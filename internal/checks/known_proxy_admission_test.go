@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"testing"
@@ -133,8 +134,6 @@ func TestAdmissionEvidencePreservesSessionPeers(t *testing.T) {
 		{ProducerMailLog, "mail_bruteforce"},
 		{ProducerFTPLog, "ftp_auth_failure_realtime"},
 		{ProducerFTPScan, "ftp_bruteforce"},
-		{ProducerCpanelAccessLog, "api_auth_failure_realtime"},
-		{ProducerCpanelScan, "api_auth_failure"},
 	} {
 		t.Run(string(tc.producer), func(t *testing.T) {
 			f := httpPeerFinding("198.51.100.7")
@@ -168,4 +167,48 @@ func TestAdmissionEvidenceRefusesEveryHTTPProducer(t *testing.T) {
 	chain := httpPeerFinding("198.51.100.7")
 	chain.Attribution = admission.AttributionTrustedHTTPChain
 	requireKnownProxyGateOutcome(t, chain, admission.CauseUnreachable)
+}
+
+// A cpsrvd peer is a web server's peer too (CDNs proxy the cPanel ports),
+// and reputation intel on an edge describes the address every visitor
+// behind it shares: both are refused like an HTTP peer.
+func TestAdmissionEvidenceRefusesPanelAndIntelEdges(t *testing.T) {
+	withKnownProxyPrefixes(t, "198.51.100.0/24")
+	SetASNLookup(nil)
+	for _, tc := range []struct {
+		producer admission.ProducerID
+		check    string
+		kind     admission.Attribution
+	}{
+		{ProducerCpanelAccessLog, "api_auth_failure_realtime", admission.AttributionPeer},
+		{ProducerCpanelScan, "api_auth_failure", admission.AttributionPeer},
+		{ProducerCpanelScan, "webmail_bruteforce", admission.AttributionPeer},
+		{ProducerReputationScan, "ip_reputation", admission.AttributionDerived},
+	} {
+		t.Run(tc.check, func(t *testing.T) {
+			f := httpPeerFinding("198.51.100.7")
+			f.Check, f.Attribution = tc.check, tc.kind
+			f.Observation.Producer = string(tc.producer)
+			requireKnownProxyGateOutcome(t, f, admission.CauseProxyPeer)
+			f.SourceIP = "203.0.113.9"
+			requireKnownProxyGateOutcome(t, f, 0)
+		})
+	}
+}
+
+// An IP reputation finding whose local sighting is a request from a known
+// edge keeps its legacy finding, and admission refuses it.
+func TestReputationFindingFromAKnownProxyIsRefused(t *testing.T) {
+	withKnownProxyPrefixes(t, "198.51.100.0/24")
+	SetASNLookup(nil)
+	at := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	cfg := listIPs(t, "198.51.100.7")
+	sightingLogs(t, map[string]string{sightingAccessLog: sightingLines("198.51.100.7", at)["HTTP request"] + "\n"})
+	f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "198.51.100.7")
+	if f.Attribution != admission.AttributionDerived || f.Observation.Producer != string(ProducerReputationScan) {
+		t.Fatalf("legacy finding changed: %s read as %s from %q", f.SourceIP, f.Attribution, f.Observation.Producer)
+	}
+	if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != admission.CauseProxyPeer {
+		t.Fatalf("mint: %v, want the proxy_peer cause", err)
+	}
 }

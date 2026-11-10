@@ -28,8 +28,8 @@ var knownProxyPrefixes = func() []netip.Prefix {
 // website-firewall edge: inside a built-in edge range, or, when the ASN
 // database names it, in a network cfg lists under
 // thresholds.http_asn_crawl_reverse_proxy_asns. Such an address carries many
-// visitors, so it is never the attacker an HTTP finding names, whether or not
-// cloudflare.enabled is set.
+// visitors, so it is never the attacker an HTTP, cPanel or reputation finding
+// names, whether or not cloudflare.enabled is set.
 func KnownProxyPeer(addr string, cfg *config.Config) bool {
 	// ASN readers use address bytes and can discard a zone.
 	a, err := netip.ParseAddr(strings.TrimSpace(addr))

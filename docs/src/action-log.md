@@ -148,7 +148,7 @@ stamped the finding), `kind_not_allowed` (no parser vouched for the address
 in a way the check accepts), `target_mismatch` (the response names an address
 its evidence does not attribute), `unreachable` (the address is a client
 behind a trusted proxy, which sends this host no packets of its own) or
-`proxy_peer` (the HTTP peer is a known CDN or website-firewall edge, which
+`proxy_peer` (the address is a known CDN or website-firewall edge, which
 carries many visitors). Refusals at submission and queue placement keep the
 same cause as refusals at evidence minting. A queued response that a later
 check refuses (its revalidation, an inventory refresh, a configuration

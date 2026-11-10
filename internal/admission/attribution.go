@@ -104,7 +104,7 @@ const (
 	// CauseUnreachable: the address is a client behind a trusted proxy, not
 	// a packet source this host can contain (spec 5.8).
 	CauseUnreachable
-	// CauseProxyPeer: the HTTP peer is a known CDN or proxy edge the
+	// CauseProxyPeer: the address is a known CDN or proxy edge the
 	// operator did not configure as trusted, which carries many visitors
 	// and cannot be blocked as one of them (spec 5.8).
 	CauseProxyPeer
