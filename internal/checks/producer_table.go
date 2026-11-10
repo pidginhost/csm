@@ -38,6 +38,7 @@ const (
 var (
 	mintsPeer        = admission.Attributions(admission.AttributionPeer)
 	mintsHTTPPeer    = admission.Attributions(admission.AttributionHTTPPeer)
+	mintsHTTPClient  = admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)
 	mintsDerived     = admission.Attributions(admission.AttributionDerived)
 	mintsDestination = admission.Attributions(admission.AttributionSocketDestination)
 )
@@ -82,7 +83,7 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerDomlogScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"wp_login_bruteforce", "xmlrpc_abuse", "wp_user_enumeration", "http_request_flood", "http_ua_spoof",
 			"http_scanner_profile", "http_claimed_bot_unverified", "http_asn_crawl"},
-		Claims: []admission.ClaimKind{admission.ClaimDomain}, Attribution: mintsHTTPPeer},
+		Claims: []admission.ClaimKind{admission.ClaimDomain}, Attribution: mintsHTTPClient},
 		admission.ParserRef{Name: "access_log", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerModSecLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"modsec_block_escalation", "modsec_csm_block_escalation"}, Claims: []admission.ClaimKind{admission.ClaimRequestName}, Attribution: mintsHTTPPeer},

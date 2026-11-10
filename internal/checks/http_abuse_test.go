@@ -1,15 +1,19 @@
 package checks
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/clientaddr"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // TestRefactorParity feeds a fixed set of access-log lines through the
@@ -523,21 +527,31 @@ func TestHTTPRequestFlood_IgnoresRecordsOutsideWindow(t *testing.T) {
 	}
 }
 
-func TestClientIPForRecord_RequiresTrustedProxy(t *testing.T) {
+// resolvedClient is recordClient against cfg's trusted proxies, as the
+// domlog scan reads it.
+func resolvedClient(rec accessLogRecord, cfg *config.Config) (string, bool, error) {
+	res, err := recordClient(rec, config.TrustedProxies(cfg))
+	if err != nil {
+		return "", false, err
+	}
+	return res.Client.String(), res.Chained, nil
+}
+
+func TestRecordClient_RequiresTrustedProxy(t *testing.T) {
 	// A trusted proxy appends the real client as the rightmost XFF entry.
 	rec := accessLogRecord{
 		RemoteIP: "198.51.100.10",
 		XFF:      "192.0.2.50, 203.0.113.10",
 	}
 
-	if got, forwarded := clientIPForRecord(rec, &config.Config{}); got != "198.51.100.10" || forwarded {
-		t.Fatalf("untrusted proxy used XFF: got %q (forwarded %v)", got, forwarded)
+	if got, chained, err := resolvedClient(rec, &config.Config{}); got != "198.51.100.10" || chained || err != nil {
+		t.Fatalf("untrusted proxy used XFF: got %q (chained %v, %v)", got, chained, err)
 	}
 
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
-	if got, forwarded := clientIPForRecord(rec, cfg); got != "203.0.113.10" || !forwarded {
-		t.Fatalf("trusted proxy client IP=%q (forwarded %v), want 203.0.113.10 from the header", got, forwarded)
+	if got, chained, err := resolvedClient(rec, cfg); got != "203.0.113.10" || !chained || err != nil {
+		t.Fatalf("trusted proxy client IP=%q (chained %v, %v), want 203.0.113.10 from the header", got, chained, err)
 	}
 }
 
@@ -545,59 +559,79 @@ func TestClientIPForRecord_RequiresTrustedProxy(t *testing.T) {
 // into the leftmost X-Forwarded-For position. The proxy-appended rightmost
 // entry is authoritative; the leftmost is attacker-controlled. Taking the
 // leftmost let an attacker auto-block any chosen victim.
-func TestClientIPForRecord_RejectsSpoofedLeftmost(t *testing.T) {
+func TestRecordClient_RejectsSpoofedLeftmost(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
 	rec := accessLogRecord{
 		RemoteIP: "198.51.100.10",
 		XFF:      "203.0.113.99, 203.0.113.10", // attacker put victim 203.0.113.99 leftmost
 	}
-	if got, forwarded := clientIPForRecord(rec, cfg); got != "203.0.113.10" || !forwarded {
-		t.Fatalf("spoofed leftmost XFF honoured: got %q (forwarded %v), want 203.0.113.10 from the header", got, forwarded)
+	if got, chained, err := resolvedClient(rec, cfg); got != "203.0.113.10" || !chained || err != nil {
+		t.Fatalf("spoofed leftmost XFF honoured: got %q (chained %v, %v), want 203.0.113.10 from the header", got, chained, err)
 	}
 }
 
-// The direct proxy's appended entry is authoritative even when it also matches
-// a trusted-proxy CIDR. Skipping it would make the next entry to the left
-// client-controlled again.
-func TestClientIPForRecord_UsesProxyAppendedEntryInTrustedCIDR(t *testing.T) {
+// An appended entry inside a trusted range is a trusted proxy's hop, and the
+// entry left of it is the client that proxy saw: the walk removes configured
+// trusted hops and stops at the first other address (spec 5.8).
+func TestRecordClient_WalksPastAnAppendedTrustedHop(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
 	rec := accessLogRecord{
 		RemoteIP: "198.51.100.10",
 		XFF:      "203.0.113.99, 198.51.100.20",
 	}
-	if got, forwarded := clientIPForRecord(rec, cfg); got != "198.51.100.20" || !forwarded {
-		t.Fatalf("trusted-CIDR appended entry: got %q (forwarded %v), want 198.51.100.20 from the header", got, forwarded)
+	if got, chained, err := resolvedClient(rec, cfg); got != "203.0.113.99" || !chained || err != nil {
+		t.Fatalf("trusted-range appended hop: got %q (chained %v, %v), want 203.0.113.99 left of it", got, chained, err)
 	}
 }
 
-func TestClientIPForRecord_TrimsTrustedProxyEntries(t *testing.T) {
+func TestRecordClient_TrimsTrustedProxyEntries(t *testing.T) {
 	rec := accessLogRecord{RemoteIP: "198.51.100.10", XFF: "203.0.113.10"}
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{" 198.51.100.10 "}
 
-	if got, forwarded := clientIPForRecord(rec, cfg); got != "203.0.113.10" || !forwarded {
-		t.Fatalf("trusted proxy client IP=%q (forwarded %v), want 203.0.113.10 from the header", got, forwarded)
+	if got, chained, err := resolvedClient(rec, cfg); got != "203.0.113.10" || !chained || err != nil {
+		t.Fatalf("trusted proxy client IP=%q (chained %v, %v), want 203.0.113.10 from the header", got, chained, err)
 	}
 }
 
-// A trusted proxy whose header names an unparsable entry, or no header at all,
-// leaves the peer in place and nothing forwarded; an entry equal to the peer
-// is still forwarded.
-func TestClientIPForRecord_ReportsTheHeaderSelection(t *testing.T) {
+// A trusted proxy whose header is missing, unreadable or names only trusted
+// proxies resolves to nobody: its own address identifies a shared transport,
+// never the client (L6).
+func TestRecordClient_RefusesWhatTheHeaderCannotResolve(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.10"}
 	for _, tc := range []struct {
-		xff, want string
-		forwarded bool
+		xff     string
+		partial bool
+		want    error
 	}{
-		{"", "198.51.100.10", false},
-		{"not-an-address", "198.51.100.10", false},
-		{"198.51.100.10", "198.51.100.10", true},
+		{"", false, clientaddr.ErrNoChain},
+		{"not-an-address", false, clientaddr.ErrMalformed},
+		{"198.51.100.10", false, clientaddr.ErrAllTrusted},
+		{"198.51.100.10", true, clientaddr.ErrTruncated},
 	} {
-		if got, forwarded := clientIPForRecord(accessLogRecord{RemoteIP: "198.51.100.10", XFF: tc.xff}, cfg); got != tc.want || forwarded != tc.forwarded {
-			t.Errorf("XFF %q: got %q (forwarded %v), want %q (forwarded %v)", tc.xff, got, forwarded, tc.want, tc.forwarded)
+		got, chained, err := resolvedClient(accessLogRecord{RemoteIP: "198.51.100.10", XFF: tc.xff, XFFPartial: tc.partial}, cfg)
+		if !errors.Is(err, tc.want) || got != "" || chained {
+			t.Errorf("XFF %q partial %v: got %q (chained %v, %v), want %v", tc.xff, tc.partial, got, chained, err, tc.want)
+		}
+	}
+}
+
+func TestParseAccessLogRecordReportsACutForwardedHeader(t *testing.T) {
+	base := `192.0.2.10 - - [09/Nov/2026:12:01:00 +0000] "GET / HTTP/1.1" 200 100 "-" "Mozilla/5.0" `
+	for _, tc := range []struct {
+		field, xff string
+		partial    bool
+	}{
+		{`"203.0.113.9"`, "203.0.113.9", false},
+		{`"bogus, 203.0.113.9"`, "203.0.113.9", true},
+		{`"` + strings.Repeat("198.51.100.1, ", 30) + `203.0.113.9"`, "203.0.113.9", true},
+	} {
+		rec, ok := parseAccessLogRecord(base + tc.field)
+		if !ok || !strings.HasSuffix(rec.XFF, tc.xff) || rec.XFFPartial != tc.partial {
+			t.Errorf("field %s: XFF %q partial %v, want suffix %q partial %v", tc.field, rec.XFF, rec.XFFPartial, tc.xff, tc.partial)
 		}
 	}
 }
@@ -812,4 +846,95 @@ func TestClaimedBot_ConfirmedNegativeEmitsUASpoof(t *testing.T) {
 		}
 	}
 	t.Fatalf("confirmed negative claimed bot did not emit ua spoof: %+v", got)
+}
+
+// Loopback and unspecified addresses are never counted, whether the log or a
+// trusted proxy chain names them: no response can act on them.
+func TestDomlogScanIgnoresLoopbackClients(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"192.0.2.10"}
+	stats := newDomlogStats()
+	for _, rec := range []accessLogRecord{
+		{RemoteIP: "127.0.0.1", Method: "POST", URI: "/wp-login.php"},
+		{RemoteIP: "::", Method: "POST", URI: "/wp-login.php"},
+		{RemoteIP: "192.0.2.10", XFF: "127.0.0.2", Method: "POST", URI: "/wp-login.php"},
+		{RemoteIP: "192.0.2.10", XFF: "::ffff:127.0.0.3", Method: "POST", URI: "/wp-login.php"},
+	} {
+		stats.scan(rec, cfg, nopBotClassifier{})
+	}
+	if len(stats.wpLogin) != 0 || len(stats.httpReqs) != 0 {
+		t.Fatalf("counted logins=%v requests=%v, want nothing", stats.wpLogin, stats.httpReqs)
+	}
+}
+
+// A listed address is never a client, even where its header is not trusted:
+// an address of this host, any listed address while the interface set cannot
+// be read, and a listed local hop in a remote proxy's chain. The scan never
+// skips past it to client text on its left. An unlisted peer still counts.
+func TestDomlogScanNeverCountsAListedAddress(t *testing.T) {
+	line := func(peer, xff string) accessLogRecord {
+		rec, ok := parseAccessLogRecord(peer + ` - - [09/Nov/2026:12:01:00 +0000] "POST /wp-login.php HTTP/1.1" 200 100 "-" "Mozilla/5.0" "` + xff + `"`)
+		if !ok {
+			t.Fatalf("fixture for %s did not parse", peer)
+		}
+		return rec
+	}
+	for _, tc := range []struct {
+		name  string
+		host  func() ([]net.IP, error)
+		trust func(*config.Config)
+		recs  []accessLogRecord
+	}{
+		{"listed address of this host",
+			func() ([]net.IP, error) { return []net.IP{net.ParseIP("192.0.2.10")}, nil },
+			func(c *config.Config) { c.WebServer.TrustedProxies = []string{"192.0.2.0/24"} },
+			[]accessLogRecord{line("192.0.2.10", "203.0.113.66"), line("::ffff:192.0.2.10", "203.0.113.66")}},
+		{"unread interface set",
+			func() ([]net.IP, error) { return nil, errors.New("no interface list") },
+			func(c *config.Config) { c.Challenge.TrustedProxies = []string{"192.0.2.10"} },
+			[]accessLogRecord{line("192.0.2.10", "203.0.113.66"), line("192.0.2.10", "")}},
+		{"listed local hop",
+			func() ([]net.IP, error) { return []net.IP{net.ParseIP("192.0.2.11")}, nil },
+			func(c *config.Config) { c.WebServer.TrustedProxies = []string{"192.0.2.0/24"} },
+			[]accessLogRecord{line("192.0.2.10", "203.0.113.66, 192.0.2.11")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(netutil.SetHostAddressLookup(tc.host))
+			cfg := &config.Config{}
+			tc.trust(cfg)
+			stats := newDomlogStats()
+			for _, rec := range tc.recs {
+				stats.scan(rec, cfg, nopBotClassifier{})
+			}
+			stats.scan(line("198.51.100.7", "192.0.2.10"), cfg, nopBotClassifier{})
+			if len(stats.wpLogin) != 1 || stats.wpLogin["198.51.100.7"] != 1 {
+				t.Fatalf("counted %v, want only the unlisted direct peer", stats.wpLogin)
+			}
+		})
+	}
+}
+
+// A client behind a trusted proxy cannot pad its own forwarded header to go
+// uncounted: the log keeps the right end the proxies appended, and that end
+// names the client however long the client-written part grows.
+func TestDomlogScanCountsAClientThatPadsItsHeader(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"192.0.2.0/24"}
+	for name, pad := range map[string]string{
+		"33 hops":   strings.Repeat("198.51.100.7,", clientaddr.MaxHops),
+		"over 4KiB": strings.Repeat(" ", clientaddr.MaxChainBytes),
+		"junk":      "not-an-address, ,",
+	} {
+		stats := newDomlogStats()
+		for i := 0; i < wpLoginThreshold; i++ {
+			rec, ok := parseAccessLogRecord(fmt.Sprintf(`192.0.2.10 - - [09/Nov/2026:12:01:%02d +0000] "POST /wp-login.php HTTP/1.1" 200 100 "-" "Mozilla/5.0" "%s203.0.113.9, 192.0.2.11"`, i, pad))
+			if !ok {
+				t.Fatalf("%s: fixture did not parse", name)
+			}
+			stats.scan(rec, cfg, nopBotClassifier{})
+		}
+		if len(stats.wpLogin) != 1 || stats.wpLogin["203.0.113.9"] != wpLoginThreshold {
+			t.Errorf("%s: counted %v, want every request against 203.0.113.9", name, stats.wpLogin)
+		}
+	}
 }

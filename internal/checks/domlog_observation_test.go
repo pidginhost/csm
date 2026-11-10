@@ -105,9 +105,9 @@ func TestDomlogScanNamesEachFindingsNewestRecord(t *testing.T) {
 }
 
 // An address resolved from a trusted proxy's forwarded header is not the
-// HTTP peer of its record: the finding keeps the record but no kind, until
-// trusted chains are read (plan 2.1c).
-func TestDomlogScanLeavesAForwardedAddressUnattributed(t *testing.T) {
+// HTTP peer of its record: the finding keeps the record and reads it as a
+// trusted chain, which admission refuses as unreachable.
+func TestDomlogScanReadsAForwardedAddressAsATrustedChain(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"192.0.2.10"}
 	var lines []string
@@ -116,16 +116,17 @@ func TestDomlogScanLeavesAForwardedAddressUnattributed(t *testing.T) {
 	}
 	path, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
 	f := oneScanFinding(t, findings, "wp_login_bruteforce")
-	if f.SourceIP != "203.0.113.62" || f.Attribution != admission.AttributionUnknown {
-		t.Fatalf("finding %s read as %s, want the forwarded address with no kind", f.SourceIP, f.Attribution)
+	if f.SourceIP != "203.0.113.62" {
+		t.Fatalf("finding %s, want the forwarded address", f.SourceIP)
 	}
 	wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, 19), domlogTestTime(19))
+	wantChainRefused(t, f)
 }
 
 // A count that mixes forwarded and direct records is not the HTTP peer's,
 // even when the newest record is direct: one direct request cannot vouch for
-// the rest.
-func TestDomlogScanLeavesAMixedCountUnattributed(t *testing.T) {
+// the rest, so the count reads as a trusted chain.
+func TestDomlogScanReadsAMixedCountAsATrustedChain(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"192.0.2.10"}
 	var lines []string
@@ -135,10 +136,11 @@ func TestDomlogScanLeavesAMixedCountUnattributed(t *testing.T) {
 	lines = append(lines, domlogTestLine("203.0.113.62", 30, "POST", "/wp-login.php", 200, "Mozilla/5.0"))
 	path, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
 	f := oneScanFinding(t, findings, "wp_login_bruteforce")
-	if f.SourceIP != "203.0.113.62" || f.Attribution != admission.AttributionUnknown {
-		t.Fatalf("finding %s read as %s, want the mixed count with no kind", f.SourceIP, f.Attribution)
+	if f.SourceIP != "203.0.113.62" {
+		t.Fatalf("finding %s, want the mixed count's address", f.SourceIP)
 	}
 	wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, 19), domlogTestTime(30))
+	wantChainRefused(t, f)
 }
 
 // The central access log read alongside the domlogs names its own records.
@@ -218,15 +220,25 @@ func mintScanFinding(t *testing.T, f alert.Finding) (admission.Evidence, admissi
 	return e, in.Target, err
 }
 
-// wantNoKind fails unless f keeps its observation but no kind, so admission
-// refuses it for want of an attributed address.
-func wantNoKind(t *testing.T, f alert.Finding) {
+// wantChainRefused fails unless f reads as a client behind a trusted proxy,
+// which admission refuses: no response here can contain it (spec 5.8).
+func wantChainRefused(t *testing.T, f alert.Finding) {
 	t.Helper()
-	if f.Attribution != admission.AttributionUnknown {
-		t.Fatalf("%s from %s read as %s, want no kind", f.Check, f.SourceIP, f.Attribution)
+	if f.Attribution != admission.AttributionTrustedHTTPChain {
+		t.Fatalf("%s from %s read as %s, want trusted_http_chain", f.Check, f.SourceIP, f.Attribution)
 	}
-	if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != admission.CauseKindNotAllowed {
-		t.Fatalf("%s from %s minted or refused without the kind cause: %v", f.Check, f.SourceIP, err)
+	if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != admission.CauseUnreachable {
+		t.Fatalf("%s from %s minted or refused without the unreachable cause: %v", f.Check, f.SourceIP, err)
+	}
+}
+
+// wantNoCheckFinding fails if findings hold one of check.
+func wantNoCheckFinding(t *testing.T, findings []alert.Finding, check string) {
+	t.Helper()
+	for _, f := range findings {
+		if f.Check == check {
+			t.Fatalf("%s finding for %s: a trusted proxy's unresolved requests are nobody's", check, f.SourceIP)
+		}
 	}
 }
 
@@ -241,9 +253,9 @@ func wantPeerMints(t *testing.T, f alert.Finding) {
 	}
 }
 
-// A trusted proxy's forwarded selection is not the HTTP peer, even when the
-// forwarded address equals the proxy's own. An untrusted peer's forged
-// header is ignored: the peer itself is read and mints.
+// A forwarded header naming only the trusted proxy itself resolves to no
+// client, so nothing is counted. An untrusted peer's forged header is
+// ignored: the peer itself is read and mints.
 func TestDomlogScanForwardedPeerEquality(t *testing.T) {
 	for name, tc := range map[string]struct {
 		peer, forwarded, trusted string
@@ -259,10 +271,8 @@ func TestDomlogScanForwardedPeerEquality(t *testing.T) {
 			for i := 0; i < 20; i++ {
 				lines = append(lines, domlogTestLine(tc.peer, i, "POST", "/wp-login.php", 200, "Mozilla/5.0")+` "`+tc.forwarded+`"`)
 			}
-			path, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
-			f := oneScanFinding(t, findings, "wp_login_bruteforce")
-			wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, 19), domlogTestTime(19))
-			wantNoKind(t, f)
+			_, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
+			wantNoCheckFinding(t, findings, "wp_login_bruteforce")
 		})
 	}
 	t.Run("untrusted peer", func(t *testing.T) {
@@ -323,7 +333,7 @@ func TestDomlogScannerDenominatorCannotVouchForPeer(t *testing.T) {
 			if tc.control {
 				wantPeerMints(t, f)
 			} else {
-				wantNoKind(t, f)
+				wantChainRefused(t, f)
 			}
 		})
 	}
@@ -381,7 +391,7 @@ func TestDomlogScannerBotRoutingCannotVouchForPeer(t *testing.T) {
 			}
 			wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, paths[probeFile], logs[probeFile], newest), domlogTestTime(9))
 			if tc.pending && tc.forwarded {
-				wantNoKind(t, f)
+				wantChainRefused(t, f)
 			} else {
 				wantPeerMints(t, f)
 			}
@@ -443,7 +453,7 @@ func TestDomlogClaimedBotMixedThresholdHasNoKind(t *testing.T) {
 				}
 				wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, newest), domlogTestTime(at))
 				if forwarded {
-					wantNoKind(t, f)
+					wantChainRefused(t, f)
 				} else {
 					wantPeerMints(t, f)
 				}
@@ -546,7 +556,7 @@ func TestDomlogScanForwardedCountsHaveNoKind(t *testing.T) {
 				if variant == "direct" {
 					wantPeerMints(t, got[0])
 				} else {
-					wantNoKind(t, got[0])
+					wantChainRefused(t, got[0])
 				}
 			})
 		}
@@ -588,7 +598,7 @@ func TestDomlogScanForwardedMarkSurvivesTimeAndStaysPerCheck(t *testing.T) {
 			path, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
 			f := oneScanFinding(t, findings, tc.check)
 			wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, tc.n-2), domlogTestTime(tc.n-2))
-			wantNoKind(t, f)
+			wantChainRefused(t, f)
 		})
 	}
 	t.Run("unrelated check", func(t *testing.T) {
@@ -603,7 +613,7 @@ func TestDomlogScanForwardedMarkSurvivesTimeAndStaysPerCheck(t *testing.T) {
 		}
 		_, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
 		wantPeerMints(t, oneScanFinding(t, findings, "wp_login_bruteforce"))
-		wantNoKind(t, oneScanFinding(t, findings, "wp_user_enumeration"))
+		wantChainRefused(t, oneScanFinding(t, findings, "wp_user_enumeration"))
 	})
 }
 
@@ -700,7 +710,7 @@ func TestScanObservationsMintAndRemainStable(t *testing.T) {
 			t.Fatalf("a finding without an observation minted or refused without the cause: %v", err)
 		}
 	})
-	t.Run("no kind", func(t *testing.T) {
+	t.Run("trusted chain", func(t *testing.T) {
 		cfg := &config.Config{}
 		cfg.WebServer.TrustedProxies = []string{domlogProxy}
 		var lines []string
@@ -712,7 +722,7 @@ func TestScanObservationsMintAndRemainStable(t *testing.T) {
 		if f.SourceIP != "203.0.113.69" || f.Severity != alert.Critical {
 			t.Fatalf("legacy finding changed: %+v", f)
 		}
-		wantNoKind(t, f)
+		wantChainRefused(t, f)
 	})
 }
 
@@ -826,13 +836,14 @@ func TestDomlogCentralRecordClaimsNoVhost(t *testing.T) {
 }
 
 // A trusted proxy that sends no usable forwarded header is still a proxy: the
-// requests it carries are its clients', so its own address is never read as
-// the HTTP peer. The legacy finding stays; admission refuses it.
+// requests it carries are its clients', so they are never counted against
+// its own address, by the legacy finding or by admission (L6).
 func TestDomlogScanNeverVouchesForATrustedProxy(t *testing.T) {
 	for name, tc := range map[string]struct{ trusted, suffix string }{
-		"no header":       {domlogProxy, ""},
-		"unusable header": {domlogProxy, ` "not-an-address"`},
-		"trusted range":   {"192.0.2.0/24", ""},
+		"no header":         {domlogProxy, ""},
+		"unusable header":   {domlogProxy, ` "not-an-address"`},
+		"trusted range":     {"192.0.2.0/24", ""},
+		"only trusted hops": {"192.0.2.0/24", ` "192.0.2.11"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := &config.Config{}
@@ -841,13 +852,8 @@ func TestDomlogScanNeverVouchesForATrustedProxy(t *testing.T) {
 			for i := 0; i < 20; i++ {
 				lines = append(lines, domlogTestLine(domlogProxy, i, "POST", "/wp-login.php", 200, "Mozilla/5.0")+tc.suffix)
 			}
-			path, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
-			f := oneScanFinding(t, findings, "wp_login_bruteforce")
-			if f.SourceIP != domlogProxy {
-				t.Fatalf("legacy finding names %s, want the proxy's address", f.SourceIP)
-			}
-			wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, 19), domlogTestTime(19))
-			wantNoKind(t, f)
+			_, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
+			wantNoCheckFinding(t, findings, "wp_login_bruteforce")
 		})
 	}
 }

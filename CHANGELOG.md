@@ -13,7 +13,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - PrestaShop shops are now scanned for injected script in settings, pages, products and categories, new back-office employees and new or promoted SuperAdmins (Critical); turn off with `disabled_checks: [db_content_prestashop]`.
 - The challenge server can listen on a Unix socket that only your proxy's group can open, for a proxy on the same host.
-- Admission refusal summaries explain missing address attribution and later refusals of queued responses, including disabled responses and lost queue positions.
+- Admission refusal summaries explain missing address attribution, clients behind a trusted proxy and later refusals of queued responses, including disabled responses and lost queue positions.
 
 ### Changed
 
@@ -27,6 +27,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- With `web_server.trusted_proxies` set, HTTP checks no longer count requests against a trusted proxy whose forwarded header is missing or unreadable, and read past further trusted proxies in it.
 - Joomla, Drupal, Magento and OpenCart scans keep checking the remaining tables when one table returns too many rows, so a flood of rows no longer hides an injection.
 - PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.
 - `challenge.verified_session` no longer issues admin sessions to this server's own addresses, so local accounts cannot guess `admin_secret` from loopback.

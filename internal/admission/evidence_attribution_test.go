@@ -15,13 +15,14 @@ func TestCauseVocabulary(t *testing.T) {
 		{CauseNoObservation, 1, "no_observation"},
 		{CauseKindNotAllowed, 2, "kind_not_allowed"},
 		{CauseTargetMismatch, 3, "target_mismatch"},
+		{CauseUnreachable, 4, "unreachable"},
 	} {
 		if uint8(w.c) != w.n || w.c.String() != w.name || !w.c.Valid() {
 			t.Errorf("cause %d = %q valid %v, want %d %q", uint8(w.c), w.c.String(), w.c.Valid(), w.n, w.name)
 		}
 	}
-	if Cause(0).Valid() || Cause(4).Valid() {
-		t.Error("cause 0 or 4 is valid")
+	if Cause(0).Valid() || Cause(5).Valid() {
+		t.Error("cause 0 or 5 is valid")
 	}
 }
 

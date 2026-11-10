@@ -496,3 +496,34 @@ func TestEmitASNCrawlStage2UsesSaturationConfig(t *testing.T) {
 		t.Fatalf("saturation config must drive Critical escalation, got %+v", out)
 	}
 }
+
+// The ASN crawl counts the clients the domlog scan resolves: never a trusted
+// proxy whose chain names nobody, never client text left of the client.
+func TestDomlogASNCrawlCountsOnlyResolvedClients(t *testing.T) {
+	SetASNLookup(func(ip string) (uint, string) {
+		switch {
+		case strings.HasPrefix(ip, "203.0.113."):
+			return 64512, "ClientNet"
+		case strings.HasPrefix(ip, "192.0.2."):
+			return 64513, "ProxyNet"
+		case strings.HasPrefix(ip, "198.51.100."):
+			return 64514, "TextNet"
+		}
+		return 0, ""
+	})
+	t.Cleanup(func() { SetASNLookup(nil) })
+	cfg := configWithASNCrawlDefaults(t)
+	cfg.WebServer.TrustedProxies = []string{"192.0.2.0/24"}
+	s := newDomlogStatsAt(mustTime("2026-06-24T12:30:00Z"))
+	for _, xff := range []string{"", "not-an-address", "192.0.2.11", "198.51.100.9, 203.0.113.9"} {
+		s.scan(accessLogRecord{RemoteIP: "192.0.2.10", XFF: xff, Method: "GET", URI: "/categorie/coliere/?filter_x=1&query_type_x=or",
+			Status: 200, Time: mustTime("2026-06-24T12:29:00Z"), Domain: "acmeradio.example", Account: "acmeradio"}, cfg, nopBotClassifier{})
+	}
+	sc := s.asnCrawl["acmeradio"]
+	if sc == nil || sc.byASN[64512] == nil || sc.byASN[64512].distinctIPs() != 1 {
+		t.Fatalf("the resolved client did not contribute: %+v", sc)
+	}
+	if sc.byASN[64513] != nil || sc.byASN[64514] != nil || sc.scopeExpensive != 1 {
+		t.Fatalf("a proxy or client text contributed: proxy %+v text %+v expensive %d", sc.byASN[64513], sc.byASN[64514], sc.scopeExpensive)
+	}
+}
