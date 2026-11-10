@@ -1494,6 +1494,7 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 		{"-", "Mozilla/5.0", "203.0.113.80," + strings.TrimSuffix(strings.Repeat("192.0.2.10,", 24), ",")},
 		{"-", "Mozilla/5.0", "203.0.113.80" + strings.Repeat(" ", 257)},
 		{"-", "Mozilla/5.0", strings.Repeat("198.51.100.7,", 32) + "203.0.113.80"},
+		{"-", "Mozilla/5.0", strings.Repeat("::,", 32) + "203.0.113.80"},
 		{"-", "Mozilla/5.0", "203.0.113.80, bogus, 192.0.2.10"},
 	} {
 		f.Add(seed[0], seed[1], seed[2])
