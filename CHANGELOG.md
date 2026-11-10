@@ -26,6 +26,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Joomla, Drupal, Magento and OpenCart re-checks look at every site on the account with its own database login, so a clean main site no longer clears another site's finding.
 - Joomla, Drupal, Magento and OpenCart database scans and re-checks now catch script tags split by a tab or line break in the stored value.
 - Joomla, Drupal, Magento and OpenCart scans keep checking the remaining tables when one table returns too many rows, so a flood of rows no longer hides an injection.
 - PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.

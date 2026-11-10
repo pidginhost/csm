@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -16,9 +18,14 @@ type cmsVerifyOS struct {
 	mockOS
 	files  map[string]string
 	statOK map[string]bool
+	// unreadable makes every file under this path prefix fail to read.
+	unreadable string
 }
 
 func (m *cmsVerifyOS) ReadFile(name string) ([]byte, error) {
+	if m.unreadable != "" && strings.HasPrefix(name, m.unreadable) {
+		return nil, os.ErrPermission
+	}
 	if c, ok := m.files[name]; ok {
 		return []byte(c), nil
 	}
@@ -30,6 +37,23 @@ func (m *cmsVerifyOS) Lstat(name string) (os.FileInfo, error) {
 		return drupalStatStub{}, nil
 	}
 	return nil, os.ErrNotExist
+}
+
+// Glob matches the canned files and every directory above them, as the
+// account-wide re-check discovery expects of a real filesystem.
+func (m *cmsVerifyOS) Glob(pattern string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for name := range m.files {
+		for p := name; p != "/" && p != "."; p = filepath.Dir(p) {
+			if ok, _ := filepath.Match(pattern, p); ok && !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func withCMSVerifyOS(t *testing.T, files map[string]string, statOK map[string]bool) {
@@ -102,7 +126,8 @@ func runCMSResolvedUnresolved(t *testing.T, setup func(t *testing.T), c cmsCase)
 	t.Helper()
 	withQuery := c.query
 	if withQuery == nil {
-		withQuery = withRootQuery
+		// CMS re-checks query with each install's own login.
+		withQuery = withPSVerifyQuery
 	}
 	t.Run(c.name+"/resolved", func(t *testing.T) {
 		setup(t)
@@ -222,6 +247,10 @@ func TestVerifyCMSNotLocatable(t *testing.T) {
 		return nil, nil
 	})
 	t.Cleanup(func() { mysqlclient.SetRootQueryForTest(nil) })
+	withPSVerifyQuery(t, func(string, string, ...any) ([]string, error) {
+		t.Fatal("query must not run without discovery")
+		return nil, nil
+	})
 	res := verifyJoomlaContentInjection(
 		"Joomla article content injection on bob: id=7",
 		"Account: bob\nArticle ID: 7")

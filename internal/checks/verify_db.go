@@ -22,10 +22,13 @@ import (
 // unparseable finding) returns Checked:false and leaves the finding in place
 // for a full account scan.
 //
-// Reliability over the wp-config password: re-checks query as root against the
-// finding's schema (mysqlclient.RootQuerySchema) rather than the per-account
-// credentials in the CMS config file, which drift on cPanel password rotations.
-// The config file is read only to re-discover the schema name and table prefix.
+// WordPress re-checks query as root against the finding's schema
+// (mysqlclient.RootQuerySchema) rather than the per-account credentials in
+// wp-config.php, which drift on cPanel password rotations. The non-WordPress
+// CMS re-checks use each install's own login and endpoint instead
+// (runDBVerifyQueryAs): the scanner already depends on them, a shop's database
+// can live on another server or socket where root's same-named schema is not
+// the shop's, and a failed login only leaves the finding unchecked.
 
 // dbVerifyTimeout bounds a single synchronous database re-check.
 var dbVerifyTimeout = 30 * time.Second
@@ -79,6 +82,16 @@ func validFindingAccount(account string) string {
 		return ""
 	}
 	return account
+}
+
+// runDBVerifyQueryAs runs a re-check query with an install's own database
+// login and endpoint, preserving the error like runDBVerifyQueryRoot.
+func runDBVerifyQueryAs(creds wpDBCreds, query string, args ...any) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbVerifyTimeout)
+	defer cancel()
+	return mysqlclient.PerAccountQuery(ctx, mysqlclient.Creds{
+		Host: creds.dbHost, DBName: creds.dbName, User: creds.dbUser, Password: creds.dbPass,
+	}, query, args...)
 }
 
 // runDBVerifyQueryRoot runs a root-credential query against an explicit schema

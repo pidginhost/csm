@@ -58,10 +58,12 @@ func TestCMSScansDecodeBatchValues(t *testing.T) {
 }
 
 func TestCMSRecheckDecodesBatchRows(t *testing.T) {
-	withRootQuery(t, func(string, string, ...any) ([]string, error) {
+	withPSVerifyQuery(t, func(string, string, ...any) ([]string, error) {
 		return []string{cmsDecodeBatch}, nil
 	})
-	if res := dbVerifyRowMalware("shop_db", "SELECT 1", true); !res.Checked || res.Resolved {
+	install := []wpDBCreds{{dbHost: "localhost", dbName: "shop_db", dbUser: "shop_user"}}
+	query := func(string) (string, error) { return "SELECT 1", nil }
+	if res := cmsVerifyEveryInstall(install, true, query); !res.Checked || res.Resolved {
 		t.Fatalf("batch-escaped injection = %+v, want unresolved", res)
 	}
 }

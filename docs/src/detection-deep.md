@@ -331,13 +331,18 @@ suspended account's database user is locked, so scanning it would only leave the
 check incomplete. PrestaShop also skips copies named `staging`, `backup`,
 `backups`, `cache` and `.trash`, matched without regard to case.
 
-PrestaShop re-checks locate only the account's canonical `public_html` install.
-Its database host, database name and table prefix must match the finding.
-Re-checks use that install's current database credentials and endpoint, including
-custom ports and sockets. Missing or changed identity, configuration failures
-and query errors leave the finding unchecked. Settings and content resolve only
-when every language, shop and scanned column is clean or absent. New employees
-resolve only when deleted; SuperAdmin findings also resolve after demotion.
+CMS re-checks look at every install of the account in the layouts the scanner
+discovers, the account's `public_html` and each folder directly under its home,
+using each install's own database login and endpoint, including custom ports and
+sockets. Administrator findings and every PrestaShop finding record their
+database host, database name and table prefix, and are re-checked only in that
+install. Joomla, Drupal, Magento, and OpenCart settings and content findings do
+not record it, so they resolve only when the row is clean or absent in every
+install of that CMS on the account. An unreadable install, a recorded database
+that no install uses, configuration failures and query errors leave the finding
+unchecked. PrestaShop settings and content resolve only when every language,
+shop and scanned column is clean or absent. New employees resolve only when
+deleted; SuperAdmin findings also resolve after demotion.
 
 Administrator baselines for Joomla, Drupal, Magento, OpenCart, and PrestaShop are scoped to
 the hosting account, CMS, database host, database name, and table prefix. Two
