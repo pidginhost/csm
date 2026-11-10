@@ -134,7 +134,7 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 			c: cmsAdminCase{
 				name: "drupal", verify: verifyDrupalAdminInjection,
 				message: "Drupal administrator account on bob: 42",
-				details: "Account: bob\nRow: 42\tadmin\tx@y\nReview: confirm this is legit.",
+				details: cmsRecordedDetails("drupal_db", "", "Account: bob\nRow: 42\tadmin\tx@y\nReview: confirm this is legit."),
 				schema:  "drupal_db", table: "user__roles",
 			},
 		},
@@ -143,7 +143,7 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 			c: cmsAdminCase{
 				name: "joomla", verify: verifyJoomlaAdminInjection,
 				message: "Joomla Super User account on bob: 7",
-				details: "Account: bob\nRow: 7\tadmin\tx@y\nReview: confirm.",
+				details: cmsRecordedDetails("joomla_db", "jos_", "Account: bob\nRow: 7\tadmin\tx@y\nReview: confirm."),
 				schema:  "joomla_db", table: "user_usergroup_map",
 			},
 		},
@@ -152,7 +152,7 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 			c: cmsAdminCase{
 				name: "magento", verify: verifyMagentoAdminInjection,
 				message: "Magento M2 admin account on bob: user_id=3",
-				details: "Account: bob\nRow: 3\tadmin\tx@y\nReview: confirm.",
+				details: cmsRecordedDetails("magento_db", "", "Account: bob\nRow: 3\tadmin\tx@y\nReview: confirm."),
 				schema:  "magento_db", table: "admin_user",
 			},
 		},
@@ -161,7 +161,7 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 			c: cmsAdminCase{
 				name: "opencart", verify: verifyOpenCartAdminInjection,
 				message: "OpenCart admin account on bob: user_id=9",
-				details: "Account: bob\nRow: 9\tadmin\tx@y\nReview: confirm.",
+				details: cmsRecordedDetails("oc_db", "oc_", "Account: bob\nRow: 9\tadmin\tx@y\nReview: confirm."),
 				schema:  "oc_db", table: "user",
 			},
 		},
@@ -178,10 +178,8 @@ func TestVerifyCMSAdminInjection(t *testing.T) {
 
 	for _, tc := range cases {
 		tc := tc
-		withQuery := withRootQuery
-		if tc.c.name == "prestashop" {
-			withQuery = withPSVerifyQuery
-		}
+		// CMS re-checks query with each install's own login.
+		withQuery := withPSVerifyQuery
 		t.Run(tc.c.name+"/resolved", func(t *testing.T) {
 			tc.setup(t)
 			withQuery(t, func(schema, query string, _ ...any) ([]string, error) {

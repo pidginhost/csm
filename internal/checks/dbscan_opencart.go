@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -118,7 +119,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.
 	}
 	var findings []alert.Finding
 
-	configs := cmsDiscover(ctx, "db_content_opencart", "*/public_html/config.php", "*/*/config.php")
+	configs := cmsDropSuspended(cmsDiscover(ctx, "db_content_opencart", "*/public_html/config.php", "*/*/config.php"))
 	if len(configs) == 0 {
 		return nil
 	}
@@ -208,7 +209,7 @@ func scanOpenCartSettings(account string, creds opencartCreds) []alert.Finding {
 		if key == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, false)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), false)
 		if !ok {
 			continue
 		}
@@ -251,7 +252,7 @@ func scanOpenCartContentTable(account string, creds opencartCreds, table, valueC
 		if id == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, true)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 		if !ok {
 			continue
 		}

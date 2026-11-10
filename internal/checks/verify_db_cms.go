@@ -1,68 +1,32 @@
 package checks
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
-
-	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
 // Per-finding Re-check for the non-WordPress CMS database-content findings
-// (Drupal, Joomla, Magento, OpenCart, PrestaShop). Each verifier re-discovers the single
-// canonical install under /home/<account>/public_html, re-reads the one flagged
-// row against that install's schema, and re-runs the SAME malware
+// (Drupal, Joomla, Magento, OpenCart, PrestaShop). Each verifier re-discovers
+// the account's installs (verify_db_cms_installs.go), re-reads the flagged row
+// with each install's own database login, and re-runs the SAME malware
 // classifier the detector used. It resolves only when the row is gone or no
-// longer classifies as malware; any query failure or undiscoverable install
+// longer classifies as malware; any query failure or uninspectable install
 // returns Checked:false so a live injection is never auto-cleared.
 
-// dbVerifyRowMalware re-queries a single value column for one entity and
-// resolves the finding when no returned row still classifies as malware.
-// inPostContext selects the looser external-script predicate the detector uses
-// for author-written content (article/product bodies) versus config storage.
-func dbVerifyRowMalware(schema, query string, inPostContext bool, args ...any) VerifyResult {
-	rows, err := runDBVerifyQueryRoot(schema, query, args...)
-	if err != nil {
-		return dbVerifyQueryError()
-	}
-	for _, row := range rows {
-		if _, _, ok := classifyMalwareRow(row, inPostContext); ok {
-			return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged row still contains injected content"}
-		}
-	}
-	return VerifyResult{Checked: true, Resolved: true, Detail: "the flagged row no longer contains injected content"}
-}
-
 // --- Drupal ---------------------------------------------------------------
-
-func discoverDrupalSchema(account string) (schema string, ok bool) {
-	if !validAccountName.MatchString(account) {
-		return "", false
-	}
-	publicHTML := filepath.Join(accountHomeDir(account), "public_html")
-	if matched, err := looksLikeDrupal8Plus(publicHTML); err != nil || !matched {
-		return "", false
-	}
-	creds, err := parseDrupalSettings(context.Background(), filepath.Join(publicHTML, "sites", "default", "settings.php"))
-	if err != nil || creds.dbName == "" {
-		return "", false
-	}
-	return creds.dbName, true
-}
 
 func verifyDrupalSettingsInjection(message, details string) VerifyResult {
 	name := detailField(details, "Config name")
 	if name == "" {
 		return VerifyResult{Checked: false, Detail: "could not parse the config name from the finding"}
 	}
-	schema, ok := discoverDrupalSchema(dbFindingAccount(message, details))
+	installs, ok := drupalVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("Drupal site")
 	}
-	return dbVerifyRowMalware(schema, "SELECT data FROM config WHERE name = ?", false, name)
+	return cmsVerifyEveryInstall(installs, false, func(string) (string, error) {
+		return "SELECT data FROM config WHERE name = ?", nil
+	}, name)
 }
 
 func verifyDrupalContentInjection(message, details string) VerifyResult {
@@ -70,48 +34,30 @@ func verifyDrupalContentInjection(message, details string) VerifyResult {
 	if entityID == "" || !isAllDigits(entityID) {
 		return VerifyResult{Checked: false, Detail: "could not parse the node id from the finding"}
 	}
-	schema, ok := discoverDrupalSchema(dbFindingAccount(message, details))
+	installs, ok := drupalVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("Drupal site")
 	}
-	return dbVerifyRowMalware(schema, "SELECT body_value FROM node_revision__body WHERE entity_id = ?", true, entityID)
+	return cmsVerifyEveryInstall(installs, true, func(string) (string, error) {
+		return "SELECT body_value FROM node_revision__body WHERE entity_id = ?", nil
+	}, entityID)
 }
 
 // --- Joomla ---------------------------------------------------------------
-
-func discoverJoomlaSchema(account string) (schema, prefix string, ok bool) {
-	if !validAccountName.MatchString(account) {
-		return "", "", false
-	}
-	path := filepath.Join(accountHomeDir(account), "public_html", "configuration.php")
-	if matched, err := looksLikeJoomlaConfig(context.Background(), path); err != nil || !matched {
-		return "", "", false
-	}
-	creds, err := parseJConfig(context.Background(), path)
-	if err != nil || creds.dbName == "" {
-		return "", "", false
-	}
-	prefix = creds.dbPrefix
-	if prefix == "" {
-		prefix = "jos_"
-	}
-	if !validTablePrefix.MatchString(prefix) {
-		return "", "", false
-	}
-	return creds.dbName, prefix, true
-}
 
 func verifyJoomlaExtensionsInjection(message, details string) VerifyResult {
 	name := detailField(details, "Extension")
 	if name == "" {
 		return VerifyResult{Checked: false, Detail: "could not parse the extension name from the finding"}
 	}
-	schema, prefix, ok := discoverJoomlaSchema(dbFindingAccount(message, details))
+	installs, ok := joomlaVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("Joomla site")
 	}
-	return dbVerifyRowMalware(schema,
-		fmt.Sprintf("SELECT params FROM `%sextensions` WHERE name = ?", prefix), false, name)
+	return cmsVerifyEveryInstall(installs, false, func(prefix string) (string, error) {
+		table, err := QuoteIdent(prefix + "extensions")
+		return fmt.Sprintf("SELECT params FROM %s WHERE name = ?", table), err
+	}, name)
 }
 
 func verifyJoomlaContentInjection(message, details string) VerifyResult {
@@ -119,60 +65,31 @@ func verifyJoomlaContentInjection(message, details string) VerifyResult {
 	if id == "" || !isAllDigits(id) {
 		return VerifyResult{Checked: false, Detail: "could not parse the article id from the finding"}
 	}
-	schema, prefix, ok := discoverJoomlaSchema(dbFindingAccount(message, details))
+	installs, ok := joomlaVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("Joomla site")
 	}
-	return dbVerifyRowMalware(schema,
-		fmt.Sprintf("SELECT introtext FROM `%scontent` WHERE id = ?", prefix), true, id)
+	return cmsVerifyEveryInstall(installs, true, func(prefix string) (string, error) {
+		table, err := QuoteIdent(prefix + "content")
+		return fmt.Sprintf("SELECT introtext FROM %s WHERE id = ?", table), err
+	}, id)
 }
 
 // --- Magento --------------------------------------------------------------
-
-func discoverMagentoSchema(account string) (schema, prefix string, ok bool) {
-	if !validAccountName.MatchString(account) {
-		return "", "", false
-	}
-	base := filepath.Join(accountHomeDir(account), "public_html", "app", "etc")
-	creds, err := parseMagentoM2(context.Background(), filepath.Join(base, "env.php"))
-	if err == nil {
-		if creds.dbName == "" {
-			return "", "", false
-		}
-		return magentoVerifyFinalize(creds)
-	}
-	// An unsafe or unreadable current config must not select an older schema
-	// and let a re-check clear the finding against that unrelated database.
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", "", false
-	}
-	if creds, err := parseMagentoM1(context.Background(), filepath.Join(base, "local.xml")); err == nil && creds.dbName != "" {
-		return magentoVerifyFinalize(creds)
-	}
-	return "", "", false
-}
-
-// magentoVerifyFinalize validates the parsed prefix. Magento's default table
-// prefix is empty (no prefix); a non-empty prefix must pass validTablePrefix
-// before it is interpolated into a table name.
-func magentoVerifyFinalize(creds magentoCreds) (string, string, bool) {
-	if creds.dbPrefix != "" && !validTablePrefix.MatchString(creds.dbPrefix) {
-		return "", "", false
-	}
-	return creds.dbName, creds.dbPrefix, true
-}
 
 func verifyMagentoSettingsInjection(message, details string) VerifyResult {
 	cfgPath := detailField(details, "Config path")
 	if cfgPath == "" {
 		return VerifyResult{Checked: false, Detail: "could not parse the config path from the finding"}
 	}
-	schema, prefix, ok := discoverMagentoSchema(dbFindingAccount(message, details))
+	installs, ok := magentoVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("Magento site")
 	}
-	return dbVerifyRowMalware(schema,
-		fmt.Sprintf("SELECT value FROM `%score_config_data` WHERE path = ?", prefix), false, cfgPath)
+	return cmsVerifyEveryInstall(installs, false, func(prefix string) (string, error) {
+		table, err := QuoteIdent(prefix + "core_config_data")
+		return fmt.Sprintf("SELECT value FROM %s WHERE path = ?", table), err
+	}, cfgPath)
 }
 
 // magentoContentTableCols maps a Magento content table to its (idColumn,
@@ -198,49 +115,31 @@ func verifyMagentoContentInjection(message, details string) VerifyResult {
 	if !ok || rowID == "" || !isAllDigits(rowID) {
 		return VerifyResult{Checked: false, Detail: "could not parse the affected row from the finding"}
 	}
-	schema, prefix, ok := discoverMagentoSchema(dbFindingAccount(message, details))
+	installs, ok := magentoVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("Magento site")
 	}
-	return dbVerifyRowMalware(schema,
-		fmt.Sprintf("SELECT %s FROM `%s%s` WHERE %s = ?", valueCol, prefix, table, idCol), true, rowID)
+	return cmsVerifyEveryInstall(installs, true, func(prefix string) (string, error) {
+		quoted, err := QuoteIdent(prefix + table)
+		return fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?", valueCol, quoted, idCol), err
+	}, rowID)
 }
 
 // --- OpenCart -------------------------------------------------------------
-
-func discoverOpenCartSchema(account string) (schema, prefix string, ok bool) {
-	if !validAccountName.MatchString(account) {
-		return "", "", false
-	}
-	path := filepath.Join(accountHomeDir(account), "public_html", "config.php")
-	if matched, err := looksLikeOpenCart(context.Background(), path); err != nil || !matched {
-		return "", "", false
-	}
-	creds, err := parseOpenCartConfig(context.Background(), path)
-	if err != nil || creds.dbName == "" {
-		return "", "", false
-	}
-	prefix = creds.dbPrefix
-	if prefix == "" {
-		prefix = "oc_"
-	}
-	if !validTablePrefix.MatchString(prefix) {
-		return "", "", false
-	}
-	return creds.dbName, prefix, true
-}
 
 func verifyOpenCartSettingsInjection(message, details string) VerifyResult {
 	key := detailField(details, "Setting key")
 	if key == "" {
 		return VerifyResult{Checked: false, Detail: "could not parse the setting key from the finding"}
 	}
-	schema, prefix, ok := discoverOpenCartSchema(dbFindingAccount(message, details))
+	installs, ok := openCartVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("OpenCart site")
 	}
-	return dbVerifyRowMalware(schema,
-		fmt.Sprintf("SELECT value FROM `%ssetting` WHERE `key` = ?", prefix), false, key)
+	return cmsVerifyEveryInstall(installs, false, func(prefix string) (string, error) {
+		table, err := QuoteIdent(prefix + "setting")
+		return fmt.Sprintf("SELECT value FROM %s WHERE `key` = ?", table), err
+	}, key)
 }
 
 // openCartContentTableCols maps an OpenCart content table to its id column. Both
@@ -263,60 +162,27 @@ func verifyOpenCartContentInjection(message, details string) VerifyResult {
 	if !ok || rowID == "" || !isAllDigits(rowID) {
 		return VerifyResult{Checked: false, Detail: "could not parse the affected row from the finding"}
 	}
-	schema, prefix, ok := discoverOpenCartSchema(dbFindingAccount(message, details))
+	installs, ok := openCartVerifyInstalls(dbFindingAccount(message, details))
 	if !ok {
 		return dbVerifyNotLocatable("OpenCart site")
 	}
-	return dbVerifyRowMalware(schema,
-		fmt.Sprintf("SELECT description FROM `%s%s` WHERE %s = ? AND language_id = 1", prefix, table, idCol), true, rowID)
+	return cmsVerifyEveryInstall(installs, true, func(prefix string) (string, error) {
+		quoted, err := QuoteIdent(prefix + table)
+		return fmt.Sprintf("SELECT description FROM %s WHERE %s = ? AND language_id = 1", quoted, idCol), err
+	}, rowID)
 }
 
 // --- PrestaShop -------------------------------------------------------------
 
-func discoverPrestaShopVerifyCreds(account, details string) (prestashopCreds, bool) {
-	if !validAccountName.MatchString(account) {
-		return prestashopCreds{}, false
+// prestashopRecordedInstall finds the shop whose database the finding records.
+// An addon shop or a changed configuration can name a different database with
+// the same row ids; a finding is never cleared against another shop.
+func prestashopRecordedInstall(message, details string) (wpDBCreds, bool) {
+	installs, ok := prestashopVerifyInstalls(dbFindingAccount(message, details))
+	if !ok {
+		return wpDBCreds{}, false
 	}
-	creds, isShop, err := readPrestaShopCreds(context.Background(), filepath.Join(accountHomeDir(account), "public_html"))
-	if err != nil || !isShop {
-		return prestashopCreds{}, false
-	}
-	// An addon install or changed configuration can name a different database
-	// with the same row ids. Never clear its finding against the canonical one.
-	for key, want := range map[string]string{
-		"Database": creds.dbName, "Table prefix": creds.dbPrefix, "Database host": creds.dbHost,
-	} {
-		if got, present := detailFieldPresent(details, key); !present || got != want {
-			return prestashopCreds{}, false
-		}
-	}
-	return creds, true
-}
-
-func runPrestaShopVerifyQuery(creds prestashopCreds, query string, args ...any) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), dbVerifyTimeout)
-	defer cancel()
-	// Root credentials may point at another server or socket. Use the same
-	// endpoint and account as the scanner, preserving errors for the caller.
-	return mysqlclient.PerAccountQuery(ctx, mysqlclient.Creds{
-		Host: creds.dbHost, DBName: creds.dbName, User: creds.dbUser, Password: creds.dbPass,
-	}, query, args...)
-}
-
-// prestashopVerifyRowMalware is dbVerifyRowMalware on the stored values. The
-// detector classifies batch-unescaped rows, so the re-check must as well, or
-// it would resolve a row the detector still reports.
-func prestashopVerifyRowMalware(creds prestashopCreds, query string, inPostContext bool, args ...any) VerifyResult {
-	rows, err := runPrestaShopVerifyQuery(creds, query, args...)
-	if err != nil {
-		return dbVerifyQueryError()
-	}
-	for _, row := range rows {
-		if _, _, ok := classifyMalwareRow(mysqlclient.BatchUnescape(row), inPostContext); ok {
-			return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged row still contains injected content"}
-		}
-	}
-	return VerifyResult{Checked: true, Resolved: true, Detail: "the flagged row no longer contains injected content"}
+	return cmsVerifyRecordedInstall(installs, details)
 }
 
 func verifyPrestaShopSettingsInjection(message, details string) VerifyResult {
@@ -324,21 +190,19 @@ func verifyPrestaShopSettingsInjection(message, details string) VerifyResult {
 	if !isAllDigits(id) {
 		return VerifyResult{Checked: false, Detail: "could not parse the setting id from the finding"}
 	}
-	creds, ok := discoverPrestaShopVerifyCreds(dbFindingAccount(message, details), details)
+	creds, ok := prestashopRecordedInstall(message, details)
 	if !ok {
 		return dbVerifyNotLocatable("PrestaShop site")
 	}
-	base, err := QuoteIdent(creds.dbPrefix + "configuration")
-	if err != nil {
-		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop tables from the finding"}
-	}
-	lang, err := QuoteIdent(creds.dbPrefix + "configuration_lang")
-	if err != nil {
-		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop tables from the finding"}
-	}
-	return prestashopVerifyRowMalware(creds, fmt.Sprintf(
-		"SELECT value FROM %s WHERE id_configuration = ? UNION ALL SELECT value FROM %s WHERE id_configuration = ?",
-		base, lang), false, id, id)
+	return cmsVerifyEveryInstall([]wpDBCreds{creds}, false, func(prefix string) (string, error) {
+		base, err := QuoteIdent(prefix + "configuration")
+		if err != nil {
+			return "", err
+		}
+		lang, err := QuoteIdent(prefix + "configuration_lang")
+		return fmt.Sprintf("SELECT value FROM %s WHERE id_configuration = ? UNION ALL SELECT value FROM %s WHERE id_configuration = ?",
+			base, lang), err
+	}, id, id)
 }
 
 // verifyPrestaShopContentInjection re-reads every language, shop and column
@@ -355,19 +219,20 @@ func verifyPrestaShopContentInjection(message, details string) VerifyResult {
 	if spec == nil || !isAllDigits(id) {
 		return VerifyResult{Checked: false, Detail: "could not parse the table and row id from the finding"}
 	}
-	creds, ok := discoverPrestaShopVerifyCreds(dbFindingAccount(message, details), details)
+	creds, ok := prestashopRecordedInstall(message, details)
 	if !ok {
 		return dbVerifyNotLocatable("PrestaShop site")
 	}
-	table, err := QuoteIdent(creds.dbPrefix + spec.table)
-	if err != nil {
-		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop table from the finding"}
-	}
-	var selects []string
 	var args []any
-	for _, col := range spec.cols {
-		selects = append(selects, fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?", col, table, spec.idCol))
+	for range spec.cols {
 		args = append(args, id)
 	}
-	return prestashopVerifyRowMalware(creds, strings.Join(selects, " UNION ALL "), true, args...)
+	return cmsVerifyEveryInstall([]wpDBCreds{creds}, true, func(prefix string) (string, error) {
+		table, err := QuoteIdent(prefix + spec.table)
+		var selects []string
+		for _, col := range spec.cols {
+			selects = append(selects, fmt.Sprintf("SELECT %s FROM %s WHERE %s = ?", col, table, spec.idCol))
+		}
+		return strings.Join(selects, " UNION ALL "), err
+	}, args...)
 }

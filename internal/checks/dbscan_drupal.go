@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -140,7 +141,7 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.St
 	}
 	var findings []alert.Finding
 
-	settings := cmsDiscover(ctx, "db_content_drupal", "*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php")
+	settings := cmsDropSuspended(cmsDiscover(ctx, "db_content_drupal", "*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php"))
 	if len(settings) == 0 {
 		return nil
 	}
@@ -218,7 +219,7 @@ func scanDrupalConfig(account string, creds drupalCreds) []alert.Finding {
 		if name == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, false)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), false)
 		if !ok {
 			continue
 		}
@@ -247,7 +248,7 @@ func scanDrupalContent(account string, creds drupalCreds) []alert.Finding {
 		if entityID == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, true)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 		if !ok {
 			continue
 		}

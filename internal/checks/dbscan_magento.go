@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -144,7 +145,7 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.S
 	// M2 discovery first (active version). Rank by mtime desc so recently
 	// touched installs are processed first when the check timeout cuts
 	// iteration short.
-	m2Files := cmsDiscover(ctx, "db_content_magento", "*/public_html/app/etc/env.php", "*/*/app/etc/env.php")
+	m2Files := cmsDropSuspended(cmsDiscover(ctx, "db_content_magento", "*/public_html/app/etc/env.php", "*/*/app/etc/env.php"))
 	for _, path := range rankCMSConfigs(ctx, "db_content_magento", m2Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
@@ -160,7 +161,7 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, store *state.S
 	}
 
 	// M1 fallback for hosts where env.php is absent or unparseable.
-	m1Files := cmsDiscover(ctx, "db_content_magento", "*/public_html/app/etc/local.xml", "*/*/app/etc/local.xml")
+	m1Files := cmsDropSuspended(cmsDiscover(ctx, "db_content_magento", "*/public_html/app/etc/local.xml", "*/*/app/etc/local.xml"))
 	for _, path := range rankCMSConfigs(ctx, "db_content_magento", m1Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
@@ -276,7 +277,7 @@ func scanMagentoSettings(account string, creds magentoCreds) []alert.Finding {
 		if cfgPath == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, false)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), false)
 		if !ok {
 			continue
 		}
@@ -314,7 +315,7 @@ func scanMagentoContent(account string, creds magentoCreds, table, valueCol stri
 		if id == "" {
 			continue
 		}
-		sev, desc, ok := classifyMalwareRow(body, true)
+		sev, desc, ok := classifyMalwareRow(mysqlclient.BatchUnescape(body), true)
 		if !ok {
 			continue
 		}

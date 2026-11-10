@@ -255,7 +255,8 @@ func TestMagentoRecheckDoesNotFallBackAfterUnsafeConfig(t *testing.T) {
 				legacyOpened = true
 				return os.Open(legacy)
 			}})
-			schema, _, ok := discoverMagentoSchema("alice")
+			creds, isInstall, err := magentoVerifyInstall(context.Background(), "/home/alice/public_html/app/etc")
+			schema, ok := creds.dbName, isInstall && err == nil
 			if ok != tc.want || legacyOpened != tc.want {
 				t.Fatalf("re-check schema=%q ok=%t legacy read=%t, want %t", schema, ok, legacyOpened, tc.want)
 			}
@@ -280,6 +281,10 @@ func TestCMSRecheckLeavesUnsafeConfigUnchecked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			openCalls := 0
 			withMockOS(t, &mockOS{
+				// Discovery finds the account's public_html install only.
+				readDir: func(string) ([]os.DirEntry, error) {
+					return []os.DirEntry{fakeDirEntry{fi: accountScanFakeInfo{name: "public_html", mode: os.ModeDir, isDir: true}}}, nil
+				},
 				lstat: func(string) (os.FileInfo, error) { return drupalStatStub{}, nil },
 				open: func(string) (*os.File, error) {
 					openCalls++

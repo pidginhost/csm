@@ -163,16 +163,26 @@ func dbAdminPresenceResult(err error, rows []string) VerifyResult {
 	return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged administrator account is still present"}
 }
 
+// cmsAdminInstall finds the install whose database the administrator finding
+// records, so a clean main site never clears an addon site's finding.
+func cmsAdminInstall(installs []wpDBCreds, located bool, details string) (wpDBCreds, bool) {
+	if !located {
+		return wpDBCreds{}, false
+	}
+	return cmsVerifyRecordedInstall(installs, details)
+}
+
 func verifyDrupalAdminInjection(message, details string) VerifyResult {
 	uid, ok := dbAdminRowID(details)
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "could not parse the account id from the finding"}
 	}
-	schema, ok := discoverDrupalSchema(dbFindingAccount(message, details))
+	installs, located := drupalVerifyInstalls(dbFindingAccount(message, details))
+	creds, ok := cmsAdminInstall(installs, located, details)
 	if !ok {
 		return dbVerifyNotLocatable("Drupal site")
 	}
-	rows, err := runDBVerifyQueryRoot(schema,
+	rows, err := runDBVerifyQueryAs(creds,
 		"SELECT u.uid FROM users_field_data u JOIN user__roles r ON u.uid = r.entity_id WHERE r.roles_target_id = ? AND u.default_langcode = 1 AND u.uid = ?",
 		drupalAdminRoleID, uid)
 	return dbAdminPresenceResult(err, rows)
@@ -183,19 +193,20 @@ func verifyJoomlaAdminInjection(message, details string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "could not parse the account id from the finding"}
 	}
-	schema, prefix, ok := discoverJoomlaSchema(dbFindingAccount(message, details))
+	installs, located := joomlaVerifyInstalls(dbFindingAccount(message, details))
+	creds, ok := cmsAdminInstall(installs, located, details)
 	if !ok {
 		return dbVerifyNotLocatable("Joomla site")
 	}
-	users, err := QuoteIdent(prefix + "users")
+	users, err := QuoteIdent(creds.tablePrefix + "users")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the Joomla tables from the finding"}
 	}
-	mapTable, err := QuoteIdent(prefix + "user_usergroup_map")
+	mapTable, err := QuoteIdent(creds.tablePrefix + "user_usergroup_map")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the Joomla tables from the finding"}
 	}
-	rows, err := runDBVerifyQueryRoot(schema, fmt.Sprintf(
+	rows, err := runDBVerifyQueryAs(creds, fmt.Sprintf(
 		"SELECT u.id FROM %s u JOIN %s m ON u.id = m.user_id WHERE m.group_id = ? AND u.id = ?",
 		users, mapTable), joomlaSuperUserGroupID, id)
 	return dbAdminPresenceResult(err, rows)
@@ -206,16 +217,16 @@ func verifyMagentoAdminInjection(message, details string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "could not parse the account id from the finding"}
 	}
-	schema, prefix, ok := discoverMagentoSchema(dbFindingAccount(message, details))
+	installs, located := magentoVerifyInstalls(dbFindingAccount(message, details))
+	creds, ok := cmsAdminInstall(installs, located, details)
 	if !ok {
 		return dbVerifyNotLocatable("Magento site")
 	}
-	table, err := QuoteIdent(prefix + "admin_user")
+	table, err := QuoteIdent(creds.tablePrefix + "admin_user")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the Magento table from the finding"}
 	}
-	rows, err := runDBVerifyQueryRoot(schema,
-		fmt.Sprintf("SELECT user_id FROM %s WHERE user_id = ?", table), id)
+	rows, err := runDBVerifyQueryAs(creds, fmt.Sprintf("SELECT user_id FROM %s WHERE user_id = ?", table), id)
 	return dbAdminPresenceResult(err, rows)
 }
 
@@ -224,16 +235,16 @@ func verifyOpenCartAdminInjection(message, details string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "could not parse the account id from the finding"}
 	}
-	schema, prefix, ok := discoverOpenCartSchema(dbFindingAccount(message, details))
+	installs, located := openCartVerifyInstalls(dbFindingAccount(message, details))
+	creds, ok := cmsAdminInstall(installs, located, details)
 	if !ok {
 		return dbVerifyNotLocatable("OpenCart site")
 	}
-	table, err := QuoteIdent(prefix + "user")
+	table, err := QuoteIdent(creds.tablePrefix + "user")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the OpenCart table from the finding"}
 	}
-	rows, err := runDBVerifyQueryRoot(schema,
-		fmt.Sprintf("SELECT user_id FROM %s WHERE user_id = ?", table), id)
+	rows, err := runDBVerifyQueryAs(creds, fmt.Sprintf("SELECT user_id FROM %s WHERE user_id = ?", table), id)
 	return dbAdminPresenceResult(err, rows)
 }
 
@@ -245,11 +256,11 @@ func verifyPrestaShopAdminInjection(message, details string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "could not parse the account id from the finding"}
 	}
-	creds, ok := discoverPrestaShopVerifyCreds(dbFindingAccount(message, details), details)
+	creds, ok := prestashopRecordedInstall(message, details)
 	if !ok {
 		return dbVerifyNotLocatable("PrestaShop site")
 	}
-	table, err := QuoteIdent(creds.dbPrefix + "employee")
+	table, err := QuoteIdent(creds.tablePrefix + "employee")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: "could not validate the PrestaShop table from the finding"}
 	}
@@ -259,7 +270,7 @@ func verifyPrestaShopAdminInjection(message, details string) VerifyResult {
 	if superAdmin {
 		query += " AND id_profile = " + prestashopSuperAdminProfile
 	}
-	rows, err := runPrestaShopVerifyQuery(creds, query, id)
+	rows, err := runDBVerifyQueryAs(creds, query, id)
 	res := dbAdminPresenceResult(err, rows)
 	if superAdmin && res.Checked {
 		res.Detail = "the flagged employee still holds the SuperAdmin profile"
