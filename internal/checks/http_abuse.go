@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -1225,31 +1226,16 @@ func normalizeHTTPClientIP(raw string) string {
 	return ip.String()
 }
 
-// IsTrustedProxy returns true when addr matches any entry in proxies (exact
-// IP or CIDR), such as web_server.trusted_proxies. Entries that fail to
-// parse are skipped.
-func IsTrustedProxy(addr string, proxies []string) bool {
-	addr = strings.TrimSpace(addr)
-	parsed := net.ParseIP(addr)
-	if parsed == nil {
-		return false
-	}
-	for _, entry := range proxies {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if _, cidr, err := net.ParseCIDR(entry); err == nil {
-			if cidr.Contains(parsed) {
-				return true
-			}
-			continue
-		}
-		if ip := net.ParseIP(entry); ip != nil && ip.Equal(parsed) {
-			return true
-		}
-	}
-	return false
+// IsTrustedProxy reports whether addr, a bare address as a log writes a
+// peer, is listed in cfg's one trusted proxy list: web_server.trusted_proxies
+// and challenge.trusted_proxies together. A listed address stands for every
+// visitor behind it even where its header is not trusted (an address of this
+// host, or any while the interface set cannot be read), so callers never
+// count, escalate or sight it. A spelling with a port, brackets or a zone is
+// not an address.
+func IsTrustedProxy(addr string, cfg *config.Config) bool {
+	a, err := netip.ParseAddr(strings.TrimSpace(addr))
+	return err == nil && a.Zone() == "" && config.TrustedProxies(cfg).Covers(a)
 }
 
 // classifyUA maps a User-Agent string to a uaKind. Matching is performed

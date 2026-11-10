@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"sort"
 	"strings"
@@ -119,10 +120,17 @@ func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central boo
 		return nil
 	}
 
-	ip, method, path, ok := accessLogIPMethodPath(line)
+	raw, method, path, ok := accessLogIPMethodPath(line)
 	if !ok {
 		return nil
 	}
+	// The web server writes the peer as a bare address; act only on its
+	// canonical form, so a block names what the firewall matches.
+	peer, err := netip.ParseAddr(raw)
+	if err != nil || peer.Zone() != "" {
+		return nil
+	}
+	ip := peer.Unmap().String()
 	// The panel's own log carries requests a cPanel proxy subdomain passed
 	// through the web server. The reader identifies the log's provenance.
 	if checks.IsProxiedPanelRequest(path, central) {
@@ -153,7 +161,7 @@ func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central boo
 	// path reads only the direct peer, so it leaves forwarded requests to
 	// the scheduled scan, which reads the client from X-Forwarded-For when
 	// the log records it.
-	if checks.IsTrustedProxy(ip, cfg.WebServer.TrustedProxies) {
+	if checks.IsTrustedProxy(ip, cfg) {
 		return nil
 	}
 

@@ -388,7 +388,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// A trusted proxy's address stands for every visitor behind it: its
 	// denies stay visible below but never escalate to a block of it.
 	if ip != "" && ruleID != "" && (isBlock || conf == modsecConfHigh || conf == modsecConfUnknown) &&
-		!checks.IsTrustedProxy(ip, cfg.WebServer.TrustedProxies) {
+		!checks.IsTrustedProxy(ip, cfg) {
 		hits, win := modsecEscalationParams(cfg)
 		lowConfHits := modsecLowConfEscalationHits(cfg)
 		rearmAfter := modsecEscalationRearmInterval(cfg)

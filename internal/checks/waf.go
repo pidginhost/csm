@@ -1165,8 +1165,9 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 	if len(blocked) == 0 {
 		return nil
 	}
+	// A trusted proxy's address stands for every visitor behind it.
 	for ip := range blocked {
-		if isInfraIP(ip, cfg.InfraIPs) || !wafAttackerIsReportable(ip) {
+		if isInfraIP(ip, cfg.InfraIPs) || !wafAttackerIsReportable(ip) || IsTrustedProxy(ip, cfg) {
 			delete(blocked, ip)
 		}
 	}

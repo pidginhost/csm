@@ -673,10 +673,8 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 				Check:    "webmail_bruteforce",
 				Message:  fmt.Sprintf("Webmail brute force from %s: %d attempts", ip, count),
 				SourceIP: ip,
-				// cpsrvd logs the connecting peer first.
-				Attribution: admission.AttributionPeer,
 			}
-			newest[ip].stamp(&f, ProducerCpanelScan)
+			stampCpanelPeer(&f, newest[ip], cfg)
 			findings = append(findings, f)
 		}
 	}
@@ -746,15 +744,23 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 				Message:  fmt.Sprintf("cPanel API auth failures from %s: %d attempts", ip, count),
 				SourceIP: ip,
 				Details:  "Possible API token brute force or unauthorized API access",
-				// cpsrvd logs the connecting peer first.
-				Attribution: admission.AttributionPeer,
 			}
-			newest[ip].stamp(&f, ProducerCpanelScan)
+			stampCpanelPeer(&f, newest[ip], cfg)
 			findings = append(findings, f)
 		}
 	}
 
 	return findings
+}
+
+// stampCpanelPeer names r as f's observation. cpsrvd logs the connecting
+// peer first, so f's address is that peer unless a trusted proxy connected:
+// its address stands for every visitor behind it.
+func stampCpanelPeer(f *alert.Finding, r scanRecord, cfg *config.Config) {
+	if !IsTrustedProxy(f.SourceIP, cfg) {
+		f.Attribution = admission.AttributionPeer
+	}
+	r.stamp(f, ProducerCpanelScan)
 }
 
 // cpanelAccessLogTime reads the time cpsrvd stamped on an access_log line:

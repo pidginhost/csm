@@ -355,6 +355,8 @@ func TestReputationSightingUsesOnlyItsParsersPeerAndTime(t *testing.T) {
 			line: access("203.0.113.90", "-")},
 		{name: "trusted IPv6", path: sightingAccessLog, ip: "2001:db8::90", surface: "HTTP request", trusted: []string{"2001:db8::/32"},
 			line: access("2001:db8::90", "-")},
+		{name: "trusted cPanel peer", path: reputationWHMAccessLog, ip: "203.0.113.91", surface: "cPanel/WHM access", trusted: []string{"203.0.113.91"},
+			line: staleSessionAccessLine("203.0.113.91", "-", cpanelUTCStamp(server), "/execute/x", "401")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := listIPs(t, tc.ip, injected)

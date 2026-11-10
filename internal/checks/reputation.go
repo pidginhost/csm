@@ -805,7 +805,12 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		for _, rec := range tailFileRecords(reputationWHMAccessLog, 100) {
 			if ip := firstField(rec.text); ip != "" {
 				at, _ := cpanelAccessLogTime(rec.text)
-				add(ip, "cPanel/WHM access", scanned(rec, at))
+				// A trusted proxy in front of cpsrvd is not the visitor.
+				r := scanned(rec, at)
+				if IsTrustedProxy(ip, cfg) {
+					r = scanRecord{}
+				}
+				add(ip, "cPanel/WHM access", r)
 			}
 		}
 	}
@@ -837,7 +842,7 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 // sighting: the requests it carries are its clients'.
 func accessLogSighting(rec syslogRecord, ip string, cfg *config.Config) scanRecord {
 	parsed, ok := parseAccessLogRecord(rec.text)
-	if !ok || parsed.RemoteIP != ip || IsTrustedProxy(parsed.RemoteIP, cfg.WebServer.TrustedProxies) {
+	if !ok || parsed.RemoteIP != ip || IsTrustedProxy(parsed.RemoteIP, cfg) {
 		return scanRecord{}
 	}
 	return scanned(rec, parsed.Time)

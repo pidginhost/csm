@@ -64,7 +64,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// A failure counts as brute force against its source and can block it;
 	// a trusted proxy's address stands for every visitor behind it.
 	if (strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ")) &&
-		!checks.IsTrustedProxy(ip, cfg.WebServer.TrustedProxies) {
+		!checks.IsTrustedProxy(ip, cfg) {
 		if strings.Contains(lineLower, "json-api") || strings.Contains(lineLower, "/execute/") {
 			if !purgeTracker.isPostPurge401(ip) {
 				findings = append(findings, alert.Finding{
