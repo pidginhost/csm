@@ -32,7 +32,7 @@ func TestAntispamDismissalRearmsBetweenProbes(t *testing.T) {
 	dismissed := false
 	for _, f := range d.store.LatestFindings() {
 		if f.Check == reconcile.CheckScanError {
-			dismissed = d.store.DismissFindingIfLatest(f)
+			dismissed = d.store.DismissFindingWithUndo(f.Key()).DismissalID != ""
 		}
 	}
 	if !dismissed {
@@ -76,7 +76,7 @@ func TestAntispamActiveDismissalSurvivesHealthUpdates(t *testing.T) {
 		t.Fatalf("first scan failure: %+v", first)
 	}
 	for _, f := range d.store.LatestFindings() {
-		if f.Check == reconcile.CheckScanError && !d.store.DismissFindingIfLatest(f) {
+		if f.Check == reconcile.CheckScanError && d.store.DismissFindingWithUndo(f.Key()).DismissalID == "" {
 			t.Fatal("could not dismiss the active failure")
 		}
 	}

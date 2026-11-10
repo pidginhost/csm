@@ -959,17 +959,18 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	message, details, filePath, dismissKey, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
+	message, details, filePath, stored, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	resolve := s.store.PrepareFindingResolution(stored)
 	result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 
-	// If fix succeeded, dismiss from both alert state and latest findings.
+	// A successful fix removes the evidence: drop the listing and re-arm the
+	// alert, so a reinfection at the same path is reported.
 	if result.Success {
-		s.store.DismissFinding(dismissKey)
-		s.store.DismissLatestFinding(dismissKey)
+		resolve()
 		s.auditLog(r, "fix", req.Check, result.Action)
 	}
 
@@ -994,17 +995,15 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	in, key, stored, found := s.verifyFindingInput(req)
+	in, _, stored, found := s.verifyFindingInput(req)
+	resolve := s.store.PrepareFindingResolution(stored)
 	in.Context = r.Context()
 	response := verifyFindingResponse{OK: true, VerifyResult: s.verifyFinding(in)}
 	switch {
 	case response.Checked && response.Resolved:
-		if key == "" {
-			key = req.Check + ":" + req.Message
+		if found && resolve() {
+			s.auditLog(r, "verify-resolved", req.Check, response.Detail)
 		}
-		s.store.DismissFinding(key)
-		s.store.DismissLatestFinding(key)
-		s.auditLog(r, "verify-resolved", req.Check, response.Detail)
 	// A severity change rewrites the stored finding, so it needs the exact
 	// snapshot the verifier read; a request that could not be matched to one
 	// leaves the finding alone rather than guessing which it meant.
@@ -1116,15 +1115,15 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			results = append(results, bulkFixItem{Check: req.Check, Error: fmt.Sprintf("no fix for %s", req.Check)})
 			continue
 		}
-		message, details, filePath, dismissKey, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
+		message, details, filePath, stored, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
 		if err != nil {
 			results = append(results, bulkFixItem{Check: req.Check, Error: err.Error()})
 			continue
 		}
+		resolve := s.store.PrepareFindingResolution(stored)
 		result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 		if result.Success {
-			s.store.DismissFinding(dismissKey)
-			s.store.DismissLatestFinding(dismissKey)
+			resolve()
 			s.auditLog(r, "fix", req.Check, result.Action)
 		}
 		results = append(results, bulkFixItem{

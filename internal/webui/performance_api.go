@@ -501,12 +501,13 @@ func (s *Server) apiPerfFixErrorLog(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "path is required", http.StatusBadRequest)
 		return
 	}
+	resolve := s.preparePerfResolution(req.Key, "perf_error_logs", req.Path)
 	res := checks.FixErrorLogBloatInRoots(req.Path, checks.ResolveValidatedDocroots(s.liveCfg()))
 	if !res.Success {
 		writeRemediation(w, res)
 		return
 	}
-	s.dismissPerfFinding(req.Key)
+	resolve()
 	s.auditLog(r, "perf_fix_error_log", req.Path, res.Description)
 	writeRemediation(w, res)
 }
@@ -533,12 +534,13 @@ func (s *Server) apiPerfFixDisplayErrors(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, "path is required", http.StatusBadRequest)
 		return
 	}
+	resolve := s.preparePerfResolution(req.Key, "perf_wp_config", req.Path)
 	res := checks.FixDisplayErrorsOnInRoots(req.Path, s.perfFixAllowedRoots())
 	if !res.Success {
 		writeRemediation(w, res)
 		return
 	}
-	s.dismissPerfFinding(req.Key)
+	resolve()
 	s.auditLog(r, "perf_fix_display_errors", req.Path, res.Description)
 	writeRemediation(w, res)
 }
@@ -569,12 +571,13 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 		options.IntervalMinutes = cfg.Performance.WPCronFix.IntervalMinutes
 		options.PHPBin = cfg.Performance.WPCronFix.PHPBin
 	}
+	resolve := s.preparePerfResolution(req.Key, "perf_wp_cron", req.Path)
 	res := checks.FixDisableWPCronInRoots(req.Path, checks.ResolveValidatedDocroots(cfg), options)
 	if !res.Success {
 		writeRemediation(w, res)
 		return
 	}
-	s.dismissPerfFinding(req.Key)
+	resolve()
 	s.auditLog(r, "perf_fix_wp_cron", req.Path, res.Description)
 	writeRemediation(w, res)
 }
@@ -587,13 +590,28 @@ func (s *Server) perfFixAllowedRoots() []string {
 	return checks.ResolveWebRoots(cfg)
 }
 
-func (s *Server) dismissPerfFinding(key string) {
+func (s *Server) preparePerfResolution(key, check, path string) func() bool {
 	key = strings.TrimSpace(key)
-	if key == "" {
-		return
+	for _, f := range s.store.LatestFindings() {
+		if f.Key() != key || f.Check != check {
+			continue
+		}
+		// These producers carry the target in text, not FilePath. Match the
+		// complete target field so fixing one file cannot resolve another.
+		matches := false
+		switch check {
+		case "perf_error_logs":
+			matches = f.Message == "Bloated error_log: "+path
+		case "perf_wp_config":
+			matches = strings.HasPrefix(f.Message, "display_errors enabled in production for ") && f.Details == "File: "+path+", Value: On"
+		case "perf_wp_cron":
+			matches = f.Details == "File: "+path+" - add define('DISABLE_WP_CRON', true); and use a real cron job instead"
+		}
+		if matches {
+			return s.store.PrepareFindingResolution(f)
+		}
 	}
-	s.store.DismissFinding(key)
-	s.store.DismissLatestFinding(key)
+	return func() bool { return false }
 }
 
 // handlePerformance renders the performance dashboard page.

@@ -1284,7 +1284,7 @@ func TestDismissedScanErrorNotifiesOnTheNextEpisode(t *testing.T) {
 	dismissed := false
 	for _, f := range d.store.LatestFindings() {
 		if f.Check == reconcile.CheckScanError {
-			dismissed = d.store.DismissFindingIfLatest(f)
+			dismissed = d.store.DismissFindingWithUndo(f.Key()).DismissalID != ""
 		}
 	}
 	if notices != 1 || !dismissed {

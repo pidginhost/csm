@@ -22,8 +22,8 @@ type rejectingFindingStore struct {
 }
 
 func (s *rejectingFindingStore) LatestFindings() []alert.Finding { return s.findings }
-func (*rejectingFindingStore) DismissFindingIfLatest(alert.Finding) bool {
-	return false
+func (*rejectingFindingStore) PrepareFindingResolution(alert.Finding) func() bool {
+	return func() bool { return false }
 }
 func (*rejectingFindingStore) DemoteLatestFinding(alert.Finding, alert.Severity) bool {
 	return false
@@ -36,9 +36,8 @@ func (s *fakeFindingStore) LatestFindings() []alert.Finding {
 	s.latestCalls++
 	return s.findings
 }
-func (s *fakeFindingStore) DismissFindingIfLatest(f alert.Finding) bool {
-	s.dismissed[f.Key()] = true
-	return true
+func (s *fakeFindingStore) PrepareFindingResolution(f alert.Finding) func() bool {
+	return func() bool { s.dismissed[f.Key()] = true; return true }
 }
 func (s *fakeFindingStore) DemoteLatestFinding(f alert.Finding, sev alert.Severity) bool {
 	if s.demoted == nil {

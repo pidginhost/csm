@@ -81,6 +81,9 @@ type Store struct {
 }
 
 type Entry struct {
+	// observation changes only when Update records evidence, not when an email completes.
+	observation uint64
+
 	Hash        string    `json:"hash"`
 	FirstSeen   time.Time `json:"first_seen"`
 	LastSeen    time.Time `json:"last_seen"`
@@ -434,12 +437,14 @@ func (s *Store) Update(findings []alert.Finding) {
 		}
 		if !exists {
 			s.entries[key] = &Entry{
-				Hash:      hash,
-				FirstSeen: now,
-				LastSeen:  now,
-				AlertSent: now,
+				observation: 1,
+				Hash:        hash,
+				FirstSeen:   now,
+				LastSeen:    now,
+				AlertSent:   now,
 			}
 		} else {
+			entry.observation++
 			entry.Hash = hash
 			entry.LastSeen = now
 			if entry.AlertSent.IsZero() {
@@ -1623,29 +1628,81 @@ func (s *Store) DemoteLatestFinding(expected alert.Finding, severity alert.Sever
 	return false
 }
 
-// DismissFindingIfLatest clears only the finding snapshot that was actually
-// verified. A realtime alert or completed scan may refresh the same key while
-// verification is in flight; that newer evidence must remain active.
-func (s *Store) DismissFindingIfLatest(expected alert.Finding) bool {
-	s.latestMu.Lock()
-	defer s.latestMu.Unlock()
-
-	for i := range s.latestFindings {
-		if !sameLatestFindingSnapshot(s.latestFindings[i], expected) {
+// PrepareFindingResolution captures the listing and alert observation before a
+// fix or re-check starts. Call the returned function only after recovery is
+// proven. New evidence or a later operator decision invalidates the capture.
+// Delivery receipts are deliberately excluded: finishing an email does not
+// change the evidence, and deleting its entry invalidates any pending receipt.
+func (s *Store) PrepareFindingResolution(expected alert.Finding) func() bool {
+	s.latestMu.RLock()
+	defer s.latestMu.RUnlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key := expected.Key()
+	if expected.Check == "" || strings.HasPrefix(key, "_") {
+		return func() bool { return false }
+	}
+	listed := false
+	for _, current := range s.latestFindings {
+		if current.Key() != key {
 			continue
 		}
-		s.mu.Lock()
-		if entry, exists := s.entries[expected.Key()]; exists {
-			entry.IsBaseline = true
-			entry.DismissalID = ""
-			s.dirty = true
+		if !sameLatestFindingSnapshot(current, expected) {
+			return func() bool { return false }
 		}
-		s.mu.Unlock()
-		s.latestFindings = append(s.latestFindings[:i], s.latestFindings[i+1:]...)
-		s.persistLatestLocked()
+		listed = true
+		break
+	}
+	entry := s.entries[key]
+	// An unlisted producer may have alert state before it has a UI row. It
+	// must not resolve someone else's evidence or an operator dismissal.
+	if !listed && entry != nil && (entry.Hash != findingHash(expected) || entry.IsBaseline) {
+		return func() bool { return false }
+	}
+	var observation uint64
+	var baseline bool
+	var dismissal string
+	if entry != nil {
+		observation, baseline, dismissal = entry.observation, entry.IsBaseline, entry.DismissalID
+	}
+	return func() bool {
+		s.latestMu.Lock()
+		defer s.latestMu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		currentEntry := s.entries[key]
+		// BeginDelivery may create an entry while remediation runs. Unlike an
+		// Update observation it has no evidence revision and may still be cleared.
+		deliveryOnly := entry == nil && currentEntry != nil && currentEntry.observation == 0 && currentEntry.Hash == findingHash(expected)
+		if (currentEntry != entry && !deliveryOnly) || (currentEntry != nil &&
+			(currentEntry.observation != observation || currentEntry.IsBaseline != baseline || currentEntry.DismissalID != dismissal)) {
+			return false
+		}
+		index := -1
+		for i, current := range s.latestFindings {
+			if current.Key() != key {
+				continue
+			}
+			if !listed || !sameLatestFindingSnapshot(current, expected) {
+				return false
+			}
+			index = i
+			break
+		}
+		if listed && index == -1 {
+			return false
+		}
+		if s.deleteRawLocked(key) {
+			if err := s.save(); err != nil {
+				fmt.Fprintf(os.Stderr, "state: error saving resolved finding: %v\n", err)
+			}
+		}
+		if index != -1 {
+			s.latestFindings = append(s.latestFindings[:index], s.latestFindings[index+1:]...)
+			s.persistLatestLocked()
+		}
 		return true
 	}
-	return false
 }
 
 // RestoreLatestFindingSeverity reverses an automatic demotion after the exact

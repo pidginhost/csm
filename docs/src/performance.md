@@ -2,6 +2,9 @@
 
 CSM monitors server performance metrics and generates findings when thresholds are exceeded.
 
+A successful Fix clears only the finding for that file, and the finding alerts
+again if the problem returns.
+
 ## Critical Checks (every 10 min)
 
 | Check | What it monitors |

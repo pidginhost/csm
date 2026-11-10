@@ -201,9 +201,8 @@ type demoteRecordingStore struct {
 }
 
 func (s *demoteRecordingStore) LatestFindings() []alert.Finding { return s.findings }
-func (s *demoteRecordingStore) DismissFindingIfLatest(f alert.Finding) bool {
-	s.dismissed[f.Key()] = true
-	return true
+func (s *demoteRecordingStore) PrepareFindingResolution(f alert.Finding) func() bool {
+	return func() bool { s.dismissed[f.Key()] = true; return true }
 }
 func (s *demoteRecordingStore) DemoteLatestFinding(f alert.Finding, sev alert.Severity) bool {
 	for i := range s.findings {

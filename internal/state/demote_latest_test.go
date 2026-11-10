@@ -185,7 +185,7 @@ func TestDemoteLatestFindingDoesNotRaceARefreshedFinding(t *testing.T) {
 	}
 }
 
-func TestDismissFindingIfLatestDoesNotRaceARefreshedFinding(t *testing.T) {
+func TestResolutionRejectsAlreadyReplacedSnapshot(t *testing.T) {
 	s := openTestStore(t)
 	old := alert.Finding{
 		Check: "c", Message: "m", Details: "d", Severity: alert.Critical,
@@ -198,7 +198,7 @@ func TestDismissFindingIfLatestDoesNotRaceARefreshedFinding(t *testing.T) {
 	fresh.ContentSHA256 = "fresh-hash"
 	s.SetLatestFindings([]alert.Finding{fresh})
 
-	if s.DismissFindingIfLatest(old) {
+	if s.PrepareFindingResolution(old)() {
 		t.Fatal("stale verification dismissed a refreshed finding")
 	}
 	got := s.LatestFindings()
