@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -247,5 +248,84 @@ func TestCMSRecheckIgnoresDanglingHomeLinks(t *testing.T) {
 	withRecheckQueries(t, func(mysqlclient.Creds, string, ...any) ([]string, error) { return nil, nil })
 	if res := verifyJoomlaContentInjection("", "Account: bob\nArticle ID: 7"); !res.Checked || !res.Resolved {
 		t.Fatalf("dangling home link: %+v, want checked and resolved", res)
+	}
+}
+
+// Links that hold no install must neither block re-checks nor hide an injected
+// addon behind a clean main site.
+func TestCMSRecheckHomeLinksPreserveOtherInstalls(t *testing.T) {
+	for _, tc := range cmsTwoInstallCases() {
+		for _, targetExists := range []bool{false, true} {
+			for _, injected := range []bool{false, true} {
+				t.Run(tc.name+"/file="+strconv.FormatBool(targetExists)+"/injected="+strconv.FormatBool(injected), func(t *testing.T) {
+					root := t.TempDir()
+					home := filepath.Join(root, "bob")
+					writeCMSVerifyFiles(t, home, tc.files, tc.statOK)
+					target := filepath.Join(root, "link-target")
+					if targetExists {
+						if err := os.WriteFile(target, nil, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.Symlink(target, filepath.Join(home, "old-site")); err != nil {
+						t.Fatal(err)
+					}
+					withMockOS(t, realOS{})
+					withAccountHomeRoots(t, root)
+					queried := map[string]int{}
+					withRecheckQueries(t, func(creds mysqlclient.Creds, _ string, _ ...any) ([]string, error) {
+						queried[creds.DBName]++
+						if injected && creds.DBName == tc.db+"2" {
+							return []string{"bad eval(base64_decode($x))"}, nil
+						}
+						return nil, nil
+					})
+					c := tc.verifies[0]
+					if res := c.verify("", c.details); !res.Checked || res.Resolved == injected {
+						t.Fatalf("home link: %+v, want checked with resolved=%t", res, !injected)
+					}
+					if len(queried) != 2 || queried[tc.db] != 1 || queried[tc.db+"2"] != 1 {
+						t.Fatalf("queries = %v, want both databases exactly once", queried)
+					}
+				})
+			}
+		}
+	}
+}
+
+type cmsVerifyStatErrorOS struct {
+	realOS
+	path string
+	err  error
+}
+
+func (o cmsVerifyStatErrorOS) Stat(path string) (os.FileInfo, error) {
+	if path == o.path {
+		return nil, &os.PathError{Op: "stat", Path: path, Err: o.err}
+	}
+	return o.realOS.Stat(path)
+}
+
+func TestCMSRecheckHomeLinkStatErrorsStayUnchecked(t *testing.T) {
+	for _, statErr := range []error{os.ErrPermission, syscall.EIO, syscall.ELOOP, syscall.ENOTDIR} {
+		t.Run(statErr.Error(), func(t *testing.T) {
+			root := t.TempDir()
+			home := filepath.Join(root, "bob")
+			writeCMSVerifyFiles(t, home, joomlaFiles(), nil)
+			link := filepath.Join(home, "shop2")
+			if err := os.Symlink(filepath.Join(root, "addon"), link); err != nil {
+				t.Fatal(err)
+			}
+			// Inject the error so permission checks also run when tests run as root.
+			withMockOS(t, cmsVerifyStatErrorOS{path: link, err: statErr})
+			withAccountHomeRoots(t, root)
+			withRecheckQueries(t, func(mysqlclient.Creds, string, ...any) ([]string, error) {
+				t.Fatal("uninspectable home link reached a database query")
+				return nil, nil
+			})
+			if res := verifyJoomlaContentInjection("", "Account: bob\nArticle ID: 7"); res.Checked || res.Resolved {
+				t.Fatalf("home link stat error: %+v, want unchecked", res)
+			}
+		})
 	}
 }
