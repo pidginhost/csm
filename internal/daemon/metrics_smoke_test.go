@@ -98,10 +98,7 @@ func TestAFAlgBackendDualMetricExport(t *testing.T) {
 // in internal/state but stays in the daemon package so a refactor of
 // either end-to-end path gets its own regression gate.
 func TestFindingsTotalFromAppendHistory(t *testing.T) {
-	// Point store.Global at a fresh bbolt so state.AppendHistory takes
-	// its bbolt branch instead of the deprecated JSONL fallback (which
-	// would still bump the metric, but also spam "DEPRECATION" on
-	// stderr every run).
+	// History is kept only in the state DB.
 	_ = openStoreForTest(t)
 
 	st, err := state.Open(t.TempDir())

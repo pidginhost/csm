@@ -76,7 +76,7 @@ func TestAccountsAtRiskUseCurrentFindingsBeyondHistoryWindow(t *testing.T) {
 	for _, backend := range []struct {
 		name string
 		new  func(*testing.T, string) *Server
-	}{{"json", newTestServer}, {"bbolt", newTestServerWithBbolt}} {
+	}{{"bbolt", newTestServerWithBbolt}} {
 		t.Run(backend.name, func(t *testing.T) {
 			s := backend.new(t, "")
 			now := time.Now()

@@ -62,7 +62,7 @@ func TestAPIAccountDetailEmptyFindings(t *testing.T) {
 // --- apiAccountDetail: findings filtered to the account ----------------
 
 func TestAPIAccountDetailFiltersFindings(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/alice/public_html/shell.php", Timestamp: now},
@@ -626,7 +626,7 @@ func TestAPIScanAccountMissingBody(t *testing.T) {
 // --- apiIncident: account parameter -----------------------------------
 
 func TestAPIIncidentWithAccount(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/frank/shell.php", Timestamp: now},

@@ -28,6 +28,7 @@ func TestFirewallStartupStateAlertBypassesFullFindingQueue(t *testing.T) {
 	cfg.Alerts.Webhook.URL = webhook.URL
 	cfg.Alerts.MaxPerHour = 1
 	seen := recordSummaryHook(t)
+	openStoreForTest(t)
 	st, err := state.Open(cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)

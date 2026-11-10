@@ -19,7 +19,7 @@ import (
 // Accounts live under the platform's account roots (/home on cPanel,
 // /var/www/vhosts on Plesk), not only /home.
 func TestAccountDetailMatchesEveryAccountRoot(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	rootA, rootB := t.TempDir(), t.TempDir()
 	s.accountRoots = func() []string { return []string{rootA, rootB} }
 	path := filepath.Join(rootB, "alice", "httpdocs", "x.php")
@@ -122,7 +122,7 @@ func TestAPIAccountsListsTheScanAccounts(t *testing.T) {
 }
 
 func TestAccountDetailResolvesRootAliasesAndRecordedOwners(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	realRoot := t.TempDir()
 	linkRoot := filepath.Join(t.TempDir(), "homes")
 	if err := os.Symlink(realRoot, linkRoot); err != nil {

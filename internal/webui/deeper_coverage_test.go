@@ -630,7 +630,7 @@ func TestAPIFindingDetailWithCheckParam(t *testing.T) {
 }
 
 func TestAPIFindingDetailWithHistory(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/alice/shell.php", Timestamp: now},
@@ -780,7 +780,7 @@ func TestAPIQuarantineRestoreDotDotID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPIHistoryWithChecksFilter(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "shell found", Timestamp: now},
@@ -822,7 +822,7 @@ func TestAPIHistoryOffsetBeyondEnd(t *testing.T) {
 }
 
 func TestAPIHistorySearchFilter(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	findings := []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found shell in /home/alice/public_html/c99.php", Timestamp: now},

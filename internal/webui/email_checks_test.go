@@ -59,7 +59,7 @@ func TestEmailKindsUnchangedForExistingChecks(t *testing.T) {
 }
 
 func TestHistoryScopeEmail(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	now := time.Now()
 	s.store.AppendHistory([]alert.Finding{
 		{Severity: alert.Warning, Check: "mail_queue", Message: "queue large", Timestamp: now.Add(-2 * time.Minute)},

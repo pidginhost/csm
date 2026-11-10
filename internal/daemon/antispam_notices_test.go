@@ -107,6 +107,7 @@ func TestAntispamHealthNoticesHonorSuppressions(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { posts.Add(1) }))
 			t.Cleanup(srv.Close)
 			d := newTestDaemon(t)
+			openStoreForTest(t)
 			cfg := &config.Config{StatePath: t.TempDir()}
 			cfg.Alerts.MaxPerHour = 1
 			cfg.Alerts.Webhook.Enabled = true

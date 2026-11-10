@@ -226,6 +226,7 @@ func TestProcessScanFindings_KeepsPerfWarningsOffAlertChannel(t *testing.T) {
 // warning that is already resolved.
 func TestProcessScanFindings_DismissesFixedFindingFromLatest(t *testing.T) {
 	d := newTestDaemon(t)
+	openStoreForTest(t)
 
 	wpcron := perfWPCronFinding("alice", "/home/alice/public_html/wp-config.php")
 	defer stubAutoFixWPCron(func(_ *config.Config, fs []alert.Finding) ([]alert.Finding, []string) {

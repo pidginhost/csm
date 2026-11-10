@@ -17,17 +17,24 @@ import (
 func newTestServerWithBbolt(t *testing.T, token string) *Server {
 	t.Helper()
 	s := newTestServer(t, token)
-	dir := t.TempDir()
-	sdb, err := store.Open(dir)
+	useHistoryDB(t)
+	return s
+}
+
+// useHistoryDB opens a fresh state DB as the global store for one test.
+// Finding history is kept only there.
+func useHistoryDB(t *testing.T) {
+	t.Helper()
+	sdb, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	previous := store.Global()
+	store.SetGlobal(sdb)
 	t.Cleanup(func() {
-		store.SetGlobal(nil)
+		store.SetGlobal(previous)
 		_ = sdb.Close()
 	})
-	store.SetGlobal(sdb)
-	return s
 }
 
 // --- apiHistory with filters -----------------------------------------

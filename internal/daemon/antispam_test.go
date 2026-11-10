@@ -585,6 +585,7 @@ func probeTimes(d *Daemon, n int, start time.Time) {
 // the same day. The latest set shows the outage while it lasts.
 func TestAntispamProbeReportsOutageAndRecovery(t *testing.T) {
 	d := newTestDaemon(t)
+	openStoreForTest(t)
 	enableAntispam(t, d, true)
 	refused := errors.New("connection refused")
 	usePing(t, refused, refused, refused, refused, nil, nil, refused, refused, refused)

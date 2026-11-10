@@ -35,6 +35,7 @@ func TestBatchPathsStampMissingTimestamps(t *testing.T) {
 	}
 	for _, tc := range paths {
 		t.Run(tc.name, func(t *testing.T) {
+			openStoreForTest(t)
 			st, err := state.Open(t.TempDir())
 			if err != nil {
 				t.Fatal(err)

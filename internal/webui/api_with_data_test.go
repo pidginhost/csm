@@ -67,7 +67,7 @@ func TestAPIHistoryWithData(t *testing.T) {
 // --- apiHistoryCSV with data -----------------------------------------
 
 func TestAPIHistoryCSVWithData(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServerWithBbolt(t, "tok")
 	seedFindings(t, s)
 	w := httptest.NewRecorder()
 	s.apiHistoryCSV(w, httptest.NewRequest("GET", "/", nil))
