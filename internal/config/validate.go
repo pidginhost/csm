@@ -363,7 +363,7 @@ func Validate(cfg *Config) []ValidationResult {
 			}
 		}
 		// A warning, not an error: an error aborts daemon start and SIGHUP
-		// reloads. The challenge server refuses this setup on its own.
+		// reloads. Request-time attribution refuses the local proxy.
 		if err := ChallengeLocalTrustError(cfg.Challenge.TrustedProxies); err != nil {
 			results = append(results, ValidationResult{"warn", "challenge.trusted_proxies", err.Error()})
 		}

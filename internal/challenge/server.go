@@ -167,11 +167,6 @@ func (s *Server) Listen() (net.Listener, error) {
 			return nil, fmt.Errorf("challenge TLS material: %w", err)
 		}
 	}
-	// Any local account can connect from an address of this host and write
-	// X-Forwarded-For, so trusting one would let it pose as any visitor.
-	if err := config.ChallengeLocalTrustError(s.cfg.Challenge.TrustedProxies); err != nil {
-		return nil, err
-	}
 	if s.socket {
 		s.socketMu.Lock()
 		defer s.socketMu.Unlock()

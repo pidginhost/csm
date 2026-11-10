@@ -101,6 +101,43 @@ func TestLoadPreservesTrustedProxyAliases(t *testing.T) {
 	}
 }
 
+// yaml.v3 accepted scalar entries as strings before proxy validation was
+// introduced. Main config and drop-ins must retain that loading behavior.
+func TestLoadKeepsLegacyScalarTrustedProxyEntries(t *testing.T) {
+	for _, key := range []string{"web_server", "challenge"} {
+		for _, dropIn := range []bool{false, true} {
+			for _, value := range []string{"false", "123", "1.5", "2026-01-01", "null", `""`, `"invalid"`} {
+				t.Run(fmt.Sprintf("%s/dropIn=%t/%s", key, dropIn, value), func(t *testing.T) {
+					main := []byte(fmt.Sprintf("%s:\n  trusted_proxies: [192.0.2.10]\n", key))
+					body := []byte(fmt.Sprintf("%s:\n  trusted_proxies: [192.0.2.10, %s]\n", key, value))
+					var cfg *Config
+					var err error
+					if dropIn {
+						dir := t.TempDir()
+						fragment := []byte(fmt.Sprintf("%s:\n  trusted_proxies: [%s]\n", key, value))
+						if writeErr := os.WriteFile(filepath.Join(dir, "proxies.yaml"), fragment, 0o600); writeErr != nil {
+							t.Fatal(writeErr)
+						}
+						cfg, err = LoadBytesWithDir(main, dir)
+					} else {
+						cfg, err = LoadBytes(body)
+					}
+					if err != nil {
+						t.Fatalf("legacy scalar prevented loading: %v", err)
+					}
+					if trusted := TrustedProxies(cfg); trusted.Len() != 1 || !trusted.Covers(netip.MustParseAddr("192.0.2.10")) {
+						t.Fatalf("usable proxy was lost: %+v", trusted)
+					}
+					assertTrustedProxyWarning(t, cfg, key, "skips")
+					if key == "challenge" && !hasResult(ValidateDeepSection(cfg, key), "error", "challenge.trusted_proxies") {
+						t.Fatal("Settings save accepted an unusable proxy")
+					}
+				})
+			}
+		}
+	}
+}
+
 // Validate reports an unusable entry as a warning, never an error: an error
 // aborts daemon start and reload, and 4.10.2 ran with such entries.
 func TestValidateWarnsAboutUnusableTrustedProxies(t *testing.T) {
@@ -233,7 +270,7 @@ func TestValidateDeepSectionRefusesUnusableChallengeProxies(t *testing.T) {
 }
 
 // A skipped catch-all trusts nothing, so it is reported once, as unusable,
-// and never stops the challenge server as an address of this host would.
+// rather than as a host-local proxy.
 func TestLocalTrustChecksIgnoreSkippedCatchAlls(t *testing.T) {
 	pinChallengeHost(t, "203.0.113.10")
 	for _, entry := range []string{"0.0.0.0/0", "::/0", "::ffff:0:0/96"} {

@@ -86,6 +86,11 @@ func ParseUsable(entries []string) (Trusted, []error) {
 			var all *catchAllError
 			if errors.As(err, &all) {
 				t.catchAll = append(t.catchAll, all.covers)
+				if all.covers.Addr().Is4In6() {
+					// Keep both the effective IPv4 catch-all and the
+					// original range, which may cover native IPv6 peers.
+					t.catchAll = append(t.catchAll, netip.PrefixFrom(netip.IPv4Unspecified(), 0))
+				}
 			}
 			errs = append(errs, fmt.Errorf("[%d]: %q %w", i, entry, err))
 			continue
@@ -101,11 +106,18 @@ func parseEntry(entry string) (netip.Prefix, error) {
 	}
 	var prefix netip.Prefix
 	if strings.Contains(entry, "/") {
-		p, err := netip.ParsePrefix(entry)
+		// Keep the legacy parser's acceptance of padded prefix lengths.
+		// Its original address also preserves a broad range's mapped form.
+		ip, network, err := net.ParseCIDR(entry)
 		if err != nil {
 			return netip.Prefix{}, errors.New("is not an IP address or CIDR range")
 		}
-		prefix = p
+		addr, _ := netip.AddrFromSlice(ip)
+		bits, width := network.Mask.Size()
+		if width == 32 {
+			addr = addr.Unmap()
+		}
+		prefix = netip.PrefixFrom(addr, bits)
 	} else {
 		addr, err := netip.ParseAddr(entry)
 		if err != nil || addr.Zone() != "" {
@@ -117,7 +129,7 @@ func parseEntry(entry string) (netip.Prefix, error) {
 	// and silently leave the configured IPv4 proxies uncovered.
 	if prefix.Addr().Is4In6() {
 		if prefix.Bits() <= 96 {
-			return netip.Prefix{}, &catchAllError{"covers every IPv4 address", netip.PrefixFrom(netip.IPv4Unspecified(), 0)}
+			return netip.Prefix{}, &catchAllError{"covers every IPv4 address", prefix}
 		}
 		prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
 	}
@@ -178,7 +190,7 @@ func Resolve(peer, xff string, complete bool, t Trusted) (Result, error) {
 		return Result{}, ErrPeer
 	}
 	if !t.Has(p) {
-		if t.refusedCatchAll(p) && strings.Trim(xff, " \t") != "" {
+		if t.refusedCatchAll(p) && (!complete || strings.Trim(xff, " \t") != "") {
 			return Result{}, ErrCatchAllChain
 		}
 		return Result{Client: p, Peer: p}, nil

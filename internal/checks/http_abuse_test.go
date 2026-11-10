@@ -572,6 +572,20 @@ func TestRecordClient_CatchAllEntryCountsForwardedRecordsAgainstNobody(t *testin
 	}
 }
 
+func TestRecordClient_RefusedCatchAllKeepsAmbiguousPeersUnattributed(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Challenge.TrustedProxies = []string{"::ffff:192.0.2.10/0"}
+	for _, rec := range []accessLogRecord{
+		{RemoteIP: "2001:db8::10", XFF: "203.0.113.99"},
+		{RemoteIP: "198.51.100.10", XFFPartial: true},
+		{RemoteIP: "198.51.100.10", XFF: " \t", XFFPartial: true},
+	} {
+		if got, _, err := resolvedClient(rec, cfg); err == nil || got != "" {
+			t.Errorf("ambiguous record %+v counted against %q: %v", rec, got, err)
+		}
+	}
+}
+
 // A client must not be able to forge an attribution by injecting a victim IP
 // into the leftmost X-Forwarded-For position. The proxy-appended rightmost
 // entry is authoritative; the leftmost is attacker-controlled. Taking the

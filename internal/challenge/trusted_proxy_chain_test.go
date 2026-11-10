@@ -113,12 +113,16 @@ func extractVia(t *testing.T, trusted []string, peer, xff string) string {
 // no visitor's pass is issued for an address a header could forge, and a
 // direct request is its own client.
 func TestExtractIPNamesNobodyBehindARefusedCatchAll(t *testing.T) {
-	for _, entry := range []string{"0.0.0.0/0", "::ffff:0:0/96"} {
-		if got := extractVia(t, []string{entry}, "198.51.100.10:1234", "203.0.113.20"); got != "" {
-			t.Errorf("%s: forwarded request resolved to %q, want nobody", entry, got)
+	for _, tc := range []struct{ entry, peer, client string }{
+		{"0.0.0.0/0", "198.51.100.10:1234", "198.51.100.10"},
+		{"::ffff:0:0/96", "198.51.100.10:1234", "198.51.100.10"},
+		{"::ffff:192.0.2.10/0", "[2001:db8::10]:1234", "2001:db8::10"},
+	} {
+		if got := extractVia(t, []string{tc.entry}, tc.peer, "203.0.113.20"); got != "" {
+			t.Errorf("%s: forwarded request resolved to %q, want nobody", tc.entry, got)
 		}
-		if got := extractVia(t, []string{entry}, "198.51.100.10:1234", ""); got != "198.51.100.10" {
-			t.Errorf("%s: direct request resolved to %q, want its peer", entry, got)
+		if got := extractVia(t, []string{tc.entry}, tc.peer, ""); got != tc.client {
+			t.Errorf("%s: direct request resolved to %q, want %s", tc.entry, got, tc.client)
 		}
 	}
 }

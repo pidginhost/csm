@@ -406,8 +406,8 @@ func challengePublicURLCheck(cfg *config.Config) DoctorCheck {
 }
 
 // challengeTrustedProxiesCheck fails when trusted_proxies covers an address
-// of this host. The challenge server refuses to start then, since any local
-// account could pose as any visitor.
+// of this host. The listener starts, but refuses requests from that proxy;
+// this explicit diagnostic reports a deployment that cannot serve visitors.
 func challengeTrustedProxiesCheck(cfg *config.Config) DoctorCheck {
 	if err := config.ChallengeLocalTrustError(cfg.Challenge.TrustedProxies); err != nil {
 		return DoctorCheck{

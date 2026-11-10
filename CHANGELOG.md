@@ -30,6 +30,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Forwarded traffic covered by a refused proxy catch-all no longer counts against the proxy, including IPv6 peers and truncated headers.
 - With `web_server.trusted_proxies` or `challenge.trusted_proxies` set, HTTP checks no longer count requests against a trusted proxy whose forwarded header is missing or unreadable, and read past further trusted proxies in it.
 - A `web_server.trusted_proxies` or `challenge.trusted_proxies` entry covering every address is no longer trusted, so visitors cannot forge their address through it.
 - Joomla, Drupal, Magento and OpenCart re-checks look at every site on the account with its own database login, so a clean main site no longer clears another site's finding.
@@ -38,7 +39,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A finding cleared by Fix, a performance fix, Re-check or a rule update now alerts again if the same detection returns.
 - PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.
 - `challenge.verified_session` no longer issues admin sessions to this server's own addresses, so local accounts cannot guess `admin_secret` from loopback.
-- The challenge server no longer starts when `challenge.trusted_proxies` covers an address of this host, so suspicious addresses get your normal response instead. Use the challenge socket or direct mode.
 - Mail that crashes, exhausts or stalls the attachment unpacker is now deferred instead of delivered unscanned, even with `email_av.fail_mode: open`; observe mode still delivers it.
 - A remote sender can no longer get a hosted mailbox reported as compromised through the wording of an email subject.
 - The per-account PHP mail volume alert now counts each account's real outbound mail, and an email's subject or sender can no longer raise it.
@@ -47,6 +47,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Challenge listeners keep starting with legacy local proxy entries while refusing to identify visitors through those local proxies.
 - Joomla, Drupal, Magento and OpenCart scans skip suspended accounts, so their checks complete again and earlier findings for those accounts clear on the next scan.
 - JavaScript served through PHP no longer raises a Critical WSO or FilesMan webshell alert because a variable name contains "filesMan".
 - Goto-obfuscated PHP, the shape licence-protected commercial modules also ship, is now reported for review instead of quarantined the moment it is written.
