@@ -19,17 +19,18 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - HTTP checks now also trust proxies listed in `challenge.trusted_proxies`, and the ModSecurity audit scan no longer reports a trusted proxy as an attacker.
 - The challenge server now also trusts proxies listed in `web_server.trusted_proxies`, and refuses overlong forwarded chains.
-- CSM now rejects a `web_server.trusted_proxies` or `challenge.trusted_proxies` entry that is not an IP address or CIDR range at startup, reload and Settings save, instead of ignoring it. Correct such entries before upgrading.
+- CSM now refuses to start, reload or save Settings with a `web_server.trusted_proxies` or `challenge.trusted_proxies` entry that is empty, unreadable or covers every address, instead of ignoring it. Correct such entries before upgrading.
+- An address of this host listed in `web_server.trusted_proxies` is no longer trusted, so requests through a local proxy count against nobody; `csm validate` warns about such entries.
 - `csm scan --full` now scans images last, and `--wait` and `--report` exit with status 3 when a scan did not cover everything, including skipped oversize files.
 - Automatic response forecasts reject unverified PHP relay addresses and stop trusting evidence after its allowed address sources change.
 - Automatic response previews reject subnet targets from checks that only attribute individual addresses, including previously queued responses.
 - New hosts set up with `csm install` now start from the packaged config, so they filter IPv6 and match the package's alert and detection settings.
 - Automatic response forecasts include scheduled security scans, Exim history and IP reputation findings with recent local sightings, without treating repeated reports as independent evidence.
-- Automatic response forecasts never read an address in `web_server.trusted_proxies` as the client, and include SMTP password sprays seen in a Postfix mail log.
+- Automatic response forecasts never read an address in `web_server.trusted_proxies` or `challenge.trusted_proxies` as the client, and include SMTP password sprays seen in a Postfix mail log.
 
 ### Security
 
-- With `web_server.trusted_proxies` set, HTTP checks no longer count requests against a trusted proxy whose forwarded header is missing or unreadable, and read past further trusted proxies in it.
+- With `web_server.trusted_proxies` or `challenge.trusted_proxies` set, HTTP checks no longer count requests against a trusted proxy whose forwarded header is missing or unreadable, and read past further trusted proxies in it.
 - Joomla, Drupal, Magento and OpenCart scans keep checking the remaining tables when one table returns too many rows, so a flood of rows no longer hides an injection.
 - PHP and phishing checks now read `${'_POST'}` and `$GLOBALS['_POST']` as request input, so these spellings no longer hide a webshell or phishing kit.
 - `challenge.verified_session` no longer issues admin sessions to this server's own addresses, so local accounts cannot guess `admin_secret` from loopback.

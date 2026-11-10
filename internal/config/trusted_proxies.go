@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/pidginhost/csm/internal/clientaddr"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // TrustedProxies returns the one trusted proxy list every HTTP producer and
@@ -22,6 +23,21 @@ func TrustedProxies(cfg *Config) clientaddr.Trusted {
 		return clientaddr.Trusted{}
 	}
 	return trusted
+}
+
+// WebServerLocalTrustError reports a web_server.trusted_proxies entry that
+// covers an address of this host. CSM never trusts such an entry, since any
+// local account can connect from that address and write X-Forwarded-For, so
+// the requests a proxy there forwards count against nobody.
+func WebServerLocalTrustError(entries []string) error {
+	entry, covered, err := netutil.HostLocalProxyEntry(entries)
+	if err != nil {
+		return fmt.Errorf("web_server.trusted_proxies: cannot check the entries: %v", err)
+	}
+	if entry == "" {
+		return nil
+	}
+	return fmt.Errorf("web_server.trusted_proxies entry %q covers %s, an address of this host: CSM never trusts it, so requests a proxy there forwards count against nobody. Have that proxy's web server log the client address, or remove the entry", entry, covered)
 }
 
 // validateTrustedProxies refuses an entry in either key that is not an IP

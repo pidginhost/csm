@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -162,5 +163,33 @@ func TestTrustedProxiesRefusesAnUnloadedInvalidList(t *testing.T) {
 		if got := TrustedProxies(cfg); got.Len() != 0 || got.Covers(netip.MustParseAddr("192.0.2.10")) {
 			t.Fatalf("%s: TrustedProxies kept %d entries from an unreadable list", key, got.Len())
 		}
+	}
+}
+
+// An address of this host in web_server.trusted_proxies is never trusted, so
+// requests a local proxy forwards count against nobody: validate says so as
+// a warning, never an error that would stop a daemon that ran with it.
+func TestValidateWarnsAboutAWebServerProxyOfThisHost(t *testing.T) {
+	pinChallengeHost(t, "203.0.113.10")
+	cfg := baseValidationConfig()
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.7", "127.0.0.1"}
+	results := Validate(cfg)
+	if hasResult(results, "error", "web_server.trusted_proxies") {
+		t.Fatal("a local proxy entry must never be a validation error: it would stop the daemon")
+	}
+	i := slices.IndexFunc(results, func(r ValidationResult) bool {
+		return r.Level == "warn" && r.Field == "web_server.trusted_proxies"
+	})
+	if i < 0 {
+		t.Fatalf("want warn on web_server.trusted_proxies, got %v", results)
+	}
+	for _, want := range []string{"127.0.0.1", "address of this host", "count against nobody"} {
+		if !strings.Contains(results[i].Message, want) {
+			t.Errorf("message %q lacks %q", results[i].Message, want)
+		}
+	}
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.7", "192.0.2.0/24"}
+	if hasResult(Validate(cfg), "warn", "web_server.trusted_proxies") {
+		t.Fatal("remote proxy entries must not warn")
 	}
 }
