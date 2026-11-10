@@ -121,10 +121,11 @@ func (s *domlogStats) observeASNCrawl(ip string, rec accessLogRecord, cfg *confi
 		return // reverse-proxy: dropped from numerator AND denominator
 	}
 	// v1 limitation (spec section 4.3): real-client attribution behind a
-	// reverse proxy/CDN depends on clientIPForRecord restoring the client from
-	// XFF, which only happens when web_server.trusted_proxies is configured.
-	// Operators fronting hosts with a CDN MUST set trusted_proxies so the real
-	// client IP (and its ASN) is attributed here; without it a CDN-fronted
+	// reverse proxy/CDN depends on the domlog resolver restoring the client
+	// from XFF, which only happens for a peer listed in
+	// web_server.trusted_proxies or challenge.trusted_proxies. Operators
+	// fronting hosts with a CDN MUST list it so the real client IP (and its
+	// ASN) is attributed here; without it a CDN-fronted
 	// distributed crawl is seen as proxy-ASN traffic and not flagged (a false
 	// negative). The catastrophic false positive is still prevented because the
 	// proxy ASN is never emitted or tempbanned. A general CDN-aware fix spans

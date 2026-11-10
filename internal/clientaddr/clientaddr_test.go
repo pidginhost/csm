@@ -275,7 +275,7 @@ func TestResolveRejectsBrokenPeerSyntax(t *testing.T) {
 
 // Only the hops the walk reads count toward the bound. Text a client writes
 // left of its own address, however many short hops it holds, never decides
-// whether it resolves; more than 32 hops read before a client does.
+// whether it resolves; needing more than 32 hops to reach a client does.
 func TestResolveBoundsOnlyTheHopsItReads(t *testing.T) {
 	trusted := mustParse(t, "192.0.2.0/24")
 	padded := strings.Repeat("::,", 90) + "203.0.113.9, 192.0.2.11"

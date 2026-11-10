@@ -15,7 +15,7 @@ import (
 )
 
 // Bounds on a forwarded chain: the bytes of the whole header, and the hops
-// the walk reads before it reaches the client. A chain over either is
+// the walk reads up to and including the client. A chain over either is
 // refused, never trimmed. Hops a client writes left of its own address are
 // never read, so they cannot make it refused.
 const (
@@ -30,7 +30,7 @@ var (
 	ErrNoChain    = errors.New("trusted proxy sent no forwarded chain")
 	ErrMalformed  = errors.New("forwarded chain holds an unreadable hop")
 	ErrTruncated  = errors.New("forwarded chain was cut before its client")
-	ErrOverlong   = errors.New("forwarded chain exceeds 4 KiB or 32 hops before its client")
+	ErrOverlong   = errors.New("forwarded chain exceeds 4 KiB or 32 hops up to its client")
 	ErrAllTrusted = errors.New("forwarded chain holds only trusted proxies")
 )
 
