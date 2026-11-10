@@ -158,20 +158,23 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 
 	db := store.Global()
-	yaraConsumer := &deepScanConsumer{name: yaraDeepCursorCheck, staleCheck: "yara_scan_incomplete", label: "YARA"}
-	jsConsumer := &deepScanConsumer{name: jsTaintDeepCursorCheck, staleCheck: "js_taint_scan_incomplete", label: "JS taint"}
-	phpConsumer := &deepScanConsumer{name: phpTaintDeepCursorCheck, staleCheck: "php_taint_scan_incomplete", label: "PHP taint"}
-	consumers := []*deepScanConsumer{yaraConsumer, jsConsumer, phpConsumer}
+	w := &yaraDeepWalk{
+		ctx:          ctx,
+		yaraConsumer: &deepScanConsumer{name: yaraDeepCursorCheck, staleCheck: "yara_scan_incomplete", label: "YARA"},
+		jsConsumer:   &deepScanConsumer{name: jsTaintDeepCursorCheck, staleCheck: "js_taint_scan_incomplete", label: "JS taint"},
+		phpConsumer:  &deepScanConsumer{name: phpTaintDeepCursorCheck, staleCheck: "php_taint_scan_incomplete", label: "PHP taint"},
+	}
+	w.consumers = []*deepScanConsumer{w.yaraConsumer, w.jsConsumer, w.phpConsumer}
 
 	yaraOff := yaraDeepConsumerDisabled(cfg)
 	jsOff := jsTaintDeepConsumerDisabled(cfg)
-	jsConsumer.dispatch = !jsOff
+	w.jsConsumer.dispatch = !jsOff
 	phpOff := phpTaintDeepConsumerDisabled(cfg)
 	phpReady := phpTaintAnalyzerReady()
 	// An absent isolated analyzer is not a coverage gap: it means the feature
 	// is not active on this host. Dispatching anyway would record every
 	// candidate as unexamined on every scan.
-	phpConsumer.dispatch = !phpOff && phpReady
+	w.phpConsumer.dispatch = !phpOff && phpReady
 	if !phpOff && !phpReady {
 		// Keep prior state while the feature is inactive. Treating an inactive
 		// owner as completed would purge findings without examining their files.
@@ -192,10 +195,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		}
 	}
 
-	var findings []alert.Finding
-	backend := activeYARABackend()
-	yaraReady := backend != nil && backend.RuleCount() > 0
-	yaraConsumer.dispatch = !yaraOff && yaraReady
+	w.backend = activeYARABackend()
+	yaraReady := w.backend != nil && w.backend.RuleCount() > 0
+	w.yaraConsumer.dispatch = !yaraOff && yaraReady
 	if !yaraOff && !yaraReady {
 		// A missing backend is a YARA coverage gap, never a JS one: mark only
 		// the YARA owner incomplete and leave its cursor unchanged so it can
@@ -203,25 +205,25 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		// below still covers its cycle.
 		markCheckIncomplete(ctx, "yara_deep")
 		if yaraAvailable() {
-			findings = append(findings, alert.Finding{
+			w.findings = append(w.findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "yara_scan_incomplete",
 				Message:  "YARA deep scan could not start because no compiled rules are available",
 			})
 		}
 	}
-	if !yaraConsumer.dispatch && !jsConsumer.dispatch && !phpConsumer.dispatch {
+	if !w.yaraConsumer.dispatch && !w.jsConsumer.dispatch && !w.phpConsumer.dispatch {
 		if ctx.Err() != nil {
 			return nil
 		}
 		resetDisabledCursors()
-		return findings
+		return w.findings
 	}
-	maxBytes := int64(FullScanMaxFileBytes(cfg))
-	jsMaxBytes := int64(jstaint.MaxSourceBytes)
-	phpMaxBytes := int64(phptaint.MaxSourceBytes)
+	w.maxBytes = int64(FullScanMaxFileBytes(cfg))
+	w.jsMaxBytes = int64(jstaint.MaxSourceBytes)
+	w.phpMaxBytes = int64(phptaint.MaxSourceBytes)
 
-	for _, c := range consumers {
+	for _, c := range w.consumers {
 		if !c.dispatch || db == nil {
 			continue
 		}
@@ -235,96 +237,212 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		c.lastScanned = c.resume
 	}
 
-	rescanGen := pendingSignatureRescan(cfg, db, yaraConsumer.dispatch)
+	rescanGen := pendingSignatureRescan(cfg, db, w.yaraConsumer.dispatch)
 
 	// The shared walk starts at the earliest dispatchable resume point; a
 	// consumer whose cursor is ahead skips already-covered paths via wants()
 	// while the lagging consumer catches up on the same snapshot reads.
-	walkResume := ""
 	firstResume := true
-	for _, c := range consumers {
+	for _, c := range w.consumers {
 		if !c.dispatch {
 			continue
 		}
-		if firstResume || c.resume < walkResume {
-			walkResume = c.resume
+		if firstResume || c.resume < w.walkResume {
+			w.walkResume = c.resume
 			firstResume = false
 		}
 	}
 
-	var softDeadline time.Time
 	if deadline, ok := ctx.Deadline(); ok {
-		softDeadline = deadline.Add(-yaraDeepDeadlineMargin)
-	}
-	outOfTime := func() bool {
-		return !softDeadline.IsZero() && !yaraDeepNow().Before(softDeadline)
+		w.softDeadline = deadline.Add(-yaraDeepDeadlineMargin)
 	}
 
 	// The collector owns both the count and the per-status breakdown, so the
 	// finding can say what the gaps were instead of only how many.
-	var observedPath string
-	var observedInfo os.FileInfo
-	observePathIdentity := func(path string, info os.FileInfo) {
-		observedPath = path
-		observedInfo = info
-	}
-	resolveObservedAliases := func(path string) ([]string, bool) {
-		if path != observedPath || observedInfo == nil {
-			return coveragePathAliases(path), false
-		}
-		return stableCoveragePathAliases(path, observedInfo)
-	}
-
-	yaraGaps := newYARAGapCollector()
-	yaraGaps.resolveAliases = resolveObservedAliases
-	recordYARAPathGap := func(path, status, _ string) {
-		recordCoverageGapPaths(ctx, "yara_deep", yaraGaps.record(path, status))
-	}
-	recordYARAUnknownRangeGap := func(detail string) {
-		yaraGaps.recordUnknownRange(detail)
-	}
-	pathFailureStillAttributable := func(path string) (os.FileInfo, bool) {
-		info, err := osFS.Lstat(path)
-		// Every metadata error is ambiguous, including ENOENT: a delete can race
-		// this observation and replace the path with a directory immediately after
-		// it. Only an observed non-directory, non-symlink entry is narrow enough to
-		// preserve by exact path.
-		return info, err == nil && !info.IsDir() && info.Mode()&os.ModeSymlink == 0 &&
-			observedPath == path && observedInfo != nil && os.SameFile(observedInfo, info)
-	}
-	recordYARAScanGap := func(path string, scanErr error) {
-		// Inline IPC overflow retries by path. If that path changed into a
-		// directory or symlink before the retry failed, the unscanned range is no
-		// longer just the original file: children or a target subtree may now be
-		// hidden. The post-failure Lstat is inherently racy, so every metadata
-		// error takes the conservative unknown-range path.
-		info, attributable := pathFailureStillAttributable(path)
-		if !attributable {
-			recordYARAUnknownRangeGap(fmt.Sprintf("scanning %s failed after the path changed: %v", path, scanErr))
-			return
-		}
-		observePathIdentity(path, info)
-		recordYARAPathGap(path, "scan_error", fmt.Sprintf("scanning %s: %v", path, scanErr))
-	}
-	jsGaps := newJSTaintGapCollector()
-	phpGaps := newPHPTaintGapCollector()
-	jsGaps.resolveAliases = resolveObservedAliases
-	phpGaps.resolveAliases = resolveObservedAliases
-	jsGaps.recordCoverage = func(paths []string) {
+	w.yaraGaps = newYARAGapCollector()
+	w.yaraGaps.resolveAliases = w.resolveObservedAliases
+	w.jsGaps = newJSTaintGapCollector()
+	w.phpGaps = newPHPTaintGapCollector()
+	w.jsGaps.resolveAliases = w.resolveObservedAliases
+	w.phpGaps.resolveAliases = w.resolveObservedAliases
+	w.jsGaps.recordCoverage = func(paths []string) {
 		recordCoverageGapPaths(ctx, logicalOwnerJSTaintDeep, paths)
 	}
-	phpGaps.recordCoverage = func(paths []string) {
+	w.phpGaps.recordCoverage = func(paths []string) {
 		recordCoverageGapPaths(ctx, logicalOwnerPHPTaintDeep, paths)
 	}
-	stoppedEarly := false
-	sep := string(filepath.Separator)
-	subtreePrefix := func(path string) string {
-		path = filepath.Clean(path)
-		if strings.HasSuffix(path, sep) {
-			return path
-		}
-		return path + sep
+	roots, rootsComplete := deepScanRoots(cfg)
+
+	// Restarting the walk on updates would starve paths that sort last.
+	// Track a lap from the current position instead. Changed or unresolved
+	// roots invalidate that proof: a new root behind the cursor may not have
+	// been visited on the return lap. The walk itself keeps its position.
+	rootsHash := ""
+	if rootsComplete {
+		rootsHash = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(roots, "\x00"))))
 	}
+	if (rescanGen != 0 && w.yaraConsumer.cur.RulesGeneration != rescanGen) ||
+		(w.yaraConsumer.cur.RulesGeneration != 0 && (w.yaraConsumer.cur.RulesRootsHash != rootsHash || !rootsComplete)) {
+		if rescanGen != 0 {
+			w.yaraConsumer.cur.RulesGeneration = rescanGen
+		}
+		w.yaraConsumer.cur.RulesFrom = w.yaraConsumer.resume
+		w.yaraConsumer.cur.RulesWrapped = false
+		w.yaraConsumer.cur.RulesRootsHash = rootsHash
+	}
+
+	w.walk(roots)
+	if ctx.Err() != nil {
+		// The runner drops every finding a check returns after its budget
+		// expired, so there is nothing worth reporting; leave every cursor
+		// untouched and let the next run redo this window.
+		return nil
+	}
+	resetDisabledCursors()
+
+	now := yaraDeepNow().UTC()
+	w.saveCursors(db, now, rootsComplete)
+	if rescanGen != 0 && rootsComplete {
+		w.clearSignatureRescan(db, rescanGen)
+	}
+	w.reportStaleCycles(now)
+	w.reportCoverage(st)
+	return w.findings
+}
+
+// yaraDeepWalk is one run of the shared deep-content walk: the three
+// consumers, their gap collectors, and the single ordered traversal they
+// share. The fields below "shared walk state" describe that one traversal.
+type yaraDeepWalk struct {
+	ctx                                   context.Context
+	backend                               yara.Backend
+	yaraConsumer, jsConsumer, phpConsumer *deepScanConsumer
+	consumers                             []*deepScanConsumer
+	maxBytes, jsMaxBytes, phpMaxBytes     int64
+	yaraGaps                              *yaraGapCollector
+	jsGaps                                *jsTaintGapCollector
+	phpGaps                               *phpTaintGapCollector
+	findings                              []alert.Finding
+
+	// Shared walk state. walkResume is the earliest dispatching resume point.
+	walkResume   string
+	softDeadline time.Time
+	stoppedEarly bool
+	// observedPath and observedInfo are the identity last observed for a
+	// path, so a later failure on it can be pinned to that exact file.
+	observedPath string
+	observedInfo os.FileInfo
+}
+
+// deepFileWants records which consumers still need the file being read.
+type deepFileWants struct{ yara, js, php bool }
+
+func (fw deepFileWants) any() bool { return fw.yara || fw.js || fw.php }
+
+func (w *yaraDeepWalk) outOfTime() bool {
+	return !w.softDeadline.IsZero() && !yaraDeepNow().Before(w.softDeadline)
+}
+
+func (w *yaraDeepWalk) observePathIdentity(path string, info os.FileInfo) {
+	w.observedPath = path
+	w.observedInfo = info
+}
+
+func (w *yaraDeepWalk) resolveObservedAliases(path string) ([]string, bool) {
+	if path != w.observedPath || w.observedInfo == nil {
+		return coveragePathAliases(path), false
+	}
+	return stableCoveragePathAliases(path, w.observedInfo)
+}
+
+func (w *yaraDeepWalk) pathFailureStillAttributable(path string) (os.FileInfo, bool) {
+	info, err := osFS.Lstat(path)
+	// Every metadata error is ambiguous, including ENOENT: a delete can race
+	// this observation and replace the path with a directory immediately after
+	// it. Only an observed non-directory, non-symlink entry is narrow enough to
+	// preserve by exact path.
+	return info, err == nil && !info.IsDir() && info.Mode()&os.ModeSymlink == 0 &&
+		w.observedPath == path && w.observedInfo != nil && os.SameFile(w.observedInfo, info)
+}
+
+func (w *yaraDeepWalk) recordYARAPathGap(path, status string) {
+	recordCoverageGapPaths(w.ctx, "yara_deep", w.yaraGaps.record(path, status))
+}
+
+func (w *yaraDeepWalk) recordYARAScanGap(path string, scanErr error) {
+	// Inline IPC overflow retries by path. If that path changed into a
+	// directory or symlink before the retry failed, the unscanned range is no
+	// longer just the original file: children or a target subtree may now be
+	// hidden. The post-failure Lstat is inherently racy, so every metadata
+	// error takes the conservative unknown-range path.
+	info, attributable := w.pathFailureStillAttributable(path)
+	if !attributable {
+		w.yaraGaps.recordUnknownRange(fmt.Sprintf("scanning %s failed after the path changed: %v", path, scanErr))
+		return
+	}
+	w.observePathIdentity(path, info)
+	w.recordYARAPathGap(path, "scan_error")
+}
+
+// recordUnknownRange records a loss whose affected paths are unknowable for
+// every consumer in fw.
+func (w *yaraDeepWalk) recordUnknownRange(fw deepFileWants, detail string) {
+	if fw.yara {
+		w.yaraGaps.recordUnknownRange(detail)
+	}
+	if fw.js {
+		w.jsGaps.recordUnknownRange(detail)
+	}
+	if fw.php {
+		w.phpGaps.recordUnknownRange(detail)
+	}
+}
+
+// recordPathGap records an exact-path gap for every consumer in fw. YARA
+// keeps its own status where its report names the failure differently.
+func (w *yaraDeepWalk) recordPathGap(fw deepFileWants, path, yaraStatus, status string) {
+	if fw.yara {
+		w.recordYARAPathGap(path, yaraStatus)
+	}
+	if fw.js {
+		w.jsGaps.record(path, status)
+	}
+	if fw.php {
+		w.phpGaps.record(path, status)
+	}
+}
+
+func (w *yaraDeepWalk) advanceAll(path string) {
+	for _, c := range w.consumers {
+		c.advance(path)
+	}
+}
+
+// deepSubtreePrefix is the sort key every path under dir starts with.
+func deepSubtreePrefix(path string) string {
+	sep := string(filepath.Separator)
+	path = filepath.Clean(path)
+	if strings.HasSuffix(path, sep) {
+		return path
+	}
+	return path + sep
+}
+
+// deepSubtreeCoveredAfter reports whether every path under dir sorts before
+// resume. Children all share the dir+sep prefix, so when resume does not
+// itself start with that prefix, any child compares to resume exactly as the
+// prefix does. Comparing the bare dir path instead would wrongly skip
+// siblings like "ab/" when the cursor sits at "ab.zz" ('/' sorts after '.').
+// An exact prefix cursor records a subtree already accounted for this cycle,
+// including an empty or unreadable directory.
+func deepSubtreeCoveredAfter(resume, dir string) bool {
+	prefix := deepSubtreePrefix(dir)
+	return resume != "" && (resume == prefix || (!strings.HasPrefix(resume, prefix) && prefix < resume))
+}
+
+// deepScanRoots returns the web roots deduplicated and in walk order, and
+// whether every root resolved.
+func deepScanRoots(cfg *config.Config) ([]string, bool) {
 	roots, rootsComplete := resolveWebRootsChecked(cfg)
 	normalizedRoots := roots[:0]
 	seenRoots := make(map[string]struct{}, len(roots))
@@ -337,541 +455,472 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		normalizedRoots = append(normalizedRoots, root)
 	}
 	roots = normalizedRoots
-	sort.Slice(roots, func(i, j int) bool { return subtreePrefix(roots[i]) < subtreePrefix(roots[j]) })
+	sort.Slice(roots, func(i, j int) bool { return deepSubtreePrefix(roots[i]) < deepSubtreePrefix(roots[j]) })
+	return roots, rootsComplete
+}
 
-	// Restarting the walk on updates would starve paths that sort last.
-	// Track a lap from the current position instead. Changed or unresolved
-	// roots invalidate that proof: a new root behind the cursor may not have
-	// been visited on the return lap. The walk itself keeps its position.
-	rootsHash := ""
-	if rootsComplete {
-		rootsHash = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(roots, "\x00"))))
-	}
-	if (rescanGen != 0 && yaraConsumer.cur.RulesGeneration != rescanGen) ||
-		(yaraConsumer.cur.RulesGeneration != 0 && (yaraConsumer.cur.RulesRootsHash != rootsHash || !rootsComplete)) {
-		if rescanGen != 0 {
-			yaraConsumer.cur.RulesGeneration = rescanGen
-		}
-		yaraConsumer.cur.RulesFrom = yaraConsumer.resume
-		yaraConsumer.cur.RulesWrapped = false
-		yaraConsumer.cur.RulesRootsHash = rootsHash
-	}
-	advanceAll := func(path string) {
-		for _, c := range consumers {
-			c.advance(path)
-		}
-	}
-
-	// subtreeCovered reports whether every path under dir sorts before the
-	// earliest resume point. Children all share the dir+sep prefix, so when
-	// resume does not itself start with that prefix, any child compares to
-	// resume exactly as the prefix does. Comparing the bare dir path instead
-	// would wrongly skip siblings like "ab/" when the cursor sits at "ab.zz"
-	// ('/' sorts after '.'). An exact prefix cursor records a subtree already
-	// accounted for this cycle, including an empty or unreadable directory.
-	subtreeCoveredAfter := func(resume, dir string) bool {
-		prefix := subtreePrefix(dir)
-		return resume != "" && (resume == prefix || (!strings.HasPrefix(resume, prefix) && prefix < resume))
-	}
-	subtreeCovered := func(dir string) bool {
-		return subtreeCoveredAfter(walkResume, dir)
-	}
-	consumerWantsSubtree := func(c *deepScanConsumer, dir string) bool {
-		return c.dispatch && !subtreeCoveredAfter(c.resume, dir)
-	}
-
-	var scanDir func(string)
-	scanDir = func(dir string) {
-		if ctx.Err() != nil || stoppedEarly {
-			return
-		}
-		if outOfTime() {
-			stoppedEarly = true
-			return
-		}
-		entries, err := osFS.ReadDir(dir)
-		if err != nil {
-			// The affected paths are unknowable, but a consumer that already
-			// covered this subtree must not inherit another consumer's gap.
-			yaraWants := consumerWantsSubtree(yaraConsumer, dir)
-			jsWants := consumerWantsSubtree(jsConsumer, dir)
-			phpWants := consumerWantsSubtree(phpConsumer, dir)
-			if yaraWants {
-				recordYARAUnknownRangeGap(fmt.Sprintf("reading %s: %v", dir, err))
-			}
-			if jsWants {
-				jsGaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
-			}
-			if phpWants {
-				phpGaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
-			}
-			advanceAll(subtreePrefix(dir))
-			return
-		}
-		// A directory's candidate paths start at dir+separator, not at the
-		// bare directory name. Bare-name order visits ab/ before ab.zz even
-		// though every child under ab/ sorts after ab.zz. The heap starts
-		// with each bare path as a lower bound, then requeues directories
-		// under their path+separator key after Lstat reveals their type.
-		ordered := make(yaraDeepScanHeap, len(entries))
-		for i, entry := range entries {
-			ordered[i].path = filepath.Join(dir, entry.Name())
-			ordered[i].sortKey = ordered[i].path
-		}
-		heap.Init(&ordered)
-
-		for ordered.Len() > 0 {
-			if ctx.Err() != nil || stoppedEarly {
-				return
-			}
-			if outOfTime() {
-				stoppedEarly = true
-				return
-			}
-
-			item := heap.Pop(&ordered).(yaraDeepScanEntry)
-			if !item.inspected {
-				item.info, item.err = osFS.Lstat(item.path)
-				item.inspected = true
-			}
-			path := item.path
-
-			if item.err == nil && item.info.Mode()&os.ModeSymlink == 0 && item.info.IsDir() {
-				if item.sortKey == path {
-					item.sortKey = subtreePrefix(path)
-					heap.Push(&ordered, item)
-					continue
-				}
-				if subtreeCovered(path) {
-					continue
-				}
-				if outOfTime() {
-					stoppedEarly = true
-					return
-				}
-				scanDir(path)
-				if ctx.Err() == nil && !stoppedEarly {
-					advanceAll(item.sortKey)
-				}
-				continue
-			}
-
-			yaraWants := yaraConsumer.wants(path)
-			jsWants := jsConsumer.wants(path)
-			phpWants := phpConsumer.wants(path)
-			if !yaraWants && !jsWants && !phpWants {
-				continue
-			}
-			if item.err != nil {
-				// A failed Lstat may hide a directory, so the gap range is
-				// unknowable for either path-based carry-forward.
-				if yaraWants {
-					recordYARAUnknownRangeGap(fmt.Sprintf("inspecting %s: %v", path, item.err))
-				}
-				if jsWants {
-					jsGaps.recordUnknownRange(fmt.Sprintf("inspecting %s: %v", path, item.err))
-				}
-				if phpWants {
-					phpGaps.recordUnknownRange(fmt.Sprintf("inspecting %s: %v", path, item.err))
-				}
-				advanceAll(path)
-				continue
-			}
-			info := item.info
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() == 0 {
-				advanceAll(path)
-				continue
-			}
-			observePathIdentity(path, info)
-			if yaraWants && info.Size() > maxBytes {
-				// Oversize files are intentionally not opened, but they still
-				// count as covered progress for this rolling cycle. The gap
-				// advances only its own consumer: a soft-deadline stop right
-				// after this gate must not move the other consumer past a
-				// file it never received.
-				recordYARAPathGap(path, "oversize", fmt.Sprintf("%s exceeds the %d-byte scan limit", path, maxBytes))
-				yaraConsumer.advance(path)
-				yaraWants = false
-			}
-			if phpWants && info.Size() > phpMaxBytes {
-				// An oversize file is only a PHP coverage gap if it could have
-				// been PHP. The deep walk hands every readable file to this
-				// consumer and the analyzer's own pre-filter normally rejects
-				// the rest instantly -- but that pre-filter never runs on a
-				// file too large to send, so without this check every large
-				// error_log, JSON blob and media file on the host is reported
-				// as PHP content we failed to examine. Measured on a live
-				// host: 617 of 660 recorded gaps in one scan, which buries the
-				// handful that are real.
-				// Past the soft deadline the walk is stopping and must do
-				// no further I/O, so the peek is skipped and the gap is
-				// recorded unexamined -- the same answer an unreadable
-				// file gets.
-				if outOfTime() || phpFileMayBePHP(path, info) {
-					phpGaps.record(path, phptaint.StatusOversize.String())
-				}
-				phpConsumer.advance(path)
-				phpWants = false
-			}
-			if jsWants && info.Size() > jsMaxBytes {
-				// An oversize file is only a JS coverage gap if it could
-				// have been JavaScript. The deep walk hands every readable
-				// file to this consumer and the analyzer's own pre-filter
-				// normally rejects the rest instantly -- but that pre-filter
-				// never runs on a file too large to send, so without this
-				// check every large image, archive and database on the host
-				// is reported as JavaScript we failed to examine. This gate
-				// was missing while the PHP one beside it existed.
-				//
-				// This branch used to decide on metadata alone. Peeking
-				// costs an open, so as with PHP above it is skipped once the
-				// soft deadline has passed and the gap is recorded
-				// unexamined.
-				if outOfTime() || jsFileMayBeJS(path, info) {
-					jsGaps.record(path, jstaint.StatusOversize.String())
-				}
-				jsConsumer.advance(path)
-				jsWants = false
-			}
-			if !yaraWants && !jsWants && !phpWants {
-				continue
-			}
-			if outOfTime() {
-				stoppedEarly = true
-				return
-			}
-			// Advance before opening so permanently unreadable or unscannable
-			// files cannot wedge the cursor in place.
-			advanceAll(path)
-
-			file, err := osFS.Open(path)
-			if err != nil {
-				detail := fmt.Sprintf("opening %s: %v", path, err)
-				info, attributable := pathFailureStillAttributable(path)
-				if attributable {
-					observePathIdentity(path, info)
-					if yaraWants {
-						recordYARAPathGap(path, "open_error", detail)
-					}
-					if jsWants {
-						jsGaps.record(path, "read_error")
-					}
-					if phpWants {
-						phpGaps.record(path, "read_error")
-					}
-				} else {
-					if yaraWants {
-						recordYARAUnknownRangeGap(detail)
-					}
-					if jsWants {
-						jsGaps.recordUnknownRange(detail)
-					}
-					if phpWants {
-						phpGaps.recordUnknownRange(detail)
-					}
-				}
-				continue
-			}
-			openedInfo, statErr := file.Stat()
-			if statErr != nil {
-				_ = file.Close()
-				if yaraWants {
-					recordYARAUnknownRangeGap(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
-				}
-				if jsWants {
-					jsGaps.recordUnknownRange(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
-				}
-				if phpWants {
-					phpGaps.recordUnknownRange(fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
-				}
-				continue
-			}
-			if !openedInfo.Mode().IsRegular() {
-				_ = file.Close()
-				if openedInfo.IsDir() {
-					// Lstat admitted a regular file, but Open bound a directory.
-					// Its children were never enumerated, so retaining only the
-					// exact path would purge findings from an unknown subtree.
-					if yaraWants {
-						recordYARAUnknownRangeGap(fmt.Sprintf("%s changed into a directory while it was being opened", path))
-					}
-					if jsWants {
-						jsGaps.recordUnknownRange(fmt.Sprintf("%s changed into a directory while it was being opened", path))
-					}
-					if phpWants {
-						phpGaps.recordUnknownRange(fmt.Sprintf("%s changed into a directory while it was being opened", path))
-					}
-				} else {
-					if yaraWants {
-						recordYARAPathGap(path, "changed_during_read", fmt.Sprintf("%s changed while it was being opened", path))
-					}
-					if jsWants {
-						jsGaps.record(path, "changed_during_read")
-					}
-					if phpWants {
-						phpGaps.record(path, "changed_during_read")
-					}
-				}
-				continue
-			}
-			observePathIdentity(path, openedInfo)
-			if yaraWants && openedInfo.Size() > maxBytes {
-				recordYARAPathGap(path, "changed_during_read", fmt.Sprintf("%s changed while it was being opened", path))
-				yaraWants = false
-			}
-			if phpWants && openedInfo.Size() > phpMaxBytes {
-				phpGaps.record(path, "changed_during_read")
-				phpWants = false
-			}
-			if jsWants && openedInfo.Size() > jsMaxBytes {
-				jsGaps.record(path, "changed_during_read")
-				jsWants = false
-			}
-			if !yaraWants && !jsWants && !phpWants {
-				_ = file.Close()
-				continue
-			}
-			readCap := int64(0)
-			if yaraWants {
-				readCap = maxBytes
-			}
-			if jsWants && jsMaxBytes > readCap {
-				readCap = jsMaxBytes
-			}
-			if phpWants && phpMaxBytes > readCap {
-				readCap = phpMaxBytes
-			}
-			data, readErr := io.ReadAll(io.LimitReader(file, readCap+1))
-			closeErr := file.Close()
-			if readErr != nil || closeErr != nil || int64(len(data)) > readCap {
-				if yaraWants {
-					recordYARAPathGap(path, "read_error", fmt.Sprintf("reading %s failed or exceeded the scan limit", path))
-				}
-				if jsWants {
-					jsGaps.record(path, "read_error")
-				}
-				if phpWants {
-					phpGaps.record(path, "read_error")
-				}
-				continue
-			}
-			if yaraWants && int64(len(data)) > maxBytes {
-				recordYARAPathGap(path, "read_error", fmt.Sprintf("reading %s failed or exceeded the scan limit", path))
-				yaraWants = false
-			}
-			if phpWants && int64(len(data)) > phpMaxBytes {
-				phpGaps.record(path, "changed_during_read")
-				phpWants = false
-			}
-			if jsWants && int64(len(data)) > jsMaxBytes {
-				jsGaps.record(path, "changed_during_read")
-				jsWants = false
-			}
-			fingerprint := sha256.Sum256(data)
-			contentSHA256 := fmt.Sprintf("%x", fingerprint)
-
-			if jsWants {
-				findings = append(findings, analyzeJSTaintSnapshot(ctx, path, contentSHA256, data, jsGaps)...)
-			}
-
-			if phpWants {
-				findings = append(findings, analyzePHPTaintSnapshot(ctx, path, contentSHA256, data, phpGaps)...)
-				phpConsumer.advance(path)
-			}
-
-			if !yaraWants {
-				continue
-			}
-			matches, scanErr := yara.ScanBytesChecked(backend, path, data)
-			if scanErr != nil {
-				recordYARAScanGap(path, scanErr)
-				continue
-			}
-			for _, match := range matches {
-				findings = append(findings, scheduledYARAFinding(match, path, data, contentSHA256))
-			}
-		}
-	}
-
+func (w *yaraDeepWalk) walk(roots []string) {
 	for _, root := range roots {
-		if ctx.Err() != nil || stoppedEarly {
+		if w.ctx.Err() != nil || w.stoppedEarly {
 			break
 		}
-		if outOfTime() {
-			stoppedEarly = true
+		if w.outOfTime() {
+			w.stoppedEarly = true
 			break
 		}
-		if subtreeCovered(root) {
+		if deepSubtreeCoveredAfter(w.walkResume, root) {
 			continue
 		}
-		scanDir(root)
-		if ctx.Err() == nil && !stoppedEarly {
-			advanceAll(subtreePrefix(root))
+		w.scanDir(root)
+		if w.ctx.Err() == nil && !w.stoppedEarly {
+			w.advanceAll(deepSubtreePrefix(root))
 		}
 	}
-	if ctx.Err() != nil {
-		// The runner drops every finding a check returns after its budget
-		// expired, so there is nothing worth reporting; leave every cursor
-		// untouched and let the next run redo this window.
-		return nil
-	}
-	resetDisabledCursors()
+}
 
-	now := yaraDeepNow().UTC()
-	if db != nil {
-		for _, c := range consumers {
-			if !c.dispatch {
+func (w *yaraDeepWalk) scanDir(dir string) {
+	if w.ctx.Err() != nil || w.stoppedEarly {
+		return
+	}
+	if w.outOfTime() {
+		w.stoppedEarly = true
+		return
+	}
+	entries, err := osFS.ReadDir(dir)
+	if err != nil {
+		// The affected paths are unknowable, but a consumer that already
+		// covered this subtree must not inherit another consumer's gap.
+		w.recordUnknownRange(deepFileWants{
+			yara: w.yaraConsumer.dispatch && !deepSubtreeCoveredAfter(w.yaraConsumer.resume, dir),
+			js:   w.jsConsumer.dispatch && !deepSubtreeCoveredAfter(w.jsConsumer.resume, dir),
+			php:  w.phpConsumer.dispatch && !deepSubtreeCoveredAfter(w.phpConsumer.resume, dir),
+		}, fmt.Sprintf("reading %s: %v", dir, err))
+		w.advanceAll(deepSubtreePrefix(dir))
+		return
+	}
+	// A directory's candidate paths start at dir+separator, not at the
+	// bare directory name. Bare-name order visits ab/ before ab.zz even
+	// though every child under ab/ sorts after ab.zz. The heap starts
+	// with each bare path as a lower bound, then requeues directories
+	// under their path+separator key after Lstat reveals their type.
+	ordered := make(yaraDeepScanHeap, len(entries))
+	for i, entry := range entries {
+		ordered[i].path = filepath.Join(dir, entry.Name())
+		ordered[i].sortKey = ordered[i].path
+	}
+	heap.Init(&ordered)
+
+	for ordered.Len() > 0 {
+		if w.ctx.Err() != nil || w.stoppedEarly {
+			return
+		}
+		if w.outOfTime() {
+			w.stoppedEarly = true
+			return
+		}
+
+		item := heap.Pop(&ordered).(yaraDeepScanEntry)
+		if !item.inspected {
+			item.info, item.err = osFS.Lstat(item.path)
+			item.inspected = true
+		}
+		path := item.path
+
+		if item.err == nil && item.info.Mode()&os.ModeSymlink == 0 && item.info.IsDir() {
+			if item.sortKey == path {
+				item.sortKey = deepSubtreePrefix(path)
+				heap.Push(&ordered, item)
 				continue
 			}
-			var next store.ScanCursorRecord
-			next.Check = c.name
-			next.RulesGeneration = c.cur.RulesGeneration
-			next.RulesFrom = c.cur.RulesFrom
-			next.RulesWrapped = c.cur.RulesWrapped || (!stoppedEarly && rootsComplete && c.cur.RulesGeneration != 0)
-			next.RulesRootsHash = c.cur.RulesRootsHash
-			if stoppedEarly {
-				next.LastPath = c.lastScanned
-				next.LastFullCycleTS = c.cur.LastFullCycleTS
-				next.WrappedAt = c.cur.WrappedAt
-				if next.WrappedAt.IsZero() {
-					next.WrappedAt = now
-				}
-			} else {
-				next.LastFullCycleTS = now
-			}
-			if err := db.PutScanCursor(next); err != nil {
-				fmt.Fprintf(os.Stderr, "%s: cursor write: %v\n", c.name, err)
-			}
-		}
-	}
-	if rescanGen != 0 && rootsComplete {
-		// A walk that started from where the update found it has passed every
-		// file once it completes. Otherwise it must have wrapped and come back
-		// to that point. A stopped walk cannot have wrapped during this run.
-		cur := yaraConsumer.cur
-		reachedFrom := yaraConsumer.lastScanned >= cur.RulesFrom
-		if strings.HasSuffix(cur.RulesFrom, sep) {
-			// A prefix cursor covers every child, not just the first path
-			// that sorts after the prefix. Use the walk's subtree ordering.
-			reachedFrom = subtreeCoveredAfter(yaraConsumer.lastScanned, cur.RulesFrom)
-		}
-		if (!stoppedEarly && (cur.RulesFrom == "" || cur.RulesWrapped)) ||
-			(cur.RulesWrapped && reachedFrom) {
-			cleared, err := db.ClearSignatureRescan(rescanGen)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "%s: clearing signature rescan: %v\n", yaraConsumer.name, err)
-			} else if cleared {
-				observeSignatureRescan()
-			}
-		}
-	}
-
-	// Rolling-cycle staleness is per consumer. All three keep their own cursor
-	// and their own WrappedAt, so the warning belongs to whichever cycle
-	// actually stalled. This was read from the YARA cursor alone, which left a
-	// stalled PHP or JS cycle silent, and silenced the warning entirely when
-	// yara_deep was disabled -- a supported configuration.
-	//
-	// Enumerated once so the shape is not rediscovered one field at a time.
-	// Persisted per-consumer state:
-	//   cur.LastPath becomes resume and lastScanned. walkResume is the minimum
-	//   active resume; wants and consumerWantsSubtree still gate each consumer,
-	//   and advance plus the cursor write update only that consumer's progress.
-	//   cur.WrappedAt starts that consumer's partial cycle and drives only its
-	//   staleCheck/label warning here.
-	//   cur.LastFullCycleTS is preserved or stamped in that consumer's record.
-	// Runtime per-consumer state:
-	//   dispatch comes from that consumer's disable/readiness gates and controls
-	//   its cursor, analysis, completion mark, status finding, and carry-forward.
-	//   yaraWants/jsWants/phpWants and the three size limits govern only the
-	//   matching consumer. The shared read cap is their maximum, so no sibling
-	//   can reduce another's snapshot.
-	//   incomplete/firstIncomplete belong only to YARA; jsGaps belongs only to
-	//   JS; phpGaps belongs only to PHP. Each is
-	//   reported and used for completion/carry-forward only in its owner block.
-	// Genuinely shared state:
-	//   roots, path order, the context/soft deadline, opened snapshots, and
-	//   stoppedEarly describe the one walk. After a consumer's resume point all
-	//   active consumers have the same remaining ordered path space, so a walk
-	//   that stops early cannot have completed one active consumer's cycle while
-	//   leaving another active consumer's cycle unfinished.
-	// Known and deliberately out of scope: php_content_rolling.go writes
-	// WrappedAt for its per-account cursor and nothing reads it, so that scan
-	// has no staleness warning of its own.
-	if stoppedEarly {
-		for _, c := range consumers {
-			if !c.dispatch || c.cur.WrappedAt.IsZero() || now.Sub(c.cur.WrappedAt) <= yaraDeepFullCycleStale {
+			if deepSubtreeCoveredAfter(w.walkResume, path) {
 				continue
 			}
-			findings = append(findings, alert.Finding{
-				Severity: alert.Warning,
-				Check:    c.staleCheck,
-				Message:  fmt.Sprintf("Rolling %s deep scan has not completed a full pass since %s", c.label, c.cur.WrappedAt.Format("2006-01-02")),
-				Details:  "Each run advances the cursor inside its time budget; a pass this stale means the budget is too small for the content volume.",
-			})
+			if w.outOfTime() {
+				w.stoppedEarly = true
+				return
+			}
+			w.scanDir(path)
+			if w.ctx.Err() == nil && !w.stoppedEarly {
+				w.advanceAll(item.sortKey)
+			}
+			continue
+		}
+		w.scanFile(path, item.info, item.err)
+	}
+}
+
+// scanFile hands one walked non-directory entry to every consumer that
+// still needs it. It sets stoppedEarly when the soft deadline passes before
+// the read.
+func (w *yaraDeepWalk) scanFile(path string, info os.FileInfo, lstatErr error) {
+	fw := deepFileWants{
+		yara: w.yaraConsumer.wants(path),
+		js:   w.jsConsumer.wants(path),
+		php:  w.phpConsumer.wants(path),
+	}
+	if !fw.any() {
+		return
+	}
+	if lstatErr != nil {
+		// A failed Lstat may hide a directory, so the gap range is
+		// unknowable for either path-based carry-forward.
+		w.recordUnknownRange(fw, fmt.Sprintf("inspecting %s: %v", path, lstatErr))
+		w.advanceAll(path)
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() == 0 {
+		w.advanceAll(path)
+		return
+	}
+	w.observePathIdentity(path, info)
+	if fw.yara && info.Size() > w.maxBytes {
+		// Oversize files are intentionally not opened, but they still
+		// count as covered progress for this rolling cycle. The gap
+		// advances only its own consumer: a soft-deadline stop right
+		// after this gate must not move the other consumer past a
+		// file it never received.
+		w.recordYARAPathGap(path, "oversize")
+		w.yaraConsumer.advance(path)
+		fw.yara = false
+	}
+	if fw.php && info.Size() > w.phpMaxBytes {
+		// An oversize file is only a PHP coverage gap if it could have
+		// been PHP. The deep walk hands every readable file to this
+		// consumer and the analyzer's own pre-filter normally rejects
+		// the rest instantly -- but that pre-filter never runs on a
+		// file too large to send, so without this check every large
+		// error_log, JSON blob and media file on the host is reported
+		// as PHP content we failed to examine. Measured on a live
+		// host: 617 of 660 recorded gaps in one scan, which buries the
+		// handful that are real.
+		// Past the soft deadline the walk is stopping and must do
+		// no further I/O, so the peek is skipped and the gap is
+		// recorded unexamined -- the same answer an unreadable
+		// file gets.
+		if w.outOfTime() || phpFileMayBePHP(path, info) {
+			w.phpGaps.record(path, phptaint.StatusOversize.String())
+		}
+		w.phpConsumer.advance(path)
+		fw.php = false
+	}
+	if fw.js && info.Size() > w.jsMaxBytes {
+		// An oversize file is only a JS coverage gap if it could
+		// have been JavaScript. The deep walk hands every readable
+		// file to this consumer and the analyzer's own pre-filter
+		// normally rejects the rest instantly -- but that pre-filter
+		// never runs on a file too large to send, so without this
+		// check every large image, archive and database on the host
+		// is reported as JavaScript we failed to examine. This gate
+		// was missing while the PHP one beside it existed.
+		//
+		// This branch used to decide on metadata alone. Peeking
+		// costs an open, so as with PHP above it is skipped once the
+		// soft deadline has passed and the gap is recorded
+		// unexamined.
+		if w.outOfTime() || jsFileMayBeJS(path, info) {
+			w.jsGaps.record(path, jstaint.StatusOversize.String())
+		}
+		w.jsConsumer.advance(path)
+		fw.js = false
+	}
+	if !fw.any() {
+		return
+	}
+	if w.outOfTime() {
+		w.stoppedEarly = true
+		return
+	}
+	// Advance before opening so permanently unreadable or unscannable
+	// files cannot wedge the cursor in place.
+	w.advanceAll(path)
+
+	data, ok := w.readSnapshot(path, &fw)
+	if !ok {
+		return
+	}
+	fingerprint := sha256.Sum256(data)
+	contentSHA256 := fmt.Sprintf("%x", fingerprint)
+
+	if fw.js {
+		w.findings = append(w.findings, analyzeJSTaintSnapshot(w.ctx, path, contentSHA256, data, w.jsGaps)...)
+	}
+	if fw.php {
+		w.findings = append(w.findings, analyzePHPTaintSnapshot(w.ctx, path, contentSHA256, data, w.phpGaps)...)
+		w.phpConsumer.advance(path)
+	}
+	if !fw.yara {
+		return
+	}
+	matches, scanErr := yara.ScanBytesChecked(w.backend, path, data)
+	if scanErr != nil {
+		w.recordYARAScanGap(path, scanErr)
+		return
+	}
+	for _, match := range matches {
+		w.findings = append(w.findings, scheduledYARAFinding(match, path, data, contentSHA256))
+	}
+}
+
+// readSnapshot reads path once, capped at the largest limit among the
+// consumers in fw. A consumer the file no longer fits, or that cannot get a
+// stable snapshot, records its gap and leaves fw. ok is false when no
+// consumer is left to receive the content.
+func (w *yaraDeepWalk) readSnapshot(path string, fw *deepFileWants) ([]byte, bool) {
+	file, err := osFS.Open(path)
+	if err != nil {
+		if info, attributable := w.pathFailureStillAttributable(path); attributable {
+			w.observePathIdentity(path, info)
+			w.recordPathGap(*fw, path, "open_error", "read_error")
+		} else {
+			w.recordUnknownRange(*fw, fmt.Sprintf("opening %s: %v", path, err))
+		}
+		return nil, false
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		w.recordUnknownRange(*fw, fmt.Sprintf("inspecting opened path %s: %v", path, statErr))
+		return nil, false
+	}
+	if !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		if openedInfo.IsDir() {
+			// Lstat admitted a regular file, but Open bound a directory.
+			// Its children were never enumerated, so retaining only the
+			// exact path would purge findings from an unknown subtree.
+			w.recordUnknownRange(*fw, fmt.Sprintf("%s changed into a directory while it was being opened", path))
+		} else {
+			w.recordPathGap(*fw, path, "changed_during_read", "changed_during_read")
+		}
+		return nil, false
+	}
+	w.observePathIdentity(path, openedInfo)
+	if fw.yara && openedInfo.Size() > w.maxBytes {
+		w.recordYARAPathGap(path, "changed_during_read")
+		fw.yara = false
+	}
+	if fw.php && openedInfo.Size() > w.phpMaxBytes {
+		w.phpGaps.record(path, "changed_during_read")
+		fw.php = false
+	}
+	if fw.js && openedInfo.Size() > w.jsMaxBytes {
+		w.jsGaps.record(path, "changed_during_read")
+		fw.js = false
+	}
+	if !fw.any() {
+		_ = file.Close()
+		return nil, false
+	}
+	readCap := int64(0)
+	if fw.yara {
+		readCap = w.maxBytes
+	}
+	if fw.js && w.jsMaxBytes > readCap {
+		readCap = w.jsMaxBytes
+	}
+	if fw.php && w.phpMaxBytes > readCap {
+		readCap = w.phpMaxBytes
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, readCap+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || int64(len(data)) > readCap {
+		w.recordPathGap(*fw, path, "read_error", "read_error")
+		return nil, false
+	}
+	if fw.yara && int64(len(data)) > w.maxBytes {
+		w.recordYARAPathGap(path, "read_error")
+		fw.yara = false
+	}
+	if fw.php && int64(len(data)) > w.phpMaxBytes {
+		w.phpGaps.record(path, "changed_during_read")
+		fw.php = false
+	}
+	if fw.js && int64(len(data)) > w.jsMaxBytes {
+		w.jsGaps.record(path, "changed_during_read")
+		fw.js = false
+	}
+	return data, true
+}
+
+// saveCursors persists each dispatching consumer's progress. A completed
+// walk stamps a full cycle; a stopped one keeps its resume point and the
+// start of its partial cycle.
+func (w *yaraDeepWalk) saveCursors(db *store.DB, now time.Time, rootsComplete bool) {
+	if db == nil {
+		return
+	}
+	for _, c := range w.consumers {
+		if !c.dispatch {
+			continue
+		}
+		var next store.ScanCursorRecord
+		next.Check = c.name
+		next.RulesGeneration = c.cur.RulesGeneration
+		next.RulesFrom = c.cur.RulesFrom
+		next.RulesWrapped = c.cur.RulesWrapped || (!w.stoppedEarly && rootsComplete && c.cur.RulesGeneration != 0)
+		next.RulesRootsHash = c.cur.RulesRootsHash
+		if w.stoppedEarly {
+			next.LastPath = c.lastScanned
+			next.LastFullCycleTS = c.cur.LastFullCycleTS
+			next.WrappedAt = c.cur.WrappedAt
+			if next.WrappedAt.IsZero() {
+				next.WrappedAt = now
+			}
+		} else {
+			next.LastFullCycleTS = now
+		}
+		if err := db.PutScanCursor(next); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: cursor write: %v\n", c.name, err)
 		}
 	}
+}
 
-	if yaraConsumer.dispatch {
+// clearSignatureRescan retires the queued rescan once the YARA walk has
+// passed every file since the rules update that queued it.
+func (w *yaraDeepWalk) clearSignatureRescan(db *store.DB, rescanGen uint64) {
+	// A walk that started from where the update found it has passed every
+	// file once it completes. Otherwise it must have wrapped and come back
+	// to that point. A stopped walk cannot have wrapped during this run.
+	cur := w.yaraConsumer.cur
+	reachedFrom := w.yaraConsumer.lastScanned >= cur.RulesFrom
+	if strings.HasSuffix(cur.RulesFrom, string(filepath.Separator)) {
+		// A prefix cursor covers every child, not just the first path
+		// that sorts after the prefix. Use the walk's subtree ordering.
+		reachedFrom = deepSubtreeCoveredAfter(w.yaraConsumer.lastScanned, cur.RulesFrom)
+	}
+	if (!w.stoppedEarly && (cur.RulesFrom == "" || cur.RulesWrapped)) ||
+		(cur.RulesWrapped && reachedFrom) {
+		cleared, err := db.ClearSignatureRescan(rescanGen)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: clearing signature rescan: %v\n", w.yaraConsumer.name, err)
+		} else if cleared {
+			observeSignatureRescan()
+		}
+	}
+}
+
+// reportStaleCycles warns for each consumer whose rolling cycle has gone too
+// long without a full pass.
+//
+// Rolling-cycle staleness is per consumer. All three keep their own cursor
+// and their own WrappedAt, so the warning belongs to whichever cycle
+// actually stalled. This was read from the YARA cursor alone, which left a
+// stalled PHP or JS cycle silent, and silenced the warning entirely when
+// yara_deep was disabled -- a supported configuration.
+//
+// Enumerated once so the shape is not rediscovered one field at a time.
+// Persisted per-consumer state:
+//
+//	cur.LastPath becomes resume and lastScanned. walkResume is the minimum
+//	active resume; wants and the per-consumer subtree check still gate each
+//	consumer, and advance plus the cursor write update only that consumer's
+//	progress.
+//	cur.WrappedAt starts that consumer's partial cycle and drives only its
+//	staleCheck/label warning here.
+//	cur.LastFullCycleTS is preserved or stamped in that consumer's record.
+//
+// Runtime per-consumer state:
+//
+//	dispatch comes from that consumer's disable/readiness gates and controls
+//	its cursor, analysis, completion mark, status finding, and carry-forward.
+//	deepFileWants and the three size limits govern only the matching
+//	consumer. The shared read cap is their maximum, so no sibling can reduce
+//	another's snapshot.
+//	yaraGaps belongs only to YARA; jsGaps only to JS; phpGaps only to PHP.
+//	Each is reported and used for completion/carry-forward only in its owner
+//	block of reportCoverage.
+//
+// Genuinely shared state:
+//
+//	roots, path order, the context/soft deadline, opened snapshots, and
+//	stoppedEarly describe the one walk. After a consumer's resume point all
+//	active consumers have the same remaining ordered path space, so a walk
+//	that stops early cannot have completed one active consumer's cycle while
+//	leaving another active consumer's cycle unfinished.
+//
+// Known and deliberately out of scope: php_content_rolling.go writes
+// WrappedAt for its per-account cursor and nothing reads it, so that scan
+// has no staleness warning of its own.
+func (w *yaraDeepWalk) reportStaleCycles(now time.Time) {
+	if !w.stoppedEarly {
+		return
+	}
+	for _, c := range w.consumers {
+		if !c.dispatch || c.cur.WrappedAt.IsZero() || now.Sub(c.cur.WrappedAt) <= yaraDeepFullCycleStale {
+			continue
+		}
+		w.findings = append(w.findings, alert.Finding{
+			Severity: alert.Warning,
+			Check:    c.staleCheck,
+			Message:  fmt.Sprintf("Rolling %s deep scan has not completed a full pass since %s", c.label, c.cur.WrappedAt.Format("2006-01-02")),
+			Details:  "Each run advances the cursor inside its time budget; a pass this stale means the budget is too small for the content volume.",
+		})
+	}
+}
+
+// reportCoverage closes each dispatching consumer's window: it marks a
+// partial window incomplete, reports gaps, and carries forward prior
+// findings for known-path gaps when the window may replace the finding set.
+func (w *yaraDeepWalk) reportCoverage(st *state.Store) {
+	if w.yaraConsumer.dispatch {
 		// Same contract the PHP and JS consumers use. Only a partial window or
 		// an unknown-range loss suppresses the purge; a gap that names a file
 		// is handled by carrying that file's prior finding forward, so the
 		// scan can still retire everything it did examine. Reporting a bare
 		// count here is what made one permanently unreadable file look
 		// identical to a lost subtree, and froze every YARA finding on a host.
-		yaraPartial := stoppedEarly || yaraConsumer.resume != "" || yaraGaps.pathsIncomplete()
+		yaraPartial := w.stoppedEarly || w.yaraConsumer.resume != "" || w.yaraGaps.pathsIncomplete()
 		if yaraPartial {
-			markCheckIncomplete(ctx, "yara_deep")
+			markCheckIncomplete(w.ctx, "yara_deep")
 		}
-		if !yaraGaps.empty() {
-			findings = append(findings, yaraGaps.finding())
+		if !w.yaraGaps.empty() {
+			w.findings = append(w.findings, w.yaraGaps.finding())
 		}
 		if !yaraPartial && st != nil {
 			// Keep the stable carried snapshots in-band so alert deduplication can
 			// retain its normal ongoing-finding re-alert cadence. Daemon callers
 			// also publish the path set for race-safe latest-state persistence.
-			findings = append(findings, carryForwardYARAFindings(st.LatestFindings(), yaraGaps)...)
+			w.findings = append(w.findings, carryForwardYARAFindings(st.LatestFindings(), w.yaraGaps)...)
 		}
 	}
 
-	if phpConsumer.dispatch {
-		phpPartial := stoppedEarly || phpConsumer.resume != "" || phpGaps.pathsIncomplete()
+	if w.phpConsumer.dispatch {
+		phpPartial := w.stoppedEarly || w.phpConsumer.resume != "" || w.phpGaps.pathsIncomplete()
 		if phpPartial {
 			// Only a partial or unknown-range window suppresses the normal
 			// purge; a known-path gap is handled by the carry-forward below.
-			markCheckIncomplete(ctx, logicalOwnerPHPTaintDeep)
+			markCheckIncomplete(w.ctx, logicalOwnerPHPTaintDeep)
 		}
-		if !phpGaps.empty() {
-			findings = append(findings, phpGaps.findings()...)
+		if !w.phpGaps.empty() {
+			w.findings = append(w.findings, w.phpGaps.findings()...)
 		}
 		if !phpPartial && st != nil {
 			// Path-specific carry-forward: this run is eligible to replace the
 			// PHP finding set, so a known-path coverage gap must re-emit that
 			// path's prior finding or the purge would clear it. A completed
 			// negative or missing path stays cleared.
-			findings = append(findings, carryForwardPHPTaintFindings(st.LatestFindings(), phpGaps)...)
+			w.findings = append(w.findings, carryForwardPHPTaintFindings(st.LatestFindings(), w.phpGaps)...)
 		}
 	}
 
-	if jsConsumer.dispatch {
-		jsPartial := stoppedEarly || jsConsumer.resume != "" || jsGaps.pathsIncomplete()
+	if w.jsConsumer.dispatch {
+		jsPartial := w.stoppedEarly || w.jsConsumer.resume != "" || w.jsGaps.pathsIncomplete()
 		if jsPartial {
 			// Only a partial or unknown-range window suppresses the normal JS
 			// purge; a known-path gap is handled by the carry-forward below.
-			markCheckIncomplete(ctx, logicalOwnerJSTaintDeep)
+			markCheckIncomplete(w.ctx, logicalOwnerJSTaintDeep)
 		}
-		if !jsGaps.empty() {
-			findings = append(findings, jsGaps.finding())
+		if !w.jsGaps.empty() {
+			w.findings = append(w.findings, w.jsGaps.finding())
 		}
 		if !jsPartial && st != nil {
 			// Path-specific carry-forward: this run is eligible to replace
 			// the JS finding set, so a known-path coverage gap must re-emit
 			// that path's prior finding or the purge would clear it. A
 			// completed negative or missing path stays cleared.
-			findings = append(findings, carryForwardJSTaintFindings(st.LatestFindings(), jsGaps)...)
+			w.findings = append(w.findings, carryForwardJSTaintFindings(st.LatestFindings(), w.jsGaps)...)
 		}
 	}
-	return findings
 }
 
 func yaraMatchSeverity(value string) alert.Severity {
