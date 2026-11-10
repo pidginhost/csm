@@ -5,6 +5,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // AdmissionEvidence is what a finding asks admission to mint: the producer
@@ -32,6 +33,11 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	if f.Attribution == admission.AttributionTrustedHTTPChain {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseUnreachable, Detail: "the address is a client behind a trusted proxy"}
 	}
+	// A known CDN or website-firewall edge carries every visitor behind it:
+	// blocking it as one of them is never an automatic response (spec 5.8).
+	if mayBeProxyEdge(f.Attribution, producer) && KnownProxyPeer(f.SourceIP, config.Active()) {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
+	}
 	target, err := admission.CanonicalAddress(f.SourceIP, admission.Caps{IPv6: true})
 	if err != nil {
 		return "", admission.EvidenceInput{}, err
@@ -41,6 +47,19 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 		Observation: admission.ObservationRef{Stream: f.Observation.Stream, Cursor: f.Observation.Cursor, Version: 1},
 		ObservedAt:  f.Observation.ObservedAt, Parser: parser, Target: target, Attribution: f.Attribution, Claims: f.Claims, Intel: f.Intel,
 	}, nil
+}
+
+// mayBeProxyEdge reports whether a finding's address can be an edge that
+// relays other people's requests: an HTTP peer, a cpsrvd peer (CDNs proxy
+// the cPanel ports), or reputation intel resting on such a sighting.
+func mayBeProxyEdge(kind admission.Attribution, producer admission.ProducerID) bool {
+	switch kind {
+	case admission.AttributionHTTPPeer, admission.AttributionDerived:
+		return true
+	case admission.AttributionPeer:
+		return producer == ProducerCpanelAccessLog || producer == ProducerCpanelScan
+	}
+	return false
 }
 
 // AdmissionTarget is the canonical target of a response: an address, or a

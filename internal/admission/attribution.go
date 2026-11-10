@@ -104,10 +104,14 @@ const (
 	// CauseUnreachable: the address is a client behind a trusted proxy, not
 	// a packet source this host can contain (spec 5.8).
 	CauseUnreachable
+	// CauseProxyPeer: the address is a known CDN or proxy edge the
+	// operator did not configure as trusted, which carries many visitors
+	// and cannot be blocked as one of them (spec 5.8).
+	CauseProxyPeer
 	causeEnd
 )
 
-var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable"}
+var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable", "proxy_peer"}
 
 func (c Cause) Valid() bool { return c > 0 && c < causeEnd }
 
