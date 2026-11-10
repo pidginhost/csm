@@ -31,8 +31,9 @@ func FuzzExtractIPClientPrefix(f *testing.F) {
 			}
 			req.Header.Add("X-Forwarded-For", suffix.text)
 			want := suffix.want
-			// A header over the chain bounds names no client at all.
-			if chain := strings.Join(req.Header.Values("X-Forwarded-For"), ","); len(chain) > clientaddr.MaxChainBytes || strings.Count(chain, ",")+1 > clientaddr.MaxHops {
+			// A header over the byte bound names no client at all; hops the
+			// client wrote left of the suffix never count toward the hop bound.
+			if chain := strings.Join(req.Header.Values("X-Forwarded-For"), ","); len(chain) > clientaddr.MaxChainBytes {
 				want = ""
 			}
 			if got := s.extractIP(req); got != want {

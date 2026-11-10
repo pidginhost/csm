@@ -54,12 +54,13 @@ func FuzzResolveNeverInjects(f *testing.F) {
 			t.Fatalf("chained result %+v from peer %q, %d bytes", got, peer, len(xff))
 		}
 		hops := strings.Split(xff, ",")
-		if len(hops) > MaxHops {
-			t.Fatalf("chained result from %d hops", len(hops))
-		}
 		// Right of the client only trusted proxies may appear; the client
-		// is the first hop from the right that is not one.
+		// is the first hop from the right that is not one, within the
+		// bound on hops read.
 		for i := len(hops) - 1; i >= 0; i-- {
+			if len(hops)-i > MaxHops {
+				t.Fatalf("chained result after reading more than %d hops", MaxHops)
+			}
 			hop, perr := netip.ParseAddr(strings.TrimSpace(hops[i]))
 			if perr != nil {
 				t.Fatalf("hop %q right of the client did not parse: %v", hops[i], perr)

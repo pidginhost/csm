@@ -938,3 +938,21 @@ func TestDomlogScanCountsAClientThatPadsItsHeader(t *testing.T) {
 		}
 	}
 }
+
+// Two-byte hops fit many to the kept end; padding with them must not make a
+// client behind a trusted proxy go uncounted either.
+func TestDomlogScanCountsAClientThatPadsItsHeaderWithShortHops(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"192.0.2.0/24"}
+	stats := newDomlogStats()
+	for i := 0; i < wpLoginThreshold; i++ {
+		rec, ok := parseAccessLogRecord(fmt.Sprintf(`192.0.2.10 - - [09/Nov/2026:12:01:%02d +0000] "POST /wp-login.php HTTP/1.1" 200 100 "-" "Mozilla/5.0" "%s203.0.113.9, 192.0.2.11"`, i, strings.Repeat("::,", 90)))
+		if !ok {
+			t.Fatal("fixture did not parse")
+		}
+		stats.scan(rec, cfg, nopBotClassifier{})
+	}
+	if len(stats.wpLogin) != 1 || stats.wpLogin["203.0.113.9"] != wpLoginThreshold {
+		t.Fatalf("counted %v, want every request against 203.0.113.9", stats.wpLogin)
+	}
+}

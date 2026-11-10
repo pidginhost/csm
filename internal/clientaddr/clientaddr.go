@@ -14,8 +14,10 @@ import (
 	"github.com/pidginhost/csm/internal/netutil"
 )
 
-// Bounds on a forwarded chain. A longer chain is refused, never trimmed:
-// the hops a trim would drop are the ones the trusted proxies appended.
+// Bounds on a forwarded chain: the bytes of the whole header, and the hops
+// the walk reads before it reaches the client. A chain over either is
+// refused, never trimmed. Hops a client writes left of its own address are
+// never read, so they cannot make it refused.
 const (
 	MaxHops       = 32
 	MaxChainBytes = 4096
@@ -28,7 +30,7 @@ var (
 	ErrNoChain    = errors.New("trusted proxy sent no forwarded chain")
 	ErrMalformed  = errors.New("forwarded chain holds an unreadable hop")
 	ErrTruncated  = errors.New("forwarded chain was cut before its client")
-	ErrOverlong   = errors.New("forwarded chain exceeds 32 hops or 4 KiB")
+	ErrOverlong   = errors.New("forwarded chain exceeds 4 KiB or 32 hops before its client")
 	ErrAllTrusted = errors.New("forwarded chain holds only trusted proxies")
 )
 
@@ -148,10 +150,10 @@ func chain(p netip.Addr, xff string, complete bool, t Trusted) (Result, error) {
 		return Result{}, ErrNoChain
 	}
 	hops := strings.Split(xff, ",")
-	if len(hops) > MaxHops {
-		return Result{}, ErrOverlong
-	}
 	for i := len(hops) - 1; i >= 0; i-- {
+		if len(hops)-i > MaxHops {
+			return Result{}, ErrOverlong
+		}
 		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
 		if err != nil || hop.Zone() != "" {
 			return Result{}, ErrMalformed

@@ -26,14 +26,15 @@ func TestExtractIPTrustsWebServerProxies(t *testing.T) {
 	}
 }
 
-// A chain over 32 hops or 4 KiB names no client, so the handlers refuse it.
+// A chain whose walk reads more than 32 hops, or a header over 4 KiB, names
+// no client, so the handlers refuse it.
 func TestExtractIPRefusesOverlongChains(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"192.0.2.0/24"}
 	s := New(cfg, nil)
 	for name, xff := range map[string]string{
-		"33 hops":   strings.Repeat("198.51.100.7, ", clientaddr.MaxHops) + "203.0.113.10",
-		"over 4KiB": strings.Repeat(" ", clientaddr.MaxChainBytes) + "203.0.113.10",
+		"33 trusted hops": "203.0.113.10," + strings.TrimSuffix(strings.Repeat("192.0.2.2,", clientaddr.MaxHops+1), ","),
+		"over 4KiB":       strings.Repeat(" ", clientaddr.MaxChainBytes) + "203.0.113.10",
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 		req.RemoteAddr = "192.0.2.1:1234"
@@ -63,5 +64,19 @@ func TestChallengeRefusesAListedPeerWhoseTrustIsUnknown(t *testing.T) {
 	s.handleChallenge(rec, req)
 	if rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("listed peer with unknown trust: status %d, cookies %d; want 400 and none", rec.Code, len(rec.Result().Cookies()))
+	}
+}
+
+// Hops a visitor writes left of its own address do not count toward the
+// bound: the walk stops at the visitor.
+func TestExtractIPIgnoresPaddingLeftOfTheVisitor(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.0/24"}
+	s := New(cfg, nil)
+	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.Header.Set("X-Forwarded-For", strings.Repeat("198.51.100.7, ", 2*clientaddr.MaxHops)+"203.0.113.10, 192.0.2.2")
+	if got := s.extractIP(req); got != "203.0.113.10" {
+		t.Fatalf("got %q, want the visitor the trusted proxy appended", got)
 	}
 }
