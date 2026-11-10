@@ -2,6 +2,7 @@ package corpusgate
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,12 +16,6 @@ func TestPreparePinnedCorpus(t *testing.T) {
 	for _, mode := range []string{"valid", "checksum", "empty", "missing license", "traversal", "symlink", "missing manifest"} {
 		t.Run(mode, func(t *testing.T) {
 			cache := t.TempDir()
-			archive := filepath.Join(cache, "app-1.zip")
-			f, err := os.Create(archive)
-			if err != nil {
-				t.Fatal(err)
-			}
-			z := zip.NewWriter(f)
 			entries := map[string]string{"app/license.txt": "test license", "app/index.php": "<?php echo 'clean';"}
 			if mode == "empty" {
 				entries = nil
@@ -31,36 +26,19 @@ func TestPreparePinnedCorpus(t *testing.T) {
 			if mode == "traversal" {
 				entries["../escape"] = "bad"
 			}
-			for name, body := range entries {
-				h := &zip.FileHeader{Name: name}
-				h.SetMode(0600)
-				if mode == "symlink" && strings.HasSuffix(name, "index.php") {
-					h.SetMode(os.ModeSymlink | 0600)
-				}
-				w, e := z.CreateHeader(h)
-				if e != nil {
-					t.Fatal(e)
-				}
-				if _, e = w.Write([]byte(body)); e != nil {
-					t.Fatal(e)
-				}
-			}
-			if err = z.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err = f.Close(); err != nil {
-				t.Fatal(err)
-			}
-			data, err := os.ReadFile(archive)
-			if err != nil {
-				t.Fatal(err)
-			}
+			data := testArchive(t, entries, mode == "symlink")
 			hash := sha256.Sum256(data)
+			if err := os.WriteFile(filepath.Join(cache, "app-"+hex.EncodeToString(hash[:])+".zip"), data, 0600); err != nil {
+				t.Fatal(err)
+			}
 			m := Manifest{Version: ManifestVersion,
 				Sources: []Source{{ID: "app", CMS: "wordpress", Version: "1", URL: "https://example.org/app.zip", SHA256: hex.EncodeToString(hash[:]), License: "test", LicenseFile: "app/license.txt", Files: 2}},
 				Pending: pendingExcept("wordpress")}
 			if mode == "checksum" {
-				m.Sources[0].SHA256 = strings.Repeat("0", 64)
+				// Same name, different bytes: a cache entry that rotted in place.
+				if err := os.WriteFile(filepath.Join(cache, "app-"+m.Sources[0].SHA256+".zip"), append(data, 0), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if mode == "missing manifest" {
 				m.Sources = nil
@@ -104,5 +82,66 @@ func TestReportRejectsBadDetectorAndMissingInput(t *testing.T) {
 	t.Setenv("TEST_CORPUS_ROOT", "")
 	if _, err := Root("TEST_CORPUS_ROOT"); err == nil {
 		t.Fatal("required corpus input missing")
+	}
+}
+
+// testArchive builds a ZIP holding entries; symlink marks every index.php as
+// a symbolic link.
+func testArchive(t *testing.T, entries map[string]string, symlink bool) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	for name, body := range entries {
+		h := &zip.FileHeader{Name: name}
+		h.SetMode(0600)
+		if symlink && strings.HasSuffix(name, "index.php") {
+			h.SetMode(os.ModeSymlink | 0600)
+		}
+		w, err := z.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// The cache key no longer changes with the manifest, so archives it stops
+// pinning must leave the cache instead of piling up in it.
+func TestPrepareDropsUnpinnedArchives(t *testing.T) {
+	cache := t.TempDir()
+	data := testArchive(t, map[string]string{"app/license.txt": "test license", "app/index.php": "<?php echo 'clean';"}, false)
+	hash := sha256.Sum256(data)
+	pinned := "app-" + hex.EncodeToString(hash[:]) + ".zip"
+	stale := []string{"app-" + strings.Repeat("0", 64) + ".zip", "app-1.zip", "gone-2.zip"}
+	for _, name := range append([]string{pinned}, stale...) {
+		if err := os.WriteFile(filepath.Join(cache, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cache, "notes.txt"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{Version: ManifestVersion,
+		Sources: []Source{{ID: "app", CMS: "wordpress", Version: "1", URL: "https://example.org/app.zip", SHA256: hex.EncodeToString(hash[:]), License: "test", LicenseFile: "app/license.txt", Files: 2}},
+		Pending: pendingExcept("wordpress")}
+	if _, err := Prepare(context.Background(), m, cache, filepath.Join(t.TempDir(), "corpus")); err != nil {
+		t.Fatal(err)
+	}
+	left, err := os.ReadDir(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range left {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, " ") != pinned+" notes.txt" {
+		t.Fatalf("cache holds %v, want only the pinned archive and unrelated files", names)
 	}
 }

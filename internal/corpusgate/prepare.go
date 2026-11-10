@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -66,8 +67,11 @@ func Prepare(ctx context.Context, manifest Manifest, cache, destination string) 
 	}
 	defer func() { _ = cacheRoot.Close() }()
 	var inventory []File
+	// Named by checksum: a re-pinned archive never meets its old copy.
+	pinned := map[string]bool{}
 	for _, s := range manifest.Sources {
-		archive := filepath.Join(cache, s.ID+"-"+s.Version+".zip")
+		archive := filepath.Join(cache, s.ID+"-"+s.SHA256+".zip")
+		pinned[filepath.Base(archive)] = true
 		if _, err := os.Stat(archive); os.IsNotExist(err) {
 			if downloadErr := download(ctx, s.URL, archive); downloadErr != nil {
 				return nil, downloadErr
@@ -95,8 +99,28 @@ func Prepare(ctx context.Context, manifest Manifest, cache, destination string) 
 		}
 		inventory = append(inventory, rows...)
 	}
+	if err := dropUnpinned(cacheRoot, pinned); err != nil {
+		return nil, err
+	}
 	sort.Slice(inventory, func(i, j int) bool { return inventory[i].Path < inventory[j].Path })
 	return inventory, nil
+}
+
+// dropUnpinned removes cached archives the manifest no longer pins, so a
+// cache kept across manifest changes holds only the current set.
+func dropUnpinned(cache *os.Root, pinned map[string]bool) error {
+	entries, err := fs.ReadDir(cache.FS(), ".")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Type().IsRegular() && strings.HasSuffix(e.Name(), ".zip") && !pinned[e.Name()] {
+			if err := cache.Remove(e.Name()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func download(ctx context.Context, address, destination string) error {

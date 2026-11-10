@@ -3,8 +3,9 @@
 The required `test:clean-corpus` job downloads the public vendor ZIP archives in
 `scripts/clean-corpus/manifest.json`. The manifest pins the version, official
 HTTPS source, SHA-256, license file, and exact regular-file count. Archives are
-cached, rechecked before extraction, and unpacked into a new private directory
-on every run. Missing input, checksum mismatch, missing license, empty or
+cached under their checksum, so a manifest edit downloads only a changed pin,
+and archives the manifest no longer pins leave the cache. Each is rechecked
+before extraction and unpacked into a new private directory on every run. Missing input, checksum mismatch, missing license, empty or
 incomplete inventory, unsafe archive entries, and read failures stop the job.
 No downloaded PHP or JavaScript is executed.
 
