@@ -966,9 +966,10 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 	}
 	result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 
-	// If fix succeeded, dismiss from both alert state and latest findings.
+	// A successful fix removes the evidence: drop the listing and re-arm the
+	// alert, so a reinfection at the same path is reported.
 	if result.Success {
-		s.store.DismissFinding(dismissKey)
+		s.store.RearmFindings([]string{dismissKey})
 		s.store.DismissLatestFinding(dismissKey)
 		s.auditLog(r, "fix", req.Check, result.Action)
 	}
@@ -1002,7 +1003,7 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 		if key == "" {
 			key = req.Check + ":" + req.Message
 		}
-		s.store.DismissFinding(key)
+		s.store.RearmFindings([]string{key})
 		s.store.DismissLatestFinding(key)
 		s.auditLog(r, "verify-resolved", req.Check, response.Detail)
 	// A severity change rewrites the stored finding, so it needs the exact
@@ -1123,7 +1124,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		}
 		result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 		if result.Success {
-			s.store.DismissFinding(dismissKey)
+			s.store.RearmFindings([]string{dismissKey})
 			s.store.DismissLatestFinding(dismissKey)
 			s.auditLog(r, "fix", req.Check, result.Action)
 		}

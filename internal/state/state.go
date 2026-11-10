@@ -1625,7 +1625,9 @@ func (s *Store) DemoteLatestFinding(expected alert.Finding, severity alert.Sever
 
 // DismissFindingIfLatest clears only the finding snapshot that was actually
 // verified. A realtime alert or completed scan may refresh the same key while
-// verification is in flight; that newer evidence must remain active.
+// verification is in flight; that newer evidence must remain active. The
+// verifier found the evidence gone, so its alert state goes too: the same
+// detection later is new, not covered by an acknowledgment.
 func (s *Store) DismissFindingIfLatest(expected alert.Finding) bool {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
@@ -1635,11 +1637,7 @@ func (s *Store) DismissFindingIfLatest(expected alert.Finding) bool {
 			continue
 		}
 		s.mu.Lock()
-		if entry, exists := s.entries[expected.Key()]; exists {
-			entry.IsBaseline = true
-			entry.DismissalID = ""
-			s.dirty = true
-		}
+		s.deleteRawLocked(expected.Key())
 		s.mu.Unlock()
 		s.latestFindings = append(s.latestFindings[:i], s.latestFindings[i+1:]...)
 		s.persistLatestLocked()

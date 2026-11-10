@@ -53,6 +53,11 @@ func (s *Store) RearmFindings(keys []string) {
 	defer s.mu.Unlock()
 	changed := false
 	for _, key := range keys {
+		// Internal housekeeping keys are not conditions; a key from a request
+		// must not reset them.
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
 		if s.deleteRawLocked(key) {
 			changed = true
 		}

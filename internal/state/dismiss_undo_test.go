@@ -112,7 +112,12 @@ func TestUndoDismissPreservesLaterDecisions(t *testing.T) {
 				s.ClearLatestFindings()
 			}
 			s.UndoDismiss(u)
-			if e, _ := s.EntryForKey(f.Key()); !e.IsBaseline {
+			e, ok := s.EntryForKey(f.Key())
+			switch {
+			case later == "verified" && ok:
+				// Verification clears the alert state; undo must not restore it.
+				t.Fatalf("undo restored alert state the verifier cleared: %+v", e)
+			case later != "verified" && !e.IsBaseline:
 				t.Fatal("undo cleared a later baseline decision")
 			}
 			if len(s.LatestFindings()) != 0 {

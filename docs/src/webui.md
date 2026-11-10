@@ -338,7 +338,8 @@ against the live filesystem and clear it if the condition is gone, useful after
 fixing something by hand instead of waiting for the next scan), **Dismiss**
 (stop alerts for it while it stays unchanged; a later scan that still finds it
 lists it again, and undo is offered for 30 seconds), and **Suppress** (create a
-rule to hide similar findings for good).
+rule to hide similar findings for good). A finding cleared by Fix or Re-check
+is new again when a later scan finds it, so a reinfection alerts.
 
 Dismissal undo preserves later dismissals, successful re-checks and baseline resets.
 Findings first received in real time stop alerting when dismissed, even before
