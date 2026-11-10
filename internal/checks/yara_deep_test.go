@@ -1007,6 +1007,34 @@ func TestCheckYARADeepOpenedStatFailureIsUnknownForEveryConsumer(t *testing.T) {
 	}
 }
 
+// An open failure on a file whose identity still matches is an exact-path gap
+// for every consumer. YARA reports it as an open error; the taint analyzers
+// count it as an unreadable file.
+func TestCheckYARADeepOpenFailureNamesThePathForEveryConsumer(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "locked.dat", "candidate")
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.open = func(string) (*os.File, error) { return nil, os.ErrPermission }
+	withMockOS(t, fs)
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
+
+	for check, status := range map[string]string{
+		"yara_scan_incomplete":      "open_error=1",
+		"js_taint_scan_incomplete":  "read_error=1",
+		"php_taint_scan_incomplete": "read_error=1",
+	} {
+		gap := findingByCheck(findings, check)
+		if !strings.Contains(gap.Details, status+" (example: "+path+")") || strings.Contains(gap.Details, "unreadable-range") {
+			t.Errorf("%s did not report %s for %s: %+v", check, status, path, gap)
+		}
+	}
+}
+
 func TestCheckYARADeepAdvancesCursorPastUnreadableDirectory(t *testing.T) {
 	db := useRollingStore(t)
 	root := t.TempDir()
