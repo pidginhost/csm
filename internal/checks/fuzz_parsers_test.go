@@ -1491,6 +1491,11 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 		{`x [09/Nov/2026:12:01:00 +0000] "y`, "curl/8.0", "::ffff:192.0.2.10"},
 		{`x [09/Nov/2099:12:01:00 +0000] "POST /xmlrpc.php HTTP/1.1" 200 100 "-" "-" "`, "Mozilla/5.0", "203.0.113.80"},
 		{"-", "Mozilla/5.0", "2001:db8::80"},
+		{"-", "Mozilla/5.0", "203.0.113.80," + strings.TrimSuffix(strings.Repeat("192.0.2.10,", 24), ",")},
+		{"-", "Mozilla/5.0", "203.0.113.80" + strings.Repeat(" ", 257)},
+		{"-", "Mozilla/5.0", strings.Repeat("198.51.100.7,", 32) + "203.0.113.80"},
+		{"-", "Mozilla/5.0", strings.Repeat("::,", 32) + "203.0.113.80"},
+		{"-", "Mozilla/5.0", "203.0.113.80, bogus, 192.0.2.10"},
 	} {
 		f.Add(seed[0], seed[1], seed[2])
 	}
@@ -1514,24 +1519,59 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 				t.Fatalf("log-escaped user %q changed request framing: ok=%v record=%+v", user, ok, rec)
 			}
 			rec.ref = syslogRecord{text: line, offset: int64(i) * 1000, stream: "f:1:2"}
-			// Every address a trusted proxy's header could name is forwarded.
-			if rec.RemoteIP == "192.0.2.10" && rec.XFF != "" {
-				if last := strings.TrimSpace(rec.XFF[strings.LastIndexByte(rec.XFF, ',')+1:]); parseAddrOK(last) {
-					forwarded[normalizeHTTPClientIP(last)] = true
+			// A forwarded client must fit with its entire right suffix in
+			// the log's retained field. Use positions in the original input,
+			// independently of the parser and resolver under test.
+			if peer == "192.0.2.10" {
+				hops := strings.Split(xff, ",")
+				offset := len(xff)
+				for k := len(hops) - 1; k >= 0; k-- {
+					offset -= len(hops[k])
+					trimmed := strings.TrimLeftFunc(hops[k], unicode.IsSpace)
+					start := offset + len(hops[k]) - len(trimmed)
+					if len(xff)-start > 256 {
+						break
+					}
+					hop, err := netip.ParseAddr(strings.TrimSpace(hops[k]))
+					if err != nil || hop.Zone() != "" {
+						break
+					}
+					if hop = hop.Unmap(); hop.String() != "192.0.2.10" {
+						if !hop.IsLoopback() && !hop.IsUnspecified() {
+							forwarded[hop.String()] = true
+						}
+						break
+					}
+					offset-- // Comma before the next token to the left.
 				}
 			}
 			stats.scan(rec, cfg, nopBotClassifier{})
+		}
+		wantCounts := map[string]int{"203.0.113.80": 3}
+		for ip := range forwarded {
+			wantCounts[ip] += 3
+		}
+		if len(stats.xmlrpc) != len(wantCounts) {
+			t.Fatalf("xff %q: counted %v, want %v", xff, stats.xmlrpc, wantCounts)
+		}
+		for ip, want := range wantCounts {
+			if got := stats.xmlrpc[ip]; got != want {
+				t.Fatalf("xff %q: counted %d for %s, want %d", xff, got, ip, want)
+			}
 		}
 		direct := 0
 		for _, finding := range stats.emitLegacy(cfg) {
 			if finding.Check != "xmlrpc_abuse" {
 				continue
 			}
-			if finding.Attribution == admission.AttributionHTTPPeer && forwarded[finding.SourceIP] {
-				t.Fatalf("user %q ua %q xff %q: %s read as the HTTP peer with a forwarded record", user, ua, xff, finding.SourceIP)
+			if forwarded[finding.SourceIP] && finding.Attribution != admission.AttributionTrustedHTTPChain {
+				t.Fatalf("user %q ua %q xff %q: %s counted a forwarded record but read as %s", user, ua, xff, finding.SourceIP, finding.Attribution)
 			}
-			if finding.Attribution == admission.AttributionHTTPPeer && finding.SourceIP == "192.0.2.10" {
-				t.Fatalf("user %q ua %q xff %q: the trusted proxy read as the HTTP peer", user, ua, xff)
+			if finding.Attribution == admission.AttributionTrustedHTTPChain && !forwarded[finding.SourceIP] {
+				t.Fatalf("user %q ua %q xff %q: %s read as a chain client the header does not name", user, ua, xff, finding.SourceIP)
+			}
+			if finding.SourceIP == "192.0.2.10" {
+				t.Fatalf("user %q ua %q xff %q: the trusted proxy's requests were counted against it", user, ua, xff)
 			}
 			if finding.SourceIP == "203.0.113.80" && !forwarded["203.0.113.80"] {
 				if finding.Attribution != admission.AttributionHTTPPeer || finding.Observation == (alert.Observation{}) {
@@ -1544,9 +1584,4 @@ func FuzzDomlogAttributionSource(f *testing.F) {
 			t.Fatalf("user %q ua %q xff %q: direct peer counted %d but emitted %d findings", user, ua, xff, stats.xmlrpc["203.0.113.80"], direct)
 		}
 	})
-}
-
-func parseAddrOK(s string) bool {
-	_, err := netip.ParseAddr(s)
-	return err == nil
 }

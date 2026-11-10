@@ -101,10 +101,13 @@ const (
 	// CauseTargetMismatch: the response names a target its evidence does
 	// not attribute.
 	CauseTargetMismatch
+	// CauseUnreachable: the address is a client behind a trusted proxy, not
+	// a packet source this host can contain (spec 5.8).
+	CauseUnreachable
 	causeEnd
 )
 
-var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch"}
+var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable"}
 
 func (c Cause) Valid() bool { return c > 0 && c < causeEnd }
 

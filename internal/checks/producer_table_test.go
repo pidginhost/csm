@@ -108,14 +108,15 @@ func TestProducerTableDeclaresExactClaimKinds(t *testing.T) {
 }
 
 // A producer declares exactly the attribution kinds its parser reads. Only
-// the HTTP resolver of plan 2.1c may add trusted chains.
+// the domlog scan reads forwarded chains, through the HTTP resolver.
 func TestProducerTableDeclaresExactAttribution(t *testing.T) {
 	peer, http := admission.Attributions(admission.AttributionPeer), admission.Attributions(admission.AttributionHTTPPeer)
+	chain := admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)
 	want := map[admission.ProducerID]admission.AttributionSet{
 		ProducerSSHLog: peer, ProducerSSHLoginScan: peer, ProducerPAMSocket: peer,
 		ProducerFTPLog: peer, ProducerFTPScan: peer, ProducerEximLog: peer, ProducerEximHistory: peer,
 		ProducerMailLog: peer, ProducerCpanelAccessLog: peer, ProducerCpanelScan: peer,
-		ProducerAccessLog: http, ProducerDomlogScan: http, ProducerModSecLog: http,
+		ProducerAccessLog: http, ProducerDomlogScan: chain, ProducerModSecLog: http,
 		ProducerModSecAuditScan: http,
 		// A header any local account writes names the client: no kind.
 		ProducerPHPRelaySpool:  0,

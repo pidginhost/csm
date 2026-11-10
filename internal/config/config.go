@@ -877,7 +877,7 @@ type Config struct {
 		// challenge.tls_cert / tls_key, or the webui TLS fallback.
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
-		TrustedProxies []string `yaml:"trusted_proxies"` // IPs or CIDRs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
+		TrustedProxies []string `yaml:"trusted_proxies"` // proxies in front of the challenge listener; HTTP checks trust them too (see TrustedProxies)
 		// TLSCert / TLSKey activate HTTPS on the challenge listener. Empty
 		// values keep loopback listeners on plain HTTP. Direct/public
 		// listeners fall back to webui.tls_cert / webui.tls_key so
@@ -1182,11 +1182,12 @@ type Config struct {
 		AccessLogs   []string `yaml:"access_logs"`       // candidate access-log paths, tried in order
 		ErrorLogs    []string `yaml:"error_logs"`        // candidate error-log paths (used for modsec denies)
 		ModSecAudits []string `yaml:"modsec_audit_logs"` // candidate ModSecurity audit-log paths
-		// TrustedProxies is the list of IP addresses or CIDR ranges whose
-		// X-Forwarded-For header is trusted for client IP extraction. When
-		// the connecting IP is not in this list, XFF is ignored and
-		// RemoteIP is used as-is.
-		TrustedProxies []string `yaml:"trusted_proxies"` // IP/CIDR sources allowed to supply X-Forwarded-For
+		// TrustedProxies lists the IP addresses or CIDR ranges of proxies
+		// whose X-Forwarded-For header names the client. It forms one list
+		// with challenge.trusted_proxies (see TrustedProxies); an address
+		// of this host is never trusted, and a listed address is never
+		// read as a client.
+		TrustedProxies []string `yaml:"trusted_proxies"` // IP/CIDR proxies allowed to supply X-Forwarded-For
 		// DomlogGlobs overrides the auto-detected per-vhost access-log glob
 		// patterns. When set, the platform default for the detected panel/OS
 		// is discarded and only these patterns are used. Leave empty to use
@@ -2387,6 +2388,9 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateFirewallConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateTrustedProxies(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -2411,9 +2415,26 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		Suppressions map[string]yaml.Node `yaml:"suppressions"`
 		AutoResponse map[string]yaml.Node `yaml:"auto_response"`
 		Firewall     map[string]yaml.Node `yaml:"firewall"`
+		WebServer    map[string]yaml.Node `yaml:"web_server"`
+		Challenge    map[string]yaml.Node `yaml:"challenge"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
+	}
+	// yaml.v3 drops null sequence entries when decoding []string, so the
+	// typed proxy validation alone could accept only part of a trust list.
+	for _, section := range []struct {
+		name   string
+		fields map[string]yaml.Node
+	}{
+		{"web_server", raw.WebServer},
+		{"challenge", raw.Challenge},
+	} {
+		if node, ok := section.fields["trusted_proxies"]; ok && !yamlNodeIsNull(&node) {
+			if err := validateStringList(node, section.name+".trusted_proxies"); err != nil {
+				return presence, err
+			}
+		}
 	}
 	if raw.Firewall != nil {
 		presence.firewall = make(map[string]bool, len(raw.Firewall))

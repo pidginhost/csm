@@ -41,15 +41,18 @@ func TestDomlogCountsClientFieldsWithoutChangingFraming(t *testing.T) {
 	}
 }
 
+// Only the forwarded field names the client of a trusted proxy's request;
+// later extensions are client text. Without a usable forwarded field the
+// request counts against nobody, never against the proxy (L6).
 func TestDomlogExtensionAttributionUsesOnlyTheForwardedField(t *testing.T) {
 	for _, tc := range []struct {
 		extra, want string
 	}{
 		{` "203.0.113.7" "127.0.0.1"`, "203.0.113.7"},
-		{` "-" "127.0.0.1"`, "192.0.2.85"},
-		{` "client text" "127.0.0.1"`, "192.0.2.85"},
+		{` "-" "127.0.0.1"`, ""},
+		{` "client text" "127.0.0.1"`, ""},
 		{` "example.com:443" "203.0.113.7" "127.0.0.1"`, "203.0.113.7"},
-		{` "127.0.0.1, invalid"`, "192.0.2.85"},
+		{` "127.0.0.1, invalid"`, ""},
 	} {
 		t.Run(tc.extra, func(t *testing.T) {
 			line := `192.0.2.85 - - [02/Oct/2026:12:00:00 +0000] "POST /wp-login.php HTTP/1.1" 401 10 "-" "Mozilla"` + tc.extra
@@ -61,6 +64,12 @@ func TestDomlogExtensionAttributionUsesOnlyTheForwardedField(t *testing.T) {
 			cfg.WebServer.TrustedProxies = []string{"192.0.2.85"}
 			stats := newDomlogStatsAt(time.Date(2026, 10, 2, 12, 0, 30, 0, time.UTC))
 			stats.scan(rec, cfg, nopBotClassifier{})
+			if tc.want == "" {
+				if len(stats.wpLogin) != 0 || len(stats.httpReqs) != 0 {
+					t.Fatalf("got logins=%v requests=%v, want none", stats.wpLogin, stats.httpReqs)
+				}
+				return
+			}
 			if stats.wpLogin[tc.want] != 1 || stats.httpReqs[tc.want] != 1 {
 				t.Fatalf("got logins=%v requests=%v, want one of each for %s", stats.wpLogin, stats.httpReqs, tc.want)
 			}

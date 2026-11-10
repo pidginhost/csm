@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -273,19 +274,17 @@ func TestNewRandomSecretWhenEmpty(t *testing.T) {
 
 func TestNewWiresTrustedProxies(t *testing.T) {
 	cfg := baseCfg()
-	cfg.Challenge.TrustedProxies = []string{"10.0.0.1", "  10.0.0.2  ", "::ffff:10.0.0.3", ""}
+	// Config load refuses empty entries; see config.TestLoadRejectsInvalidTrustedProxies.
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.1", "  192.0.2.2  ", "::ffff:192.0.2.3"}
 	s := New(cfg, nil)
-	if !s.trustedProxies["10.0.0.1"] {
-		t.Error("10.0.0.1 should be trusted")
+	if !s.trusted.Has(netip.MustParseAddr("192.0.2.1")) {
+		t.Error("192.0.2.1 should be trusted")
 	}
-	if !s.trustedProxies["10.0.0.2"] {
-		t.Error("10.0.0.2 should be trusted after whitespace trim")
+	if !s.trusted.Has(netip.MustParseAddr("192.0.2.2")) {
+		t.Error("192.0.2.2 should be trusted after whitespace trim")
 	}
-	if !s.trustedProxies["10.0.0.3"] {
-		t.Error("IPv4-mapped trusted proxy should be stored in canonical form")
-	}
-	if s.trustedProxies[""] {
-		t.Error("empty trusted proxy entries should be ignored")
+	if !s.trusted.Has(netip.MustParseAddr("192.0.2.3")) {
+		t.Error("IPv4-mapped trusted proxy should match its plain IPv4 form")
 	}
 }
 
@@ -567,26 +566,28 @@ func TestExtractIPTrustedProxyCanonicalizesPeerBeforeLookup(t *testing.T) {
 	}
 }
 
-func TestExtractIPTrustedProxyNoXFFFallsBackToRemote(t *testing.T) {
+// A trusted proxy's request without a usable header names no client; the
+// proxy's own address is never used in its place.
+func TestExtractIPTrustedProxyNoXFFNamesNoClient(t *testing.T) {
 	cfg := baseCfg()
-	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.1"}
 	s := New(cfg, nil)
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "10.0.0.1:1234"
-	if got := s.extractIP(req); got != "10.0.0.1" {
-		t.Errorf("got %q, want 10.0.0.1", got)
+	req.RemoteAddr = "192.0.2.1:1234"
+	if got := s.extractIP(req); got != "" {
+		t.Errorf("got %q, want no client", got)
 	}
 }
 
-func TestExtractIPTrustedProxyBogusXFFFallsBackToRemote(t *testing.T) {
+func TestExtractIPTrustedProxyBogusXFFNamesNoClient(t *testing.T) {
 	cfg := baseCfg()
-	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.1"}
 	s := New(cfg, nil)
 	req := httptest.NewRequest("GET", "/", nil)
-	req.RemoteAddr = "10.0.0.1:1234"
+	req.RemoteAddr = "192.0.2.1:1234"
 	req.Header.Set("X-Forwarded-For", "not-an-ip, garbage")
-	if got := s.extractIP(req); got != "10.0.0.1" {
-		t.Errorf("got %q, want 10.0.0.1 (fallback)", got)
+	if got := s.extractIP(req); got != "" {
+		t.Errorf("got %q, want no client", got)
 	}
 }
 
@@ -607,9 +608,9 @@ func TestExtractIPNeverReturnsHTMLInjectableString(t *testing.T) {
 	// value into an HTML response via fmt.Fprintf (see the #nosec G705 on
 	// that line). The #nosec is only valid while extractIP is guaranteed
 	// to return either a net.SplitHostPort peer address or a
-	// net.ParseIP-validated XFF entry — never attacker-controlled HTML.
+	// net.ParseIP-validated XFF entry -- never attacker-controlled HTML.
 	cfg := baseCfg()
-	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
+	cfg.Challenge.TrustedProxies = []string{"192.0.2.1"}
 	s := New(cfg, nil)
 
 	payloads := []string{
@@ -620,12 +621,12 @@ func TestExtractIPNeverReturnsHTMLInjectableString(t *testing.T) {
 	}
 	for _, p := range payloads {
 		req := httptest.NewRequest("GET", "/", nil)
-		req.RemoteAddr = "10.0.0.1:1234"
+		req.RemoteAddr = "192.0.2.1:1234"
 		req.Header.Set("X-Forwarded-For", p)
 		got := s.extractIP(req)
-		// Must parse as an IP (either the peer fallback or a validated
-		// XFF entry — whatever the policy returns must be an IP literal).
-		if parsed := net.ParseIP(got); parsed == nil {
+		// Must be empty (no client) or parse as an IP: whatever the policy
+		// returns must never be header text.
+		if parsed := net.ParseIP(got); got != "" && parsed == nil {
 			t.Errorf("extractIP returned non-IP string %q for XFF payload %q", got, p)
 		}
 	}

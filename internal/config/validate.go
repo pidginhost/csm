@@ -368,6 +368,11 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"warn", "challenge.trusted_proxies", err.Error()})
 		}
 	}
+	// A warning too: an entry of this host is inert, and an error would stop
+	// a daemon that ran with it before.
+	if err := WebServerLocalTrustError(cfg.WebServer.TrustedProxies); err != nil {
+		results = append(results, ValidationResult{"warn", "web_server.trusted_proxies", err.Error()})
+	}
 
 	// --- EmailAV ---
 	if cfg.EmailAV.Enabled && cfg.EmailAV.MaxAttachmentSize <= 0 {

@@ -7,8 +7,10 @@
 package checks
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/clientaddr"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/threatintel"
 )
@@ -37,8 +40,10 @@ type accessLogRecord struct {
 	Status    int
 	UserAgent string
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
-	Domain    string // vhost the line came from (per-domain domlog); empty for the central log
-	Account   string // cPanel account owning Domain; empty when unknown/non-cPanel
+	// XFFPartial reports that the log kept only the right end of XFF.
+	XFFPartial bool
+	Domain     string // vhost the line came from (per-domain domlog); empty for the central log
+	Account    string // cPanel account owning Domain; empty when unknown/non-cPanel
 	// Central is set only for a recognized central access log on cPanel.
 	Central bool
 	// proxyPath is classified before the URI is truncated for aggregation.
@@ -155,8 +160,14 @@ type domlogStats struct {
 	// by finding check (or User-Agent kind), so the finding names it.
 	newest map[string]map[string]scanRecord
 	// forwarded marks, by the same key, the addresses a forwarded header
-	// supplied for any counted record: such a count is not the HTTP peer's.
+	// supplied for any counted record: such a count is not the HTTP peer's
+	// and reads as a trusted chain.
 	forwarded map[string]map[string]bool
+
+	// trusted is the trust list scan resolves clients against, parsed from
+	// cfg once per scan like the thresholds below.
+	trusted    clientaddr.Trusted
+	trustedSet bool
 
 	// Scanner thresholds are derived from cfg once per scan -- cfg is stable
 	// across a single domlogStats lifetime -- instead of on every parsed record.
@@ -230,13 +241,22 @@ func (s *domlogStats) observe(key, ip string, r scanRecord, direct bool) {
 }
 
 // stamp names the newest record of f's address kept under key as f's
-// observation, read as the HTTP peer only when every counted record was.
+// observation, read as the HTTP peer only when every counted record was and
+// as a trusted chain otherwise.
 func (s *domlogStats) stamp(f *alert.Finding, key string) {
 	r := s.newest[key][f.SourceIP]
 	if s.forwarded[key][f.SourceIP] {
-		r.kind = admission.AttributionUnknown
+		r.kind = admission.AttributionTrustedHTTPChain
 	}
 	r.stamp(f, ProducerDomlogScan)
+}
+
+// trustedFor returns cfg's trusted proxies, parsed on the first record.
+func (s *domlogStats) trustedFor(cfg *config.Config) clientaddr.Trusted {
+	if !s.trustedSet {
+		s.trusted, s.trustedSet = config.TrustedProxies(cfg), true
+	}
+	return s.trusted
 }
 
 // scan updates counters for one parsed record. cfg is allowed to be nil
@@ -248,11 +268,13 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 	if rec.Central && rec.proxyPath {
 		return
 	}
-	selected, forwarded := clientIPForRecord(rec, cfg)
-	ip := normalizeHTTPClientIP(selected)
-	if ip == "" {
+	// A record no client can be resolved for counts against nobody: a
+	// trusted proxy's own address names a shared transport (L6).
+	client, err := recordClient(rec, s.trustedFor(cfg))
+	if err != nil || client.Client.IsLoopback() || client.Client.IsUnspecified() {
 		return
 	}
+	ip := client.Client.String()
 	if cfg != nil && isInfraIP(ip, cfg.InfraIPs) {
 		return
 	}
@@ -261,9 +283,9 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		return
 	}
 	// The record the counters below name. Its address is the HTTP peer only
-	// when no forwarded header supplied it and the normalized address is not
-	// a trusted proxy: brackets or ports in a log must not bypass that check.
-	direct := !forwarded && (cfg == nil || !IsTrustedProxy(ip, cfg.WebServer.TrustedProxies))
+	// when no trusted proxy chain supplied it; stamp reads a count with any
+	// chained record as a trusted chain.
+	direct := !client.Chained
 	var r scanRecord
 	if rec.ref.stream != "" {
 		r = scanned(rec.ref, rec.Time)
@@ -654,7 +676,7 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 		// Display assets can defeat a pending-bot majority even though
 		// they do not count toward the scanner profile itself.
 		if s.uaCat[ip][uaKindClaimedBotPending] > 0 && s.forwarded[uaObservationKey(uaKindClaimedBotPending)][ip] {
-			f.Attribution = admission.AttributionUnknown
+			f.Attribution = admission.AttributionTrustedHTTPChain
 		}
 		out = append(out, f)
 	}
@@ -1152,7 +1174,7 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 		}
 		extra, _ = patternDecodeField(extra, len(extra))
 	}
-	rec.XFF, _, _ = patternXFFSuffix(extra)
+	rec.XFF, rec.XFFPartial, _ = patternXFFSuffix(extra)
 
 	return rec, true
 }
@@ -1169,23 +1191,23 @@ func atoiSafe(s string) int {
 	return n
 }
 
-func clientIPForRecord(rec accessLogRecord, cfg *config.Config) (ip string, forwarded bool) {
-	if cfg == nil || len(cfg.WebServer.TrustedProxies) == 0 || rec.XFF == "" {
-		return rec.RemoteIP, false
+// errListedClient refuses a resolved address that is itself a listed proxy.
+var errListedClient = errors.New("the resolved address is a listed proxy")
+
+// recordClient resolves rec's client: the direct peer, or the client a
+// trusted proxy chain names (spec 5.8). A trusted peer whose chain resolves
+// to nobody is refused, never read as the client, and so is a listed address
+// whose header is not trusted (an address of this host, or any listed address
+// while the interface set cannot be read).
+func recordClient(rec accessLogRecord, trusted clientaddr.Trusted) (clientaddr.Result, error) {
+	res, err := clientaddr.Resolve(rec.RemoteIP, rec.XFF, !rec.XFFPartial, trusted)
+	if err != nil {
+		return clientaddr.Result{}, err
 	}
-	if !IsTrustedProxy(rec.RemoteIP, cfg.WebServer.TrustedProxies) {
-		return rec.RemoteIP, false
+	if trusted.Covers(res.Client) {
+		return clientaddr.Result{}, errListedClient
 	}
-	// A trusted direct proxy appends the peer it observed to the end of
-	// X-Forwarded-For. Use that entry only; earlier entries can come from
-	// the client.
-	ip = strings.TrimSpace(rec.XFF[strings.LastIndexByte(rec.XFF, ',')+1:])
-	if net.ParseIP(ip) != nil {
-		// A forwarded header supplied the address, even one equal to the
-		// proxy's own.
-		return ip, true
-	}
-	return rec.RemoteIP, false
+	return res, nil
 }
 
 func normalizeHTTPClientIP(raw string) string {
@@ -1204,31 +1226,16 @@ func normalizeHTTPClientIP(raw string) string {
 	return ip.String()
 }
 
-// IsTrustedProxy returns true when addr matches any entry in proxies (exact
-// IP or CIDR), such as web_server.trusted_proxies. Entries that fail to
-// parse are skipped.
-func IsTrustedProxy(addr string, proxies []string) bool {
-	addr = strings.TrimSpace(addr)
-	parsed := net.ParseIP(addr)
-	if parsed == nil {
-		return false
-	}
-	for _, entry := range proxies {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if _, cidr, err := net.ParseCIDR(entry); err == nil {
-			if cidr.Contains(parsed) {
-				return true
-			}
-			continue
-		}
-		if ip := net.ParseIP(entry); ip != nil && ip.Equal(parsed) {
-			return true
-		}
-	}
-	return false
+// IsTrustedProxy reports whether addr, a bare address as a log writes a
+// peer, is listed in cfg's one trusted proxy list: web_server.trusted_proxies
+// and challenge.trusted_proxies together. A listed address stands for every
+// visitor behind it even where its header is not trusted (an address of this
+// host, or any while the interface set cannot be read), so callers never
+// count, escalate or sight it. A spelling with a port, brackets or a zone is
+// not an address.
+func IsTrustedProxy(addr string, cfg *config.Config) bool {
+	a, err := netip.ParseAddr(strings.TrimSpace(addr))
+	return err == nil && a.Zone() == "" && config.TrustedProxies(cfg).Covers(a)
 }
 
 // classifyUA maps a User-Agent string to a uaKind. Matching is performed

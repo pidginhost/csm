@@ -27,6 +27,11 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	if !f.Attribution.Valid() {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseKindNotAllowed, Detail: "no parser vouched for the finding's address"}
 	}
+	// A client behind a trusted proxy sends no packets to this host, so no
+	// response this build applies can contain it (spec 5.8).
+	if f.Attribution == admission.AttributionTrustedHTTPChain {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseUnreachable, Detail: "the address is a client behind a trusted proxy"}
+	}
 	target, err := admission.CanonicalAddress(f.SourceIP, admission.Caps{IPv6: true})
 	if err != nil {
 		return "", admission.EvidenceInput{}, err

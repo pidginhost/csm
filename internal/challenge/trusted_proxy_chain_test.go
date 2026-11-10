@@ -126,8 +126,8 @@ func TestExtractIPTrustedProxyCIDR(t *testing.T) {
 
 func TestExtractIPStopsAtUnreadableEntry(t *testing.T) {
 	for _, xff := range []string{"198.51.100.7, unknown", "198.51.100.7, , ", "198.51.100.7,203.0.113.10:80"} {
-		if got := extractVia(t, []string{"192.0.2.1"}, "192.0.2.1:1234", xff); got != "192.0.2.1" {
-			t.Errorf("XFF %q: got %q, want the connecting proxy", xff, got)
+		if got := extractVia(t, []string{"192.0.2.1"}, "192.0.2.1:1234", xff); got != "" {
+			t.Errorf("XFF %q: got %q, want no client: an unreadable hop ends the chain, never at the proxy", xff, got)
 		}
 	}
 }
@@ -150,12 +150,12 @@ func TestExtractIPAcrossHeaderLines(t *testing.T) {
 		{"appended client", []string{"198.51.100.7", "203.0.113.10"}, "203.0.113.10"},
 		{"trusted suffix", []string{"198.51.100.7", "203.0.113.10, 192.0.2.2"}, "203.0.113.10"},
 		{"trusted separate line", []string{"198.51.100.7, 203.0.113.10", "192.0.2.2"}, "203.0.113.10"},
-		{"unreadable suffix", []string{"198.51.100.7", "unknown, 192.0.2.2"}, "192.0.2.1"},
-		{"empty final line", []string{"198.51.100.7", ""}, "192.0.2.1"},
-		{"empty middle line", []string{"198.51.100.7", "", "192.0.2.2"}, "192.0.2.1"},
+		{"unreadable suffix", []string{"198.51.100.7", "unknown, 192.0.2.2"}, ""},
+		{"empty final line", []string{"198.51.100.7", ""}, ""},
+		{"empty middle line", []string{"198.51.100.7", "", "192.0.2.2"}, ""},
 		{"unreadable client text", []string{"unknown", "203.0.113.10"}, "203.0.113.10"},
-		{"all trusted", []string{"192.0.2.2", "192.0.2.3"}, "192.0.2.1"},
-		{"absent", nil, "192.0.2.1"},
+		{"all trusted", []string{"192.0.2.2", "192.0.2.3"}, ""},
+		{"absent", nil, ""},
 		{"mapped IPv4", []string{"198.51.100.7", "::ffff:203.0.113.10, ::ffff:192.0.2.2"}, "203.0.113.10"},
 		{"IPv6", []string{"198.51.100.7", "2001:db8:2::1, 2001:db8:1::2"}, "2001:db8:2::1"},
 	} {

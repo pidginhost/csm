@@ -8,8 +8,10 @@ import (
 )
 
 // Trust follows the address used by the finding, including accepted log
-// spellings with brackets or ports. Client-controlled headers on unrelated
-// peers must neither grant attribution to a proxy nor take it from the peer.
+// spellings with brackets or ports: a trusted proxy's requests without a
+// usable header are never counted against it. Client-controlled headers on
+// unrelated peers must neither name the proxy nor take attribution from the
+// peer.
 func TestDomlogProxyTrustFollowsNormalizedAddress(t *testing.T) {
 	for name, tc := range map[string]struct {
 		logged, address, trusted string
@@ -54,8 +56,8 @@ func TestDomlogProxyTrustFollowsNormalizedAddress(t *testing.T) {
 							domlogTestLine(peer, i, profile.method, uri, 404, profile.ua)+` "`+tc.address+`"`)
 					}
 					path, findings := scanDomlogFile(t, cfg, profile.bot, lines)
-					if len(findings) != 2*len(profile.checks) {
-						t.Fatalf("findings %+v, want one per check and address", findings)
+					if len(findings) != len(profile.checks) {
+						t.Fatalf("findings %+v, want one per check for the direct peer", findings)
 					}
 					for _, check := range profile.checks {
 						seen := map[string]bool{}
@@ -68,9 +70,6 @@ func TestDomlogProxyTrustFollowsNormalizedAddress(t *testing.T) {
 							}
 							seen[f.SourceIP] = true
 							switch f.SourceIP {
-							case tc.address:
-								wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, 38), domlogTestTime(19))
-								wantNoKind(t, f)
 							case peer:
 								wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, 39), domlogTestTime(19))
 								wantPeerMints(t, f)
@@ -78,8 +77,8 @@ func TestDomlogProxyTrustFollowsNormalizedAddress(t *testing.T) {
 								t.Fatalf("unexpected source %s", f.SourceIP)
 							}
 						}
-						if len(seen) != 2 {
-							t.Fatalf("%s addresses %v, want proxy and direct peer", check, seen)
+						if len(seen) != 1 {
+							t.Fatalf("%s addresses %v, want the direct peer only", check, seen)
 						}
 					}
 				})
