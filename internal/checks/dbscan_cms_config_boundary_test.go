@@ -39,6 +39,10 @@ func TestCMSConfigRejectsSymlinksAndOversize(t *testing.T) {
 			creds, err := parseOpenCartConfig(context.Background(), path)
 			return creds.dbName, err
 		}},
+		{"prestashop", prestashopParametersPHP("ps_"), func(path string) (string, error) {
+			creds, err := parsePrestaShopParameters(context.Background(), path)
+			return creds.dbName, err
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -300,6 +304,7 @@ func TestCMSConfigMarkerRejectsSymlinksAndOversize(t *testing.T) {
 	}{
 		{"joomla", canonicalJConfigBody("jos_"), looksLikeJoomlaConfig},
 		{"opencart", "<?php define('DB_DRIVER', 'mysqli');", configContainsDBDriver},
+		{"prestashop", prestashopDefinesPHP(), prestashopMarker},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config")
