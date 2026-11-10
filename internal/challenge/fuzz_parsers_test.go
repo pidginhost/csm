@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/clientaddr"
 )
 
 // Arbitrary client header text cannot override the suffix observed by proxies,
@@ -19,8 +21,8 @@ func FuzzExtractIPClientPrefix(f *testing.F) {
 	f.Fuzz(func(t *testing.T, prefix string) {
 		for _, suffix := range []struct{ text, want string }{
 			{"203.0.113.10, 192.0.2.2", "203.0.113.10"},
-			{"unknown, 192.0.2.2", "192.0.2.1"},
-			{", 192.0.2.2", "192.0.2.1"},
+			{"unknown, 192.0.2.2", ""},
+			{", 192.0.2.2", ""},
 		} {
 			req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 			req.RemoteAddr = "192.0.2.1:1234"
@@ -28,8 +30,13 @@ func FuzzExtractIPClientPrefix(f *testing.F) {
 				req.Header.Add("X-Forwarded-For", line)
 			}
 			req.Header.Add("X-Forwarded-For", suffix.text)
-			if got := s.extractIP(req); got != suffix.want {
-				t.Fatalf("prefix %q: got %q, want %q", prefix, got, suffix.want)
+			want := suffix.want
+			// A header over the chain bounds names no client at all.
+			if chain := strings.Join(req.Header.Values("X-Forwarded-For"), ","); len(chain) > clientaddr.MaxChainBytes || strings.Count(chain, ",")+1 > clientaddr.MaxHops {
+				want = ""
+			}
+			if got := s.extractIP(req); got != want {
+				t.Fatalf("prefix %q: got %q, want %q", prefix, got, want)
 			}
 		}
 	})

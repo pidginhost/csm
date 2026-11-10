@@ -192,6 +192,22 @@ func TestParseAcceptsAddressesAndRanges(t *testing.T) {
 	}
 }
 
+func TestResolveBehindProxyReadsTheChainOfAnAddresslessPeer(t *testing.T) {
+	trusted := mustParse(t, "192.0.2.0/24")
+	got, err := ResolveBehindProxy("198.51.100.7, 203.0.113.10, 192.0.2.2", trusted)
+	if err != nil {
+		t.Fatalf("ResolveBehindProxy: %v", err)
+	}
+	if want := (Result{Client: netip.MustParseAddr("203.0.113.10"), Chained: true}); got != want {
+		t.Fatalf("ResolveBehindProxy = %+v, want %+v", got, want)
+	}
+	for xff, want := range map[string]error{"": ErrNoChain, "unknown": ErrMalformed, "192.0.2.2": ErrAllTrusted} {
+		if got, err := ResolveBehindProxy(xff, trusted); !errors.Is(err, want) || got != (Result{}) {
+			t.Errorf("ResolveBehindProxy(%q) = %+v, %v; want %v", xff, got, err, want)
+		}
+	}
+}
+
 func TestCoversIncludesListedAddressesOfThisHost(t *testing.T) {
 	trusted := mustParse(t, "127.0.0.0/8", "192.0.2.10")
 	for _, addr := range []string{"127.0.0.1", "::ffff:127.0.0.1", "192.0.2.10"} {

@@ -11,6 +11,7 @@ import (
 	"html"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/clientaddr"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/netutil"
 )
@@ -29,12 +31,13 @@ import (
 // IPs on it -- serving the puzzle to anyone else would let an arbitrary
 // client turn one cheap hash search into a verified session.
 type Server struct {
-	cfg            *config.Config
-	secret         []byte
-	ipList         *IPList
-	srv            *http.Server
-	trustedProxies map[string]bool
-	trustedNets    []*net.IPNet
+	cfg    *config.Config
+	secret []byte
+	ipList *IPList
+	srv    *http.Server
+	// trusted is the one trusted proxy list: web_server.trusted_proxies and
+	// challenge.trusted_proxies together.
+	trusted clientaddr.Trusted
 
 	// socket mode: listen_addr is unix:<path>. The only peer that can open
 	// the socket is the proxy, so its X-Forwarded-For names the visitor.
@@ -87,16 +90,13 @@ func New(cfg *config.Config, ipList *IPList) *Server {
 		_, _ = rand.Read(secret)
 	}
 
-	trusted, trustedNets := parseTrustedProxies(cfg.Challenge.TrustedProxies)
-
 	s := &Server{
-		cfg:            cfg,
-		secret:         secret,
-		ipList:         ipList,
-		trustedProxies: trusted,
-		trustedNets:    trustedNets,
-		verified:       make(map[string]time.Time),
-		adminFailures:  make(map[string][]time.Time),
+		cfg:           cfg,
+		secret:        secret,
+		ipList:        ipList,
+		trusted:       config.TrustedProxies(cfg),
+		verified:      make(map[string]time.Time),
+		adminFailures: make(map[string][]time.Time),
 	}
 
 	// The verify-cookie signer is always on (independent of the optional
@@ -724,90 +724,41 @@ func (s *Server) CleanExpired() {
 	}
 }
 
-// clientIP rejects a trusted proxy fallback before any challenge or bypass
-// decision. That address identifies a shared transport, not a visitor, so a
-// pass or cookie for it could bypass challenges for unrelated visitors.
+// clientIP rejects a request that names no client before any challenge or
+// bypass decision. A trusted proxy's own address identifies a shared
+// transport, not a visitor, so a pass or cookie for it could bypass
+// challenges for unrelated visitors.
 func (s *Server) clientIP(w http.ResponseWriter, r *http.Request) (string, bool) {
 	ip := s.extractIP(r)
-	// Test the list itself, not isTrustedProxy: a listed proxy the host-local
-	// guard refused to trust still names a shared transport, not a visitor.
-	if ip == "" || proxyTrusted(s.trustedProxies, s.trustedNets, ip) {
+	// Test the list itself, not trust: a listed address the host-local guard
+	// refused to trust still names a shared transport, not a visitor.
+	if ip == "" || s.trusted.Covers(netip.MustParseAddr(ip)) {
 		http.Error(w, "Cannot identify the client behind the trusted proxy", http.StatusBadRequest)
 		return "", false
 	}
 	return ip, true
 }
 
-// extractIP returns the client IP from the request. X-Forwarded-For is only
-// trusted when the direct peer is in the configured trusted_proxies list.
-// It is read right to left, past further trusted proxies, to the first
-// other address: entries left of that are client text. An unreadable entry
-// ends the walk, since the client could have written everything left of it.
-// When no client is found the direct peer is used; clientIP rejects that
-// fallback in handlers. Without trusted proxies, RemoteAddr is always used.
-// On a socket the peer is the proxy and has no address, so the fallback is
-// empty.
+// extractIP returns the client of the request, or "" when there is none
+// (spec 5.8). X-Forwarded-For is read only behind a trusted proxy, right to
+// left past further trusted proxies; proxies can append a field line instead
+// of extending the first, so all lines are read. An unreadable, overlong or
+// all-trusted chain names nobody: none falls back to the proxy. A listed
+// address of this host is not trusted and is returned as itself; clientIP
+// refuses it. On a socket the peer is the proxy and has no address.
 func (s *Server) extractIP(r *http.Request) string {
-	peerIP := ""
-	if !s.socket {
-		peerIP, _, _ = net.SplitHostPort(r.RemoteAddr)
-		peerIP = canonicalIP(peerIP)
-		if !s.isTrustedProxy(peerIP) {
-			return peerIP
-		}
+	xff := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	var res clientaddr.Result
+	var err error
+	if s.socket {
+		res, err = clientaddr.ResolveBehindProxy(xff, s.trusted)
+	} else {
+		res, err = clientaddr.Resolve(r.RemoteAddr, xff, true, s.trusted)
 	}
-	// Proxies can append a field line instead of extending the first one.
-	// Header.Get would hide that trusted suffix and expose client-written text.
-	parts := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		ip := net.ParseIP(strings.TrimSpace(parts[i]))
-		if ip == nil {
-			break
-		}
-		if !s.isTrustedProxy(ip.String()) {
-			return ip.String()
-		}
+	if err != nil {
+		return ""
 	}
-	return peerIP
-}
-
-// isTrustedProxy reports whether ip, in canonical form, is a configured
-// trusted proxy address or inside a configured trusted range, and is not an
-// address of this host. Listen refuses lists that cover one; this catches
-// addresses added to the host later. An unknown host set trusts nobody.
-func (s *Server) isTrustedProxy(ip string) bool {
-	if !proxyTrusted(s.trustedProxies, s.trustedNets, ip) {
-		return false
-	}
-	local, known := netutil.IsHostLocal(net.ParseIP(ip))
-	return known && !local
-}
-
-func parseTrustedProxies(entries []string) (map[string]bool, []*net.IPNet) {
-	trusted := make(map[string]bool)
-	var nets []*net.IPNet
-	for _, p := range entries {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if strings.Contains(p, "/") {
-			if n := netutil.ParseCIDROrIP(p); n != nil {
-				nets = append(nets, n)
-			}
-			continue
-		}
-		trusted[canonicalIP(p)] = true
-	}
-	return trusted, nets
-}
-
-func proxyTrusted(trusted map[string]bool, nets []*net.IPNet, ip string) bool {
-	if trusted[ip] {
-		return true
-	}
-	parsed := net.ParseIP(ip)
-	return parsed != nil && netutil.IPInAnyNet(parsed, nets)
+	return res.Client.String()
 }
 
 // canonicalIP normalizes an IP string so downstream exact-match lookups (the

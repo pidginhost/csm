@@ -130,6 +130,17 @@ func Resolve(peer, xff string, complete bool, t Trusted) (Result, error) {
 	if !t.Has(p) {
 		return Result{Client: p, Peer: p}, nil
 	}
+	return chain(p, xff, complete, t)
+}
+
+// ResolveBehindProxy returns the client behind a peer that has no address
+// but is trusted by how it connects, such as a proxy on a Unix socket only
+// its group can open. Its chain is read as Resolve reads a trusted peer's.
+func ResolveBehindProxy(xff string, t Trusted) (Result, error) {
+	return chain(netip.Addr{}, xff, true, t)
+}
+
+func chain(p netip.Addr, xff string, complete bool, t Trusted) (Result, error) {
 	if len(xff) > MaxChainBytes {
 		return Result{}, ErrOverlong
 	}

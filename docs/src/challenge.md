@@ -150,14 +150,17 @@ challenge:
 
 Entries are addresses or CIDR ranges. Trust only proxies you control, not
 ranges that also contain visitors. Each proxy must append its observed peer
-address to X-Forwarded-For or replace the header with that address.
+address to X-Forwarded-For or replace the header with that address. The
+challenge server also trusts the proxies in `web_server.trusted_proxies`,
+the list the HTTP checks use.
 
 CSM reads all X-Forwarded-For field lines as one ordered chain, from the
 right, past other trusted proxies, and takes the first other address as the
 visitor. An entry that is not an address ends the read.
 
-If no visitor can be identified because the chain is missing, malformed, or
-contains only trusted proxies, challenge endpoints return HTTP 400. They do
+If no visitor can be identified because the chain is missing, malformed,
+longer than 32 hops or 4 KiB, or contains only trusted proxies, challenge
+endpoints return HTTP 400. They do
 not issue a puzzle or cookie, accept a bypass, or clear a pending challenge
 for the proxy. This also applies to the gate and admin-token endpoints.
 
@@ -190,8 +193,12 @@ port gate. It does not check the proxy itself, so confirm HTTPS works at
 A `public_url` that names the listener's own address and port is direct
 mode, and the usual TLS and port-gate checks apply.
 
-Without `trusted_proxies`, X-Forwarded-For from a TCP peer is ignored to
-prevent IP spoofing.
+With both `challenge.trusted_proxies` and `web_server.trusted_proxies`
+empty, X-Forwarded-For from a TCP peer is ignored to prevent IP spoofing.
+Only `challenge.trusted_proxies` says the listener itself sits behind a
+proxy: the installer, `csm doctor`'s TLS and port gate rows and the startup
+check above read it alone, so a site CDN in `web_server.trusted_proxies`
+does not change them. A listed address is never a visitor in either mode.
 
 ### Proxy on the same host
 
