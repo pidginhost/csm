@@ -28,17 +28,39 @@ func cmsVerifyInstalls(account, rel string, load cmsInstallLoader) ([]wpDBCreds,
 		return nil, false
 	}
 	home := accountHomeDir(account)
+	// Glob discards filesystem errors, so an inaccessible addon could vanish
+	// from the inventory and let a clean site clear its finding.
+	entries, err := osFS.ReadDir(home)
+	if err != nil {
+		return nil, false
+	}
 	var paths []string
-	for _, pattern := range []string{filepath.Join(home, "public_html", rel), filepath.Join(home, "*", rel)} {
-		matches, err := osFS.Glob(pattern)
+	for _, entry := range entries {
+		root := filepath.Join(home, entry.Name())
+		isDir := entry.IsDir()
+		if entry.Type()&os.ModeSymlink != 0 {
+			info, err := osFS.Stat(root)
+			if err != nil {
+				return nil, false
+			}
+			isDir = info.IsDir()
+		}
+		if !isDir {
+			continue
+		}
+		path := filepath.Join(root, rel)
+		_, err := osFS.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, false
 		}
-		paths = append(paths, matches...)
+		paths = append(paths, path)
 	}
 	var installs []wpDBCreds
 	seen := map[string]bool{}
-	for _, path := range uniqueStrings(paths) {
+	for _, path := range paths {
 		creds, isInstall, err := load(context.Background(), path)
 		if err != nil {
 			return nil, false
@@ -85,6 +107,7 @@ func cmsVerifyRecordedInstall(installs []wpDBCreds, details string) (wpDBCreds, 
 // site must not clear a finding an addon site may have raised. query builds
 // the statement for one install's table prefix.
 func cmsVerifyEveryInstall(installs []wpDBCreds, inPostContext bool, query func(prefix string) (string, error), args ...any) VerifyResult {
+	injected := false
 	for _, creds := range installs {
 		q, err := query(creds.tablePrefix)
 		if err != nil {
@@ -96,9 +119,13 @@ func cmsVerifyEveryInstall(installs []wpDBCreds, inPostContext bool, query func(
 		}
 		for _, row := range rows {
 			if _, _, ok := classifyMalwareRow(mysqlclient.BatchUnescape(row), inPostContext); ok {
-				return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged row still contains injected content"}
+				injected = true
+				break
 			}
 		}
+	}
+	if injected {
+		return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged row still contains injected content"}
 	}
 	return VerifyResult{Checked: true, Resolved: true, Detail: "the flagged row no longer contains injected content"}
 }

@@ -33,10 +33,34 @@ func (m *cmsVerifyOS) ReadFile(name string) ([]byte, error) {
 }
 
 func (m *cmsVerifyOS) Lstat(name string) (os.FileInfo, error) {
-	if m.statOK[name] {
-		return drupalStatStub{}, nil
+	return m.Stat(name)
+}
+
+func (m *cmsVerifyOS) Stat(name string) (os.FileInfo, error) {
+	var paths []string
+	for path := range m.files {
+		paths = append(paths, path)
 	}
-	return nil, os.ErrNotExist
+	for path := range m.statOK {
+		paths = append(paths, path)
+	}
+	return mockPathInfo(name, paths)
+}
+
+func (m *cmsVerifyOS) ReadDir(name string) ([]os.DirEntry, error) {
+	paths, err := m.Glob(filepath.Join(name, "*"))
+	if err != nil {
+		return nil, err
+	}
+	var entries []os.DirEntry
+	for _, path := range paths {
+		info, err := m.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, fakeDirEntry{fi: info})
+	}
+	return entries, nil
 }
 
 // Glob matches the canned files and every directory above them, as the

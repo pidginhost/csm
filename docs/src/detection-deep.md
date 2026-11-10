@@ -343,9 +343,13 @@ install. Joomla, Drupal, Magento, and OpenCart settings and content findings do
 not record it, so they resolve only when the row is clean or absent in every
 install of that CMS on the account. An unreadable install, a recorded database
 that no install uses, configuration failures and query errors leave the finding
-unchecked. PrestaShop settings and content resolve only when every language,
-shop and scanned column is clean or absent. New employees resolve only when
-deleted; SuperAdmin findings also resolve after demotion.
+unchecked. Home directory listing and install discovery errors also leave it
+unchecked. Re-checks inspect every relevant database even after finding an
+injection, so a later query failure still leaves the finding unchecked. Linked
+folders naming the same database are checked once. PrestaShop settings and
+content resolve only when every language, shop and scanned column is clean or
+absent. New employees resolve only when deleted; SuperAdmin findings also
+resolve after demotion.
 
 Administrator baselines for Joomla, Drupal, Magento, OpenCart, and PrestaShop are scoped to
 the hosting account, CMS, database host, database name, and table prefix. Two

@@ -282,8 +282,8 @@ func TestCMSRecheckLeavesUnsafeConfigUnchecked(t *testing.T) {
 			openCalls := 0
 			withMockOS(t, &mockOS{
 				// Discovery finds the account's public_html install only.
-				glob: func(pattern string) ([]string, error) {
-					return []string{strings.Replace(pattern, "*", "public_html", 1)}, nil
+				readDir: func(string) ([]os.DirEntry, error) {
+					return []os.DirEntry{fakeDirEntry{fi: accountScanFakeInfo{name: "public_html", mode: os.ModeDir, isDir: true}}}, nil
 				},
 				lstat: func(string) (os.FileInfo, error) { return drupalStatStub{}, nil },
 				open: func(string) (*os.File, error) {
