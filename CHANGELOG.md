@@ -50,6 +50,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - JavaScript scans with widespread analysis failures use less memory, report truncated coverage details, and keep earlier detections visible.
 - Dry run no longer removes automatic subnet blocks from the firewall when the daemon starts.
 - Scan findings no longer produce duplicate termination attempts or action log entries, including when termination fails or is refused.
+- Audit rules now load in full on servers without cPanel, so cron, account, temporary-folder execution and CSM tamper watches work there.
 
 ## [4.10.2] - 2026-11-08
 
