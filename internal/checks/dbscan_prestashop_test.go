@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -629,5 +630,112 @@ func TestPrestaShopEmployeeQuerySkipsPassword(t *testing.T) {
 	scanPrestaShopEmployees(nil, "alice", psScanCreds("ps_"))
 	if len(*queries) != 1 || !strings.Contains((*queries)[0], "SELECT id_employee, id_profile, email FROM ps_employee") || strings.Contains((*queries)[0], "passwd") {
 		t.Fatalf("employee queries = %v", *queries)
+	}
+}
+
+func psEntryRows(q string) []string {
+	switch {
+	case strings.Contains(q, "FROM ps_configuration WHERE"):
+		return []string{"12\tPS_HEAD_JS\t" + psPayload()}
+	case strings.Contains(q, "description FROM ps_product_lang"):
+		return []string{"42\t" + psPayload()}
+	case strings.Contains(q, "FROM ps_employee"):
+		return psBaselineRows
+	}
+	return nil
+}
+
+func TestCheckPrestaShopContentScansInstall(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: prestashopInstallFiles(psTestRoot, "ps_")})
+	withCapturedQueries(t, psEntryRows)
+	got := CheckPrestaShopContent(context.Background(), &config.Config{}, newCrontabTestStore(t))
+	for check, want := range map[string]int{"prestashop_settings_injection": 1, "prestashop_content_injection": 1, "prestashop_admin_injection": 0} {
+		if n := len(psFindings(got, check)); n != want {
+			t.Errorf("%s = %d, want %d", check, n, want)
+		}
+	}
+	for _, f := range got {
+		if f.TenantID != "alice" {
+			t.Errorf("%s TenantID = %q, want alice", f.Check, f.TenantID)
+		}
+	}
+}
+
+func TestCheckPrestaShopContentSkipsStagingRoot(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: prestashopInstallFiles("/home/alice/staging", "ps_")})
+	queries := withCapturedQueries(t, psEntryRows)
+	ctx, coverage := withIncompleteCheckCollector(context.Background())
+	CheckPrestaShopContent(ctx, &config.Config{}, nil)
+	if len(*queries) != 0 || coverage.contains(prestashopOwner) {
+		t.Fatalf("staging copy scanned: %d queries, incomplete %v", len(*queries), coverage.contains(prestashopOwner))
+	}
+}
+
+func TestCheckPrestaShopContentSkipsSuspendedAccount(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	files := prestashopInstallFiles(psTestRoot, "ps_")
+	files["/var/cpanel/suspended/alice"] = ""
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: files})
+	queries := withCapturedQueries(t, psEntryRows)
+	ctx, coverage := withIncompleteCheckCollector(context.Background())
+	CheckPrestaShopContent(ctx, &config.Config{}, nil)
+	if len(*queries) != 0 || coverage.contains(prestashopOwner) {
+		t.Fatalf("suspended account scanned: %d queries, incomplete %v", len(*queries), coverage.contains(prestashopOwner))
+	}
+}
+
+func TestCheckPrestaShopContentNeverLeaksOtherParameters(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: prestashopInstallFiles(psTestRoot, "ps_")})
+	var seen []string
+	previous := runMySQLQuery
+	runMySQLQuery = func(c wpDBCreds, q string) []string {
+		if c.dbPass != "fixture-db-pass" {
+			t.Errorf("query ran with password %q", c.dbPass)
+		}
+		seen = append(seen, fmt.Sprintf("%+v", c), q)
+		return psEntryRows(q)
+	}
+	t.Cleanup(func() { runMySQLQuery = previous })
+	for _, f := range CheckPrestaShopContent(context.Background(), &config.Config{}, nil) {
+		seen = append(seen, f.Message, f.Details)
+	}
+	if len(seen) == 0 {
+		t.Fatal("nothing was scanned")
+	}
+	for _, text := range seen {
+		if strings.Contains(text, "fixture-secret-") || strings.Contains(text, "FIXTURE KEY") {
+			t.Fatalf("a non-database parameter escaped: %s", text)
+		}
+	}
+}
+
+func TestCheckPrestaShopContentYAMLOnlyMarksIncomplete(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: map[string]string{
+		psTestRoot + "/config/defines.inc.php":    prestashopDefinesPHP(),
+		psTestRoot + "/app/config/parameters.yml": "parameters:\n    database_name: shop_db\n",
+		psTestRoot + "/config/settings.inc.php":   prestashopSettingsIncPHP("old_db", "ps_"),
+	}})
+	queries := withCapturedQueries(t, psEntryRows)
+	ctx, coverage := withIncompleteCheckCollector(context.Background())
+	CheckPrestaShopContent(ctx, &config.Config{}, nil)
+	if len(*queries) != 0 || !coverage.contains(prestashopOwner) || coverage.contains("db_content") {
+		t.Fatalf("YAML-only install: %d queries, incomplete %v", len(*queries), coverage.contains(prestashopOwner))
+	}
+}
+
+func TestCheckPrestaShopContentIgnoresNonPrestaShop(t *testing.T) {
+	withAccountHomeRoots(t, "/home")
+	files := prestashopInstallFiles(psTestRoot, "ps_")
+	files[psTestRoot+"/config/defines.inc.php"] = "<?php\ndefine('APP_ROOT', __DIR__);\n"
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: files})
+	queries := withCapturedQueries(t, psEntryRows)
+	ctx, coverage := withIncompleteCheckCollector(context.Background())
+	CheckPrestaShopContent(ctx, &config.Config{}, nil)
+	if len(*queries) != 0 || coverage.contains(prestashopOwner) {
+		t.Fatalf("non-PrestaShop tree: %d queries, incomplete %v", len(*queries), coverage.contains(prestashopOwner))
 	}
 }

@@ -27,6 +27,7 @@ func cmsCheckFixtures() []cmsCheckFixture {
 		{"drupal", "drupal_content_injection", CheckDrupalContent, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true}},
 		{"magento", "magento_content_injection", CheckMagentoContent, &fakeMagentoOS{m2Body: canonicalM2EnvPHP()}},
 		{"opencart", "opencart_content_injection", CheckOpenCartContent, &fakeOpenCartOS{rootBody: canonicalOpenCartConfig(), adminBody: canonicalOpenCartConfig()}},
+		{"prestashop", "prestashop_content_injection", CheckPrestaShopContent, &twoOwnerCMSOS{files: prestashopInstallFiles("/home/alice/public_html", "ps_")}},
 	}
 }
 
@@ -190,7 +191,7 @@ func TestCMSIncompleteInstallationDoesNotSeedAdminBaseline(t *testing.T) {
 				if failed && calls == 1 {
 					return nil, errors.New("content query failed")
 				}
-				if strings.Contains(query, "username, email") || strings.Contains(query, "u.username, u.email") || strings.Contains(query, "u.uid, u.name, u.mail") {
+				if strings.Contains(query, "username, email") || strings.Contains(query, "u.username, u.email") || strings.Contains(query, "u.uid, u.name, u.mail") || strings.Contains(query, "id_profile, email") {
 					return rows, nil
 				}
 				return nil, nil

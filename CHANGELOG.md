@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
+- PrestaShop database scanning: injected script in settings, pages, products and categories, new back-office employees, and Critical alerts for a new or promoted SuperAdmin.
 - The challenge server can listen on a Unix socket that only your proxy's group can open, for a proxy on the same host.
 - Admission refusal summaries explain missing address attribution and later refusals of queued responses, including disabled responses and lost queue positions.
 

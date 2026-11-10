@@ -16,15 +16,16 @@ import (
 
 // expectedKinds is an independent expectation. It must not be generated
 // from All(): deleting a descriptor would otherwise delete its own test.
-var expectedKinds = []Kind{"wordpress", "joomla", "drupal", "opencart", "magento"}
+var expectedKinds = []Kind{"wordpress", "joomla", "drupal", "opencart", "magento", "prestashop"}
 
 // expectedOwners pins each adapter owner name independently of the table.
 var expectedOwners = map[Kind]string{
-	"wordpress": "db_content",
-	"joomla":    "db_content_joomla",
-	"drupal":    "db_content_drupal",
-	"opencart":  "db_content_opencart",
-	"magento":   "db_content_magento",
+	"wordpress":  "db_content",
+	"joomla":     "db_content_joomla",
+	"drupal":     "db_content_drupal",
+	"opencart":   "db_content_opencart",
+	"magento":    "db_content_magento",
+	"prestashop": "db_content_prestashop",
 }
 
 func TestCMSKindsAndDescriptors(t *testing.T) {
@@ -84,7 +85,7 @@ func TestValidateDescriptorsRejects(t *testing.T) {
 			return ds
 		},
 		"undeclared kind": func(ds []Descriptor) []Descriptor {
-			return append(ds, Descriptor{Kind: "prestashop", DBContentCheck: "db_content_prestashop", PathConstants: []string{"dir_ps"}})
+			return append(ds, Descriptor{Kind: "shopware", DBContentCheck: "db_content_shopware", PathConstants: []string{"dir_ps"}})
 		},
 	}
 	for name, mutate := range cases {
@@ -252,12 +253,12 @@ func TestCMSAccessors(t *testing.T) {
 			t.Errorf("Lookup(%q) = %+v, %v", k, d, ok)
 		}
 	}
-	for _, s := range []string{"", "Joomla", " joomla", "joomla ", "joomla!", "wp", "WORDPRESS", "prestashop"} {
+	for _, s := range []string{"", "Joomla", " joomla", "joomla ", "joomla!", "wp", "WORDPRESS", "shopware"} {
 		if k, ok := Parse(s); ok || k != "" {
 			t.Errorf("Parse(%q) = %q, %v; want zero, false", s, k, ok)
 		}
 	}
-	if d, ok := Lookup(Kind("prestashop")); ok || d.Kind != "" || d.DBContentCheck != "" || d.PathConstants != nil {
+	if d, ok := Lookup(Kind("shopware")); ok || d.Kind != "" || d.DBContentCheck != "" || d.PathConstants != nil {
 		t.Errorf("Lookup(unknown) = %+v, %v; want zero descriptor, false", d, ok)
 	}
 

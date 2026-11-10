@@ -117,7 +117,9 @@ func TestCMSDiscoveryIncludesAddonDocroots(t *testing.T) {
 	CheckJoomlaContent(ctx, cfg, nil)
 	CheckMagentoContent(ctx, cfg, nil)
 	CheckDrupalContent(ctx, cfg, nil)
+	CheckPrestaShopContent(ctx, cfg, nil)
 	for _, want := range []string{
+		"/home/*/*/config/defines.inc.php",
 		"/home/*/*/config.php",
 		"/home/*/*/configuration.php",
 		"/home/*/*/app/etc/env.php",

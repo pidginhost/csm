@@ -89,7 +89,7 @@ func TestRunPrintsSourcedAndPendingSummary(t *testing.T) {
 	cache := filepath.Join(t.TempDir(), "cache")
 	m := corpusgate.Manifest{Version: corpusgate.ManifestVersion,
 		Sources: []corpusgate.Source{fixtureSource(t, cache, "wp", "wordpress"), fixtureSource(t, cache, "plugin", "wordpress"), fixtureSource(t, cache, "joomla", "joomla")},
-		Pending: []corpusgate.PendingCMS{{CMS: "opencart", Reason: "await c"}, {CMS: "drupal", Reason: "await b"}, {CMS: "magento", Reason: "await d"}}}
+		Pending: []corpusgate.PendingCMS{{CMS: "opencart", Reason: "await c"}, {CMS: "drupal", Reason: "await b"}, {CMS: "magento", Reason: "await d"}, {CMS: "prestashop", Reason: "await e"}}}
 	out := filepath.Join(t.TempDir(), "out")
 	var stdout bytes.Buffer
 	if err := run(writeManifest(t, m), cache, filepath.Join(t.TempDir(), "corpus"), out, &stdout); err != nil {
@@ -103,7 +103,8 @@ func TestRunPrintsSourcedAndPendingSummary(t *testing.T) {
 		"pending (no clean-corpus evidence):\n" +
 		"  drupal: await b\n" +
 		"  magento: await d\n" +
-		"  opencart: await c\n"
+		"  opencart: await c\n" +
+		"  prestashop: await e\n"
 	if stdout.String() != want {
 		t.Fatalf("summary:\n%s\nwant:\n%s", stdout.String(), want)
 	}
@@ -164,11 +165,11 @@ func TestRunInvalidManifestHasNoSideEffects(t *testing.T) {
 			m.Pending = append(m.Pending, corpusgate.PendingCMS{CMS: "wordpress", Reason: "await corpus"})
 		}, "no source"},
 		{"missing cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = "" }, "cms field"},
-		{"unknown cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = "prestashop" }, "prestashop"},
+		{"unknown cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = "shopware" }, "shopware"},
 		{"whitespace cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = " wordpress" }, `" wordpress"`},
 		{"case-variant cms", func(m *corpusgate.Manifest) { m.Sources[0].CMS = "WordPress" }, `"WordPress"`},
 		{"missing pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = "" }, `pending cms ""`},
-		{"unknown pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = "prestashop" }, "prestashop"},
+		{"unknown pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = "shopware" }, "shopware"},
 		{"whitespace pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = " joomla" }, `" joomla"`},
 		{"case-variant pending cms", func(m *corpusgate.Manifest) { m.Pending[0].CMS = "Joomla" }, `"Joomla"`},
 		{"duplicate pending", func(m *corpusgate.Manifest) { m.Pending = append(m.Pending, m.Pending[0]) }, "twice"},
@@ -208,7 +209,7 @@ func TestRunInvalidManifestHasNoSideEffects(t *testing.T) {
 		{"too many files", func(m *corpusgate.Manifest) { m.Sources[0].Files = 30001 }, "files"},
 	} {
 		m := corpusgate.Manifest{Version: corpusgate.ManifestVersion, Sources: []corpusgate.Source{good},
-			Pending: []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}}}
+			Pending: []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}, {CMS: "prestashop", Reason: "x"}}}
 		tc.mutate(&m)
 		cases = append(cases, invalidCase{tc.name, string(mustJSON(t, m)), tc.want})
 	}
@@ -279,7 +280,7 @@ func TestRunPreparationErrorPrintsNoSummary(t *testing.T) {
 	bad := fixtureSource(t, cache, "wp", "wordpress")
 	bad.SHA256 = strings.Repeat("00", 32)
 	m := corpusgate.Manifest{Version: 2, Sources: []corpusgate.Source{bad},
-		Pending: []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}}}
+		Pending: []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}, {CMS: "prestashop", Reason: "x"}}}
 	out := filepath.Join(t.TempDir(), "out")
 	var stdout bytes.Buffer
 	if err := run(writeManifest(t, m), cache, filepath.Join(t.TempDir(), "corpus"), out, &stdout); err == nil {
@@ -301,7 +302,7 @@ func TestRunPropagatesWriterErrors(t *testing.T) {
 	installCountingTransport(t)
 	cache := filepath.Join(t.TempDir(), "cache")
 	m := corpusgate.Manifest{Version: 2, Sources: []corpusgate.Source{fixtureSource(t, cache, "wp", "wordpress")},
-		Pending: []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}}}
+		Pending: []corpusgate.PendingCMS{{CMS: "joomla", Reason: "x"}, {CMS: "drupal", Reason: "x"}, {CMS: "opencart", Reason: "x"}, {CMS: "magento", Reason: "x"}, {CMS: "prestashop", Reason: "x"}}}
 	err := run(writeManifest(t, m), cache, filepath.Join(t.TempDir(), "corpus"), filepath.Join(t.TempDir(), "out"), failingWriter{})
 	if err == nil || !strings.Contains(err.Error(), "closed pipe") {
 		t.Fatalf("writer error not propagated: %v", err)

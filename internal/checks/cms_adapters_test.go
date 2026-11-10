@@ -58,7 +58,7 @@ func compareAdaptersToCMSTable(owners []string, descriptors []cms.Descriptor) er
 // descriptor cannot be padded without an adapter.
 func TestDBContentAdaptersMatchCMSTable(t *testing.T) {
 	owners := dbContentOwners(runnerFindingNames)
-	if want := "db_content,db_content_drupal,db_content_joomla,db_content_magento,db_content_opencart"; strings.Join(owners, ",") != want {
+	if want := "db_content,db_content_drupal,db_content_joomla,db_content_magento,db_content_opencart,db_content_prestashop"; strings.Join(owners, ",") != want {
 		t.Fatalf("runner adapters %v, want %s", owners, want)
 	}
 	if err := compareAdaptersToCMSTable(owners, cms.All()); err != nil {
@@ -73,14 +73,14 @@ func TestDBContentAdaptersMatchCMSTable(t *testing.T) {
 
 func TestDBContentAdapterGuardRejectsDrift(t *testing.T) {
 	owners := dbContentOwners(runnerFindingNames)
-	if err := compareAdaptersToCMSTable(append(append([]string(nil), owners...), "db_content_prestashop"), cms.All()); err == nil || !strings.Contains(err.Error(), "db_content_prestashop") {
+	if err := compareAdaptersToCMSTable(append(append([]string(nil), owners...), "db_content_shopware"), cms.All()); err == nil || !strings.Contains(err.Error(), "db_content_shopware") {
 		t.Errorf("adapter without descriptor accepted: %v", err)
 	}
 	if err := compareAdaptersToCMSTable(owners[:len(owners)-1], cms.All()); err == nil {
 		t.Error("descriptor without adapter accepted")
 	}
-	padded := append(cms.All(), cms.Descriptor{Kind: "prestashop", DBContentCheck: "db_content_prestashop", PathConstants: []string{"dir_ps"}})
-	if err := compareAdaptersToCMSTable(owners, padded); err == nil || !strings.Contains(err.Error(), "prestashop") {
+	padded := append(cms.All(), cms.Descriptor{Kind: "shopware", DBContentCheck: "db_content_shopware", PathConstants: []string{"dir_ps"}})
+	if err := compareAdaptersToCMSTable(owners, padded); err == nil || !strings.Contains(err.Error(), "shopware") {
 		t.Errorf("padded table accepted: %v", err)
 	}
 	renamed := cms.All()

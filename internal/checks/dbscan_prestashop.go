@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -50,6 +51,69 @@ type prestashopCreds struct {
 	// path is the configuration file the values came from.
 	path       string
 	queryState *dbQueryState
+}
+
+// CheckPrestaShopContent discovers PrestaShop installs under every account
+// root and scans their settings, content and back-office employees.
+func CheckPrestaShopContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	markers := cmsDiscover(ctx, prestashopOwner, "*/public_html/config/defines.inc.php", "*/*/config/defines.inc.php")
+	var kept []string
+	for _, marker := range markers {
+		// Staging and backup copies query a database the site does not serve.
+		if !wpSkipDirNames[filepath.Base(prestashopRoot(marker))] {
+			kept = append(kept, marker)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	var findings []alert.Finding
+	// Rank by mtime desc so recently touched installs are scanned first when
+	// the check timeout cuts iteration short.
+	for _, marker := range rankCMSConfigs(ctx, prestashopOwner, kept, accountScanMaxFiles(ctx, cfg)) {
+		if ctx.Err() != nil {
+			return findings
+		}
+		findings = append(findings, scanPrestaShopInstall(ctx, prestashopRoot(marker), store)...)
+	}
+	return findings
+}
+
+func prestashopRoot(marker string) string {
+	return filepath.Dir(filepath.Dir(marker))
+}
+
+// scanPrestaShopInstall scans one install and stamps its findings with the
+// owner resolved from the configuration path.
+func scanPrestaShopInstall(ctx context.Context, root string, store *state.Store) []alert.Finding {
+	creds, isShop, err := readPrestaShopCreds(ctx, root)
+	if err != nil {
+		markCheckIncomplete(ctx, prestashopOwner)
+		return nil
+	}
+	if !isShop {
+		return nil
+	}
+	owner, owned := installOwner(creds.path)
+	// A suspended account's database user is locked: scanning it would only
+	// leave the check incomplete.
+	if owned && accountSuspended(owner) {
+		return nil
+	}
+	account := extractUser(root)
+	creds.ctx = ctx
+	creds.queryState = new(dbQueryState)
+	var findings []alert.Finding
+	findings = append(findings, scanPrestaShopSettings(account, creds)...)
+	findings = append(findings, scanPrestaShopContent(account, creds)...)
+	findings = append(findings, scanPrestaShopEmployees(store, account, creds)...)
+	if owned {
+		findings = stampTenantIDIfEmpty(findings, owner)
+	}
+	return findings
 }
 
 func (c prestashopCreds) asWPDBCreds() wpDBCreds {

@@ -19,6 +19,9 @@ const (
 	Drupal    Kind = "drupal"
 	OpenCart  Kind = "opencart"
 	Magento   Kind = "magento"
+	// PrestaShop covers 8 and 9; 1.7 and 1.6 are best-effort through the
+	// same schema.
+	PrestaShop Kind = "prestashop"
 )
 
 // Descriptor records what the rest of the tree needs to know about a CMS.
@@ -50,6 +53,12 @@ var descriptors = []Descriptor{
 		"dir_template", "dir_upload",
 	}},
 	{Kind: Magento, DBContentCheck: "db_content_magento", PathConstants: []string{"bp"}},
+	// _PS_ROOT_DIR_ may come from a server environment variable: server
+	// configuration, not request input.
+	{Kind: PrestaShop, DBContentCheck: "db_content_prestashop", PathConstants: []string{
+		"_ps_cache_dir_", "_ps_class_dir_", "_ps_config_dir_", "_ps_controller_dir_", "_ps_core_dir_",
+		"_ps_img_dir_", "_ps_module_dir_", "_ps_override_dir_", "_ps_root_dir_", "_ps_tool_dir_",
+	}},
 }
 
 func (d Descriptor) clone() Descriptor {

@@ -195,6 +195,7 @@ func TestCMSConfigFailuresMarkActualOwnerIncomplete(t *testing.T) {
 		{"db_content_drupal", "sites/default/settings.php", CheckDrupalContent},
 		{"db_content_magento", "app/etc/env.php", CheckMagentoContent},
 		{"db_content_opencart", "config.php", CheckOpenCartContent},
+		{"db_content_prestashop", "config/defines.inc.php", CheckPrestaShopContent},
 	} {
 		t.Run(tc.owner, func(t *testing.T) {
 			root := t.TempDir()
