@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 // psOmit drops a key from psParamsBody.
@@ -295,5 +297,175 @@ func TestReadPrestaShopCredsMissingUser(t *testing.T) {
 	files[psTestRoot+"/app/config/parameters.php"] = psParamsBody(map[string]string{"database_user": "''"})
 	if _, isShop, err := readPSRoot(t, files); !isShop || !errors.Is(err, errPrestaShopCreds) {
 		t.Fatalf("empty user: isShop %v err %v", isShop, err)
+	}
+}
+
+func psScanCreds(prefix string) prestashopCreds {
+	return prestashopCreds{dbHost: "localhost", dbName: "shop_db", dbUser: "shop_user", dbPrefix: prefix}
+}
+
+func psPayload() string { return evalToken + "(base64_decode('cGF5bG9hZA=='));" }
+
+func psFindings(findings []alert.Finding, check string) []alert.Finding {
+	var out []alert.Finding
+	for _, f := range findings {
+		if f.Check == check {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func TestPrestaShopSettingsScanBothTables(t *testing.T) {
+	withCapturedQueries(t, func(q string) []string {
+		switch {
+		case strings.Contains(q, "configuration_lang"):
+			return []string{"12\tPS_HEAD_JS\t" + psPayload(), "13\tPS_FOOTER\t" + psPayload()}
+		case strings.Contains(q, "FROM ps_configuration"):
+			return []string{"12\tPS_HEAD_JS\t" + psPayload()}
+		}
+		return nil
+	})
+	got := scanPrestaShopSettings("alice", psScanCreds("ps_"))
+	if len(got) != 2 {
+		t.Fatalf("findings = %d, want one per setting id: %+v", len(got), got)
+	}
+	all := got[0].Details + "\n" + got[1].Details
+	for _, want := range []string{"Setting key: PS_HEAD_JS", "Setting id: 12", "Setting id: 13", "Database: shop_db", "Table prefix: ps_", "Account: alice"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("details missing %q:\n%s", want, all)
+		}
+	}
+	for _, f := range got {
+		if f.Check != "prestashop_settings_injection" || f.DedupKey == "" {
+			t.Errorf("finding = %+v", f)
+		}
+	}
+}
+
+func TestPrestaShopSettingsNeverOutputsValue(t *testing.T) {
+	const marker = "fixture-config-value-5521"
+	withCapturedQueries(t, func(q string) []string {
+		if strings.Contains(q, "configuration") {
+			return []string{"12\tPS_MAIL_PASSWD\t" + marker + " " + psPayload()}
+		}
+		return nil
+	})
+	got := scanPrestaShopSettings("alice", psScanCreds("ps_"))
+	if len(got) == 0 {
+		t.Fatal("injected setting not reported")
+	}
+	for _, f := range got {
+		if strings.Contains(f.Message+f.Details+f.DedupKey, marker) {
+			t.Fatalf("setting value reached the finding: %+v", f)
+		}
+	}
+}
+
+func TestPrestaShopSettingsLangQueryJoinsName(t *testing.T) {
+	queries := withCapturedQueries(t, func(string) []string { return nil })
+	scanPrestaShopSettings("alice", psScanCreds("ps_"))
+	for _, q := range *queries {
+		if strings.Contains(q, "configuration_lang") {
+			if !strings.Contains(q, "ps_configuration_lang l JOIN ps_configuration c") {
+				t.Errorf("lang query does not join the setting name: %s", q)
+			}
+			return
+		}
+	}
+	t.Fatal("configuration_lang was not queried")
+}
+
+func TestPrestaShopSettingsValueWithTab(t *testing.T) {
+	withCapturedQueries(t, func(q string) []string {
+		if strings.Contains(q, "FROM ps_configuration WHERE") {
+			return []string{"14\tPS_X\tcol1\tcol2 " + psPayload()}
+		}
+		return nil
+	})
+	got := scanPrestaShopSettings("alice", psScanCreds("ps_"))
+	if len(got) != 1 || !strings.Contains(got[0].Details, "Setting key: PS_X\n") || !strings.Contains(got[0].Details, "Setting id: 14\n") {
+		t.Fatalf("tabbed value = %+v", got)
+	}
+}
+
+func TestPrestaShopSettingsSuppressesScriptOnlyFP(t *testing.T) {
+	withCapturedQueries(t, func(q string) []string {
+		if strings.Contains(q, "configuration") {
+			return []string{"20\tPS_HEAD_JS\t<script src=\"https://www.googletagmanager.com/gtag/js?id=G-XYZ\"></script>"}
+		}
+		return nil
+	})
+	if got := scanPrestaShopSettings("alice", psScanCreds("ps_")); len(got) != 0 {
+		t.Fatalf("Tag Manager embed classified as malicious: %+v", got)
+	}
+}
+
+func TestPrestaShopContentOneFindingPerProduct(t *testing.T) {
+	withCapturedQueries(t, func(q string) []string {
+		if !strings.Contains(q, "FROM ps_product_lang") {
+			return nil
+		}
+		if strings.Contains(q, "description_short") {
+			return []string{"42\t" + psPayload()}
+		}
+		return []string{"42\t" + psPayload(), "42\t" + psPayload(), "42\t" + psPayload()}
+	})
+	got := scanPrestaShopContent("alice", psScanCreds("ps_"))
+	if len(got) != 1 || got[0].Check != "prestashop_content_injection" ||
+		!strings.Contains(got[0].Details, "Table: product_lang\n") || !strings.Contains(got[0].Details, "Row id: 42\n") {
+		t.Fatalf("findings = %+v, want one for product_lang 42", got)
+	}
+}
+
+func TestPrestaShopContentCoversAllTables(t *testing.T) {
+	queries := withCapturedQueries(t, func(string) []string { return nil })
+	scanPrestaShopContent("alice", psScanCreds("ps_"))
+	joined := strings.Join(*queries, "\n")
+	for _, want := range []string{"id_cms, content FROM ps_cms_lang", "id_product, description FROM ps_product_lang", "id_product, description_short FROM ps_product_lang", "id_category, description FROM ps_category_lang"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing query %q in:\n%s", want, joined)
+		}
+	}
+	for _, banned := range []string{"additional_description", "id_lang", "id_shop"} {
+		if strings.Contains(joined, banned) {
+			t.Errorf("content query names %s", banned)
+		}
+	}
+}
+
+func TestPrestaShopContentIdentityIsStable(t *testing.T) {
+	withCapturedQueries(t, func(q string) []string {
+		if strings.Contains(q, "FROM ps_product_lang") && !strings.Contains(q, "description_short") ||
+			strings.Contains(q, "FROM ps_cms_lang") {
+			return []string{"42\t" + psPayload()}
+		}
+		return nil
+	})
+	first := scanPrestaShopContent("alice", psScanCreds("ps_"))
+	second := scanPrestaShopContent("alice", psScanCreds("ps_"))
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("findings = %d then %d, want 2", len(first), len(second))
+	}
+	if first[0].DedupKey != second[0].DedupKey || first[1].DedupKey != second[1].DedupKey {
+		t.Error("identity changed between identical scans")
+	}
+	if first[0].DedupKey == first[1].DedupKey {
+		t.Error("cms_lang 42 and product_lang 42 share an identity")
+	}
+}
+
+func TestPrestaShopScansUnprefixedTables(t *testing.T) {
+	queries := withCapturedQueries(t, func(string) []string { return nil })
+	scanPrestaShopSettings("alice", psScanCreds(""))
+	scanPrestaShopContent("alice", psScanCreds(""))
+	joined := strings.Join(*queries, "\n")
+	for _, want := range []string{"FROM configuration ", "FROM product_lang "} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("unprefixed query %q missing in:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "FROM _") {
+		t.Error("an empty prefix produced an underscore table name")
 	}
 }

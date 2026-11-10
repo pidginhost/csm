@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 // PrestaShop database content scanner.
@@ -263,4 +265,121 @@ func parsePrestaShopSettingsInc(ctx context.Context, path string) (prestashopCre
 		creds.dbPrefix = "ps_"
 	}
 	return creds, nil
+}
+
+// prestashopContentTable is one author-content table: one row per language
+// and shop, keyed by idCol.
+type prestashopContentTable struct {
+	table, idCol string
+	cols         []string
+}
+
+var prestashopContentTables = []prestashopContentTable{
+	{"cms_lang", "id_cms", []string{"content"}},
+	{"product_lang", "id_product", []string{"description", "description_short"}},
+	// additional_description exists only from 8.x on, so it is not queried.
+	{"category_lang", "id_category", []string{"description"}},
+}
+
+// prestashopFindingSet keeps one finding per identity, the most severe match
+// winning, in first-seen order: a product injected in every language and shop
+// is one finding.
+type prestashopFindingSet struct {
+	order []string
+	byKey map[string]alert.Finding
+}
+
+func (s *prestashopFindingSet) add(key string, f alert.Finding) {
+	if s.byKey == nil {
+		s.byKey = map[string]alert.Finding{}
+	}
+	prev, seen := s.byKey[key]
+	if !seen {
+		s.order = append(s.order, key)
+	}
+	if !seen || f.Severity > prev.Severity {
+		s.byKey[key] = f
+	}
+}
+
+func (s *prestashopFindingSet) findings() []alert.Finding {
+	out := make([]alert.Finding, 0, len(s.order))
+	for _, key := range s.order {
+		out = append(out, s.byKey[key])
+	}
+	return out
+}
+
+func prestashopFindingDetails(creds wpDBCreds, lines ...string) string {
+	return dbContentFindingDetails(creds, creds.tablePrefix, append([]string{"Database host: " + creds.dbHost}, lines...)...)
+}
+
+// scanPrestaShopSettings scans configuration and configuration_lang values
+// with the strict config-storage rules. Values are classified, never output:
+// PS_MAIL_PASSWD is stored here in plain text.
+func scanPrestaShopSettings(account string, creds prestashopCreds) []alert.Finding {
+	w := creds.asWPDBCreds()
+	p := creds.dbPrefix
+	queries := []string{
+		fmt.Sprintf("SELECT id_configuration, name, value FROM %sconfiguration WHERE %s", p, paramsLikeClause("value")),
+		fmt.Sprintf("SELECT c.id_configuration, c.name, l.value FROM %sconfiguration_lang l JOIN %sconfiguration c ON c.id_configuration = l.id_configuration WHERE %s",
+			p, p, paramsLikeClause("l.value")),
+	}
+	var set prestashopFindingSet
+	for _, query := range queries {
+		rows, _ := runCMSQuery(w, query)
+		for _, row := range rows {
+			fields := strings.SplitN(row, "\t", 3)
+			if len(fields) < 3 || !isAllDigits(fields[0]) {
+				continue
+			}
+			id, name := fields[0], fields[1]
+			sev, desc, ok := classifyMalwareRow(fields[2], false)
+			if !ok {
+				continue
+			}
+			set.add(id, alert.Finding{
+				Severity: sev,
+				Check:    "prestashop_settings_injection",
+				Message:  fmt.Sprintf("PrestaShop settings injection on %s: %s (%s)", account, name, desc),
+				Details: prestashopFindingDetails(w, "Account: "+account, "Setting key: "+name,
+					"Setting id: "+id, "Match: "+desc),
+				DedupKey: dbContentDedupKey(account, w, p, "prestashop-setting", "id="+id),
+			})
+		}
+	}
+	return set.findings()
+}
+
+// scanPrestaShopContent scans page, product and category text in every
+// language and shop with the looser author-content rules.
+func scanPrestaShopContent(account string, creds prestashopCreds) []alert.Finding {
+	w := creds.asWPDBCreds()
+	p := creds.dbPrefix
+	var set prestashopFindingSet
+	for _, t := range prestashopContentTables {
+		for _, col := range t.cols {
+			rows, _ := runCMSQuery(w, fmt.Sprintf("SELECT %s, %s FROM %s%s WHERE %s",
+				t.idCol, col, p, t.table, paramsLikeClause(col)))
+			for _, row := range rows {
+				id, body := splitTabRow(row)
+				if !isAllDigits(id) {
+					continue
+				}
+				sev, desc, ok := classifyMalwareRow(body, true)
+				if !ok {
+					continue
+				}
+				set.add(t.table+"\x00"+id, alert.Finding{
+					Severity: sev,
+					Check:    "prestashop_content_injection",
+					Message:  fmt.Sprintf("PrestaShop content injection on %s: %s id=%s (%s)", account, t.table, id, desc),
+					Details: prestashopFindingDetails(w, "Account: "+account, "Table: "+t.table,
+						"Row id: "+id, "Match: "+desc),
+					DedupKey: dbContentDedupKey(account, w, p, "prestashop-content", "table="+t.table, "id="+id),
+				})
+			}
+		}
+	}
+	return set.findings()
 }
