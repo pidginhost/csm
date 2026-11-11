@@ -183,16 +183,11 @@ back to the web server or run detached under init, the shape of a loop a
 webshell leaves behind. A PHP worker that serves the site is not stopped unless
 it wrote the file itself. A process with a terminal, or one started from an
 SSH, cPanel or cron session, is left running and the file is still handled;
-root processes are never stopped. CSM follows the full ancestry even when it
-passes through a PHP worker or web server. Missing process information, an
-unknown parent or an ancestry chain beyond the safety limit prevents killing.
-
-CSM captures the writer chain before queuing content analysis, so a short-lived
-writer can exit without losing its surviving parents. Before each signal,
-CSM rechecks the terminal, ancestry and start time through a kernel process
-handle. The original event time rejects processes that reused a PID while
-analysis was queued. A parent that has become a PHP worker is left running.
-The process handle and older-kernel behavior are described above.
+root processes are never stopped. An SSH, cron or cPanel session anywhere
+above a PHP worker also prevents the kill, and so does any part of the
+ancestry CSM cannot read. The processes are named when the write is seen, and
+each is checked again through a kernel process handle just before the signal,
+as described above.
 
 ### Restoring quarantined files
 

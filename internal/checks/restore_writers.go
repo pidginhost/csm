@@ -109,6 +109,11 @@ func isControlPlaneExe(exe string) bool {
 		"mysqld", "mariadbd", "postgres", "redis-server", "valkey-server", "memcached":
 		return true
 	}
+	// The PHP command-line binary ships under /opt/cpanel but runs account
+	// scripts; its ancestry decides, not its install path.
+	if isPHPCLIExe(exe) {
+		return false
+	}
 	for _, prefix := range []string{
 		"/usr/local/cpanel/", "/opt/cpanel/", "/usr/local/lsws/",
 		"/sbin/", "/usr/sbin/", "/usr/local/sbin/", "/usr/libexec/", "/usr/lib/", "/lib/",
@@ -119,6 +124,12 @@ func isControlPlaneExe(exe string) bool {
 		}
 	}
 	return false
+}
+
+// isPHPCLIExe matches php, php81 or php8.1, not the server binaries.
+func isPHPCLIExe(exe string) bool {
+	base := filepath.Base(exe)
+	return strings.HasPrefix(base, "php") && strings.Trim(base[len("php"):], "0123456789.") == ""
 }
 
 // procParentAndTTY reads the parent PID and controlling terminal of pid.

@@ -578,3 +578,30 @@ func TestAutoKillRestorePHPWriterOnly(t *testing.T) {
 		})
 	}
 }
+
+// cPanel's PHP command-line binary lives under /opt/cpanel but runs account
+// scripts, such as a loop a webshell started with "php loop.php &". Its
+// ancestry, not its install path, decides.
+func TestRestoreWriterChainStopsADetachedPHPScript(t *testing.T) {
+	for _, exe := range []string{"/opt/cpanel/ea-php84/root/usr/bin/php", "/opt/alt/php81/usr/bin/php"} {
+		t.Run(exe, func(t *testing.T) {
+			withProcTable(t, map[int]fakeProc{
+				700: {ppid: 1, uid: "1001", exe: exe},
+			})
+			if got := RestoreWriterChain(700, restoreWrittenAt); !reflect.DeepEqual(got, []int{700}) {
+				t.Fatalf("chain = %v, want the detached PHP script", got)
+			}
+		})
+	}
+}
+
+// The same binary run for a cPanel task stays protected by its ancestry.
+func TestRestoreWriterChainLeavesPHPRunByCPanel(t *testing.T) {
+	withProcTable(t, map[int]fakeProc{
+		701: {ppid: 400, uid: "1001", exe: "/opt/cpanel/ea-php84/root/usr/bin/php"},
+		400: {ppid: 1, uid: "0", exe: "/usr/local/cpanel/3rdparty/wp-toolkit/bin/wpt-panopticon"},
+	})
+	if got := RestoreWriterChain(701, restoreWrittenAt); got != nil {
+		t.Fatalf("chain = %v, want nothing for a cPanel task", got)
+	}
+}
