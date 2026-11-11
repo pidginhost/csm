@@ -1,9 +1,14 @@
 package daemon
 
 import (
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func TestBuildPolicyDisabledWhenEnforcementOff(t *testing.T) {
@@ -131,7 +136,7 @@ func TestBuildPolicyPortsCollectedFromDetectorWhenSMTPGate(t *testing.T) {
 func TestSafeUIDsFromPasswdParsesRoot(t *testing.T) {
 	uids, err := safeUIDsFromPasswd("testdata/passwd_simple")
 	if err != nil {
-		t.Skipf("fixture not available: %v", err)
+		t.Fatalf("read passwd fixture: %v", err)
 	}
 	if !uids[0] {
 		t.Errorf("root (UID 0) must be in safe_uids")
@@ -141,7 +146,7 @@ func TestSafeUIDsFromPasswdParsesRoot(t *testing.T) {
 func TestSafeUIDsFromPasswdSkipsHostedAccounts(t *testing.T) {
 	uids, err := safeUIDsFromPasswd("testdata/passwd_simple")
 	if err != nil {
-		t.Skipf("fixture not available: %v", err)
+		t.Fatalf("read passwd fixture: %v", err)
 	}
 	if uids[1001] {
 		t.Errorf("hosted UID 1001 must NOT be in safe_uids (only system + MTA)")
@@ -151,10 +156,45 @@ func TestSafeUIDsFromPasswdSkipsHostedAccounts(t *testing.T) {
 func TestSafeUIDsFromPasswdIncludesPostfix(t *testing.T) {
 	uids, err := safeUIDsFromPasswd("testdata/passwd_simple")
 	if err != nil {
-		t.Skipf("fixture not available: %v", err)
+		t.Fatalf("read passwd fixture: %v", err)
 	}
 	postfixUID := uint32(89)
 	if !uids[postfixUID] {
 		t.Errorf("postfix UID 89 must be in safe_uids; got %v", uids)
+	}
+}
+
+func TestSafeUIDsFromPasswdStalwartIdentity(t *testing.T) {
+	for _, panel := range []platform.Panel{platform.PanelNone, platform.PanelPlesk, platform.PanelDA, platform.PanelCPanel} {
+		for _, user := range []string{"stalwart", "stalwart-mail"} {
+			for _, uid := range []uint32{999, 1000, 1001} {
+				t.Run(fmt.Sprintf("%s/%s/%d", panel, user, uid), func(t *testing.T) {
+					platform.ResetForTest()
+					t.Cleanup(platform.ResetForTest)
+					if !platform.SetOverrides(platform.Overrides{Panel: &panel}) {
+						t.Fatal("set platform override")
+					}
+					path := filepath.Join(t.TempDir(), "passwd")
+					passwd := "root:x:0:0::/root:/bin/sh\n" +
+						"postfix:x:2000:2000::/var/spool/postfix:/usr/sbin/nologin\n" +
+						"alice:x:2001:2001::/home/alice:/bin/sh\n" +
+						fmt.Sprintf("%s:x:%d:%d::/var/lib/stalwart:/usr/sbin/nologin\n", user, uid, uid)
+					if err := os.WriteFile(path, []byte(passwd), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					got, err := safeUIDsFromPasswd(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := map[uint32]bool{0: true, 2000: true}
+					if uid < 1000 {
+						want[uid] = true
+					}
+					if !maps.Equal(got, want) {
+						t.Fatalf("safe UIDs = %v, want %v", got, want)
+					}
+				})
+			}
+		}
 	}
 }

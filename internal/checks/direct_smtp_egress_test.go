@@ -1,12 +1,14 @@
 package checks
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/processctx"
@@ -304,5 +306,60 @@ func TestDirectSMTPEgressFindingsTotalBumps(t *testing.T) {
 	out := sb.String()
 	if !strings.Contains(out, "csm_direct_smtp_egress_findings_total 2") {
 		t.Errorf("expected counter at 2:\n%s", out)
+	}
+}
+
+// The firewall lets smtp_allow_users send through smtp_block, so the
+// detector must not call the same connections unexpected.
+func TestEvaluateDirectSMTPEgressSkipsSMTPAllowUsers(t *testing.T) {
+	cfg := sampleDirectSMTPCfg()
+	cfg.Firewall = &firewall.FirewallConfig{SMTPAllowUsers: []string{"relay", "shop", ""}}
+	for _, user := range []string{"relay", "shop"} {
+		in := DirectSMTPEgressInput{
+			UID: 1002, User: user, PID: 4242, Comm: "php-fpm",
+			DstIP: net.ParseIP("203.0.113.10").To4(), DstPort: 25, MTA: sampleMTA(),
+		}
+		if _, ok := EvaluateDirectSMTPEgress(cfg, in); ok {
+			t.Errorf("%s is listed in firewall.smtp_allow_users and must be skipped", user)
+		}
+	}
+	for _, user := range []string{"shopx", "Shop", ""} {
+		in := DirectSMTPEgressInput{
+			UID: 1003, User: user, PID: 4243, Comm: "php-fpm",
+			DstIP: net.ParseIP("203.0.113.10").To4(), DstPort: 25, MTA: sampleMTA(),
+		}
+		if _, ok := EvaluateDirectSMTPEgress(cfg, in); !ok {
+			t.Errorf("user %q is not listed and must still raise a finding", user)
+		}
+	}
+}
+
+func TestEvaluateDirectSMTPEgressStalwartIdentity(t *testing.T) {
+	for _, panel := range []platform.Panel{platform.PanelNone, platform.PanelPlesk, platform.PanelDA, platform.PanelCPanel} {
+		for _, user := range []string{"stalwart", "stalwart-mail"} {
+			for _, uid := range []uint32{999, 1000, 1001} {
+				t.Run(fmt.Sprintf("%s/%s/%d", panel, user, uid), func(t *testing.T) {
+					cfg := sampleDirectSMTPCfg()
+					in := DirectSMTPEgressInput{
+						UID: uid, User: user,
+						DstIP: net.ParseIP("203.0.113.10"), DstPort: 25,
+						MTA: platform.LocalMTAIdentities(platform.Info{Panel: panel}),
+					}
+					wantFinding := uid >= 1000 || panel == platform.PanelCPanel
+					f, ok := EvaluateDirectSMTPEgress(cfg, in)
+					if ok != wantFinding {
+						t.Fatalf("finding = %v, want %v for user %s with UID %d", ok, wantFinding, user, uid)
+					}
+					if ok && (f.Check != "direct_smtp_egress" || f.Severity != alert.High) {
+						t.Fatalf("unexpected finding: %+v", f)
+					}
+
+					cfg.Firewall = &firewall.FirewallConfig{SMTPBlock: true, SMTPAllowUsers: []string{user}}
+					if _, ok := EvaluateDirectSMTPEgress(cfg, in); ok {
+						t.Fatal("explicitly allowed SMTP user must not raise a finding")
+					}
+				})
+			}
+		}
 	}
 }

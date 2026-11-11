@@ -15,7 +15,14 @@ A finding with `check: "direct_smtp_egress"` is emitted when:
 - Destination IP is not loopback, infra, or in the operator's
   `infra_ips` list.
 - The process user is NOT a known MTA user (mail, mailnull, postfix,
-  dovecot, dovenull, mailman, plus exim on cPanel).
+  dovecot, dovenull, mailman, plus exim on cPanel). On non-cPanel hosts,
+  Stalwart's stalwart and stalwart-mail users are also recognized when
+  their UID is below 1000. Hosted UIDs do not receive this automatic
+  exemption, even when they use a Stalwart username.
+- The process user is NOT listed under `firewall.smtp_allow_users`.
+  Those users may send through `firewall.smtp_block`, so their
+  connections are expected. List any other mail server's service user
+  there.
 
 Process names are never a standalone allow condition. A hosted account
 renaming malware to `smtp` or `smtpd` still emits a finding.
@@ -46,7 +53,7 @@ detection:
 - `bpf` -- emit only from the cgroup/connect4,6 consumer.
 - `legacy` -- emit only from the `/proc/net/tcp[6]` polling path
   (live poller or scheduled critical scan). This path lacks PID/comm;
-  MTA matching is user-only.
+  MTA matching uses the username and UID.
 - `none` -- detector disabled even when `enabled: true` is set
   elsewhere; useful for staged rollout.
 
@@ -71,6 +78,8 @@ omitted; the finding still fires.
 
 ## Caveats
 
+- `firewall.smtp_allow_users` suppresses detector findings but does not
+  exempt hosted UIDs from BPF denial. See [BPF enforcement](bpf-enforcement.md).
 - `2525` is intentionally NOT in the default port list. Many operators
   run unrelated services on it. Add it to `ports` if your infra uses
   it for submission.

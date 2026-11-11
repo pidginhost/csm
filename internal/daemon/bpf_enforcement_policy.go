@@ -98,7 +98,7 @@ func safeUIDsFromPasswd(path string) (map[uint32]bool, error) {
 		}
 		// Hosted UIDs (>=1000): NOT safe by default. Exception:
 		// platform-known MTA users on distros that put them above 1000.
-		if mta.IsMTAUser(user) {
+		if mta.IsMTAUser(user, uid) {
 			out[uid] = true
 		}
 	}
