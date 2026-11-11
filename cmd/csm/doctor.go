@@ -84,6 +84,8 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.OverallStatus = collapseDoctor(report.Checks)
 		return report
 	}
+	// Apply web_server: before any check reads the platform.
+	overridesApplied := doctorPlatformOverrides(cfg)
 	modeCheckIndex := len(report.Checks)
 	report.Checks = append(report.Checks, doctorModeCheck(cfg))
 	validationChecks, invalid := doctorConfigValidation(cfg)
@@ -100,6 +102,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	// daemon is already down for that reason.
 	report.Checks = append(report.Checks, doctorIntegrityCheck(cfg, verifyIntegrity))
 	report.Checks = append(report.Checks, doctorAccountRootAccess(cfg)...)
+	report.Checks = append(report.Checks, webRewriteDoctorCheck(doctorHTTPRewrite(overridesApplied)))
 
 	// 2. Daemon reachable
 	resp, err := readStatus()
