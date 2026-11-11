@@ -1081,6 +1081,7 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
 		findings[i].Attribution = r.ResponseAttribution
+		findings[i].ScanCarryForward = r.ScanCarryForward
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
