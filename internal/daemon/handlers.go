@@ -70,23 +70,22 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// an attack. Real API abuse won't correlate with a recent purge for the same account.
 	// A failure counts as brute force against its source and can block it;
 	// a trusted proxy's address stands for every visitor behind it.
-	if rec.MayHaveStatus("401", "403") && (rec.Proxy || !checks.IsTrustedProxy(ip, cfg)) {
-		if rec.TargetContains("json-api", "/execute/") {
-			if rec.Proxy || rec.Status != "401" || !purgeTracker.isPostPurge401(ip) {
-				attribution := admission.AttributionUnknown
-				if !rec.Proxy {
-					attribution = admission.AttributionPeer
-				}
-				findings = append(findings, alert.Finding{
-					Severity:    alert.High,
-					Check:       "api_auth_failure_realtime",
-					Message:     fmt.Sprintf("cPanel API auth failure from %s", client),
-					Details:     truncateDaemon(line, 300),
-					SourceIP:    sourceIP,
-					DedupKey:    dedup,
-					Attribution: attribution,
-				})
+	// The scheduled scan counts the same records (checks.CheckAPIAuthFailures).
+	if rec.APIAuthFailure() && (rec.Proxy || !checks.IsTrustedProxy(ip, cfg)) {
+		if rec.Proxy || rec.Status != "401" || !purgeTracker.isPostPurge401(ip) {
+			attribution := admission.AttributionUnknown
+			if !rec.Proxy {
+				attribution = admission.AttributionPeer
 			}
+			findings = append(findings, alert.Finding{
+				Severity:    alert.High,
+				Check:       "api_auth_failure_realtime",
+				Message:     fmt.Sprintf("cPanel API auth failure from %s", client),
+				Details:     truncateDaemon(line, 300),
+				SourceIP:    sourceIP,
+				DedupKey:    dedup,
+				Attribution: attribution,
+			})
 		}
 	}
 

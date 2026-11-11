@@ -30,6 +30,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- cPanel API failure alerts now count legacy XML API calls, and the scheduled check no longer counts page requests from expired cPanel or webmail sessions.
 - API-created cPanel sessions and logins from the server itself no longer raise account hijack alerts or count toward multi-address login alerts.
 - On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
 - cPanel login checks now read session logs written without a time zone, so logins and multi-address logins on those servers are reported.

@@ -173,6 +173,15 @@ func (r CpanelAccessRecord) MayHaveStatus(codes ...string) bool {
 	return false
 }
 
+// APIAuthFailure reports whether the record may be a failed cPanel or WHM
+// API authentication: a 401 or 403 on a UAPI, JSON API or XML API call. Page
+// requests on an expired session URL do not count; they carry no credential
+// to guess. Any target or status on the line counts, since a forged one can
+// only count against the client that wrote it.
+func (r CpanelAccessRecord) APIAuthFailure() bool {
+	return r.MayHaveStatus("401", "403") && r.TargetContains("json-api", "xml-api", "/execute/")
+}
+
 // WebmailLogin reports whether the record is a login POST to webmail.
 func (r CpanelAccessRecord) WebmailLogin() bool {
 	if r.Port != "2095" && r.Port != "2096" {
