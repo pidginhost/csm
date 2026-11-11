@@ -330,7 +330,7 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 }
 
 func handleCloudRelayCredentialAbuse(cfg *config.Config, authUser string) {
-	respondToMailboxCompromise(cfg, authUser, "authenticated sends from several cloud-provider addresses")
+	respondToMailboxCompromise(cfg, authUser, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses")
 }
 
 func truncateIPList(ips []string, n int) []string {

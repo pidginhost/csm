@@ -6,6 +6,7 @@ package privops
 var operations = []Op{
 	{
 		ID:               "respond.hold_outgoing_mail",
+		Audited:          true,
 		Risk:             RiskReversible,
 		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",

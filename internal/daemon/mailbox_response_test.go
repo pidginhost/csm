@@ -96,7 +96,7 @@ func TestMaybeSuspendMailbox_GatedByConfig(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := captureActionRecords(t)
-			if maybeSuspendMailbox(tc.cfg, "real@victim.example", "test") {
+			if maybeSuspendMailbox(tc.cfg, "real@victim.example", "email_compromised_account", "test") {
 				t.Error("reported the mailbox as suspended")
 			}
 			if len(*calls) != 0 || len(*holds) != 0 {
@@ -120,7 +120,7 @@ func TestMaybeSuspendMailbox_SuspendsLoginAndOutgoing(t *testing.T) {
 	holds := stubAccountHold(t, true)
 	sink := captureActionRecords(t)
 
-	if !maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "credential abuse") {
+	if !maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "email_compromised_account", "credential abuse") {
 		t.Fatal("live response must report the mailbox as suspended")
 	}
 	want := [][]string{uapiArgs("suspend_login"), uapiArgs("suspend_outgoing")}
@@ -166,7 +166,7 @@ func TestMaybeSuspendMailbox_LoginFailureStillCountsOutgoing(t *testing.T) {
 	holds := stubAccountHold(t, true)
 	sink := captureActionRecords(t)
 
-	if !maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "test") {
+	if !maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "email_compromised_account", "test") {
 		t.Fatal("outgoing suspension alone still stops the sending and must report success")
 	}
 	if len(*calls) != 2 || len(*holds) != 0 {
@@ -203,7 +203,7 @@ func TestMaybeSuspendMailbox_ResultStatusControlsFallback(t *testing.T) {
 			})
 			holds := stubAccountHold(t, true)
 			sink := captureActionRecords(t)
-			if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "test") {
+			if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "email_compromised_account", "test") {
 				t.Fatal("successful suspension or fallback did not report stopped")
 			}
 			if len(*calls) != 2 || len(sink.records) != 2 {
@@ -240,7 +240,7 @@ func TestMailboxSuspensionSetsTimeout(t *testing.T) {
 	withUserdomains(t, "example.com: cpuser\n")
 	stubAccountHold(t, true)
 	captureActionRecords(t)
-	if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "test") || calls != 2 {
+	if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "email_compromised_account", "test") || calls != 2 {
 		t.Fatalf("expected two bounded calls, got %d", calls)
 	}
 }
@@ -253,7 +253,7 @@ func TestMaybeSuspendMailbox_FallsBackToAccountHold(t *testing.T) {
 	holds := stubAccountHold(t, true)
 	sink := captureActionRecords(t)
 
-	if !maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "test") {
+	if !maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "email_compromised_account", "test") {
 		t.Fatal("a successful fallback hold must be reported as stopped")
 	}
 	if len(*calls) != 2 {
@@ -268,7 +268,7 @@ func TestMaybeSuspendMailbox_FallsBackToAccountHold(t *testing.T) {
 		}
 	}
 	holdsFailed := stubAccountHold(t, false)
-	if maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "test") {
+	if maybeSuspendMailbox(eximAutoHoldConfig(), "real@victim.example", "email_compromised_account", "test") {
 		t.Fatal("when the fallback hold fails nothing was stopped")
 	}
 	if len(*holdsFailed) != 1 {
@@ -282,7 +282,7 @@ func TestMaybeSuspendMailbox_UnresolvedMailboxHoldsAccount(t *testing.T) {
 	holds := stubAccountHold(t, true)
 
 	for _, target := range []string{"real@victim.example", "victim.example"} {
-		if !maybeSuspendMailbox(eximAutoHoldConfig(), target, "test") {
+		if !maybeSuspendMailbox(eximAutoHoldConfig(), target, "email_compromised_account", "test") {
 			t.Errorf("%s: fallback hold result must be returned", target)
 		}
 	}
@@ -393,7 +393,7 @@ func TestMailboxSuspensionUndoPreservesIdentity(t *testing.T) {
 			if identity != mailbox {
 				t.Fatalf("authenticated identity = %q, want %q", identity, mailbox)
 			}
-			if !maybeSuspendMailbox(eximAutoHoldConfig(), identity, "test") {
+			if !maybeSuspendMailbox(eximAutoHoldConfig(), identity, "email_compromised_account", "test") {
 				t.Fatal("suspension failed")
 			}
 			for _, args := range (*calls)[len(*calls)-2:] {

@@ -8,11 +8,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -89,55 +92,111 @@ func uapiResultError(out []byte) error {
 	return errors.New(strings.Join(reply.Result.Errors, "; "))
 }
 
-// maybeSuspendMailbox stops one abused credential: it suspends the mailbox's
-// logins, which also ends its SMTP authentication, and its outgoing mail. An
-// account-wide hold punishes every mailbox under the account for one stolen
-// password, so the hold is the fallback only when neither suspension can be
-// applied or no cPanel account owns the mailbox. The action honours the same
-// master switch and dry-run safety default as the hold. It returns true when
-// sending from the mailbox was stopped by either path.
-func maybeSuspendMailbox(cfg *config.Config, mailbox, reason string) bool {
-	if cfg == nil || !cfg.AutoResponse.Enabled {
-		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend mailbox %s (auto_response disabled)\n",
-			time.Now().Format("2006-01-02 15:04:05"), mailbox)
-		return false
-	}
-	if cfg.AutoResponseDryRunEnabled() {
-		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend mailbox %s (dry-run)\n",
-			time.Now().Format("2006-01-02 15:04:05"), mailbox)
-		actionlog.Write(actionlog.Record{Op: "respond.suspend_mailbox", Target: mailbox, Reason: reason, Result: actionlog.DryRun})
-		return false
-	}
-	return suspendMailbox(mailbox, reason)
+// maybeSuspendMailbox stops one abused credential seen sending: it suspends
+// the mailbox's logins, which also ends its SMTP authentication, and its
+// outgoing mail. It returns true when sending from the mailbox was stopped.
+func maybeSuspendMailbox(cfg *config.Config, mailbox, check, reason string) bool {
+	stopped, _ := respondToCompromise(cfg, mailboxCompromise{
+		Subject: mailbox, Check: check, Reason: reason, Evidence: evidenceSending, At: time.Now(),
+	})
+	return stopped
 }
 
-func suspendMailbox(mailbox, reason string) bool {
-	domain := extractDomainFromEmail(mailbox)
-	if domain == "" {
-		// A bare domain names the whole account; only the account hold fits.
-		return autoSuspendOutgoingMail(mailbox)
+// cpanelMailBackend suspends through cPanel's uapi and whmapi1.
+type cpanelMailBackend struct{}
+
+func (cpanelMailBackend) name() string { return "cpanel" }
+
+func (cpanelMailBackend) suspend(c mailboxCompromise) (store.MailboxSuspension, error) {
+	switch {
+	case strings.Contains(c.Subject, "@"):
+		return suspendCPanelMailbox(c)
+	case strings.Contains(c.Subject, "."):
+		// A domain names its owning account; only the account hold fits.
+		return holdOwnerAccount(c.Subject)
+	default:
+		return holdBareCPanelAccount(c.Subject)
 	}
+}
+
+func (cpanelMailBackend) release(store.MailboxSuspension, string) error {
+	return errors.New("not implemented")
+}
+
+func (cpanelMailBackend) active([]store.MailboxSuspension) (map[string]bool, error) {
+	return nil, errors.New("not implemented")
+}
+
+// suspendCPanelMailbox suspends one mailbox's logins and outgoing mail. An
+// account-wide hold punishes every mailbox under the account for one stolen
+// password, so it is the fallback only for sending evidence, when neither
+// suspension applies or no cPanel account owns the mailbox.
+func suspendCPanelMailbox(c mailboxCompromise) (store.MailboxSuspension, error) {
+	stamp := time.Now().Format("2006-01-02 15:04:05")
+	domain := extractDomainFromEmail(c.Subject)
 	user := lookupCPanelUser(domain)
 	if user == "" {
-		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: no cPanel account owns %s, falling back to the account hold\n",
-			time.Now().Format("2006-01-02 15:04:05"), domain)
-		return autoSuspendOutgoingMail(mailbox)
+		if c.Evidence == evidenceLogin {
+			return store.MailboxSuspension{}, fmt.Errorf("no cPanel account owns %s", domain)
+		}
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: no cPanel account owns %s, falling back to the account hold\n", stamp, domain)
+		return holdOwnerAccount(c.Subject)
 	}
-	stopped := false
-	for _, fn := range []string{"suspend_login", "suspend_outgoing"} {
-		if err := runMailboxSuspension(user, mailbox, fn, reason); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: uapi Email %s failed for %s: %v\n",
-				time.Now().Format("2006-01-02 15:04:05"), fn, mailbox, err)
+	var applied []string
+	var errs []error
+	for _, fn := range []string{store.AppliedSuspendLogin, store.AppliedSuspendOutgoing} {
+		if err := runMailboxSuspension(user, c.Subject, fn, c.Reason); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: uapi Email %s failed for %s: %v\n", stamp, fn, c.Subject, err)
+			errs = append(errs, fmt.Errorf("%s: %w", fn, err))
 			continue
 		}
-		stopped = true
+		applied = append(applied, fn)
 	}
-	if stopped {
-		fmt.Fprintf(os.Stderr, "[%s] AUTO-SUSPEND: mailbox %s suspended (cPanel user %s)\n",
-			time.Now().Format("2006-01-02 15:04:05"), mailbox, user)
-		return true
+	if len(applied) > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] AUTO-SUSPEND: mailbox %s suspended (cPanel user %s)\n", stamp, c.Subject, user)
+		return store.MailboxSuspension{Kind: store.SuspensionKindMailbox, Account: user, Applied: applied}, nil
 	}
-	return autoSuspendOutgoingMail(mailbox)
+	if c.Evidence == evidenceLogin {
+		return store.MailboxSuspension{}, errors.Join(errs...)
+	}
+	return holdOwnerAccount(c.Subject)
+}
+
+// holdOwnerAccount holds outgoing mail for the account owning a domain or a
+// mailbox's domain.
+func holdOwnerAccount(subject string) (store.MailboxSuspension, error) {
+	domain := subject
+	if at := strings.LastIndexByte(domain, '@'); at >= 0 {
+		domain = domain[at+1:]
+	}
+	user := lookupCPanelUser(domain)
+	if !autoSuspendOutgoingMail(subject) {
+		return store.MailboxSuspension{}, fmt.Errorf("outgoing mail hold for %s failed", subject)
+	}
+	return store.MailboxSuspension{Kind: store.SuspensionKindAccount, Account: user, Applied: []string{store.AppliedHoldOutgoing}}, nil
+}
+
+// cpanelUsersDir lists one file per cPanel account. var so tests can point it
+// at a fixture.
+var cpanelUsersDir = "/var/cpanel/users"
+
+// cpanelUserRe bounds a bare login to a cPanel account name before it reaches
+// a path or a whmapi1 argument.
+var cpanelUserRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// holdBareCPanelAccount holds the account's outgoing mail when a login named
+// the cPanel account itself: that password unlocks every mailbox.
+func holdBareCPanelAccount(user string) (store.MailboxSuspension, error) {
+	if !cpanelUserRe.MatchString(user) {
+		return store.MailboxSuspension{}, fmt.Errorf("%q is not a cPanel account name", user)
+	}
+	if _, err := os.Stat(filepath.Join(cpanelUsersDir, user)); err != nil {
+		return store.MailboxSuspension{}, fmt.Errorf("no cPanel account %s", user)
+	}
+	if !holdCPanelAccount(user) {
+		return store.MailboxSuspension{}, fmt.Errorf("outgoing mail hold for cPanel account %s failed", user)
+	}
+	return store.MailboxSuspension{Kind: store.SuspensionKindAccount, Account: user, Applied: []string{store.AppliedHoldOutgoing}}, nil
 }
 
 // runMailboxSuspension applies one uapi Email suspension and records it.

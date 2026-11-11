@@ -467,6 +467,7 @@ func TestAuditedOperationsArePinned(t *testing.T) {
 		"operate.manual_firewall",
 		"respond.block_ip",
 		"respond.clean_file",
+		"respond.hold_outgoing_mail",
 		"respond.kill_process",
 		"respond.quarantine_file",
 		"respond.suspend_mailbox",

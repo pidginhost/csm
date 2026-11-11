@@ -71,9 +71,11 @@ through the pinned file handles. Directories and symlinks have no digest.
 ## What is covered
 
 The [capability matrix](capability-matrix.md) has an "Action record" column.
-Seven operations write here today: firewall blocks and unblocks (automatic and
+These operations write here today: firewall blocks and unblocks (automatic and
 operator), whole-ruleset changes, file quarantine, surgical file cleaning,
-process termination, and mailbox suspension. Everything else appears in the
+process termination, mailbox suspension, and the account-wide outgoing mail
+hold. A hold record carries the quoted `whmapi1 release_outgoing_email`
+command that lifts it. Everything else appears in the
 daemon log only. The column is the authoritative list. Tests exercise the
 operation paths, including failures and concurrent blocks.
 
