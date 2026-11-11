@@ -54,6 +54,27 @@ func TestReconcileReturnsBatchWithoutRevocation(t *testing.T) {
 	}
 }
 
+func TestReconcileAdoptsAndRevokesLegacyContentInOneBatch(t *testing.T) {
+	s := openTestStore(t)
+	unknown := contentFinding("yara_match_scheduled", "")
+	s.SetBaseline([]alert.Finding{unknown})
+	a, b := contentFinding(unknown.Check, shaA), contentFinding(unknown.Check, shaB)
+	carried := b
+	carried.ScanCarryForward = true
+
+	got := s.ReconcileDismissedContent([]alert.Finding{unknown, carried, a, b, a})
+
+	if len(got) != 1 || got[0].ContentSHA256 != shaB || got[0].ScanCarryForward {
+		t.Fatalf("batch = %+v, want the fresh content that ended the adopted dismissal", got)
+	}
+	if _, ok := s.EntryForKey(b.Key()); ok {
+		t.Fatal("legacy dismissal survived differing content in the same batch")
+	}
+	if fresh := s.FilterNew(alert.Deduplicate(got)); len(fresh) != 1 || fresh[0].ContentSHA256 != shaB {
+		t.Fatalf("new findings = %+v, want the changed content", fresh)
+	}
+}
+
 func TestReconcileLogsEndedDismissal(t *testing.T) {
 	s := openTestStore(t)
 	a, b := contentFinding("yara_match_scheduled", shaA), contentFinding("yara_match_scheduled", shaB)
@@ -69,6 +90,25 @@ func TestReconcileLogsEndedDismissal(t *testing.T) {
 	}
 }
 
+func TestReconcileLogKeepsUntrustedKeyOnOneLine(t *testing.T) {
+	s := openTestStore(t)
+	a := contentFinding("yara_match_scheduled", shaA)
+	a.FilePath = "/home/a/public_html/line\nbreak\x1b[2J.php"
+	a.Message = "YARA rule match [webshell_generic]: " + a.FilePath
+	b := a
+	b.ContentSHA256 = shaB
+	s.SetBaseline([]alert.Finding{a})
+
+	out := captureStderr(t, func() { s.ReconcileDismissedContent([]alert.Finding{b}) })
+
+	if !strings.Contains(out, "content changed") || !strings.Contains(out, `line\nbreak\x1b[2J.php`) {
+		t.Errorf("log = %q, want the ended dismissal with escaped file name", out)
+	}
+	if strings.Count(out, "\n") != 1 || strings.ContainsRune(out, '\x1b') {
+		t.Errorf("log = %q, want one line without terminal control characters", out)
+	}
+}
+
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stderr
@@ -76,6 +116,8 @@ func captureStderr(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
+	defer w.Close()
 	os.Stderr = w
 	defer func() { os.Stderr = old }()
 	fn()

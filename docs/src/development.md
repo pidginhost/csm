@@ -297,9 +297,12 @@ before filtering and delivery in `respondToInitialScan`. Every observation in
 the batch contributes content evidence even when notification deduplication
 keeps only one finding. For an ended dismissal it returns the batch without
 that key's hashless, carried or previously dismissed observations, so
-deduplication keeps the new content, and it logs the ended dismissal. Pending
-shutdown findings retain `ScanCarryForward` in their private storage format so
-replay cannot treat stale content as fresh.
+deduplication keeps the new content, and it logs the ended dismissal with the
+key quoted so file names cannot inject log lines or terminal controls. The
+initial scan retains the full batch in history and audit, including the
+observations omitted from notification and response. Pending shutdown findings
+retain `ScanCarryForward` in their private storage format so replay cannot
+treat stale content as fresh.
 
 Undo restores the previous content hash only when the dismissal created the
 baseline or changed its content. Content adopted after a dismissal that left

@@ -456,7 +456,7 @@ func (s *Store) ReconcileDismissedContent(findings []alert.Finding) []alert.Find
 			}
 			ended[key] = entry.ContentSHA256
 			delete(s.entries, key)
-			fmt.Fprintf(os.Stderr, "state: content changed, dismissal ended: %s\n", key)
+			fmt.Fprintf(os.Stderr, "state: content changed, dismissal ended: %q\n", key)
 		}
 		s.dirty = true
 	}
