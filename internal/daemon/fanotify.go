@@ -560,7 +560,8 @@ type fileEvent struct {
 	phpExecutable bool
 	// at is when the event was read, the latest moment the writer is known
 	// to have existed under its PID.
-	at time.Time
+	at          time.Time
+	writerChain []int
 }
 
 func (fm *FileMonitor) currentCfg() *config.Config {
@@ -883,6 +884,7 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 
 // processEvents parses a buffer of fanotify event metadata and dispatches each event.
 func (fm *FileMonitor) processEvents(buf []byte) {
+	readAt := time.Now()
 	offset := 0
 	for offset+metadataSize <= len(buf) {
 		// #nosec G103 -- fanotify delivers a packed binary stream on the
@@ -898,7 +900,7 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 		if event.Mask&unix.FAN_Q_OVERFLOW != 0 {
 			fm.handleQueueOverflow()
 		} else if event.Fd >= 0 {
-			fm.handleEvent(int(event.Fd), event.Pid, event.Mask)
+			fm.handleEventAt(int(event.Fd), event.Pid, event.Mask, readAt)
 		}
 
 		offset += eventLen
@@ -978,6 +980,10 @@ func (fm *FileMonitor) Stop() {
 }
 
 func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
+	fm.handleEventAt(fd, pid, mask, time.Now())
+}
+
+func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time.Time) {
 	var admitted, dropped bool
 	defer func() { fm.recordEvent(admitted, dropped) }()
 	// Get the file path from the fd via /proc/self/fd/N
@@ -996,9 +1002,9 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 
 	// Send to analyzer pool (with backpressure)
 	fm.initQueueHealth()
-	read := time.Now()
-	ticket := fm.analyzerHealth.Begin(read)
-	event.queueTicket, event.pid, event.mask, event.at = ticket, pid, mask, read
+	ticket := fm.analyzerHealth.Begin(time.Now())
+	event.queueTicket, event.pid, event.mask, event.at = ticket, pid, mask, readAt
+	captureRestoreWriterChain(&event)
 	select {
 	case fm.analyzerCh <- event:
 		admitted = true

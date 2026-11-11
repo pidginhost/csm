@@ -44,10 +44,20 @@ func (fm *FileMonitor) checkRemovedFileRestored(event fileEvent, procInfo string
 		return false
 	}
 	f := removedFileRestoredFinding(event.path, removed, procInfo, event.pid)
-	// Named now: the writer can exit before the response runs.
-	f.WriterChain = restoreWriterChain(int(event.pid), event.at)
+	f.WriterChain, f.WriterObservedAt = event.writerChain, event.at
 	fm.sendFileFinding(f)
 	return true
+}
+
+// Capture before analyzer queuing: the writer may exit during content analysis,
+// but its still-running parents must remain eligible for the response.
+func captureRestoreWriterChain(event *fileEvent) {
+	if event.pid <= 1 || int(event.pid) == os.Getpid() {
+		return
+	}
+	if _, ok := removedFileAt(event.path); ok {
+		event.writerChain = restoreWriterChain(int(event.pid), event.at)
+	}
 }
 
 // restoreWriterChain lets tests observe what the detector captures.

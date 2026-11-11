@@ -27,14 +27,24 @@ func TestRestoredFileFindingCarriesTheWriterChain(t *testing.T) {
 		return []int{writerPID, 700}
 	}
 	t.Cleanup(func() { restoreWriterChain = prev })
-	seen := time.Now().Add(-time.Second)
+	seen := time.Now()
 
 	if err := os.WriteFile(path, []byte(restoredPayload), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ch := make(chan alert.Finding, 4)
-	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: openRawFd(t, path), pid: writerPID, at: seen})
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch, analyzerCh: make(chan fileEvent, 1)}
+	fm.handleEvent(openRawFd(t, path), writerPID, FAN_CLOSE_WRITE)
+	event := <-fm.analyzerCh
+	if gotPID != writerPID || gotAt.Before(seen) || !gotAt.Equal(event.at) {
+		t.Fatalf("chain not captured at event admission: pid=%d at=%v event=%v", gotPID, gotAt, event.at)
+	}
+	// The short-lived writer has exited while waiting in the analyzer queue.
+	restoreWriterChain = func(int, time.Time) []int {
+		t.Error("looked up the writer after event admission")
+		return nil
+	}
+	fm.analyzeFile(event)
 	close(ch)
 	var found []alert.Finding
 	for f := range ch {
@@ -45,7 +55,10 @@ func TestRestoredFileFindingCarriesTheWriterChain(t *testing.T) {
 	if len(got) != 1 || !reflect.DeepEqual(got[0].WriterChain, []int{writerPID, 700}) {
 		t.Fatalf("restore findings = %+v, want the captured chain", got)
 	}
-	if gotPID != writerPID || !gotAt.Equal(seen) {
-		t.Fatalf("chain captured for pid %d at %v, want pid %d at the event time %v", gotPID, gotAt, writerPID, seen)
+	if !got[0].WriterObservedAt.Equal(event.at) {
+		t.Fatalf("writer observation time = %v, want %v", got[0].WriterObservedAt, event.at)
+	}
+	if gotPID != writerPID || !gotAt.Equal(event.at) {
+		t.Fatalf("chain captured for pid %d at %v, want pid %d at the event time %v", gotPID, gotAt, writerPID, event.at)
 	}
 }

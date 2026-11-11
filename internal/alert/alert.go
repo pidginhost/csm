@@ -125,6 +125,9 @@ type Finding struct {
 	// CSM had removed, named when the write was seen. Process-local: a
 	// finding replayed after a restart never signals a stale PID.
 	WriterChain []int `json:"-"`
+	// WriterObservedAt binds those PIDs to the event, not the later finding
+	// timestamp. A replacement born while analysis runs is not the writer.
+	WriterObservedAt time.Time `json:"-"`
 
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".

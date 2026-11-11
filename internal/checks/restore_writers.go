@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// maxRestoreChainDepth bounds the walk up from a writer. A deeper chain of
-// one account's processes is not the shape this response is for, so nothing
-// is stopped.
+// maxRestoreChainDepth bounds the full ancestry walk, including parents
+// that are not termination targets. Incomplete ancestry refuses the response.
 const maxRestoreChainDepth = 16
 
 // RestoreWriterChain names the processes to stop after pid wrote back a file
@@ -19,49 +18,71 @@ const maxRestoreChainDepth = 16
 // SSH, cPanel or cron session started, belongs to a person or a scheduled job:
 // CSM still removes the file but leaves the process to the operator.
 func RestoreWriterChain(pid int, writtenAt time.Time) []int {
+	return restoreWriterChain(pid, writtenAt, true)
+}
+
+func restoreWriterChain(pid int, writtenAt time.Time, directWriter bool) []int {
 	uid := getProcessUID(strconv.Itoa(pid))
 	if uid == "" || uid == "0" {
 		return nil
 	}
 	var chain []int
-	for p := pid; len(chain) < maxRestoreChainDepth; {
+	collecting := true
+	for p, depth := pid, 0; depth < maxRestoreChainDepth; depth++ {
 		id := strconv.Itoa(p)
 		parent, tty, ok := procParentAndTTY(id)
 		exe := getProcessExe(id)
-		if !ok || tty != 0 || exe == "" || getProcessUID(id) != uid || !processStartedBefore(id, writtenAt) {
+		owner := getProcessUID(id)
+		if !ok || parent < 1 || tty != 0 || exe == "" || owner == "" || !processStartedBefore(id, writtenAt) {
 			return nil
 		}
-		if isServerPHPExe(exe) {
-			// PHP code looping inside a request writes from the worker
-			// itself. A worker above a writer serves the site and stays.
-			if len(chain) == 0 {
+		if p == pid && owner != uid {
+			return nil
+		}
+		if isSessionExe(exe) {
+			return nil
+		}
+		if isWebServerExe(exe) {
+			// A web worker ends the set of targets, not the safety walk:
+			// PHP can itself have been launched from SSH or cron.
+			if p == pid && directWriter && isServerPHPExe(exe) {
 				chain = append(chain, p)
 			}
-			return chain
-		}
-		if isControlPlaneExe(exe) {
-			return nil
-		}
-		chain = append(chain, p)
-		if parent <= 1 {
-			return chain
-		}
-		parentID := strconv.Itoa(parent)
-		if getProcessUID(parentID) != uid {
-			if isWebServerExe(getProcessExe(parentID)) {
-				return chain
+			collecting = false
+		} else {
+			if isControlPlaneExe(exe) || collecting && owner != uid {
+				return nil
 			}
-			return nil
+			if collecting {
+				chain = append(chain, p)
+			}
+		}
+		if parent == 1 {
+			return chain
 		}
 		p = parent
 	}
 	return nil
 }
 
+// isSessionExe identifies administrative origins even when they run as the
+// account or PHP appears between the session and the writer.
+func isSessionExe(exe string) bool {
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	if strings.HasPrefix(exe, "/usr/local/cpanel/") {
+		return true
+	}
+	switch filepath.Base(exe) {
+	case "sshd", "sshd-session", "sshd-auth", "cron", "crond", "anacron", "cpsrvd", "cpsrvd-dormant":
+		return true
+	}
+	return false
+}
+
 // isServerPHPExe matches the PHP binaries a web server runs requests in.
 // The PHP command-line binary is not one: a script it runs is stoppable.
 func isServerPHPExe(exe string) bool {
-	base := filepath.Base(exe)
+	base := filepath.Base(strings.TrimSuffix(exe, " (deleted)"))
 	return strings.HasPrefix(base, "lsphp") || strings.HasPrefix(base, "php-fpm") || strings.HasPrefix(base, "php-cgi")
 }
 
@@ -69,7 +90,7 @@ func isWebServerExe(exe string) bool {
 	if isServerPHPExe(exe) {
 		return true
 	}
-	switch filepath.Base(exe) {
+	switch filepath.Base(strings.TrimSuffix(exe, " (deleted)")) {
 	case "httpd", "apache2", "lshttpd", "litespeed", "openlitespeed", "lscgid", "nginx":
 		return true
 	}
@@ -79,9 +100,19 @@ func isWebServerExe(exe string) bool {
 // isControlPlaneExe matches panel, web server and system service binaries,
 // including the per-user processes cPanel and SSH run as the account.
 func isControlPlaneExe(exe string) bool {
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	if isSessionExe(exe) || isWebServerExe(exe) {
+		return true
+	}
+	switch filepath.Base(exe) {
+	case "systemd", "init", "dbus-daemon", "dbus-broker", "dbus-broker-launch",
+		"mysqld", "mariadbd", "postgres", "redis-server", "valkey-server", "memcached":
+		return true
+	}
 	for _, prefix := range []string{
-		"/usr/local/cpanel/", "/usr/local/lsws/", "/usr/sbin/", "/usr/libexec/",
-		"/usr/lib/systemd/", "/lib/systemd/", "/opt/cloudlinux/", "/opt/imunify360/",
+		"/usr/local/cpanel/", "/opt/cpanel/", "/usr/local/lsws/",
+		"/sbin/", "/usr/sbin/", "/usr/local/sbin/", "/usr/libexec/", "/usr/lib/", "/lib/",
+		"/opt/cloudlinux/", "/opt/imunify360/",
 	} {
 		if strings.HasPrefix(exe, prefix) {
 			return true

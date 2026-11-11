@@ -1652,3 +1652,16 @@ func FuzzWebConfigGlob(f *testing.F) {
 		}
 	})
 }
+
+func FuzzProcParentAndTTY(f *testing.F) {
+	f.Add("worker", int32(700), int32(0))
+	f.Add("a (b) c)\n", int32(1), int32(34816))
+	f.Fuzz(func(t *testing.T, comm string, parent, tty int32) {
+		data := []byte(fmt.Sprintf("701 (%s) S %d 0 0 %d", comm, parent, tty))
+		withMockOS(t, &mockOS{readFile: func(string) ([]byte, error) { return data, nil }})
+		gotParent, gotTTY, ok := procParentAndTTY("701")
+		if !ok || gotParent != int(parent) || gotTTY != int(tty) {
+			t.Fatalf("command name changed process ancestry: parent=%d tty=%d ok=%v", gotParent, gotTTY, ok)
+		}
+	})
+}

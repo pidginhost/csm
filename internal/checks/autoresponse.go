@@ -83,11 +83,15 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 
 		if f.Check == RemovedFileRestoredCheck {
 			// The parents go first so a loop cannot start another writer.
-			// The chain was vetted when the write was seen; an interpreter
-			// is the expected target here, so only panel and service
-			// binaries are refused.
+			// Recheck origin and terminal inside the process handle too:
+			// a captured process can exec or acquire a terminal before this.
 			for j := len(f.WriterChain) - 1; j >= 0; j-- {
-				if action, ok := killFindingProcess(ctx, f, f.WriterChain[j], restoreWriterExeAllowed); ok {
+				pid := f.WriterChain[j]
+				allow := func(string) bool {
+					chain := restoreWriterChain(pid, f.WriterObservedAt, j == 0)
+					return len(chain) > 0 && chain[0] == pid
+				}
+				if action, ok := killFindingProcess(ctx, f, pid, allow); ok {
 					actions = append(actions, action)
 				}
 			}
@@ -142,10 +146,6 @@ func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowE
 		Timestamp: time.Now(),
 		Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
 	}, true
-}
-
-func restoreWriterExeAllowed(exe string) bool {
-	return isServerPHPExe(exe) || !isControlPlaneExe(exe)
 }
 
 // recordKillAction writes the unified action record for one termination
