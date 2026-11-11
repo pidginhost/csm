@@ -66,7 +66,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 	}
 	if pol.Enforce == 1 {
 		if uids, loadErr := safeUIDsFromPasswd("/etc/passwd", cfg); loadErr == nil {
-			if err = installSafeUIDs(objs, uids); err != nil {
+			if err = installSafeUIDs(objs.SafeUids, uids); err != nil {
 				csmlog.Warn("bpf enforcement initial safe-uid install failed", "err", err)
 			}
 		} else {
@@ -132,7 +132,7 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 					BumpUIDRefreshFailure()
 					return err
 				}
-				if err := installSafeUIDs(objs, uids); err != nil {
+				if err := installSafeUIDs(objs.SafeUids, uids); err != nil {
 					BumpUIDRefreshFailure()
 					return err
 				}

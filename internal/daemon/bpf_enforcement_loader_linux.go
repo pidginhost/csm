@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"errors"
+
 	"github.com/cilium/ebpf"
 
 	"github.com/pidginhost/csm/internal/daemon/connection_bpfprog"
@@ -30,13 +32,27 @@ func installBPFEnforcementPolicy(objs *connection_bpfprog.ConnectionObjects, pol
 	return nil
 }
 
-// installSafeUIDs repopulates the safe_uids BPF map. Called periodically
+// installSafeUIDs syncs the safe_uids BPF map to uids. Called periodically
 // (T7 refresher) and at startup (T10).
-// shortcut: only adds UIDs, so a deleted account stays exempt until restart;
-// delete stale keys if UID reuse within one daemon run becomes a concern.
-func installSafeUIDs(objs *connection_bpfprog.ConnectionObjects, uids map[uint32]bool) error {
+func installSafeUIDs(m *ebpf.Map, uids map[uint32]bool) error {
+	var installed []uint32
+	var uid uint32
+	var present uint8
+	it := m.Iterate()
+	for it.Next(&uid, &present) {
+		installed = append(installed, uid)
+	}
+	if err := it.Err(); err != nil {
+		return err
+	}
+	// Delete first so a full map still has room for the new UIDs.
+	for _, uid := range staleSafeUIDs(installed, uids) {
+		if err := m.Delete(uid); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return err
+		}
+	}
 	for uid := range uids {
-		if err := objs.SafeUids.Update(uid, uint8(1), ebpf.UpdateAny); err != nil {
+		if err := m.Update(uid, uint8(1), ebpf.UpdateAny); err != nil {
 			return err
 		}
 	}

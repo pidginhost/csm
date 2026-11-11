@@ -26,12 +26,13 @@ denial.
 The safe-UID map includes system UIDs below 1000, traditional MTA
 accounts, and accounts listed in `firewall.smtp_allow_users`. Stalwart
 usernames are exempt only as system UIDs; a hosted account cannot gain
-an exemption by choosing a Stalwart name.
+an exemption by choosing a Stalwart name. CSM rereads `/etc/passwd` every
+5 minutes and drops the exemption of hosted accounts that were deleted or
+renamed, so a new account reusing such a UID is exempt for at most one
+refresh.
 
 ## What it does NOT do
 
-- It does NOT remove exemptions while running. A deleted account's UID
-  stays exempt until CSM restarts.
 - It does NOT wait on remote verdict callbacks in-kernel. That would
   add HTTP latency to every connect. The verdict callback (if
   enabled) runs in userspace after the BPF decision and enriches the
