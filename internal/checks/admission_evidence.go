@@ -28,6 +28,13 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	if !f.Attribution.Valid() {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseKindNotAllowed, Detail: "no parser vouched for the finding's address"}
 	}
+	// This build reads no separate peer field when the web server replaces
+	// the logged address, so neither the peer nor a chain can be verified
+	// (spec 5.8). An unknown state is refused the same way.
+	if (f.Attribution == admission.AttributionHTTPPeer || f.Attribution == admission.AttributionTrustedHTTPChain) &&
+		CurrentHTTPRewrite().State != RewriteNone {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseRewrittenLog, Detail: "the web server may replace the client address it logs"}
+	}
 	// A client behind a trusted proxy sends no packets to this host, so no
 	// response this build applies can contain it (spec 5.8).
 	if f.Attribution == admission.AttributionTrustedHTTPChain {

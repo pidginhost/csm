@@ -144,28 +144,29 @@ it, `actor_detail` the entry it came through (`scan`, or a derived entry such
 as `challenge_timeout` or `central`), `result` the decision (`queued`,
 `coalesced`, `observe` or `refused`) and `error` the refusal reason. An
 `attribution` refusal also names its `cause`: `no_observation` (no reader
-stamped the finding), `kind_not_allowed` (no parser vouched for the address
-in a way the check accepts), `target_mismatch` (the response names an address
-its evidence does not attribute), `unreachable` (the address is a client
-behind a trusted proxy, which sends this host no packets of its own) or
-`proxy_peer` (the address is a known CDN or website-firewall edge, which
-carries many visitors). Refusals at submission and queue placement keep the
-same cause as refusals at evidence minting. A queued response that a later
-check refuses (its revalidation, an inventory refresh, a configuration
-opt-out, a lost queue position after reassessment, or the recheck of a pick
-before an attempt or a preview) counts as `refused` too, with its reason and
-cause, in the hour the ledger ended it. A displaced queued response also
-counts once. These rows retain that hour even after a newer hour was
-reported. Hours discarded when a logging outage exhausts summary retention
-stay discarded; later refusals for them never return as partial summaries. An
-owner that runs automatic blocks and forecasts them in dry-run mode also
-counts `dry_run` decisions, each with a `prediction` of what live admission
-would have done: `capacity_admit`, `existing_actual`, `existing_shadow`,
-`ceiling`, `set_full`, `pending_recovery`, `forecast_limited`,
-`not_modelled`, `capacity_evict`, `capacity_rotate` or `equal_tier_wait`. A
-prediction is not a refusal reason. A clean stop writes the open hour early,
-so summaries for the same hour add up; a crash loses the open hour, so the
-counts are lower bounds.
+stamped the finding), `kind_not_allowed` (no parser vouched for the address in
+a way the check accepts), `target_mismatch` (the response names an address its
+evidence does not attribute), `unreachable` (the address is a client behind a
+trusted proxy, which sends this host no packets of its own), `proxy_peer` (the
+address is a known CDN or website-firewall edge, which carries many visitors)
+or `rewritten_log` (the web server replaced the logged client address, or CSM
+could not read its configuration, so the connecting peer is unknown). Refusals
+at submission and queue placement keep the same cause as refusals at evidence
+minting. A queued response that a later check refuses (its revalidation, an
+inventory refresh, a configuration opt-out, a lost queue position after
+reassessment, or the recheck of a pick before an attempt or a preview) counts
+as `refused` too, with its reason and cause, in the hour the ledger ended it.
+A displaced queued response also counts once. These rows retain that hour even
+after a newer hour was reported. Hours discarded when a logging outage
+exhausts summary retention stay discarded; later refusals for them never
+return as partial summaries. An owner that runs automatic blocks and forecasts
+them in dry-run mode also counts `dry_run` decisions, each with a `prediction`
+of what live admission would have done: `capacity_admit`, `existing_actual`,
+`existing_shadow`, `ceiling`, `set_full`, `pending_recovery`,
+`forecast_limited`, `not_modelled`, `capacity_evict`, `capacity_rotate` or
+`equal_tier_wait`. A prediction is not a refusal reason. A clean stop writes
+the open hour early, so summaries for the same hour add up; a crash loses the
+open hour, so the counts are lower bounds.
 
 Refused previews and submissions displaced from the memory queue count as
 `refused` with their reason, including every report merged into a displaced

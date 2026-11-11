@@ -90,14 +90,14 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 	defer delete(a.activePaths, abs)
 
 	if info, statErr := osFS.Stat(path); statErr == nil && info.IsDir() {
-		entries, globErr := osFS.Glob(filepath.Join(path, "*"))
-		if globErr != nil {
+		// An unreadable directory is not an empty one.
+		entries, readErr := osFS.ReadDir(path)
+		if readErr != nil {
 			a.complete = false
-			return dst
 		}
-		sort.Strings(entries)
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
-			dst = a.appendPath(dst, entry, false, depth+1)
+			dst = a.appendPath(dst, filepath.Join(path, entry.Name()), false, depth+1)
 		}
 		return dst
 	}
@@ -110,33 +110,25 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 		return dst
 	}
 
-	lines := strings.Split(string(data), "\n")
+	lines := strings.SplitAfter(string(data), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
 
 	continued := ""
-	for _, physical := range lines {
-		line := continued + physical
-		if prefix, continues := apacheContinuationPrefix(line); continues {
-			continued = prefix + " "
+	for i, physical := range lines {
+		line, continues := apacheContinuationPrefix(continued + physical)
+		if continues && i < len(lines)-1 {
+			continued = line
 			continue
 		}
 		continued = ""
 
-		fields, valid := parseApacheDirectiveFields(stripApacheComment(line))
-		if !valid {
-			a.complete = false
-			dst = append(dst, apacheConfigLine{File: path, Text: line})
-			continue
-		}
-		if len(fields) == 0 {
-			dst = append(dst, apacheConfigLine{File: path, Text: line})
-			continue
-		}
+		// Section handlers discard their suffix before reading arguments;
+		// quotes in that ignored text must not invalidate the whole tree.
 		if tag, isContainer, tagValid := parseApacheContainerTag(line); isContainer {
 			switch {
-			case !tagValid:
+			case !tagValid || apacheArgumentHasVariable(tag.name):
 				a.complete = false
 			case tag.closing:
 				last := len(a.containers) - 1
@@ -150,6 +142,22 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 			}
 			dst = append(dst, apacheConfigLine{File: path, Text: line})
 			continue
+		}
+
+		fields, valid := parseApacheDirectiveFields(stripApacheComment(line))
+		if !valid {
+			a.complete = false
+			dst = append(dst, apacheConfigLine{File: path, Text: line})
+			continue
+		}
+		if len(fields) == 0 {
+			dst = append(dst, apacheConfigLine{File: path, Text: line})
+			continue
+		}
+		// Apache expands Define and process environment variables before it
+		// reads the directive name. An unresolved name could be an Include.
+		if apacheArgumentHasVariable(fields[0]) {
+			a.complete = false
 		}
 
 		switch {
@@ -166,19 +174,18 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 				a.complete = false
 				continue
 			}
-			paths, expanded := expandApacheInclude(fields[1], a.serverRoot)
+			paths, globbed, expanded := expandApacheInclude(fields[1], a.serverRoot)
 			if !expanded || (!optionalInclude && len(paths) == 0) {
 				a.complete = false
 			}
+			// A file a glob found must be read; only an absent literal
+			// IncludeOptional target may be missing.
 			for _, included := range paths {
-				dst = a.appendPath(dst, included, optionalInclude, depth+1)
+				dst = a.appendPath(dst, included, optionalInclude && !globbed, depth+1)
 			}
 		default:
 			dst = append(dst, apacheConfigLine{File: path, Text: line})
 		}
-	}
-	if continued != "" {
-		a.complete = false
 	}
 	return dst
 }
@@ -187,59 +194,42 @@ func apacheArgumentHasVariable(arg string) bool {
 	return strings.Contains(arg, "${")
 }
 
-func expandApacheInclude(target, serverRoot string) ([]string, bool) {
+// expandApacheInclude resolves an Include target. A glob reports whether
+// every directory it walked could be read: filepath.Glob drops those
+// errors, so an unreadable directory would look empty.
+func expandApacheInclude(target, serverRoot string) (paths []string, globbed, complete bool) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(serverRoot, target)
 	}
-	if !strings.ContainsAny(target, "*?[") {
-		return []string{target}, true
+	// APR normalizes absolute as well as relative Include arguments.
+	target = filepath.Clean(target)
+	if !apacheIncludeHasGlob(target) {
+		return []string{target}, false, true
 	}
-	matches, err := osFS.Glob(target)
-	if err != nil {
-		return nil, false
-	}
+	matches, complete := checkedApacheConfigGlob(target)
 	sort.Strings(matches)
-	return matches, true
+	return matches, true, complete
 }
 
 func apacheContinuationPrefix(line string) (string, bool) {
-	line = strings.TrimRight(line, " \t\r")
-	backslashes := 0
-	for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
-		backslashes++
+	// Only a backslash immediately before LF or CRLF continues a line.
+	// Spaces after a comment's backslash must not swallow the next setting.
+	if !strings.HasSuffix(line, "\n") {
+		return line, false
 	}
-	if backslashes%2 == 0 {
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	if !strings.HasSuffix(line, "\\") {
 		return line, false
 	}
 	return line[:len(line)-1], true
 }
 
 func stripApacheComment(line string) string {
-	var quote byte
-	escaped := false
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if c == '\\' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if c == quote {
-				quote = 0
-			}
-			continue
-		}
-		if c == '\'' || c == '"' {
-			quote = c
-			continue
-		}
-		if c == '#' {
-			return line[:i]
-		}
+	// httpd only treats a leading hash as a comment. A hash in an Include
+	// path is literal; truncating it can silently select a different tree.
+	if strings.HasPrefix(strings.TrimLeft(line, " \t\r\n\v\f"), "#") {
+		return ""
 	}
 	return line
 }
@@ -247,61 +237,44 @@ func stripApacheComment(line string) string {
 // parseApacheDirectiveFields handles the quoting and escapes accepted in
 // include paths and container arguments.
 func parseApacheDirectiveFields(line string) ([]string, bool) {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return nil, true
-	}
-
 	var fields []string
-	var field strings.Builder
-	var quote byte
-	escaped := false
-	inField := false
-	flush := func() {
-		if !inField {
-			return
+	for {
+		line = strings.TrimLeft(line, " \t\r\n\v\f")
+		if line == "" {
+			return fields, true
 		}
-		fields = append(fields, field.String())
-		field.Reset()
-		inField = false
-	}
-
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		if escaped {
+		var field strings.Builder
+		var quote byte
+		if line[0] == '\'' || line[0] == '"' {
+			quote, line = line[0], line[1:]
+		}
+		i := 0
+		for i < len(line) {
+			c := line[i]
+			if quote != 0 && c == quote || quote == 0 && strings.ContainsRune(" \t\r\n\v\f", rune(c)) {
+				break
+			}
+			if c == '\r' || c == '\n' {
+				return fields, false
+			}
+			// ap_getword_conf only decodes a doubled backslash or the
+			// matching quote inside a quoted argument.
+			if c == '\\' && i+1 < len(line) && (line[i+1] == '\\' || quote != 0 && line[i+1] == quote) {
+				i++
+				c = line[i]
+			}
 			field.WriteByte(c)
-			inField = true
-			escaped = false
-			continue
-		}
-		if c == '\\' {
-			escaped = true
-			inField = true
-			continue
+			i++
 		}
 		if quote != 0 {
-			if c == quote {
-				quote = 0
-			} else {
-				field.WriteByte(c)
+			if i == len(line) {
+				return fields, false
 			}
-			inField = true
-			continue
+			i++
 		}
-		if c == '\'' || c == '"' {
-			quote = c
-			inField = true
-			continue
-		}
-		if c == ' ' || c == '\t' || c == '\r' {
-			flush()
-			continue
-		}
-		field.WriteByte(c)
-		inField = true
+		fields = append(fields, field.String())
+		line = line[i:]
 	}
-	flush()
-	return fields, quote == 0 && !escaped
 }
 
 type apacheParsedContainerTag struct {
@@ -315,21 +288,47 @@ func parseApacheContainerTag(line string) (apacheParsedContainerTag, bool, bool)
 	if !strings.HasPrefix(text, "<") {
 		return apacheParsedContainerTag{}, false, true
 	}
-	if !strings.HasSuffix(text, ">") {
+	wordEnd := strings.IndexAny(text, " \t\r\n\v\f")
+	if strings.HasPrefix(text, "</") {
+		word := text
+		if wordEnd >= 0 {
+			word = text[:wordEnd]
+		}
+		// Closing tags are directive names, not section arguments. httpd
+		// checks the whole first word, including its terminating bracket.
+		if !strings.HasSuffix(word, ">") {
+			return apacheParsedContainerTag{}, true, false
+		}
+		name := word[2 : len(word)-1]
+		if name == "" || strings.ContainsAny(name, "<>") {
+			return apacheParsedContainerTag{}, true, false
+		}
+		if wordEnd >= 0 {
+			switch strings.ToLower(name) {
+			case "ifmodule", "ifdefine", "ifversion", "iffile", "ifsection", "ifdirective":
+				// Active read-time sections require an exact closing line.
+				// Their runtime condition is unavailable to this parser.
+				return apacheParsedContainerTag{}, true, false
+			}
+		}
+		return apacheParsedContainerTag{name: name, label: name, closing: true}, true, true
+	}
+	// Core section handlers end their arguments at the last '>'. A bracket
+	// inside the directive name cannot terminate a nonempty argument list.
+	end := strings.LastIndexByte(text, '>')
+	if end < 0 || (wordEnd >= 0 && end < wordEnd) || (wordEnd < 0 && end != len(text)-1) {
 		return apacheParsedContainerTag{}, true, false
 	}
-
-	closing := strings.HasPrefix(text, "</")
-	prefix := "<"
-	if closing {
-		prefix = "</"
-	}
-	label := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, prefix), ">"))
+	label := strings.TrimSpace(text[1:end])
 	fields, valid := parseApacheDirectiveFields(label)
-	if !valid || len(fields) == 0 || (closing && len(fields) != 1) {
+	if !valid || len(fields) == 0 {
 		return apacheParsedContainerTag{}, true, false
 	}
-	return apacheParsedContainerTag{name: fields[0], label: label, closing: closing}, true, true
+	// mod_version parses a fixed argument list instead of raw section text.
+	if strings.EqualFold(fields[0], "IfVersion") && end != len(text)-1 {
+		return apacheParsedContainerTag{}, true, false
+	}
+	return apacheParsedContainerTag{name: fields[0], label: label}, true, true
 }
 
 type apacheLineContext struct {

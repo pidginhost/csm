@@ -1642,20 +1642,34 @@ func findWebServerConfigPath(info platform.Info) string {
 		return ""
 	}
 
-	var candidates []string
-	if info.IsCPanel() {
-		candidates = append(candidates, "/etc/apache2/conf/httpd.conf")
-	}
-	if info.ApacheConfigDir != "" {
+	// A selected root is authoritative even when its main file is missing.
+	// Falling back could report another server's direct logs as this one's.
+	if root := info.ApacheConfigDir; root != "" {
+		var main string
 		switch {
-		case info.IsDebianFamily() && !info.IsCPanel():
-			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "apache2.conf"))
-		case info.IsRHELFamily() && !info.IsCPanel():
-			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "conf", "httpd.conf"))
+		case info.IsCPanel() && filepath.Base(filepath.Clean(root)) == "conf":
+			// Older cPanel detection supplies the conf directory itself.
+			main = filepath.Join(root, "httpd.conf")
+		case info.IsCPanel(), info.IsRHELFamily():
+			main = filepath.Join(root, "conf", "httpd.conf")
+		case info.IsDebianFamily():
+			main = filepath.Join(root, "apache2.conf")
 		default:
-			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "httpd.conf"))
+			main = filepath.Join(root, "httpd.conf")
 		}
+		// Packages such as php-fpm leave Apache snippet directories on
+		// hosts another web server runs; no main file there means no Apache.
+		if info.WebServer != platform.WSApache && !info.IsCPanel() {
+			if _, err := osFS.Stat(main); errors.Is(err, os.ErrNotExist) {
+				return ""
+			}
+		}
+		return main
 	}
+	if info.IsCPanel() {
+		return "/etc/apache2/conf/httpd.conf"
+	}
+	var candidates []string
 	switch {
 	case info.IsDebianFamily():
 		candidates = append(candidates, "/etc/apache2/apache2.conf")

@@ -137,16 +137,18 @@ type Server struct {
 	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
-	threatActionMu   sync.Mutex // serialize operator block, clear and undo decisions
-	loginMu          sync.Mutex
-	loginAttempts    map[string][]time.Time
-	apiMu            sync.Mutex
-	apiRequests      map[string][]time.Time // per-IP API rate limiting
-	scanMu           sync.Mutex
-	scanRunning      bool       // only one scan at a time
-	auditMu          sync.Mutex // serializes UI audit rotation and appends
-	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
-	sigCountMu       sync.RWMutex
+	threatActionMu sync.Mutex // serialize operator block, clear and undo decisions
+	loginMu        sync.Mutex
+	loginAttempts  map[string][]time.Time
+	apiMu          sync.Mutex
+	apiRequests    map[string][]time.Time // per-IP API rate limiting
+	scanMu         sync.Mutex
+	scanRunning    bool       // only one scan at a time
+	auditMu        sync.Mutex // serializes UI audit rotation and appends
+	modSecApplyMu  sync.Mutex // serializes modsec rules apply (write+reload+rollback)
+	sigCountMu     sync.RWMutex
+	// settingsSaveHook runs before reading or changing a settings save's
+	// config, including attempts that fail or require a restart.
 	settingsSaveHook func()
 	// configAppliedHook runs after a settings save has published a new live
 	// config, so the daemon can push safe-field values into the subsystems
@@ -815,6 +817,12 @@ func (s *Server) emailAVMode() string {
 		return v
 	}
 	return ""
+}
+
+// SetSettingsSaveHook registers the host refresh for each settings save
+// attempt. Call it before Start.
+func (s *Server) SetSettingsSaveHook(fn func()) {
+	s.settingsSaveHook = fn
 }
 
 // SetVersion sets the application version for display in the UI.

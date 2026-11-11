@@ -1280,6 +1280,9 @@ func FuzzParseVhostPHPVersion(f *testing.F) {
 
 func FuzzApacheConfigParsers(f *testing.F) {
 	f.Add("IncludeOptional \"conf enabled/*.conf\"")
+	f.Add(`IncludeOptional conf#edge/remoteip.conf`)
+	f.Add(`IncludeOptional conf\edge/remoteip.conf`)
+	f.Add("RemoteIPHeader\fX-Real-IP")
 	f.Add("<Directory /var/www/>\nOptions -Indexes\n</Directory>")
 	f.Add("<IfDefine VERBOSE>\nServerTokens Full\n</IfModule>")
 	f.Add("")
@@ -1595,4 +1598,57 @@ func FuzzKnownProxyPeerAddressBoundary(f *testing.F) {
 		f.Add(raw)
 	}
 	f.Fuzz(func(t *testing.T, raw string) { checkKnownProxyAddressBoundary(t, raw) })
+}
+
+// An nginx file never panics the reader, and the same text commented out
+// yields no directive, so text inside a comment never configures realip.
+func FuzzNginxDirectives(f *testing.F) {
+	for _, seed := range []string{
+		"set_real_ip_from 192.0.2.0/24;\nreal_ip_header CF-Connecting-IP;",
+		"http { include conf.d/*.conf; }",
+		"log_format x '$remote_addr \\' set_real_ip_from;';",
+		"\"unterminated",
+		"}}}{{{;;;",
+		"log_format peer foo#bar; set_real_ip_from 192.0.2.0/24;",
+		"a esc\\ aped ${host} \"q\\\"q\";",
+		`if ($a = "b") { include realip.conf; }`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, text string) {
+		got, _ := parseNginxDirectives(text, "nginx.conf")
+		for _, d := range got {
+			if d.Name == "" || d.File != "nginx.conf" {
+				t.Fatalf("directive %+v from %q", d, text)
+			}
+		}
+		quoted := `log_format x "` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(text) + `";`
+		if got, ok := parseNginxDirectives(quoted, "nginx.conf"); !ok || len(got) != 1 || got[0].Name != "log_format" || len(got[0].Args) != 2 || got[0].Args[1] != text {
+			t.Fatalf("quoted text %q yields %+v (complete %v)", text, got, ok)
+		}
+		commented := "#" + strings.NewReplacer("\n", " ", "\r", " ").Replace(text)
+		if got, ok := parseNginxDirectives(commented, "nginx.conf"); len(got) != 0 || !ok {
+			t.Fatalf("commented text %q yields %+v (complete %v)", commented, got, ok)
+		}
+	})
+}
+
+// Escaping glob metacharacters must match the literal filename, regardless
+// of whether the unescaped text forms a valid shell bracket expression.
+func FuzzWebConfigGlob(f *testing.F) {
+	for _, name := range []string{"remoteip.conf", "[!a].conf", "]-a.conf", "[[:alpha:]].conf", `.hidden`, `back\slash`} {
+		f.Add(name)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		if strings.ContainsAny(name, "/\x00") {
+			return
+		}
+		pattern := strings.NewReplacer(`\`, `\\`, "*", `\*`, "?", `\?`, "[", `\[`).Replace(name)
+		if matched, err := matchWebConfigGlob(pattern, name); err != nil || !matched {
+			t.Fatalf("literal pattern %q did not match %q: %v", pattern, name, err)
+		}
+		if matched, err := matchWebConfigGlob(name, "remoteip.conf"); err != nil && matched {
+			t.Fatalf("invalid pattern %q matched", name)
+		}
+	})
 }

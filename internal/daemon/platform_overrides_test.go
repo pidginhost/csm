@@ -34,3 +34,18 @@ func TestPlatformOverridesFromConfig(t *testing.T) {
 		t.Fatal("an empty web_server.type must leave the detected webserver alone")
 	}
 }
+
+// web_server.config_dir is the one configuration root knob: it reaches the
+// nginx reader as it reaches Apache's.
+func TestHTTPRewriteConfigRootOverride(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.Type = "nginx"
+	cfg.WebServer.ConfigDir = "/srv/nginx"
+	if o := PlatformOverridesFrom(cfg); o.NginxConfigDir != "/srv/nginx" || o.ApacheConfigDir != "/srv/nginx" {
+		t.Fatalf("overrides = %+v, want the root for both servers", o)
+	}
+	cfg.WebServer.Type = ""
+	if o := PlatformOverridesFrom(cfg); o.NginxConfigDir != "/srv/nginx" || o.WebServer != nil {
+		t.Fatalf("overrides without a type = %+v", o)
+	}
+}

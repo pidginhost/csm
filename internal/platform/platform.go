@@ -75,6 +75,18 @@ type Info struct {
 // tailing, etc.) without re-detecting each time.
 func (i Info) IsCPanel() bool { return i.Panel == PanelCPanel }
 
+// LiteSpeedConfigPath is LiteSpeed's own server configuration.
+const LiteSpeedConfigPath = "/usr/local/lsws/conf/httpd_config.xml"
+
+// NginxConfigRoot returns the nginx configuration root: the detected or
+// configured NginxConfigDir, else the packaged default.
+func (i Info) NginxConfigRoot() string {
+	if i.NginxConfigDir != "" {
+		return i.NginxConfigDir
+	}
+	return "/etc/nginx"
+}
+
 // ApacheCompatibleConfigDir returns the Apache-style config root consumed by
 // the active web server. cPanel LiteSpeed reads the EA4 Apache tree even when
 // Apache itself is not the detected server, and older detection snapshots may
@@ -593,8 +605,11 @@ func populatePaths(i *Info) {
 	// under /usr/local/apache, separate from the OS package tree; that
 	// override wins over the distro default when cPanel is present.
 	switch {
-	case i.Panel == PanelCPanel && dirExists("/usr/local/apache/conf"):
-		i.ApacheConfigDir = "/usr/local/apache/conf"
+	case i.Panel == PanelCPanel:
+		i.ApacheConfigDir = "/etc/apache2"
+		if dirExists("/usr/local/apache/conf") {
+			i.ApacheConfigDir = "/usr/local/apache/conf"
+		}
 	case i.IsDebianFamily():
 		if dirExists("/etc/apache2") {
 			i.ApacheConfigDir = "/etc/apache2"

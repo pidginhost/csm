@@ -21,6 +21,7 @@ func PlatformOverridesFrom(cfg *config.Config) platform.Overrides {
 	return platform.Overrides{
 		WebServer:           wsOverride,
 		ApacheConfigDir:     cfg.WebServer.ConfigDir,
+		NginxConfigDir:      cfg.WebServer.ConfigDir,
 		AccessLogPaths:      cfg.WebServer.AccessLogs,
 		ErrorLogPaths:       cfg.WebServer.ErrorLogs,
 		ModSecAuditLogPaths: cfg.WebServer.ModSecAudits,

@@ -50,7 +50,7 @@ For hosts with a custom layout (reverse proxy, non-standard package locations, c
 ```yaml
 web_server:
   type: "nginx"                          # apache | nginx | litespeed -- overrides auto-detect
-  config_dir: "/etc/nginx"               # for info/diagnostics only
+  config_dir: "/etc/nginx"               # Apache or nginx configuration root
   access_logs:                           # tried in order until one exists
     - "/var/log/nginx/access.log"
     - "/srv/logs/nginx/access.log"

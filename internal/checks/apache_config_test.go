@@ -538,3 +538,42 @@ func TestAuditApacheDirectivesPassesWhenNoScopeGrantsIndexing(t *testing.T) {
 		t.Errorf("web_directory_listing = %s (%s), want pass", r.Status, r.Message)
 	}
 }
+
+// The hardening audit trusts a directive only when the whole tree was read:
+// an optional include directory it cannot list must warn, not pass.
+func TestApacheAuditUnreadableOptionalInclude(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "httpd.conf")
+	writeApacheConf(t, main, "ServerTokens Prod\nIncludeOptional conf.d/*.conf\n")
+	writeApacheConf(t, filepath.Join(dir, "conf.d", "site.conf"), "ServerSignature Off\n")
+	status := func() string {
+		for _, r := range auditApacheDirectives(main) {
+			if r.Name == "web_server_tokens" {
+				return r.Status
+			}
+		}
+		return ""
+	}
+	if got := status(); got != "pass" {
+		t.Fatalf("readable tree: web_server_tokens = %q, want pass", got)
+	}
+	withDeniedPaths(t, filepath.Join(dir, "conf.d"))
+	if got := status(); got != "warn" {
+		t.Fatalf("unreadable include directory: web_server_tokens = %q, want warn", got)
+	}
+}
+
+func TestApacheAuditReadsLiteralIncludeNames(t *testing.T) {
+	for _, name := range []string{"conf#edge/extra.conf", "conf'edge'/extra.conf", `conf\edge/extra.conf`} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeApacheConf(t, filepath.Join(dir, name), "ServerTokens Full\n")
+			main := filepath.Join(dir, "httpd.conf")
+			writeApacheConf(t, main, "ServerTokens Prod\nIncludeOptional "+name+"\n")
+			got, ok := auditByName(auditApacheDirectives(main), "web_server_tokens")
+			if !ok || got.Status != "fail" {
+				t.Fatalf("web_server_tokens = %+v, want fail from the included setting", got)
+			}
+		})
+	}
+}

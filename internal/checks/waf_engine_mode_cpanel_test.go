@@ -70,7 +70,8 @@ func TestCheckEngineModeCPanelHonorsApacheContainersAndComments(t *testing.T) {
 # SecRuleEngine Off
 SecRuleEngineDisabled Off
 <IfModule mod_security2.c>
-  SecRuleEngine On # active cPanel wrapper
+  # active cPanel wrapper
+  SecRuleEngine On
   <IfModule !mod_security2.c>
     SecRuleEngine Off
   </IfModule>
@@ -83,6 +84,16 @@ SecRuleEngineDisabled Off
 	info := platform.Info{Panel: platform.PanelCPanel, OS: platform.OSAlma, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
 	if mode := checkEngineMode(info); mode != "on" {
 		t.Fatalf("mode = %q, want active server-scope mode on", mode)
+	}
+}
+
+func TestCheckEngineModeCPanelRejectsInlineComment(t *testing.T) {
+	mockModsecFiles(t, map[string]string{
+		"/etc/apache2/conf.d/modsec2.conf": "SecRuleEngine On # extra arguments\n",
+	})
+	info := platform.Info{Panel: platform.PanelCPanel, OS: platform.OSAlma, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if mode := checkEngineMode(info); mode != "" {
+		t.Fatalf("mode = %q, want unknown for an invalid Apache directive", mode)
 	}
 }
 

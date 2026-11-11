@@ -12,5 +12,7 @@ import (
 func TestMain(m *testing.M) {
 	cronSpoolDir = func() string { return "/var/spool/cron" }
 	SetZipLister(inProcessZipLister{})
+	// The test host's web server is not the one a test describes.
+	SetHTTPRewrite(HTTPRewrite{State: RewriteNone})
 	os.Exit(m.Run())
 }
