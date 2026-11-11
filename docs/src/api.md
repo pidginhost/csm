@@ -1791,9 +1791,11 @@ past its 30-second TTL. Recognised inverse action keys are
 they have no clean inverse.
 
 Dismissals accept at most 500 keys per request and deduplicate repeated keys.
-`contents` maps a key to the `content_sha256` its row showed, empty for a finding
-without one; any other value than 64 lowercase hex characters answers 400. A key whose listed finding now carries different content is not
-dismissed: a single key answers 409, and a bulk request dismisses the rest,
+`contents` maps a key to the `content_sha256` its row showed: an empty string for
+a finding without one, or a string of 64 lowercase hex characters. All other
+values, including `null`, answer 400 before any findings are dismissed. A key
+whose listed finding now carries different content is not dismissed: a single
+key answers 409, and a bulk request dismisses the rest,
 returns the refused keys in `refused`, and counts only the applied dismissals in
 `count`. A key missing from `contents` is dismissed as before and covers the
 listed content.

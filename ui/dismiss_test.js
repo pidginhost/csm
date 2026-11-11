@@ -138,7 +138,7 @@ function shownFinding(sha) {
 }
 
 async function renderedFindings(findings) {
-    const page = loadPage(templateBody('findings'), SHARED.concat(['findings.js', 'shortcuts.js']));
+    const page = loadPage('<div id="csm-toasts"></div>' + templateBody('findings'), SHARED.concat(['findings.js', 'shortcuts.js']));
     page.respond('/api/v1/findings/enriched', 200, { items: findings, total: findings.length });
     await settle();
     return page;
@@ -271,3 +271,30 @@ test('bulk refusal names the rows that changed', async () => {
     assert.doesNotMatch(warning.message, /f0\.php|f6\.php|f7\.php/);
     assert.match(warning.message, /and 2 more/);
 });
+
+for (const field of ['file_path', 'message']) {
+    test('bulk refusal renders the ' + field + ' label as plain text', async () => {
+        const label = field === 'file_path' ? '/home/a/public_html/<img src=x>.php' : 'Changed <img src=x> & "content"';
+        const finding = { ...shownFinding('a'.repeat(64)), [field]: label };
+        const other = { ...shownFinding('b'.repeat(64)), key: 'webshell:other', message: 'Unchanged finding' };
+        const page = await renderedFindings([finding, other]);
+        page.window.CSM.confirm = () => Promise.resolve();
+        const selectAll = page.document.getElementById('select-all');
+        selectAll.checked = true;
+        selectAll.dispatchEvent(new page.window.Event('change', { bubbles: true }));
+        page.document.getElementById('bulk-dismiss-btn').click();
+        await settle();
+        const requests = page.pending('/api/v1/dismiss');
+        assert.equal(requests.length, 1);
+        assert.deepEqual(requests[0].body.keys, [finding.key, other.key]);
+        page.respond('/api/v1/dismiss', 200, { ok: true, count: 1, refused: [finding.key] });
+        await settle();
+
+        const warning = page.document.querySelector('#csm-toasts .csm-toast--warning');
+        assert.ok(warning);
+        assert.equal(warning.querySelector('span').textContent,
+            '1 finding(s) changed since the page loaded and were not dismissed: ' + label + '. Review them again.');
+        assert.equal(warning.querySelector('img'), null);
+        assert.equal(page.pending('/api/v1/findings/enriched').length, 1);
+    });
+}

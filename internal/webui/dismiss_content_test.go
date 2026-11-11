@@ -253,24 +253,73 @@ func TestBulkDismissAllChangedPreservesPendingUndo(t *testing.T) {
 }
 
 func TestDismissRejectsMalformedContentHash(t *testing.T) {
-	for name, shown := range map[string]string{
+	for name, shown := range map[string]any{
 		"not hex":   "not-a-content-hash",
 		"uppercase": strings.Repeat("A", 64),
+		"too short": strings.Repeat("a", 63),
 		"too long":  strings.Repeat("a", 4096),
+		"null":      nil,
+		"boolean":   false,
+		"number":    0,
+		"object":    map[string]any{},
+		"array":     []string{},
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := newTestServerWithBbolt(t, "tok")
-			f := listedYARAFinding(s, "/home/a/public_html/x.php", dismissShaA)
-			before, _ := s.store.EntryForKey(f.Key())
+			for _, bulk := range []bool{false, true} {
+				t.Run(fmt.Sprintf("bulk=%t", bulk), func(t *testing.T) {
+					s := newTestServerWithBbolt(t, "tok")
+					x := listedYARAFinding(s, "/home/a/public_html/x.php", dismissShaA)
+					y := listedYARAFinding(s, "/home/a/public_html/y.php", "")
+					xBefore, _ := s.store.EntryForKey(x.Key())
+					yBefore, _ := s.store.EntryForKey(y.Key())
+					latest := s.store.LatestFindings()
+					body := map[string]any{"key": y.Key(), "contents": map[string]any{y.Key(): shown}}
+					if bulk {
+						body = map[string]any{
+							"keys":     []string{x.Key(), y.Key()},
+							"contents": map[string]any{x.Key(): dismissShaA, y.Key(): shown},
+						}
+					}
 
-			rec := postDismiss(t, s, map[string]any{"key": f.Key(), "contents": map[string]string{f.Key(): shown}})
+					rec := postDismiss(t, s, body)
 
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
-			}
-			if e, _ := s.store.EntryForKey(f.Key()); e != before {
-				t.Fatalf("malformed hash changed the entry: %+v", e)
+					if rec.Code != http.StatusBadRequest {
+						t.Errorf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
+					}
+					if e, _ := s.store.EntryForKey(x.Key()); e != xBefore {
+						t.Errorf("malformed request changed the valid entry: %+v", e)
+					}
+					if e, _ := s.store.EntryForKey(y.Key()); e != yBefore {
+						t.Errorf("malformed hash changed the entry: %+v", e)
+					}
+					if got := s.store.LatestFindings(); !reflect.DeepEqual(got, latest) {
+						t.Errorf("malformed request changed the list: %+v", got)
+					}
+					if id := pendingUndoID(t, s); id != "" {
+						t.Errorf("malformed request recorded undo %q", id)
+					}
+					if audit := readUIAuditLog(s.cfg.StatePath, 20); len(audit) != 0 {
+						t.Errorf("malformed request was audited: %+v", audit)
+					}
+				})
 			}
 		})
+	}
+}
+
+func TestDismissAcceptsEmptyContentHash(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	f := listedYARAFinding(s, "/home/a/public_html/x.php", "")
+
+	rec := postDismiss(t, s, map[string]any{"key": f.Key(), "contents": map[string]string{f.Key(): ""}})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if e, _ := s.store.EntryForKey(f.Key()); !e.IsBaseline || e.ContentSHA256 != "" {
+		t.Fatalf("finding without content was not dismissed: %+v", e)
+	}
+	if latest := s.store.LatestFindings(); len(latest) != 0 {
+		t.Fatalf("dismissed finding remains listed: %+v", latest)
 	}
 }

@@ -1511,7 +1511,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		Keys []string `json:"keys"`
 		// Contents maps a key to the content hash its row showed (empty for
 		// none). A listed key whose content changed since is not dismissed.
-		Contents map[string]string `json:"contents"`
+		Contents map[string]*string `json:"contents"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 1<<20, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
@@ -1545,7 +1545,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	}
 	keys = uniqueKeys
 	for _, shown := range req.Contents {
-		if shown != "" && !isContentSHA256(shown) {
+		if shown == nil || (*shown != "" && !isContentSHA256(*shown)) {
 			writeJSONError(w, "Invalid content hash", http.StatusBadRequest)
 			return
 		}
@@ -1558,7 +1558,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		var u state.DismissUndo
 		if shown, claimed := req.Contents[key]; claimed {
 			var ok bool
-			if u, ok = s.store.DismissFindingAsShown(key, shown); !ok {
+			if u, ok = s.store.DismissFindingAsShown(key, *shown); !ok {
 				refused = append(refused, key)
 				continue
 			}
