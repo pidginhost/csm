@@ -12,6 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
+- BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 
 ## [4.11.0] - 2026-11-10
 

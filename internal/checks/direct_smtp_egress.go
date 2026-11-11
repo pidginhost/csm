@@ -54,7 +54,7 @@ func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (ale
 	if isInfraIP(in.DstIP.String(), cfg.InfraIPs) {
 		return alert.Finding{}, false
 	}
-	if in.MTA.IsMTAUser(in.User, in.UID) || smtpAllowedUser(cfg, in.User) {
+	if in.MTA.IsMTAUser(in.User, in.UID) || SMTPAllowedUser(cfg, in.User) {
 		return alert.Finding{}, false
 	}
 
@@ -77,10 +77,11 @@ func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (ale
 	}, true
 }
 
-// smtpAllowedUser reports whether the operator lets user send through the
-// firewall's smtp_block, so its connections are expected, not direct egress.
-func smtpAllowedUser(cfg *config.Config, user string) bool {
-	if user == "" || cfg.Firewall == nil {
+// SMTPAllowedUser reports whether the operator lets user send through the
+// firewall's smtp_block, so its connections are neither direct egress nor
+// blocked by BPF enforcement.
+func SMTPAllowedUser(cfg *config.Config, user string) bool {
+	if user == "" || cfg == nil || cfg.Firewall == nil {
 		return false
 	}
 	for _, allowed := range cfg.Firewall.SMTPAllowUsers {

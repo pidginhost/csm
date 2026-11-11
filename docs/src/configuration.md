@@ -900,7 +900,7 @@ firewall:
 
   # Outbound SMTP restriction
   smtp_block: false                     # block outgoing mail except allowed users
-  smtp_allow_users: [cpanel, mailman]   # extra outbound SMTP users, also skipped by direct SMTP egress detection; root and mailnull are always allowed
+  smtp_allow_users: [cpanel, mailman]   # extra outbound SMTP users, also exempt from direct SMTP egress detection and BPF enforcement; root and mailnull are always allowed
   smtp_ports: [25,465,587]
 
   # Dynamic DNS

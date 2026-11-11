@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -134,7 +135,7 @@ func TestBuildPolicyPortsCollectedFromDetectorWhenSMTPGate(t *testing.T) {
 }
 
 func TestSafeUIDsFromPasswdParsesRoot(t *testing.T) {
-	uids, err := safeUIDsFromPasswd("testdata/passwd_simple")
+	uids, err := safeUIDsFromPasswd("testdata/passwd_simple", nil)
 	if err != nil {
 		t.Fatalf("read passwd fixture: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestSafeUIDsFromPasswdParsesRoot(t *testing.T) {
 }
 
 func TestSafeUIDsFromPasswdSkipsHostedAccounts(t *testing.T) {
-	uids, err := safeUIDsFromPasswd("testdata/passwd_simple")
+	uids, err := safeUIDsFromPasswd("testdata/passwd_simple", nil)
 	if err != nil {
 		t.Fatalf("read passwd fixture: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestSafeUIDsFromPasswdSkipsHostedAccounts(t *testing.T) {
 }
 
 func TestSafeUIDsFromPasswdIncludesPostfix(t *testing.T) {
-	uids, err := safeUIDsFromPasswd("testdata/passwd_simple")
+	uids, err := safeUIDsFromPasswd("testdata/passwd_simple", nil)
 	if err != nil {
 		t.Fatalf("read passwd fixture: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestSafeUIDsFromPasswdStalwartIdentity(t *testing.T) {
 					if err := os.WriteFile(path, []byte(passwd), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					got, err := safeUIDsFromPasswd(path)
+					got, err := safeUIDsFromPasswd(path, nil)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -195,6 +196,35 @@ func TestSafeUIDsFromPasswdStalwartIdentity(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestSafeUIDsFromPasswdIncludesSMTPAllowUsers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "passwd")
+	passwd := "root:x:0:0::/root:/bin/sh\n" +
+		"relay:x:1005:1005::/home/relay:/bin/sh\n" +
+		"relayx:x:1006:1006::/home/relayx:/bin/sh\n" +
+		"Relay:x:1007:1007::/home/Relay:/bin/sh\n" +
+		"alice:x:1008:1008::/home/alice:/bin/sh\n"
+	if err := os.WriteFile(path, []byte(passwd), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{SMTPAllowUsers: []string{"relay", ""}}}
+	got, err := safeUIDsFromPasswd(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[uint32]bool{0: true, 1005: true}; !maps.Equal(got, want) {
+		t.Fatalf("safe UIDs = %v, want %v", got, want)
+	}
+	for _, c := range []*config.Config{nil, {}} {
+		got, err := safeUIDsFromPasswd(path, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := map[uint32]bool{0: true}; !maps.Equal(got, want) {
+			t.Fatalf("without an allow list, safe UIDs = %v, want %v", got, want)
 		}
 	}
 }
