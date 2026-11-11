@@ -127,7 +127,7 @@ func TestCpanelProxyHandlerCannotUseStaleSessionEvidence(t *testing.T) {
 	}
 }
 
-func TestCpanelWHMAlertsIgnoreForgedUserRecords(t *testing.T) {
+func TestCpanelWHMAlertsRequireDefiniteListener(t *testing.T) {
 	for _, stamp := range []string{"11/09/2026:12:00:00 -0000", "bad -0000", "09/Nov/2026:12:00:00 +0000"} {
 		for _, user := range []string{
 			`x"`,
@@ -141,6 +141,18 @@ func TestCpanelWHMAlertsIgnoreForgedUserRecords(t *testing.T) {
 				} {
 					line := `192.0.2.66 - ` + user + ` [` + stamp + `] "` + request + ` HTTP/1.1" 401 0 ` + suffix
 					got := parseAccessLogLineEnhanced(line, &config.Config{})
+					if strings.Contains(user, "[") && strings.HasSuffix(suffix, `"`) {
+						// The same text can occur inside a user agent. Without
+						// a bare listener it must not supply a WHM port.
+						rec, ok := checks.ParseCpanelAccessRecord(line)
+						method, target, _ := strings.Cut(request, " ")
+						if len(got) != 0 || !ok || rec.Port != "" || !rec.Any(func(q checks.CpanelRequest) bool {
+							return q.MethodIs(method) && q.Target == target
+						}) {
+							t.Fatalf("ambiguous listener trusted or request lost: %+v, %+v", rec, got)
+						}
+						continue
+					}
 					if len(got) != 1 || got[0].Check != check || got[0].SourceIP != "192.0.2.66" {
 						t.Errorf("%q: got %+v, want one %s", line, got, check)
 					}

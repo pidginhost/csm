@@ -64,3 +64,45 @@ func checksOf(findings []alert.Finding) []string {
 	}
 	return names
 }
+
+func TestCpanelScansRequireDefiniteStatusForExemptions(t *testing.T) {
+	forceCPanelPlatform(t)
+	for _, tc := range []struct {
+		name, agent string
+		wantUpload  bool
+	}{
+		{"definite rejection", "agent", false},
+		{"second status", `agent" 200 0 "`, true},
+		{"second request", `agent [bad] "GET / HTTP/1.1`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `192.0.2.66 - alice [11/09/2026:12:00:00 -0000] "POST /cpsess123/execute/Fileman/upload_files HTTP/1.1" 401 0 "-" "` + tc.agent + `" "-" "-" 2083`
+			lines := make([]string, apiFailThreshold)
+			for i := range lines {
+				lines[i] = line
+			}
+			cpanelScanLog(t, lines)
+			cfg := &config.Config{}
+			api := CheckAPIAuthFailures(context.Background(), cfg, nil)
+			if len(api) != 1 || api[0].Check != "api_auth_failure" || api[0].SourceIP != "192.0.2.66" {
+				t.Fatalf("ambiguous text changed API failure counts: %+v", api)
+			}
+			uploads := CheckCpanelFileManager(context.Background(), cfg, nil)
+			want := 0
+			if tc.wantUpload {
+				want = len(lines)
+			}
+			if rec, ok := ParseStaleSessionRequest(line); ok == tc.wantUpload {
+				t.Fatalf("stale session evidence = %+v (%v), want accepted %v", rec, ok, !tc.wantUpload)
+			}
+			if len(uploads) != want {
+				t.Fatalf("got %d File Manager findings, want %d", len(uploads), want)
+			}
+			for _, f := range uploads {
+				if f.Check != "cpanel_file_upload" {
+					t.Fatalf("unexpected finding: %+v", f)
+				}
+			}
+		})
+	}
+}

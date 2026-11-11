@@ -251,7 +251,9 @@ func TestParseCpanelAccessRecordUndatedUserFields(t *testing.T) {
 			line := `192.0.2.66 - ` + user + ` [` + stamp + `] "GET /scripts2/listaccts HTTP/1.1" 401 0 "-" "-" "-" "-" 2087`
 			got, ok := ParseCpanelAccessRecord(line)
 			var want time.Time
-			if stamp == "11/09/2026:12:00:00 -0000" && !strings.Contains(user, "[11/10/2026:") {
+			// An earlier bracketed request could be the actual record with
+			// a malformed date, leaving the valid date inside client text.
+			if stamp == "11/09/2026:12:00:00 -0000" && !strings.Contains(user, "[") {
 				want = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 			}
 			if !ok || !hasCpanelRequest(got, "GET", "/scripts2/listaccts") || !got.MayHaveStatus("401") ||
@@ -380,7 +382,7 @@ func TestParseCpanelAccessRecordFields(t *testing.T) {
 
 // hasCpanelRequest reports whether rec may hold method and target.
 func hasCpanelRequest(rec CpanelAccessRecord, method, target string) bool {
-	return rec.Any(func(q CpanelRequest) bool { return q.Method == method && q.Target == target })
+	return rec.Any(func(q CpanelRequest) bool { return q.MethodIs(method) && q.Target == target })
 }
 
 func TestCpanelAccessRecordWebmailLogin(t *testing.T) {

@@ -21,8 +21,8 @@ type CpanelAccessRecord struct {
 	// status, "" when client text makes it ambiguous.
 	Status string
 	// Port served the request: the bare last field after a quoted field, or
-	// the host:port of the last quoted field when a request's suffix parses
-	// strictly through the end of the line.
+	// the host:port of the last quoted field when the first candidate's
+	// suffix parses strictly through the end of the line.
 	Port string
 	// At is the time cpsrvd stamped, zero unless cpanelAccessLogTime dates
 	// the line.
@@ -41,7 +41,7 @@ type CpanelAccessRecord struct {
 // method and the start of the target are read from just after the opening
 // quote; raw quotes later on cannot move them.
 type CpanelRequest struct {
-	Method string
+	Method string // raw log escapes kept; compare with MethodIs
 	Target string // raw, up to the first blank; may hold raw quotes
 }
 
@@ -75,21 +75,24 @@ func ParseCpanelAccessRecord(line string) (CpanelAccessRecord, bool) {
 		return CpanelAccessRecord{}, false
 	}
 	if requests == 1 {
-		if codes := cpanelStatuses(rec.first, 2); len(codes) == 1 {
-			rec.Status = codes[0]
+		for code := range cpanelStatuses(rec.first) {
+			if rec.Status != "" {
+				rec.Status = ""
+				break
+			}
+			rec.Status = code
 		}
 	}
 	rec.Port = cpanelServedPort(line)
 	if rec.Port == "" {
-		// A writer without the bare port names the served host in a third
-		// or later quoted field. Only a strict parse through the end of the
-		// line tells that field from a user agent; a start forged in the
-		// user runs into the real timestamp and fails it.
-		for _, after := range cpanelRequestStarts(rest) {
-			if vhost, ok := strictCpanelSuffix(after); ok && vhost != "" {
-				rec.Port = vhost
-				break
+		// A later candidate could be inside a user agent. Its strict suffix
+		// cannot establish that the final field is a server-supplied host.
+		for open, after := range cpanelRequestStarts(rest) {
+			if open < 0 {
+				continue
 			}
+			rec.Port, _ = strictCpanelSuffix(after)
+			break
 		}
 	}
 	rec.At, _ = cpanelAccessLogTime(line)
@@ -144,12 +147,11 @@ func (r CpanelAccessRecord) Any(match func(CpanelRequest) bool) bool {
 }
 
 // TargetContains reports whether any request target on the line contains
-// one of words, ignoring case.
+// one of words, ignoring ASCII case.
 func (r CpanelAccessRecord) TargetContains(words ...string) bool {
 	return r.Any(func(q CpanelRequest) bool {
-		target := strings.ToLower(q.Target)
 		for _, w := range words {
-			if strings.Contains(target, strings.ToLower(w)) {
+			if q.TargetContains(w) {
 				return true
 			}
 		}
@@ -161,7 +163,7 @@ func (r CpanelAccessRecord) TargetContains(words ...string) bool {
 // request is one of codes. Only use it where a forged status can count only
 // against the client that sent it.
 func (r CpanelAccessRecord) MayHaveStatus(codes ...string) bool {
-	for _, s := range cpanelStatuses(r.first, -1) {
+	for s := range cpanelStatuses(r.first) {
 		for _, c := range codes {
 			if s == c {
 				return true
@@ -177,10 +179,53 @@ func (r CpanelAccessRecord) WebmailLogin() bool {
 		return false
 	}
 	return r.Any(func(q CpanelRequest) bool {
-		target := strings.ToLower(q.Target)
-		return strings.EqualFold(q.Method, "POST") &&
-			(strings.Contains(target, "login") || strings.Contains(target, "auth"))
+		return q.MethodIs("POST") && (q.TargetContains("login") || q.TargetContains("auth"))
 	})
+}
+
+// MethodIs compares an HTTP method ignoring case without copying log escapes.
+func (q CpanelRequest) MethodIs(method string) bool {
+	j := 0
+	for i := 0; i < len(q.Method); {
+		var c byte
+		c, i = patternLogByte(q.Method, i)
+		if j == len(method) || cpanelASCIILower(c) != cpanelASCIILower(method[j]) {
+			return false
+		}
+		j++
+	}
+	return j == len(method)
+}
+
+// TargetContains compares ASCII endpoint names without copying the target.
+func (q CpanelRequest) TargetContains(word string) bool {
+	for i := 0; i <= len(q.Target)-len(word); i++ {
+		if cpanelEqualFold(q.Target[i:i+len(word)], word) {
+			return true
+		}
+	}
+	return false
+}
+
+// TargetHasPrefix compares an ASCII endpoint prefix without copying the target.
+func (q CpanelRequest) TargetHasPrefix(prefix string) bool {
+	return len(q.Target) >= len(prefix) && cpanelEqualFold(q.Target[:len(prefix)], prefix)
+}
+
+func cpanelEqualFold(a, b string) bool {
+	for i := range len(b) {
+		if cpanelASCIILower(a[i]) != cpanelASCIILower(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func cpanelASCIILower(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 // parseCpanelRequest reads the method and target from just after a
@@ -192,36 +237,51 @@ func parseCpanelRequest(s string) (CpanelRequest, bool) {
 	}
 	// Method tokens have no fixed length. Rejecting a long one would hide
 	// the whole request.
-	method, _ = patternDecodeField(method, len(method))
 	target, _, _ := strings.Cut(rest, " ")
-	if !patternValidMethod(method) || !patternValidRawTarget(target) {
+	if !validCpanelMethod(method) || !patternValidRawTarget(target) {
 		return CpanelRequest{}, false
 	}
 	return CpanelRequest{Method: method, Target: target}, true
 }
 
-// cpanelStatuses returns up to limit (all when negative) `" <code> ` fields
-// in s: the status cpsrvd wrote after the request, and any a client wrote
-// into its own text.
-func cpanelStatuses(s string, limit int) []string {
-	var codes []string
-	for i := 0; i < len(s) && len(codes) != limit; i++ {
-		j := strings.IndexByte(s[i:], '"')
-		if j < 0 {
-			break
-		}
-		i += j
-		rest := s[i+1:]
-		if rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
-			continue
-		}
-		code, tail := patternToken(rest)
-		if len(code) == 3 && patternDigitsOnly(code) && code[0] >= '1' && code[0] <= '5' &&
-			tail != "" && (tail[0] == ' ' || tail[0] == '\t') {
-			codes = append(codes, code)
+// Validate decoded bytes in place: client text can contain any number
+// of escaped method candidates, including arbitrarily long ones.
+func validCpanelMethod(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for i := 0; i < len(raw); {
+		var c byte
+		c, i = patternLogByte(raw, i)
+		valid := ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z') ||
+			('0' <= c && c <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))
+		if !valid {
+			return false
 		}
 	}
-	return codes
+	return true
+}
+
+// cpanelStatuses yields `" <code> ` fields without collecting client text.
+func cpanelStatuses(s string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for i := 0; i < len(s); i++ {
+			j := strings.IndexByte(s[i:], '"')
+			if j < 0 {
+				break
+			}
+			i += j
+			rest := s[i+1:]
+			if rest == "" || (rest[0] != ' ' && rest[0] != '\t') {
+				continue
+			}
+			code, tail := patternToken(rest)
+			if len(code) == 3 && patternDigitsOnly(code) && code[0] >= '1' && code[0] <= '5' &&
+				tail != "" && (tail[0] == ' ' || tail[0] == '\t') && !yield(code) {
+				return
+			}
+		}
+	}
 }
 
 // cpanelServedPort reads the port cpsrvd ends its line with, after its
@@ -239,8 +299,8 @@ func cpanelServedPort(line string) string {
 // with ident "-". The client chooses the user, which may hold spaces,
 // brackets and quotes, so only one complete parse dates the line: a user
 // holding its own timestamp followed by a quote leaves the line with no
-// time, never the time the client wrote. A line with raw quotes in its
-// quoted fields does not parse strictly and stays undated.
+// time, never the time the client wrote. An earlier bracketed candidate
+// or a suffix that cannot be parsed strictly leaves the line undated.
 func cpanelAccessLogTime(line string) (time.Time, bool) {
 	peer, rest, ok := strings.Cut(line, " ")
 	if !ok || net.ParseIP(peer) == nil {
@@ -253,6 +313,17 @@ func cpanelAccessLogTime(line string) (time.Time, bool) {
 	stamp, suffix, ok := cpanelUniqueStamp(rest)
 	if !ok {
 		return time.Time{}, false
+	}
+	// With an earlier candidate, this timestamp might be in a header on
+	// a line whose actual timestamp has another shape.
+	for open, after := range cpanelRequestStarts(rest) {
+		if open < 0 {
+			continue
+		}
+		if len(after) != len(suffix) {
+			return time.Time{}, false
+		}
+		break
 	}
 	if _, ok := strictCpanelSuffix(suffix); !ok {
 		return time.Time{}, false
@@ -322,8 +393,8 @@ func cpanelStampShape(s string) bool {
 // strictCpanelSuffix parses what follows a timestamp through the end of the
 // line, reading quoted fields with escapes. It returns the port the line
 // names: its bare last field, or the host:port of a third or later quoted
-// field. cpsrvd writes raw quotes, so its lines with quotes in client text
-// fail here; use this only to date a line or to trust a quoted host.
+// field. Use it only at the first bracketed candidate: a later strict
+// suffix may belong to client text.
 func strictCpanelSuffix(s string) (port string, ok bool) {
 	request, s, ok := patternQuotedField(s)
 	if !ok {
@@ -331,8 +402,7 @@ func strictCpanelSuffix(s string) (port string, ok bool) {
 	}
 	method, afterMethod, hasMethod := strings.Cut(request, " ")
 	target, proto, hasProto := strings.Cut(afterMethod, " ")
-	method, _ = patternDecodeField(method, len(method))
-	if !hasMethod || !hasProto || !patternValidMethod(method) ||
+	if !hasMethod || !hasProto || !validCpanelMethod(method) ||
 		!patternValidRawTarget(target) || !patternHTTPVersion(proto) {
 		return "", false
 	}

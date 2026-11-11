@@ -72,7 +72,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// a trusted proxy's address stands for every visitor behind it.
 	if rec.MayHaveStatus("401", "403") && (rec.Proxy || !checks.IsTrustedProxy(ip, cfg)) {
 		if rec.TargetContains("json-api", "/execute/") {
-			if rec.Proxy || !purgeTracker.isPostPurge401(ip) {
+			if rec.Proxy || rec.Status != "401" || !purgeTracker.isPostPurge401(ip) {
 				attribution := admission.AttributionUnknown
 				if !rec.Proxy {
 					attribution = admission.AttributionPeer
@@ -111,7 +111,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	isWHMPort := rec.Port == "2087" || rec.Port == "2086"
 	if isWHMPort && !cfg.Suppressions.SuppressCpanelLogin {
 		if rec.Any(func(q checks.CpanelRequest) bool {
-			return strings.EqualFold(q.Method, "POST") && strings.HasPrefix(strings.ToLower(q.Target), "/login/?login_only=1")
+			return q.MethodIs("POST") && q.TargetHasPrefix("/login/?login_only=1")
 		}) {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
