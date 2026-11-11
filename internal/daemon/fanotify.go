@@ -558,6 +558,10 @@ type fileEvent struct {
 	mask          uint64
 	dropperOnly   bool
 	phpExecutable bool
+	// at is when the event was read, the latest moment the writer is known
+	// to have existed under its PID.
+	at          time.Time
+	writerChain []int
 }
 
 func (fm *FileMonitor) currentCfg() *config.Config {
@@ -880,6 +884,7 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 
 // processEvents parses a buffer of fanotify event metadata and dispatches each event.
 func (fm *FileMonitor) processEvents(buf []byte) {
+	readAt := time.Now()
 	offset := 0
 	for offset+metadataSize <= len(buf) {
 		// #nosec G103 -- fanotify delivers a packed binary stream on the
@@ -895,7 +900,7 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 		if event.Mask&unix.FAN_Q_OVERFLOW != 0 {
 			fm.handleQueueOverflow()
 		} else if event.Fd >= 0 {
-			fm.handleEvent(int(event.Fd), event.Pid, event.Mask)
+			fm.handleEventAt(int(event.Fd), event.Pid, event.Mask, readAt)
 		}
 
 		offset += eventLen
@@ -975,6 +980,10 @@ func (fm *FileMonitor) Stop() {
 }
 
 func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
+	fm.handleEventAt(fd, pid, mask, time.Now())
+}
+
+func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time.Time) {
 	var admitted, dropped bool
 	defer func() { fm.recordEvent(admitted, dropped) }()
 	// Get the file path from the fd via /proc/self/fd/N
@@ -994,7 +1003,8 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	// Send to analyzer pool (with backpressure)
 	fm.initQueueHealth()
 	ticket := fm.analyzerHealth.Begin(time.Now())
-	event.queueTicket, event.pid, event.mask = ticket, pid, mask
+	event.queueTicket, event.pid, event.mask, event.at = ticket, pid, mask, readAt
+	captureRestoreWriterChain(&event)
 	select {
 	case fm.analyzerCh <- event:
 		admitted = true
@@ -1031,11 +1041,12 @@ func (fm *FileMonitor) classifyEvent(path string, fd int) (ev fileEvent, admit b
 	// The dropper tracker also needs arbitrary executable names that have
 	// no path-only content signal.
 	fm.invalidateDropperPHPHandlerCache(path)
-	contentInteresting := fm.isInteresting(path)
+	_, removed := removedFileAt(path)
+	contentInteresting := removed || fm.isInteresting(path)
 	// Filtering must not reroute writes retained for dropper tracking: the
 	// dropper-only path bypasses normal suppressions and checksum verification.
 	contentNeedsAnalysis := contentInteresting
-	if contentInteresting && underTempRoot(path) {
+	if contentInteresting && !removed && underTempRoot(path) {
 		contentNeedsAnalysis = fm.tempRootEventNeedsAnalysis(path, fd)
 	}
 	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
@@ -1600,6 +1611,13 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			}
 			return
 		}
+	}
+
+	// Checked after the checksum skip: official release bytes coming back
+	// are never a response being undone.
+	if fm.checkRemovedFileRestored(event, procInfo) {
+		markDropperContentSuspicious()
+		return
 	}
 
 	// User crontab written under /var/spool/cron/<user>. Scan content

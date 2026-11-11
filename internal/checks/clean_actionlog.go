@@ -27,6 +27,9 @@ func (a *cleanAction) replace(target *cleanTarget, content []byte, backupPath st
 	if target.installed {
 		a.rec.Result = actionlog.Applied
 		a.rec.After = actionlog.ContentState(target.replacementInfo, content)
+		if a.rec.Before != nil {
+			rememberRemovedFile(target.Path, a.rec.Before.Digest, a.rec.Before.Size, "clean")
+		}
 		if err != nil {
 			err = fmt.Errorf("%w; recovery backup retained", err)
 		}

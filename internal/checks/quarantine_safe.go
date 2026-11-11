@@ -61,10 +61,12 @@ func quarantineFileVersionedTOCTOUSafe(path, qPath string, originalInfo os.FileI
 }
 
 func quarantineFileVersionedTOCTOUSafeFD(path, qPath string, originalInfo os.FileInfo, metadata []byte, sourceFD int, scannedHead []byte) error {
-	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true, sourceFD, scannedHead)
+	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true, sourceFD, func(fd *os.File) error {
+		return requireScannedHead(fd, scannedHead)
+	})
 }
 
-func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool, sourceFD int, scannedHead []byte) error {
+func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool, sourceFD int, verifyContent func(*os.File) error) error {
 	if originalInfo == nil {
 		return fmt.Errorf("quarantine: missing original stat")
 	}
@@ -120,7 +122,7 @@ func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, 
 		}
 		defer releaseQuarantineLease(fd)
 		leased = fd
-		if contentErr := requireScannedHead(fd, scannedHead); contentErr != nil {
+		if contentErr := verifyContent(fd); contentErr != nil {
 			return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed before atomic capture: %w", path, contentErr))
 		}
 	}

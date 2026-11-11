@@ -68,19 +68,9 @@ func procUptime() (float64, bool) {
 }
 
 func procStartTicks(pid string) (uint64, bool) {
-	data, err := osFS.ReadFile(filepath.Join("/proc", pid, "stat"))
-	if err != nil {
-		return 0, false
-	}
-	// The comm field is parenthesised and may contain spaces, so fields are
-	// counted from after its closing parenthesis.
-	closing := strings.LastIndex(string(data), ")")
-	if closing < 0 {
-		return 0, false
-	}
-	fields := strings.Fields(string(data)[closing+1:])
+	fields, ok := procStatFields(pid)
 	// starttime is field 22 overall, index 19 once pid and comm are behind us.
-	if len(fields) < 20 {
+	if !ok || len(fields) < 20 {
 		return 0, false
 	}
 	ticks, err := strconv.ParseUint(fields[19], 10, 64)
@@ -88,6 +78,21 @@ func procStartTicks(pid string) (uint64, bool) {
 		return 0, false
 	}
 	return ticks, true
+}
+
+// procStatFields returns the /proc/<pid>/stat fields after the command name.
+func procStatFields(pid string) ([]string, bool) {
+	data, err := osFS.ReadFile(filepath.Join("/proc", pid, "stat"))
+	if err != nil {
+		return nil, false
+	}
+	// The comm field is parenthesised and may contain spaces, so fields are
+	// counted from after its closing parenthesis.
+	closing := strings.LastIndex(string(data), ")")
+	if closing < 0 {
+		return nil, false
+	}
+	return strings.Fields(string(data)[closing+1:]), true
 }
 
 // processUsesFile reports whether pid still references path, as its executable

@@ -128,6 +128,7 @@ var attributionEvidence = map[string]string{
 	"signature_match_realtime":         "TestFanotifyFindingsAttributeByPath",
 	"yara_match_realtime":              "TestYARARealtimeFindingAttributesByPath",
 	"self_deleting_dropper_realtime":   "TestDropperEngineFindingAttributesByPath",
+	"removed_file_restored_realtime":   "TestRemovedFileRestoredFindingAttributesByPath",
 	"php_shield_block":                 "TestPHPShieldFindingsStampOwner",
 	"php_shield_eval":                  "TestPHPShieldFindingsStampOwner",
 	"php_shield_webshell":              "TestPHPShieldFindingsStampOwner",

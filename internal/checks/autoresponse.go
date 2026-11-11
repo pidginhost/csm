@@ -28,6 +28,10 @@ func InQuarantine(path string) bool {
 	return path == quarantineDir || strings.HasPrefix(path, quarantineDir+string(filepath.Separator))
 }
 
+// RemovedFileRestoredCheck reports a process writing back, byte for byte,
+// content CSM quarantined or cleaned at the same path.
+const RemovedFileRestoredCheck = "removed_file_restored_realtime"
+
 // autoQuarantineChecks are the findings the scheduled auto-responder may
 // quarantine on its own: the manual move set plus the kill-and-quarantine
 // family, and the realtime signature match, which must
@@ -45,13 +49,15 @@ var autoQuarantineChecks = map[string]bool{
 	"phishing_page":            true,
 	"phishing_directory":       true,
 	"signature_match_realtime": true,
+	RemovedFileRestoredCheck:   true,
 }
 
 var signalProcess = processhandle.Signal
 var errProcessNotEligible = errors.New("process is no longer eligible for termination")
 
 // AutoKillProcesses kills processes that match critical findings.
-// Only targets: fake kernel threads, reverse shells, GSocket processes.
+// Only targets: fake kernel threads, reverse shells, GSocket processes, and
+// the processes that wrote back a file CSM had removed.
 // Never kills root system services or cPanel processes.
 // Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
@@ -64,7 +70,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 	for i, f := range findings {
 		// Only act on specific high-confidence critical checks
 		switch f.Check {
-		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution":
+		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution", RemovedFileRestoredCheck:
 		default:
 			continue
 		}
@@ -74,6 +80,23 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		// A scan hands its findings to alert delivery, which must not
 		// signal the same process again.
 		findings[i].AutoProcessResponseEvaluated = true
+
+		if f.Check == RemovedFileRestoredCheck {
+			// The parents go first so a loop cannot start another writer.
+			// Recheck origin and terminal inside the process handle too:
+			// a captured process can exec or acquire a terminal before this.
+			for j := len(f.WriterChain) - 1; j >= 0; j-- {
+				pid := f.WriterChain[j]
+				allow := func(string) bool {
+					chain := restoreWriterChain(pid, f.WriterObservedAt, j == 0)
+					return len(chain) > 0 && chain[0] == pid
+				}
+				if action, ok := killFindingProcess(ctx, f, pid, allow); ok {
+					actions = append(actions, action)
+				}
+			}
+			continue
+		}
 
 		// Use structured PID field when available, fall back to text extraction
 		pid := fmt.Sprintf("%d", f.PID)
@@ -88,34 +111,41 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		if !validPID {
 			continue
 		}
-		pid = strconv.Itoa(pidInt)
-		var uid, exe string
-		err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
-			uid, exe = getProcessUID(pid), getProcessExe(pid)
-			if uid == "0" || uid == "" || exe == "" || isSafeProcess(exe) || !processStartedBefore(pid, f.Timestamp) {
-				return errProcessNotEligible
-			}
-			return nil
-		})
-		if err != nil {
-			if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
-				csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
-			}
-			recordKillAction(&f, pid, exe, err)
-			continue
+		if action, ok := killFindingProcess(ctx, f, pidInt, func(exe string) bool { return !isSafeProcess(exe) }); ok {
+			actions = append(actions, action)
 		}
-		recordKillAction(&f, pid, exe, nil)
-
-		actions = append(actions, alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "auto_response",
-			Message:   fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
-			Timestamp: time.Now(),
-			Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
-		})
 	}
 
 	return actions
+}
+
+// killFindingProcess signals one process for f after verifying, through the
+// captured handle, that it is still a non-root process with an executable
+// allowExe accepts that started before the finding.
+func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowExe func(string) bool) (alert.Finding, bool) {
+	pid := strconv.Itoa(pidInt)
+	var uid, exe string
+	err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
+		uid, exe = getProcessUID(pid), getProcessExe(pid)
+		if uid == "0" || uid == "" || exe == "" || !allowExe(exe) || !processStartedBefore(pid, f.Timestamp) {
+			return errProcessNotEligible
+		}
+		return nil
+	})
+	recordKillAction(&f, pid, exe, err)
+	if err != nil {
+		if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
+			csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
+		}
+		return alert.Finding{}, false
+	}
+	return alert.Finding{
+		Severity:  alert.Critical,
+		Check:     "auto_response",
+		Message:   fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
+		Timestamp: time.Now(),
+		Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
+	}, true
 }
 
 // recordKillAction writes the unified action record for one termination
@@ -183,13 +213,45 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
+		clean := !realtime && ShouldCleanInsteadOfQuarantine(path)
+		restored := f.Check == RemovedFileRestoredCheck
+		var removed RemovedFile
+		if restored {
+			// Repeat what CSM did to these bytes before: the path alone does
+			// not say whether the whole file was malicious.
+			removed, info = restoredFileResponseInfo(path, f.DedupKey, info)
+			if info == nil {
+				continue
+			}
+			clean = removed.Action == "clean"
+			if clean && filepath.Base(path) == ".htaccess" && !cfg.AutoResponse.CleanHtaccess {
+				continue
+			}
+		}
 		// Multiple checks can report one file. Do not re-clean a repaired
 		// target or charge repeated failures for the same batch of evidence.
 		seen[key] = true
 		paused := runAutoFileResponse(cfg, path, info, func() error {
+			if restored {
+				latest, ok := RemovedFileAt(path)
+				current, statErr := osFS.Lstat(path)
+				if !ok || latest != removed || statErr != nil || !SameFileVersion(info, current) {
+					return refuseFileResponse(errors.New("restored file evidence changed before response"))
+				}
+			}
 			// Cleaning is one response attempt. A failed cleaner leaves the file
 			// and any backup for review; it must not escalate to removing the file.
-			if !realtime && ShouldCleanInsteadOfQuarantine(path) {
+			if clean {
+				if restored && filepath.Base(path) == ".htaccess" {
+					result := cleanHtaccessFileIdentified(path, info)
+					if result.Success {
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path), Details: result.Description, Timestamp: time.Now()})
+					}
+					if result.Error != "" && !result.Refused {
+						return errors.New(result.Error)
+					}
+					return nil
+				}
 				result := cleanInfectedFileIdentified(path, info)
 				if result.Error != "" {
 					outcome := "failed"
@@ -211,7 +273,12 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			qPath := newQuarantinePath(quarantineDir, path)
 			meta := quarantineMetadata(path, info, f.Message)
 			meta.FindingID = alert.FindingID(f)
-			err := quarantineTarget(path, qPath, info, meta)
+			var err error
+			if restored {
+				err = quarantineRestoredTarget(path, qPath, info, meta, removed)
+			} else {
+				err = quarantineTarget(path, qPath, info, meta)
+			}
 			warning := ""
 			if err != nil {
 				var completed bool

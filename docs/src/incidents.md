@@ -901,6 +901,7 @@ Attribution gaps:
 | `protection_queue_degraded` | ignored | self-health |  |
 | `protection_queue_recovered` | ignored | self-health |  |
 | `realtime_scanner_panic` | ignored | self-health |  |
+| `removed_file_restored_realtime` | security event |  |  |
 | `reputation_quota_exhausted` | ignored | self-health |  |
 | `response_capacity_exhausted` | ignored | self-health |  |
 | `root_password_change` | ignored | host-scope |  |

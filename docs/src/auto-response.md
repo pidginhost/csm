@@ -6,7 +6,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 
 | Action | Description |
 |--------|-------------|
-| **Kill processes** | Fake kernel threads, reverse shells, GSocket. Never kills root or system processes. |
+| **Kill processes** | Fake kernel threads, reverse shells, GSocket, and loops that write back a file CSM removed. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
 | **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
@@ -155,6 +155,39 @@ These limits use the existing `enabled`, `quarantine_files` and `clean_htaccess`
 opt-ins. Observe mode still forbids automatic changes. `dry_run` continues to
 control IP blocking and web-exposed-file virtual patches; it does not preview
 file quarantine or cleaning. Other response families have their own controls.
+
+### Files written back after removal
+
+When CSM quarantines or cleans a file, it clears the alert state it kept for
+that file. If a detection finds the file there again, the finding is reported
+as new instead of being held back as a repeat.
+Dismissals remain in effect.
+
+CSM also remembers, for seven days, the content each quarantine or clean took
+away. A process that writes the same bytes back to the same path raises
+`removed_file_restored_realtime` (Critical). With `quarantine_files` on, CSM
+then does what it did before: it quarantines the file again, or cleans it
+again. This memory does not survive a daemon restart. A restore from the web
+UI quarantine page, CSM's own writes and official WordPress release files are
+never treated as the file coming back.
+
+Before repeating the response, CSM checks that the file still holds the
+removed bytes, so a later replacement or a restore from the web UI is never
+removed. Removed files are watched whatever their extension. A restored
+`.htaccess` is cleaned only when `clean_htaccess` is on.
+
+With `kill_processes` on, CSM also stops the process that wrote the file back,
+together with its parent processes of the same account, parents first, so a
+loop cannot start another writer. It does so only when those processes trace
+back to the web server or run detached under init, the shape of a loop a
+webshell leaves behind. A PHP worker that serves the site is not stopped unless
+it wrote the file itself. A process with a terminal, or one started from an
+SSH, cPanel or cron session, is left running and the file is still handled;
+root processes are never stopped. An SSH, cron or cPanel session anywhere
+above a PHP worker also prevents the kill, and so does any part of the
+ancestry CSM cannot read. The processes are named when the write is seen, and
+each is checked again through a kernel process handle just before the signal,
+as described above.
 
 ### Restoring quarantined files
 

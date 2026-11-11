@@ -1,6 +1,10 @@
 package state
 
-import "github.com/pidginhost/csm/internal/alert"
+import (
+	"path/filepath"
+
+	"github.com/pidginhost/csm/internal/alert"
+)
 
 // BeginDelivery reserves eligible findings until finish is called with the
 // successfully delivered subset. No store lock stays held during delivery.
@@ -35,6 +39,11 @@ func (s *Store) BeginDelivery(findings []alert.Finding) ([]alert.Finding, func([
 		if entry == nil {
 			entry = &Entry{Hash: f.Fingerprint(), FirstSeen: now, AlertSent: now}
 			s.entries[key] = entry
+		}
+		// Removal may clear state while delivery is in flight, before Update
+		// attaches the path or for findings that never reach Update.
+		if f.FilePath != "" {
+			entry.Path = filepath.Clean(f.FilePath)
 		}
 		entry.LastSeen = now
 		s.dirty = true
