@@ -300,11 +300,11 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	configMu := integrity.ConfigWriteMutex()
 	configMu.Lock()
 	defer configMu.Unlock()
-	if rejectConfigWriteDuringRollback(w) {
-		return
-	}
 	if s.settingsSaveHook != nil {
 		s.settingsSaveHook()
+	}
+	if rejectConfigWriteDuringRollback(w) {
+		return
 	}
 
 	diskBytes, err := os.ReadFile(s.cfg.ConfigFile) // #nosec G304 -- operator-supplied config path

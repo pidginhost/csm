@@ -739,15 +739,17 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 // corroborate intel: the independence window (spec 5.3).
 const reputationSightingWindow = 24 * time.Hour
 
-// collectRecentSightings is collectRecentIPs with the record behind each
-// address's kept surface: the newest record that surface's parser read the
-// address from, dated by the server within the sighting window. An address
-// without such a record has no entry in records.
+// collectRecentSightings keeps the legacy surface choice and, separately,
+// the strongest surface that can supply evidence. Rewritten HTTP logs can
+// report an address without displacing a direct sighting from another log.
+// The kept record is that surface's newest within the sighting window.
 func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]string, records map[string]scanRecord) {
 	ips, records = make(map[string]string), make(map[string]scanRecord)
+	surfaces := make(map[string]string)
 	add := func(ip, source string, r scanRecord) {
-		previous := ips[ip]
-		if !addIfNotInfra(ips, ip, source, cfg) {
+		addIfNotInfra(ips, ip, source, cfg)
+		previous := surfaces[ip]
+		if !addIfNotInfra(surfaces, ip, source, cfg) {
 			return
 		}
 		if previous != source {
@@ -781,6 +783,10 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		}
 		for _, rec := range tailFileRecords(path, 100) {
 			if ip := firstField(rec.text); ip != "" {
+				if CurrentHTTPRewrite().State != RewriteNone {
+					addIfNotInfra(ips, ip, "HTTP request", cfg)
+					continue
+				}
 				add(ip, "HTTP request", accessLogSighting(rec, ip, cfg))
 			}
 		}
@@ -839,12 +845,9 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 
 // accessLogSighting is the record of an access-log line its parser reads as
 // a request from ip itself. A trusted proxy's own address is never a
-// sighting: the requests it carries are its clients'. Nor is a line from a
-// web server that replaces the peer address it logs.
+// sighting: the requests it carries are its clients'. The caller excludes
+// web servers that replace the peer address they log.
 func accessLogSighting(rec syslogRecord, ip string, cfg *config.Config) scanRecord {
-	if CurrentHTTPRewrite().State != RewriteNone {
-		return scanRecord{}
-	}
 	parsed, ok := parseAccessLogRecord(rec.text)
 	if !ok || parsed.RemoteIP != ip || IsTrustedProxy(parsed.RemoteIP, cfg) {
 		return scanRecord{}

@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,12 +116,17 @@ func TestConfigReloadReadsHTTPRewrite(t *testing.T) {
 		})
 	}
 	t.Run("web ui save", func(t *testing.T) {
-		d := newTestDaemon(t)
-		useActiveConfig(t, d.cfg)
-		calls := withHostHTTPRewrite(t, nginxRewrite)
-		d.applySavedConfig()
-		if *calls != 1 || checks.CurrentHTTPRewrite() != nginxRewrite {
-			t.Fatalf("save read the web server %d times, state %+v", *calls, checks.CurrentHTTPRewrite())
+		// Handler tests cover save outcomes and ordering. Keep the daemon
+		// bound to the attempt hook, not the successful-publication hook.
+		source, err := os.ReadFile("daemon.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		hook := strings.Index(text, "srv.SetSettingsSaveHook(d.refreshHTTPRewrite)")
+		start := strings.Index(text, "srv.Start()")
+		if hook < 0 || start < 0 || hook > start {
+			t.Fatal("web UI does not refresh rewrite state on save attempts before serving requests")
 		}
 	})
 }

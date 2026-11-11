@@ -229,7 +229,6 @@ func (d *Daemon) reconcileHotReloadables() {
 // failing step is logged rather than refused: the operator sees the saved
 // values and the log explains what did not reach a subsystem.
 func (d *Daemon) applySavedConfig() {
-	d.refreshHTTPRewrite()
 	cfg := d.activeOrStartupCfg()
 	if err := installAccountExtractorFromConfig(cfg); err != nil {
 		csmlog.Error("settings save: account extractor update failed", "err", err)

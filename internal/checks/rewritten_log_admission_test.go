@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,5 +212,33 @@ func TestReputationIgnoresRewrittenAccessLogSightings(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// An untrusted web address must not hide independent cpsrvd evidence for
+// the same address. Neither the legacy finding nor its severity changes.
+func TestReputationRewrittenLogKeepsIndependentSighting(t *testing.T) {
+	at := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	lines := sightingLines("203.0.113.60", at)
+	for _, rw := range []HTTPRewrite{activeRewrite, {State: RewriteUnknown}} {
+		t.Run(rw.State.String(), func(t *testing.T) {
+			withHTTPRewrite(t, rw)
+			cfg := listIPs(t, "203.0.113.60")
+			paths := sightingLogs(t, map[string]string{
+				logPathFor["HTTP request"]:  lines["HTTP request"] + "\n",
+				logPathFor["cPanel access"]: lines["cPanel access"] + "\n",
+			})
+			f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "203.0.113.60")
+			if _, _, err := mintScanFinding(t, f); err != nil {
+				t.Fatalf("independent cPanel sighting refused: %v", err)
+			}
+			want := syslogTestRef(t, paths[logPathFor["cPanel access"]], 0, lines["cPanel access"])
+			if f.Observation.Stream != want.Stream || f.Observation.Cursor != want.Cursor || !f.Observation.ObservedAt.Equal(at) {
+				t.Fatalf("observation = %+v, want the cPanel record %+v at %v", f.Observation, want, at)
+			}
+			if f.Severity != reputationSightingSeverity("HTTP request") || !strings.Contains(f.Details, "Detected via: HTTP request") {
+				t.Fatalf("legacy finding changed: %+v", f)
+			}
+		})
 	}
 }
