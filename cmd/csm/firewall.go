@@ -28,9 +28,9 @@ func runFirewall() {
 	case "status":
 		fwStatus()
 	case "deny":
-		fwDeny()
+		fwSendIP("deny", control.CmdFirewallBlock, "Blocked via CLI", "")
 	case "allow":
-		fwAllow()
+		fwSendIP("allow", control.CmdFirewallAllow, "Allowed via CLI", "")
 	case "allow-port":
 		fwAllowPort()
 	case "remove-port":
@@ -42,9 +42,9 @@ func runFirewall() {
 	case "grep":
 		fwGrep()
 	case "tempban":
-		fwTempban()
+		fwSendIP("tempban", control.CmdFirewallTempBan, "Tempban via CLI", "1h, 24h, 7d, 1h30m")
 	case "tempallow":
-		fwTempAllow()
+		fwSendIP("tempallow", control.CmdFirewallTempAllow, "Temp allow via CLI", "4h, 1d, 30m")
 	case "ports":
 		fwPorts()
 	case "flush":
@@ -62,9 +62,9 @@ func runFirewall() {
 	case "remove-subnet":
 		fwRemoveSubnet()
 	case "deny-file":
-		fwDenyFile()
+		fwSendIPFile("deny-file", control.CmdFirewallDenyFile, "Bulk block via CLI", "Blocked")
 	case "allow-file":
-		fwAllowFile()
+		fwSendIPFile("allow-file", control.CmdFirewallAllowFile, "Bulk allow via CLI", "Allowed")
 	case "audit":
 		fwAudit()
 	case "actions":
@@ -234,63 +234,49 @@ func fwStatus() {
 	}
 }
 
-func fwDeny() {
+// fwSendIP sends one address to the daemon and prints its reply. A command
+// with a durationHint takes a duration after the address.
+func fwSendIP(verb, cmd, defaultReason, durationHint string) {
+	usage := "Usage: csm firewall " + verb + " <ip> [reason]"
+	need := 1
+	if durationHint != "" {
+		usage = "Usage: csm firewall " + verb + " <ip> <duration> [reason]"
+		need = 2
+	}
 	args := fwArgs()
 	if isHelpRequest(args) {
-		fmt.Printf("Usage: csm firewall deny <ip> [reason]\n")
+		fmt.Println(usage)
 		return
 	}
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: csm firewall deny <ip> [reason]\n")
+	if len(args) < need {
+		fmt.Fprintln(os.Stderr, usage)
+		if durationHint != "" {
+			fmt.Fprintf(os.Stderr, "  Duration examples: %s\n", durationHint)
+		}
 		os.Exit(1)
 	}
 
-	ip := args[0]
-	if net.ParseIP(ip) == nil {
-		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", ip)
+	req := control.FirewallIPArgs{IP: args[0]}
+	if net.ParseIP(req.IP) == nil {
+		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", req.IP)
 		os.Exit(1)
 	}
-
-	reason, reasonErr := parseReason(args[1:], "Blocked via CLI")
+	if durationHint != "" {
+		duration, err := parseFWDuration(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid duration '%s': %v\n", args[1], err)
+			os.Exit(1)
+		}
+		req.Timeout = duration.String()
+	}
+	reason, reasonErr := parseReason(args[need:], defaultReason)
 	if reasonErr != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
 		os.Exit(1)
 	}
+	req.Reason = reason
 
-	raw := requireDaemon(control.CmdFirewallBlock, control.FirewallIPArgs{
-		IP:     ip,
-		Reason: reason,
-	})
-	fmt.Println(decodeFirewallAck(raw).Message)
-}
-
-func fwAllow() {
-	args := fwArgs()
-	if isHelpRequest(args) {
-		fmt.Printf("Usage: csm firewall allow <ip> [reason]\n")
-		return
-	}
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: csm firewall allow <ip> [reason]\n")
-		os.Exit(1)
-	}
-
-	ip := args[0]
-	if net.ParseIP(ip) == nil {
-		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", ip)
-		os.Exit(1)
-	}
-
-	reason, reasonErr := parseReason(args[1:], "Allowed via CLI")
-	if reasonErr != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
-		os.Exit(1)
-	}
-
-	raw := requireDaemon(control.CmdFirewallAllow, control.FirewallIPArgs{
-		IP:     ip,
-		Reason: reason,
-	})
+	raw := requireDaemon(cmd, req)
 	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
@@ -409,82 +395,6 @@ func fwGrep() {
 	for _, line := range list.Lines {
 		fmt.Println(line)
 	}
-}
-
-func fwTempban() {
-	args := fwArgs()
-	if isHelpRequest(args) {
-		fmt.Printf("Usage: csm firewall tempban <ip> <duration> [reason]\n")
-		return
-	}
-	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: csm firewall tempban <ip> <duration> [reason]\n")
-		fmt.Fprintf(os.Stderr, "  Duration examples: 1h, 24h, 7d, 1h30m\n")
-		os.Exit(1)
-	}
-
-	ip := args[0]
-	if net.ParseIP(ip) == nil {
-		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", ip)
-		os.Exit(1)
-	}
-
-	duration, err := parseFWDuration(args[1])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid duration '%s': %v\n", args[1], err)
-		os.Exit(1)
-	}
-
-	reason, reasonErr := parseReason(args[2:], "Tempban via CLI")
-	if reasonErr != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
-		os.Exit(1)
-	}
-
-	raw := requireDaemon(control.CmdFirewallTempBan, control.FirewallIPArgs{
-		IP:      ip,
-		Reason:  reason,
-		Timeout: duration.String(),
-	})
-	fmt.Println(decodeFirewallAck(raw).Message)
-}
-
-func fwTempAllow() {
-	args := fwArgs()
-	if isHelpRequest(args) {
-		fmt.Printf("Usage: csm firewall tempallow <ip> <duration> [reason]\n")
-		return
-	}
-	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: csm firewall tempallow <ip> <duration> [reason]\n")
-		fmt.Fprintf(os.Stderr, "  Duration examples: 4h, 1d, 30m\n")
-		os.Exit(1)
-	}
-
-	ip := args[0]
-	if net.ParseIP(ip) == nil {
-		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", ip)
-		os.Exit(1)
-	}
-
-	duration, err := parseFWDuration(args[1])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid duration '%s': %v\n", args[1], err)
-		os.Exit(1)
-	}
-
-	reason, reasonErr := parseReason(args[2:], "Temp allow via CLI")
-	if reasonErr != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", reasonErr)
-		os.Exit(1)
-	}
-
-	raw := requireDaemon(control.CmdFirewallTempAllow, control.FirewallIPArgs{
-		IP:      ip,
-		Reason:  reason,
-		Timeout: duration.String(),
-	})
-	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwPorts() {
@@ -954,10 +864,12 @@ func parseAckCounts(msg string) (int, int, int) {
 	return 0, 0, 0
 }
 
-func fwDenyFile() {
+// fwSendIPFile sends the addresses listed in a file in batches and prints
+// the totals; done names what succeeded ("Blocked" or "Allowed").
+func fwSendIPFile(verb, cmd, reason, done string) {
 	args := fwArgs()
 	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: csm firewall deny-file <path>\n")
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall %s <path>\n", verb)
 		fmt.Fprintf(os.Stderr, "  File format: one IP per line, optional # comment\n")
 		os.Exit(1)
 	}
@@ -969,62 +881,22 @@ func fwDenyFile() {
 	}
 
 	const batchSize = 1000
-	var blocked, failed, skipped int
+	var succeeded, failed, skipped int
 	for i := 0; i < len(ips); i += batchSize {
-		end := i + batchSize
-		if end > len(ips) {
-			end = len(ips)
-		}
-		raw := requireDaemon(control.CmdFirewallDenyFile, control.FirewallFileArgs{
+		end := min(i+batchSize, len(ips))
+		raw := requireDaemon(cmd, control.FirewallFileArgs{
 			IPs:    ips[i:end],
-			Reason: "Bulk block via CLI",
+			Reason: reason,
 		})
-		b, f, s := parseAckCounts(decodeFirewallAck(raw).Message)
-		blocked += b
+		n, f, s := parseAckCounts(decodeFirewallAck(raw).Message)
+		succeeded += n
 		failed += f
 		skipped += s
 	}
 	if failed > 0 {
-		fmt.Printf("Blocked %d, failed %d, skipped %d invalid\n", blocked, failed, skipped)
+		fmt.Printf("%s %d, failed %d, skipped %d invalid\n", done, succeeded, failed, skipped)
 	} else {
-		fmt.Printf("Blocked %d, skipped %d invalid\n", blocked, skipped)
-	}
-}
-
-func fwAllowFile() {
-	args := fwArgs()
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "Usage: csm firewall allow-file <path>\n")
-		fmt.Fprintf(os.Stderr, "  File format: one IP per line, optional # comment\n")
-		os.Exit(1)
-	}
-
-	ips, err := readIPList(args[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
-
-	const batchSize = 1000
-	var allowed, failed, skipped int
-	for i := 0; i < len(ips); i += batchSize {
-		end := i + batchSize
-		if end > len(ips) {
-			end = len(ips)
-		}
-		raw := requireDaemon(control.CmdFirewallAllowFile, control.FirewallFileArgs{
-			IPs:    ips[i:end],
-			Reason: "Bulk allow via CLI",
-		})
-		a, f, s := parseAckCounts(decodeFirewallAck(raw).Message)
-		allowed += a
-		failed += f
-		skipped += s
-	}
-	if failed > 0 {
-		fmt.Printf("Allowed %d, failed %d, skipped %d invalid\n", allowed, failed, skipped)
-	} else {
-		fmt.Printf("Allowed %d, skipped %d invalid\n", allowed, skipped)
+		fmt.Printf("%s %d, skipped %d invalid\n", done, succeeded, skipped)
 	}
 }
 
