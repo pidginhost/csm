@@ -11,7 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- cPanel API failure alerts now catch encoded requests and additional authenticated endpoints in both scheduled scans and realtime monitoring.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
 - Crafted or malformed cPanel session log entries can no longer fake or hide logins and password changes.
 - A dismissed malware finding now alerts again when the file's content changes.
@@ -31,7 +30,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- cPanel API failure alerts now count legacy XML API calls, and the scheduled check no longer counts page requests from expired cPanel or webmail sessions.
+- cPanel API failure alerts now cover every API and token endpoint, including encoded requests, and no longer count page requests from expired cPanel or webmail sessions.
 - API-created cPanel sessions and logins from the server itself no longer raise account hijack alerts or count toward multi-address login alerts.
 - On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
 - cPanel login checks now read session logs written without a time zone, so logins and multi-address logins on those servers are reported.
