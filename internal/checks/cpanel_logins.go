@@ -38,35 +38,23 @@ func CheckCpanelLogins(ctx context.Context, cfg *config.Config, store *state.Sto
 	cutoff := time.Now().Add(-time.Duration(multiIPWindowMin(cfg)) * time.Minute)
 
 	for _, line := range lines {
-		// Session log format:
-		// [2026-03-25 07:19:47 +0200] info [cpaneld] 203.0.113.133 NEW user:token address=IP,...
-		// [2026-03-25 07:38:18 +0200] info [security] internal PURGE user:token password_change
-
-		// Parse timestamp
-		ts := parseSessionTimestamp(line)
-		if ts.IsZero() || ts.Before(cutoff) {
+		r, ok := ParseSessionRecord(line)
+		if !ok || r.At.IsZero() || r.At.Before(cutoff) {
 			continue
 		}
 
 		// Detect cPanel logins from non-infra IPs
 		// Skip API/portal sessions (create_user_session) - only alert on direct form login
-		if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
-			if cfg.Suppressions.SuppressCpanelLogin {
-				// Still track IPs for multi-IP correlation even when suppressed
-			} else if strings.Contains(line, "method=create_user_session") ||
-				strings.Contains(line, "method=create_session") ||
-				strings.Contains(line, "create_user_session") {
+		if r.Service == "cpaneld" && r.Event == "NEW" {
+			if r.CreatedByAPI() {
 				continue
 			}
 
-			ip, account := parseCpanelLogin(line)
-			if ip == "" || account == "" {
+			addr, ok := r.ClientAddr()
+			if !ok || addr.IsLoopback() || isInfraIP(addr.String(), cfg.InfraIPs) {
 				continue
 			}
-
-			if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" || ip == "internal" {
-				continue
-			}
+			ip, account := addr.String(), r.Account
 
 			// Always track for multi-IP correlation (even when login alerts suppressed)
 			if accountIPs[account] == nil {
@@ -88,11 +76,8 @@ func CheckCpanelLogins(ctx context.Context, cfg *config.Config, store *state.Sto
 		}
 
 		// Detect password change purge events
-		if strings.Contains(line, "PURGE") && strings.Contains(line, "password_change") {
-			account := parsePurgeAccount(line)
-			if account != "" {
-				passwordChanges = append(passwordChanges, account)
-			}
+		if r.Event == "PURGE" && r.Reason() == "password_change" {
+			passwordChanges = append(passwordChanges, r.Account)
 		}
 	}
 
@@ -198,77 +183,6 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 	}
 
 	return findings
-}
-
-// parseSessionTimestamp extracts the timestamp from a session log line.
-// Format: [2026-03-25 07:19:47 +0200]
-func parseSessionTimestamp(line string) time.Time {
-	start := strings.Index(line, "[")
-	end := strings.Index(line, "]")
-	if start < 0 || end < 0 || end <= start+1 {
-		return time.Time{}
-	}
-	tsStr := line[start+1 : end]
-	// Try common cPanel session log formats
-	for _, layout := range []string{
-		"2006-01-02 15:04:05 -0700",
-		"2006-01-02 15:04:05 +0000",
-	} {
-		if t, err := time.Parse(layout, tsStr); err == nil {
-			return t
-		}
-	}
-	return time.Time{}
-}
-
-// parseCpanelLogin extracts IP and account from a session NEW line.
-// Format: [timestamp] info [cpaneld] 203.0.113.133 NEW user:token address=IP,...
-func parseCpanelLogin(line string) (ip, account string) {
-	// Find IP after [cpaneld]
-	idx := strings.Index(line, "[cpaneld]")
-	if idx < 0 {
-		return "", ""
-	}
-	rest := strings.TrimSpace(line[idx+len("[cpaneld]"):])
-	fields := strings.Fields(rest)
-	if len(fields) < 3 {
-		return "", ""
-	}
-
-	ip = fields[0]
-
-	// Find account from "NEW user:token" or "NEW user:token address=..."
-	for i, f := range fields {
-		if f == "NEW" && i+1 < len(fields) {
-			userToken := fields[i+1]
-			parts := strings.SplitN(userToken, ":", 2)
-			if len(parts) >= 1 {
-				account = parts[0]
-			}
-			break
-		}
-	}
-
-	return ip, account
-}
-
-// parsePurgeAccount extracts the account name from a PURGE password_change line.
-// Format: [timestamp] info [security] internal PURGE user:token password_change
-func parsePurgeAccount(line string) string {
-	idx := strings.Index(line, "PURGE")
-	if idx < 0 {
-		return ""
-	}
-	rest := strings.TrimSpace(line[idx+len("PURGE"):])
-	fields := strings.Fields(rest)
-	if len(fields) < 1 {
-		return ""
-	}
-	parts := strings.SplitN(fields[0], ":", 2)
-	if len(parts) >= 1 {
-		return parts[0]
-	}
-	return ""
 }
 
 func multiIPThreshold(cfg *config.Config) int {

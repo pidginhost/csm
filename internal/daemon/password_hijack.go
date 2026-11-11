@@ -2,11 +2,11 @@ package daemon
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -133,50 +133,20 @@ func (d *PasswordHijackDetector) Cleanup() {
 // ParseSessionLineForHijack extracts password change and login events
 // from session log lines and feeds them to the detector.
 func ParseSessionLineForHijack(line string, detector *PasswordHijackDetector) {
-	// WHM password change: [timestamp] info [whostmgr] IP PURGE account:token password_change
-	if strings.Contains(line, "[whostmgr]") && strings.Contains(line, "PURGE") && strings.Contains(line, "password_change") {
-		ip, account := parseWHMPurge(line)
-		if ip != "" && account != "" {
-			detector.HandlePasswordChange(account, ip)
-		}
+	r, ok := checks.ParseSessionRecord(line)
+	if !ok {
+		return
 	}
-
-	// cPanel login: [timestamp] info [cpaneld] IP NEW account:token ...
-	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
-		// Skip API sessions
-		if strings.Contains(line, "method=create_user_session") {
-			return
-		}
-		ip, account := parseCpanelSessionLogin(line)
-		if ip != "" && account != "" {
-			detector.HandleLogin(account, ip)
-		}
+	addr, isAddr := r.ClientAddr()
+	if !isAddr || addr.IsLoopback() {
+		return
 	}
-}
-
-func parseWHMPurge(line string) (ip, account string) {
-	// Format: [timestamp] info [whostmgr] 198.51.100.50 PURGE account:token password_change
-	idx := strings.Index(line, "[whostmgr]")
-	if idx < 0 {
-		return "", ""
+	switch {
+	case r.Service == "whostmgr" && r.Event == "PURGE" && r.Reason() == "password_change":
+		// WHM password change: [timestamp] info [whostmgr] IP PURGE account:token password_change
+		detector.HandlePasswordChange(r.Account, addr.String())
+	case r.Service == "cpaneld" && r.Event == "NEW" && !r.CreatedByAPI():
+		// cPanel login, not an API session: [timestamp] info [cpaneld] IP NEW account:token ...
+		detector.HandleLogin(r.Account, addr.String())
 	}
-	rest := strings.TrimSpace(line[idx+len("[whostmgr]"):])
-	fields := strings.Fields(rest)
-	if len(fields) < 3 {
-		return "", ""
-	}
-	ip = fields[0]
-
-	// Find account from PURGE account:token
-	for i, f := range fields {
-		if f == "PURGE" && i+1 < len(fields) {
-			parts := strings.SplitN(fields[i+1], ":", 2)
-			if len(parts) >= 1 {
-				account = parts[0]
-			}
-			break
-		}
-	}
-
-	return ip, account
 }

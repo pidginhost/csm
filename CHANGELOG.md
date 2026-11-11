@@ -12,6 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
+- Crafted or malformed cPanel session log entries can no longer fake or hide logins and password changes.
 - A dismissed malware finding now alerts again when the file's content changes.
 - Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
@@ -26,7 +27,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- API-created cPanel sessions and logins from the server itself no longer raise account hijack alerts or count toward multi-address login alerts.
 - On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
+- cPanel login checks now read session logs written without a time zone, so logins and multi-address logins on those servers are reported.
+- Realtime cPanel login alerts no longer report logins from the server itself or entries without a client address, matching the scheduled scan.
 - The web server hardening audit reads Apache continuations, section comments and include names correctly, and warns when its configuration cannot be read completely.
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 - High mail volume alerts and the Web UI top senders list now count senders with quoted addresses and no longer count delivery failures as sent mail.

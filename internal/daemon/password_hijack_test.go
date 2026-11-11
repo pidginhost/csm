@@ -191,26 +191,6 @@ func TestCleanupRemovesExpired(t *testing.T) {
 	}
 }
 
-// --- parseWHMPurge ----------------------------------------------------
-
-func TestParseWHMPurgeStandard(t *testing.T) {
-	line := `[2026-04-12 10:00:00 +0000] info [whostmgr] 198.51.100.50 PURGE alice:token password_change`
-	ip, account := parseWHMPurge(line)
-	if ip != "198.51.100.50" {
-		t.Errorf("ip = %q", ip)
-	}
-	if account != "alice" {
-		t.Errorf("account = %q", account)
-	}
-}
-
-func TestParseWHMPurgeNoWhostmgr(t *testing.T) {
-	ip, account := parseWHMPurge("no whostmgr here")
-	if ip != "" || account != "" {
-		t.Errorf("got (%q, %q)", ip, account)
-	}
-}
-
 // --- ParseSessionLineForHijack ----------------------------------------
 
 func TestParseSessionLineForHijackPasswordChange(t *testing.T) {

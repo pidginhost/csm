@@ -556,47 +556,6 @@ func TestIsInfraIPDaemon_IPv6ExactNoMatch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// parseCpanelSessionLogin edge cases
-// ---------------------------------------------------------------------------
-
-func TestParseCpanelSessionLogin_ShortFields(t *testing.T) {
-	line := `[cpaneld] 1.2.3.4 `
-	ip, account := parseCpanelSessionLogin(line)
-	if ip != "" || account != "" {
-		t.Errorf("short fields should return empty: (%q, %q)", ip, account)
-	}
-}
-
-func TestParseCpanelSessionLogin_NoNEW(t *testing.T) {
-	line := `[cpaneld] 1.2.3.4 OLD alice:token address=1.2.3.4`
-	ip, account := parseCpanelSessionLogin(line)
-	// IP is still extracted (first field after [cpaneld]), but account is empty
-	// since there's no "NEW" keyword.
-	if account != "" {
-		t.Errorf("no NEW keyword should yield empty account, got %q", account)
-	}
-	_ = ip
-}
-
-// ---------------------------------------------------------------------------
-// parsePurgeDaemon edge cases
-// ---------------------------------------------------------------------------
-
-func TestParsePurgeDaemon_EmptyAfterPurge(t *testing.T) {
-	line := "PURGE"
-	if got := parsePurgeDaemon(line); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestParsePurgeDaemon_WhitespaceAfterPurge(t *testing.T) {
-	line := "PURGE   "
-	if got := parsePurgeDaemon(line); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // extractMailHoldSender edge cases
 // ---------------------------------------------------------------------------
 
