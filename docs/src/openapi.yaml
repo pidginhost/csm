@@ -372,6 +372,45 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "500": { description: "Release failed or the recorded envelope is missing or ambiguous, and the copy stays held; or another release or delete already took the copy, which is then not found." }
+  "/api/v1/email/suspensions":
+    get:
+      operationId: get_email_suspensions
+      summary: "get /api/v1/email/suspensions (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: >-
+            Mailbox suspensions and account outgoing-mail holds CSM made,
+            newest first, each with what was applied, why, and whether the
+            mail server still applies it. A suspension lifted outside CSM is
+            shown as released.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/suspensions/":
+    post:
+      operationId: post_email_suspensions_
+      summary: "Release the suspension whose ID follows this path prefix, at {id}/release (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Released. The password is not changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: Invalid suspension ID or unknown action. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: No such suspension. }
+        "409": { description: Already released. }
+        "500": { description: "The mail server refused part of the release; the suspension stays listed as active and can be released again." }
+        "503": { description: Mailbox suspensions are not available on this host. }
   "/api/v1/email/queue-composition":
     get:
       operationId: get_email_queue_composition

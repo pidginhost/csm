@@ -124,6 +124,7 @@ type Server struct {
 	queueFlusher       intel.QueueFlusher
 	queueAdmin         intel.QueueAdmin
 	forwardHeld        heldForwardStore
+	mailboxSuspensions MailboxSuspensions
 	mcp                MCPServer
 	version            string
 	// queueReasons caches msglog reasons for the queue list by message ID.
@@ -389,6 +390,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/queue/{id}/{action}", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQueueAction))))
 	mux.Handle("/api/v1/email/held", s.requireAuth(http.HandlerFunc(s.apiEmailHeldList)))
 	mux.Handle("/api/v1/email/held/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailHeldAction))))
+	mux.Handle("/api/v1/email/suspensions", s.requireAuth(http.HandlerFunc(s.apiEmailSuspensionsList)))
+	mux.Handle("/api/v1/email/suspensions/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailSuspensionAction))))
 	mux.Handle("/api/v1/performance", s.requireAuth(getOnly(http.HandlerFunc(s.apiPerformance))))
 	mux.Handle("/api/v1/perf/fix-error-log", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixErrorLog))))
 	mux.Handle("/api/v1/perf/fix-display-errors", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixDisplayErrors))))

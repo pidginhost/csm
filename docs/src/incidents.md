@@ -750,6 +750,7 @@ Attribution gaps:
 | `email_filter_forwarder` | security event |  |  |
 | `email_filter_pipe` | security event |  |  |
 | `email_mail_filters` | ignored | self-health |  |
+| `email_mailbox_response` | ignored | response |  |
 | `email_malware` | ignored | attacker-side |  |
 | `email_password_audit_incomplete` | ignored | self-health |  |
 | `email_phishing_content` | ignored | attacker-side |  |

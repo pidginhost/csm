@@ -7,13 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
@@ -773,7 +774,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// identity is the credential actually being abused and the one we
 	// must lock out.
 	for _, f := range parseCloudRelayFinding(line, cfg) {
-		handleCloudRelayCredentialAbuse(cfg, extractAuthUser(line))
+		handleCloudRelayCredentialAbuse(cfg, extractAuthUser(line), f.Timestamp)
 		findings = append(findings, f)
 	}
 
@@ -781,7 +782,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// churn and recipient fan-out judged against the mailbox's own history.
 	for _, f := range parseSenderProfileFinding(line, cfg, time.Now()) {
 		if f.Severity == alert.Critical {
-			respondToMailboxCompromise(cfg, extractAuthUser(line), "authenticated sends outside the mailbox's own source and recipient history")
+			respondToMailboxCompromise(cfg, extractAuthUser(line), "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
 		}
 		findings = append(findings, f)
 	}
@@ -846,9 +847,15 @@ var outgoingMailHoldUsersPath = "/etc/outgoing_mail_hold_users"
 var whmapi1HoldExec = func(user string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// #nosec G204 -- whmapi1 is the cPanel API binary; user is a cPanel
-	// account name resolved from /etc/userdomains (cpanel-managed).
-	return exec.CommandContext(ctx, "whmapi1", "hold_outgoing_email", "user="+user).CombinedOutput()
+	return uapiCommand(ctx, "whmapi1", "hold_outgoing_email", "user="+user, "--output=json")
+}
+
+// whmapi1ReleaseExec invokes `whmapi1 release_outgoing_email user=<user>`.
+// var so tests can replace it without spawning whmapi1.
+var whmapi1ReleaseExec = func(user string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return uapiCommand(ctx, "whmapi1", "release_outgoing_email", "user="+user, "--output=json")
 }
 
 // userOnOutgoingMailHold reports whether the cPanel user already appears
@@ -856,37 +863,52 @@ var whmapi1HoldExec = func(user string) ([]byte, error) {
 // whmapi1 calls when exim re-emits "exceeded max defers/failures" every
 // retry hour while the hold is already active.
 func userOnOutgoingMailHold(user string) bool {
+	held, _ := outgoingMailHoldState(user)
+	return held
+}
+
+// outgoingMailHoldState reads whether cPanel holds the user's outgoing mail.
+// A missing list means no account is held; any other read failure is an
+// error, so a caller can tell "not held" from "cannot tell".
+func outgoingMailHoldState(user string) (bool, error) {
 	if user == "" {
-		return false
+		return false, nil
 	}
 	f, err := os.Open(outgoingMailHoldUsersPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		if strings.TrimSpace(scanner.Text()) == user {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, scanner.Err()
 }
 
-// maybeHoldOutgoingMail applies an outgoing-mail hold only when auto-response
-// is enabled and not in dry-run. Holding a customer's outbound mail is a
-// customer-impacting action, so it honours the same master switch and dry-run
-// safety default as IP blocking and quarantine; an operator evaluating CSM in
-// monitor mode must never have mail held out from under them. It returns true
-// only when a hold was actually applied (or already active), so callers can
-// keep their hold-dedup bookkeeping accurate.
+// maybeHoldOutgoingMail holds outgoing mail for the account that owns a
+// domain after sustained mail abuse. It goes through the same entry point as
+// a mailbox suspension, so it honours auto-response and dry-run, is recorded,
+// and can be released. It returns true only when a hold was applied or is
+// already active, so callers can keep their hold-dedup bookkeeping accurate.
 func maybeHoldOutgoingMail(cfg *config.Config, domainOrEmail string) bool {
-	if cfg == nil || !cfg.AutoResponse.Enabled || cfg.AutoResponseDryRunEnabled() {
-		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would hold outgoing mail for %s (auto_response disabled or dry-run)\n",
-			time.Now().Format("2006-01-02 15:04:05"), domainOrEmail)
-		return false
+	subject := domainOrEmail
+	if at := strings.LastIndexByte(subject, '@'); at >= 0 {
+		subject = subject[at+1:]
 	}
-	return autoSuspendOutgoingMail(domainOrEmail)
+	stopped, _ := respondToCompromise(cfg, mailboxCompromise{
+		Subject:  subject,
+		Check:    "email_spam_outbreak",
+		Reason:   "outbound spam blast with deferred and failed deliveries",
+		Evidence: evidenceSending,
+		At:       time.Now(),
+	})
+	return stopped
 }
 
 // autoSuspendOutgoingMail calls whmapi1 to hold outgoing mail for the cPanel
@@ -899,18 +921,24 @@ func autoSuspendOutgoingMailReal(domainOrEmail string) bool {
 	if domainOrEmail == "" {
 		return false
 	}
-	// Extract domain from email if needed
 	domain := domainOrEmail
 	if atIdx := strings.LastIndexByte(domain, '@'); atIdx >= 0 {
 		domain = domain[atIdx+1:]
 	}
-	// Look up cPanel username for this domain
 	user := lookupCPanelUser(domain)
 	if user == "" {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not find cPanel user for domain %s\n",
 			time.Now().Format("2006-01-02 15:04:05"), domain)
 		return false
 	}
+	return holdCPanelAccount(user)
+}
+
+// holdCPanelAccount holds one cPanel account's outgoing mail. var so tests
+// can swap in a recorder without spawning whmapi1.
+var holdCPanelAccount = holdCPanelAccountReal
+
+func holdCPanelAccountReal(user string) bool {
 	// Skip if cPanel already lists this user as held. Re-issuing the
 	// hold has no operational effect, but on a sustained exim retry
 	// loop (queued bounces keep the defer/fail ratio above threshold
@@ -920,13 +948,28 @@ func autoSuspendOutgoingMailReal(domainOrEmail string) bool {
 		return true
 	}
 	out, err := whmapi1HoldExec(user)
+	if err == nil {
+		err = whmapi1ResultError(out)
+	}
+	rec := actionlog.Record{
+		Op:      "respond.hold_outgoing_mail",
+		Action:  "hold_outgoing_email",
+		Target:  user,
+		Account: user,
+		Command: []string{"whmapi1", "hold_outgoing_email", "user=" + user, "--output=json"},
+		Undo:    "whmapi1 release_outgoing_email " + mailboxShellArg("user="+user),
+		Result:  actionlog.Applied,
+	}
 	if err != nil {
+		rec.Result, rec.Error = actionlog.Failed, err.Error()
+		actionlog.Write(rec)
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: whmapi1 hold_outgoing_email failed for %s: %v\n%s\n",
 			time.Now().Format("2006-01-02 15:04:05"), user, err, string(out))
 		return false
 	}
-	fmt.Fprintf(os.Stderr, "[%s] AUTO-SUSPEND: outgoing mail held for cPanel user %s (domain: %s)\n",
-		time.Now().Format("2006-01-02 15:04:05"), user, domain)
+	actionlog.Write(rec)
+	fmt.Fprintf(os.Stderr, "[%s] AUTO-SUSPEND: outgoing mail held for cPanel user %s\n",
+		time.Now().Format("2006-01-02 15:04:05"), user)
 	return true
 }
 
