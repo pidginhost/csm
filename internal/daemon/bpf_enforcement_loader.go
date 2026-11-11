@@ -20,3 +20,17 @@ func policyMapPayload(pol BPFEnforcementPolicy) PolicyMapPayload {
 		ProtectedPorts: uint32(len(pol.Ports)),
 	}
 }
+
+// staleSafeUIDs returns the installed hosted UIDs (>= 1000) that next no
+// longer exempts, so a deleted account's UID cannot stay exempt for whoever
+// gets it next. System UIDs stay: hosted accounts never receive them, and
+// keeping them means a bad passwd read cannot deny the host's mail daemons.
+func staleSafeUIDs(installed []uint32, next map[uint32]bool) []uint32 {
+	var stale []uint32
+	for _, uid := range installed {
+		if uid >= 1000 && !next[uid] {
+			stale = append(stale, uid)
+		}
+	}
+	return stale
+}

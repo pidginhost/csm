@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -22,5 +23,15 @@ func TestPopulatePolicyMapEmptyPolicyDisables(t *testing.T) {
 	got := policyMapPayload(BPFEnforcementPolicy{})
 	if got.Enforce != 0 || got.DryRun != 0 || got.ProtectedPorts != 0 {
 		t.Errorf("zero policy must yield zero payload; got %+v", got)
+	}
+}
+
+func TestStaleSafeUIDsDropsOnlyHostedUIDs(t *testing.T) {
+	installed := []uint32{0, 89, 999, 1000, 1005, 1006}
+	next := map[uint32]bool{0: true, 89: true, 1005: true}
+	got := staleSafeUIDs(installed, next)
+	slices.Sort(got)
+	if want := []uint32{1000, 1006}; !slices.Equal(got, want) {
+		t.Fatalf("stale UIDs = %v, want %v", got, want)
 	}
 }
