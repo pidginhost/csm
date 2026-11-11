@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
 )
 
@@ -58,17 +59,22 @@ var (
 // parseDeferralLine parses one exim_mainlog line. ok is false for anything that
 // is not a deferral (delivery "=>", arrival "<=", failure "**", blanks, junk).
 func parseDeferralLine(line string) (Deferral, bool) {
-	return parseDeferral(line, strings.Fields(line))
+	p, rest, ok := eximlog.SplitPrefix(line, time.Local)
+	if !ok {
+		return Deferral{}, false
+	}
+	return parseDeferral(line, p, rest)
 }
 
-// parseDeferral is parseDeferralLine for a line already split into fields.
-func parseDeferral(line string, fields []string) (Deferral, bool) {
-	// <date> <time> <msgid> == <recipient> ...
-	if len(fields) < 5 || fields[3] != "==" {
+// parseDeferral is parseDeferralLine for a line whose prefix is already read.
+func parseDeferral(line string, p eximlog.Prefix, rest string) (Deferral, bool) {
+	// <msgid> == <recipient> ...
+	fields := strings.Fields(rest)
+	if p.MessageID == "" || len(fields) < 2 || fields[0] != "==" {
 		return Deferral{}, false
 	}
 
-	recipient := strings.Trim(fields[4], "<>")
+	recipient := strings.Trim(fields[1], "<>")
 	if recipient == "" || len(recipient) > maxAddressLen || !strings.Contains(recipient, "@") {
 		return Deferral{}, false
 	}
@@ -80,7 +86,7 @@ func parseDeferral(line string, fields []string) (Deferral, bool) {
 	if d.Domain == "" || len(d.Domain) > maxDomainLen {
 		return Deferral{}, false
 	}
-	d.Time, _ = lineTime(fields)
+	d.Time = p.Time
 
 	errText := fallbackDeferralText(line)
 	canExtractOutboundIP := false
@@ -104,15 +110,6 @@ func parseDeferral(line string, fields []string) (Deferral, bool) {
 	d.Text = boundText(errText)
 
 	return d, true
-}
-
-// lineTime parses the timestamp that opens a log line split into fields.
-func lineTime(fields []string) (time.Time, bool) {
-	if len(fields) < 2 {
-		return time.Time{}, false
-	}
-	t, err := time.ParseInLocation(eximTimeLayout, fields[0]+" "+fields[1], time.Local)
-	return t, err == nil
 }
 
 // mxProviders maps provider MX host suffixes to the provider class. Google's
@@ -337,14 +334,15 @@ func BuildReport(lines []string) Report {
 
 	var windowStart, windowEnd time.Time
 	for _, line := range lines {
-		fields := strings.Fields(line)
-		if t, ok := lineTime(fields); ok {
-			if windowStart.IsZero() {
-				windowStart = t
-			}
-			windowEnd = t
+		p, rest, ok := eximlog.SplitPrefix(line, time.Local)
+		if !ok {
+			continue
 		}
-		d, ok := parseDeferral(line, fields)
+		if windowStart.IsZero() {
+			windowStart = p.Time
+		}
+		windowEnd = p.Time
+		d, ok := parseDeferral(line, p, rest)
 		if !ok {
 			continue
 		}

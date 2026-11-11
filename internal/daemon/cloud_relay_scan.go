@@ -211,7 +211,8 @@ func processCloudRelayScanRecord(line string, cfg *config.Config, since time.Tim
 	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
 		return
 	}
-	ts, ok := parseEximTimestamp(line)
+	// A stamp without a zone is in the zone of the caller's clock.
+	ts, ok := eximlog.LineTime(line, since.Location())
 	if !ok || ts.Before(since) {
 		return
 	}
@@ -247,14 +248,11 @@ func processCloudRelayScanRecord(line string, cfg *config.Config, since time.Tim
 	}
 	acc.record(cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
 	// Forward order: the last counted send is the newest. A send without a
-	// record or a whole server time leaves none, so the finding never names
-	// an older address's line. The observation reads Exim's full time; the
-	// counting above keeps its legacy reading.
+	// record leaves none, so the finding never names an older address's line.
 	acc.newest = alert.Observation{}
-	// A stamp without a zone is in the zone of the caller's clock.
-	if at, dated := eximlog.LineTime(line, since.Location()); rec.stream != "" && dated {
+	if rec.stream != "" {
 		acc.newest = alert.Observation{Producer: string(checks.ProducerEximHistory), Stream: rec.stream,
-			Cursor: alert.RecordCursor(rec.offset, line), ObservedAt: at.UTC()}
+			Cursor: alert.RecordCursor(rec.offset, line), ObservedAt: ts.UTC()}
 	}
 }
 
@@ -445,19 +443,6 @@ func maxCloudRelayBurst(events []cloudRelayScanEvent) (int, int, time.Time, stri
 		}
 	}
 	return bestSends, bestDistinct, bestAt, bestPTR
-}
-
-// parseEximTimestamp extracts the "YYYY-MM-DD HH:MM:SS" timestamp prefix
-// from an exim log line. Returns false on any parse failure.
-func parseEximTimestamp(line string) (time.Time, bool) {
-	if len(line) < 19 {
-		return time.Time{}, false
-	}
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", line[:19], time.Local)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
 }
 
 // alreadyReportedRetro returns true when the latest event for this user

@@ -30,6 +30,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 - Restoring a mail message quarantined from a phishing finding now returns the whole message to the mail queue instead of failing, and a failed restore can be retried.
+- On servers whose Exim log adds a time zone or process ID, the deferral report now lists deferrals and outbound mail checks see delivered messages and real send times.
 
 ## [4.11.0] - 2026-11-10
 

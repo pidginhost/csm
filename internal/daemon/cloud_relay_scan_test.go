@@ -484,21 +484,3 @@ func TestProcessCloudRelayScanLine_CapsDistinctUsers(t *testing.T) {
 		t.Fatalf("new user %s was dropped after cap was reached", lastUser)
 	}
 }
-
-func TestParseEximTimestamp(t *testing.T) {
-	line := "2026-04-22 14:55:43 1wFWBE-000000036n0-1PMK <= ..."
-	ts, ok := parseEximTimestamp(line)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	if ts.Year() != 2026 || ts.Month() != 4 || ts.Day() != 22 ||
-		ts.Hour() != 14 || ts.Minute() != 55 || ts.Second() != 43 {
-		t.Fatalf("unexpected ts: %v", ts)
-	}
-	if _, ok := parseEximTimestamp("too short"); ok {
-		t.Fatal("expected parse failure on short line")
-	}
-	if _, ok := parseEximTimestamp("not-a-date-here-at-all 12345"); ok {
-		t.Fatal("expected parse failure on bad date")
-	}
-}

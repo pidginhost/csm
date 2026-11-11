@@ -1470,29 +1470,16 @@ func (e *evaluator) reapCompletedMsg(line string) {
 }
 
 // eximCompletedMsgID returns the message id from an exim queue-completion line
-// ("YYYY-MM-DD HH:MM:SS <msgid> Completed[ ...]") and true, or ("", false) for
-// any other line. Requiring the "Completed" verb to immediately follow the id
-// keeps an attacker-controlled Subject that merely contains the word from
+// ("<time> [<zone>] [<pid>] <msgid> Completed[ ...]") and true, or ("", false)
+// for any other line. Requiring the "Completed" verb to immediately follow the
+// id keeps an attacker-controlled Subject that merely contains the word from
 // reaping a live message.
 func eximCompletedMsgID(line string) (string, bool) {
-	const tsLen = 19 // "2006-01-02 15:04:05"
-	if len(line) < tsLen+2 {
+	p, rest, ok := eximlog.SplitPrefix(line, time.Local)
+	if !ok || p.MessageID == "" || (rest != "Completed" && !strings.HasPrefix(rest, "Completed ")) {
 		return "", false
 	}
-	rest := line[tsLen+1:] // skip timestamp and the following space
-	end := strings.IndexByte(rest, ' ')
-	if end < 0 {
-		return "", false
-	}
-	id := rest[:end]
-	if !msgIDPattern.MatchString(id) {
-		return "", false
-	}
-	verb := rest[end+1:]
-	if verb != "Completed" && !strings.HasPrefix(verb, "Completed ") {
-		return "", false
-	}
-	return id, true
+	return p.MessageID, true
 }
 
 // parsePHPRelayAccountVolume processes one outbound `<= ` exim_mainlog line

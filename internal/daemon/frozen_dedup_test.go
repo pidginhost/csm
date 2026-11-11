@@ -59,7 +59,7 @@ func TestEximFrozenUnfreezeLinesIgnored(t *testing.T) {
 	lines := []string{
 		"2026-08-13 20:26:10 1wuCbn-00000004YPU-3U2V Unfrozen by errmsg timer",
 		"2026-08-13 20:26:31 1wuCXs-00000004XEk-3Rfd Unfrozen by forced delivery",
-		"2026-08-13 20:26:52 future-id-format Unfrozen by forced delivery",
+		"2026-08-13 20:26:52 1wuZUi-0000000BrCR-0u0H-v5 Unfrozen by forced delivery",
 	}
 	if got := countFrozenFindings(t, cfg, lines); got != 0 {
 		t.Errorf("got %d frozen findings for unfreeze events, want 0", got)
@@ -184,7 +184,7 @@ func TestEximFrozenIgnoresIncidentalTextAfterQueueAction(t *testing.T) {
 	lines := []string{
 		`2026-08-13 20:45:33 1wuZUi-0000000BrCR-0u0H <= sender@example.com H=mail.example T="Frozen account report"`,
 		`2026-08-13 20:45:34 1wuZpz-0000000Byih-1TiL ** user@example.com R=dnslookup: Message is frozen in remote system`,
-		`2026-08-13 20:45:35 future-id-format <= sender@example.com T="Frozen account report"`,
+		`2026-08-13 20:45:35 1wuZUi-0000000BrCR-0u0H-v5 <= sender@example.com T="Frozen account report"`,
 		"2026-08-13 20:45:36 queue run: 3 frozen messages skipped",
 	}
 	if got := countFrozenFindings(t, cfg, lines); got != 0 {
@@ -243,7 +243,7 @@ func TestEximFrozenNoMessageIDStillAlerts(t *testing.T) {
 	resetEximFrozenDedup()
 	cfg := &config.Config{}
 	lines := []string{
-		"2026-08-13 20:45:33 future-id-format Frozen (delivery error message)",
+		"2026-08-13 20:45:33 1wuZUi-0000000BrCR-0u0H-v5 Frozen (delivery error message)",
 	}
 	if got := countFrozenFindings(t, cfg, lines); got != 1 {
 		t.Errorf("got %d frozen findings for ID-less line, want 1", got)

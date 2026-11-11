@@ -141,37 +141,8 @@ func MessagePrefix(prefix string) bool {
 // An arrival must start with a date, time, optional zone/PID and message ID.
 // A <= fragment in a delivery reply or subject cannot supply an identity.
 func arrivalPrefix(prefix string) bool {
-	fields := strings.Fields(prefix)
-	if len(fields) < 3 {
-		return false
-	}
-	if _, err := time.Parse("2006-01-02 15:04:05", fields[0]+" "+fields[1]); err != nil {
-		return false
-	}
-	fields = fields[2:]
-	if _, err := time.Parse("-0700", fields[0]); err == nil {
-		fields = fields[1:]
-	}
-	if len(fields) > 0 && strings.HasPrefix(fields[0], "[") {
-		pid := fields[0]
-		if len(pid) < 3 || pid[len(pid)-1] != ']' || strings.Trim(pid[1:len(pid)-1], "0123456789") != "" {
-			return false
-		}
-		fields = fields[1:]
-	}
-	if len(fields) != 1 {
-		return false
-	}
-	id := strings.Split(fields[0], "-")
-	if len(id) != 3 {
-		return false
-	}
-	for _, part := range id {
-		if part == "" || strings.Trim(part, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
-			return false
-		}
-	}
-	return true
+	p, rest, ok := SplitPrefix(prefix, time.UTC)
+	return ok && p.MessageID != "" && strings.TrimSpace(rest) == ""
 }
 
 func envelopeEnd(s string) int {

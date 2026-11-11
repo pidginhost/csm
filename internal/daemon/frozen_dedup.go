@@ -2,12 +2,12 @@ package daemon
 
 import (
 	"container/list"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/eximlog"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/store"
@@ -41,10 +41,6 @@ const eximFrozenDedupMaxEntries = 10_000
 // interval, and each of those is reported once more after the restart. A var
 // so tests can drive the periodic writer without waiting a minute.
 var eximFrozenDedupPersistInterval = time.Minute
-
-// eximMessageIDPattern matches the exim queue ID as its own log field
-// (e.g. "1wuZUi-0000000BrCR-0u0H"; older exims use shorter middle segments).
-var eximMessageIDPattern = regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6,11}-[0-9A-Za-z]{2,4}$`)
 
 // eximFrozenDedup keeps the last-observed time per frozen message ID. Exim
 // re-logs "Message is frozen" on every queue run for as long as the message
@@ -167,7 +163,7 @@ func loadEximFrozenDedup(db *store.DB, now time.Time) error {
 	restored := make([]*eximFrozenSighting, 0, len(persisted))
 	corrected := false
 	for id, lastSeen := range persisted {
-		if !eximMessageIDPattern.MatchString(id) || !lastSeen.After(cutoff) {
+		if !eximlog.IsMessageID(id) || !lastSeen.After(cutoff) {
 			corrected = true
 			continue
 		}
@@ -285,25 +281,24 @@ func parseEximFrozenEvent(line string) (string, eximFrozenEvent) {
 		return "", eximFrozenEventNone
 	}
 
-	fields := strings.Fields(line)
-	idIndex := eximMessageIDFieldIndex(fields)
-	if idIndex >= 0 {
-		return fields[idIndex], parseEximFrozenAction(fields[idIndex+1:])
+	p, rest, ok := eximlog.SplitPrefix(line, time.Local)
+	if !ok {
+		return "", eximFrozenEventNone
+	}
+	fields := strings.Fields(rest)
+	if p.MessageID != "" {
+		return p.MessageID, parseEximFrozenAction(fields)
 	}
 
 	// Preserve fail-open behavior for a future message-ID format, but only
 	// when the field immediately after the candidate ID is an actual Exim
 	// freeze action. Treating every ID-less occurrence of "frozen" as an event
 	// lets subjects and router errors manufacture findings.
-	payloadIndex := eximLogPayloadFieldIndex(fields)
-	if payloadIndex < 0 {
-		return "", eximFrozenEventNone
-	}
-	if event := parseEximFrozenAction(fields[payloadIndex:]); event != eximFrozenEventNone {
+	if event := parseEximFrozenAction(fields); event != eximFrozenEventNone {
 		return "", event
 	}
-	if event := parseEximFrozenAction(fields[payloadIndex+1:]); event != eximFrozenEventNone {
-		return "", event
+	if len(fields) > 0 {
+		return "", parseEximFrozenAction(fields[1:])
 	}
 	return "", eximFrozenEventNone
 }
@@ -325,56 +320,4 @@ func parseEximFrozenAction(action []string) eximFrozenEvent {
 		return eximFrozenEventFreeze
 	}
 	return eximFrozenEventNone
-}
-
-// eximMessageIDFieldIndex locates the queue ID after the timestamp. Exim can
-// insert a timezone and/or PID before it when log_timezone or the pid log
-// selector is enabled.
-func eximMessageIDFieldIndex(fields []string) int {
-	index := eximLogPayloadFieldIndex(fields)
-	if index < 0 || !eximMessageIDPattern.MatchString(fields[index]) {
-		return -1
-	}
-	return index
-}
-
-func eximLogPayloadFieldIndex(fields []string) int {
-	if len(fields) < 3 {
-		return -1
-	}
-	index := 2
-	for metadataFields := 0; metadataFields < 2 && index < len(fields); metadataFields++ {
-		if !isEximLogTimezone(fields[index]) && !isEximLogPID(fields[index]) {
-			break
-		}
-		index++
-	}
-	if index >= len(fields) {
-		return -1
-	}
-	return index
-}
-
-func isEximLogTimezone(field string) bool {
-	if len(field) != 5 || (field[0] != '+' && field[0] != '-') {
-		return false
-	}
-	for _, c := range field[1:] {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func isEximLogPID(field string) bool {
-	if len(field) < 3 || field[0] != '[' || field[len(field)-1] != ']' {
-		return false
-	}
-	for _, c := range field[1 : len(field)-1] {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }
