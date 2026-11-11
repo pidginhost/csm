@@ -176,6 +176,10 @@ Quarantine selection counts and buttons are refreshed whenever the visible rows 
 A failed file restore cleans up its own destination copy while retaining the
 quarantined evidence. A replacement created by another writer is preserved.
 
+A mail message quarantined from a phishing finding is listed as two files,
+its header and its body. Restoring either one returns the whole message to
+the mail queue, and Exim delivers it on its next queue run.
+
 Quarantine deletes large file selections in sequential batches.
 If a request fails, later batches are not sent; the page reports the confirmed
 deletion count and refreshes the list. File restore and delete controls stay

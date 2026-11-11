@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -565,6 +566,26 @@ func extractEximMsgID(message string) string {
 		return ""
 	}
 	return strings.TrimSpace(rest)
+}
+
+// QuarantinedSpoolFile returns the Exim spool directory and file suffix (-H
+// or -D) of a quarantined spool file. It accepts only what the spool Fix
+// records: a valid message ID, one of that ID's spool directories, and the
+// message's header or body file in it.
+func QuarantinedSpoolFile(meta QuarantineMeta) (dir, suffix string, err error) {
+	if !eximMsgIDRegex.MatchString(meta.MessageID) {
+		return "", "", fmt.Errorf("quarantined spool file has an invalid Exim message ID")
+	}
+	dir = filepath.Clean(meta.SpoolDir)
+	if !slices.Contains(eximSpoolMessageDirs(meta.MessageID), dir) {
+		return "", "", fmt.Errorf("quarantined spool file is not from an Exim spool directory")
+	}
+	for _, s := range []string{"-D", "-H"} {
+		if filepath.Clean(meta.OriginalPath) == filepath.Join(dir, meta.MessageID+s) {
+			return dir, s, nil
+		}
+	}
+	return "", "", fmt.Errorf("quarantined spool file is not the message's header or body")
 }
 
 // fixQuarantineSpoolMessage moves Exim spool files (-H header and -D body)

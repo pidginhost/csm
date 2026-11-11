@@ -15,3 +15,11 @@ func SetQuarantineDirForTest(dir string) (restore func()) {
 	quarantineDir = dir
 	return func() { quarantineDir = prev }
 }
+
+// SetEximSpoolDirsForTest points Exim spool lookups at dirs and returns a
+// function that restores the previous directories. For tests only.
+func SetEximSpoolDirsForTest(dirs []string) (restore func()) {
+	prev := eximSpoolDirs
+	eximSpoolDirs = dirs
+	return func() { eximSpoolDirs = prev }
+}
