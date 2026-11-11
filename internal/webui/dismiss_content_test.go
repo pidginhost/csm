@@ -251,3 +251,26 @@ func TestBulkDismissAllChangedPreservesPendingUndo(t *testing.T) {
 		t.Fatalf("refused dismissals changed the audit log: %+v", audit)
 	}
 }
+
+func TestDismissRejectsMalformedContentHash(t *testing.T) {
+	for name, shown := range map[string]string{
+		"not hex":   "not-a-content-hash",
+		"uppercase": strings.Repeat("A", 64),
+		"too long":  strings.Repeat("a", 4096),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestServerWithBbolt(t, "tok")
+			f := listedYARAFinding(s, "/home/a/public_html/x.php", dismissShaA)
+			before, _ := s.store.EntryForKey(f.Key())
+
+			rec := postDismiss(t, s, map[string]any{"key": f.Key(), "contents": map[string]string{f.Key(): shown}})
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
+			}
+			if e, _ := s.store.EntryForKey(f.Key()); e != before {
+				t.Fatalf("malformed hash changed the entry: %+v", e)
+			}
+		})
+	}
+}

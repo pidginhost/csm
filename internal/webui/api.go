@@ -1544,6 +1544,12 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	keys = uniqueKeys
+	for _, shown := range req.Contents {
+		if shown != "" && !isContentSHA256(shown) {
+			writeJSONError(w, "Invalid content hash", http.StatusBadRequest)
+			return
+		}
+	}
 
 	undos := make([]state.DismissUndo, 0, len(keys))
 	applied := make([]string, 0, len(keys))
@@ -1586,6 +1592,12 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeOK(w, resp)
+}
+
+// isContentSHA256 reports a finding content hash: 64 lowercase hex characters.
+func isContentSHA256(s string) bool {
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
 }
 
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.
