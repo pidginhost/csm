@@ -54,7 +54,7 @@ func TestForgetFileAlertsAfterReload(t *testing.T) {
 	}
 	f := alert.Finding{Check: "obfuscated_php", Message: "scanned", FilePath: removedPath}
 	s.Update([]alert.Finding{f})
-	if err := s.Close(); err != nil {
+	if err = s.Close(); err != nil {
 		t.Fatal(err)
 	}
 
