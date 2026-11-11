@@ -643,15 +643,14 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// 4. SMTP credentials leaked in subject - compromised account
 	// Pattern: T="...host:port,user@domain,PASSWORD..." in the subject field
-	if strings.Contains(line, " <= ") && strings.Contains(line, "T=\"") {
-		subject := extractEximSubject(line)
+	if subject, ok := eximlog.Subject(line); ok {
+		_, sender, _ := eximlog.Arrival(line)
 		subjectLower := strings.ToLower(subject)
 		// Detect credential patterns: host:port,user,password or
 		// SMTP credentials in subject (common in credential stuffing attacks)
 		if (strings.Contains(subject, ":587,") || strings.Contains(subject, ":465,") ||
 			strings.Contains(subject, ":25,")) &&
 			strings.Contains(subject, "@") {
-			sender := extractEximSender(line)
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "email_credential_leak",
@@ -664,7 +663,6 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 		// Also detect common spam subject patterns
 		if strings.Contains(subjectLower, "password") && strings.Contains(subjectLower, "smtp") {
-			sender := extractEximSender(line)
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "email_credential_leak",
@@ -797,21 +795,6 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	return findings
 }
 
-// extractEximSender extracts the sender address from an exim log line.
-// Format: "... <= sender@domain.com H=..."
-func extractEximSender(line string) string {
-	idx := strings.Index(line, " <= ")
-	if idx < 0 {
-		return ""
-	}
-	rest := line[idx+4:]
-	fields := strings.Fields(rest)
-	if len(fields) > 0 {
-		return fields[0]
-	}
-	return ""
-}
-
 // extractEximDomain extracts a domain from an exim log line mentioning
 // "Domain X has exceeded".
 func extractEximDomain(line string) string {
@@ -824,20 +807,6 @@ func extractEximDomain(line string) string {
 		return rest[:sp]
 	}
 	return rest
-}
-
-// extractEximSubject extracts the subject from T="..." in an exim log line.
-func extractEximSubject(line string) string {
-	idx := strings.Index(line, "T=\"")
-	if idx < 0 {
-		return ""
-	}
-	rest := line[idx+3:]
-	end := strings.Index(rest, "\"")
-	if end < 0 {
-		return rest
-	}
-	return rest[:end]
 }
 
 // --- Helpers (avoid import cycle with checks package) ---

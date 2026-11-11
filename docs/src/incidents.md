@@ -559,6 +559,13 @@ branches:
   data, and local arrivals do not acquire a peer from later metadata.
   An optional MAIL AUTH value follows the authenticated identity and does
   not change that identity or the peer.
+  Subject credential alerts read the arrival's subject, with Exim's quote
+  and backslash escapes decoded; escapes for non-printing characters stay
+  as written. Literal tabs remain as logged. Sender addresses, greetings,
+  message IDs and recipients cannot supply that subject.
+  Records with remote ident or optional MAIL AUTH text are skipped for
+  subject alerts because those unquoted values can imitate later fields.
+  Subject text remains sender-controlled and is not proof of authentication.
   TCP Fast Open connections retain the same peer and ownership checks.
   The submission boundary follows
   [Exim's reception log fields](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-log_files.html)

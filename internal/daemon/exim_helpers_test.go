@@ -5,28 +5,6 @@ import (
 	"time"
 )
 
-// --- extractEximSender ------------------------------------------------
-
-func TestExtractEximSenderStandard(t *testing.T) {
-	line := `2026-04-12 10:00:00 ABC123-DEF456 <= alice@example.com H=localhost U=alice P=local`
-	if got := extractEximSender(line); got != "alice@example.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractEximSenderMissing(t *testing.T) {
-	if got := extractEximSender("no sender marker"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractEximSenderBounce(t *testing.T) {
-	line := `2026-04-12 10:00:00 ABC123 <= <> H=localhost`
-	if got := extractEximSender(line); got != "<>" {
-		t.Errorf("bounce got %q, want <>", got)
-	}
-}
-
 // --- parsePurgeDaemon -------------------------------------------------
 
 func TestParsePurgeDaemonStandard(t *testing.T) {

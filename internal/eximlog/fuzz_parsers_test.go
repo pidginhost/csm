@@ -9,6 +9,79 @@ import (
 	"time"
 )
 
+func FuzzSubjectRoundTrip(f *testing.F) {
+	for _, text := range []string{"", "\n\r\t\b\v\f\x01\x7f\xc3\xa9", `\n \\ \" T="smtp password"`, "\\\n\"end\\"} {
+		f.Add(text, false)
+		f.Add(text, true)
+	}
+	f.Fuzz(func(t *testing.T, subject string, topbit bool) {
+		// receive.c logs up to the first NUL or 100 bytes of the decoded header.
+		subject, _, _ = strings.Cut(subject, "\x00")
+		if len(subject) > 100 {
+			subject = subject[:100]
+		}
+		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(subject)
+		logged := eximPrintingForTest(quoted, topbit)
+		line := `2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com U=sender P=local S=900 T="` + logged + `" for recipient@example.net`
+		// Derive the expected rendering from the header, independently of
+		// how the parser removes the log's quote and backslash escapes.
+		want := eximPrintingForTest(subject, topbit)
+		got, ok := Subject(line)
+		if !ok || got != want {
+			t.Fatalf("Subject(%q) = %q, %v; want %q, true", line, got, ok, want)
+		}
+		// Exim leaves tabs literal; all other ASCII controls stay escaped.
+		if strings.ContainsFunc(got, func(r rune) bool { return r < 0x20 && r != '\t' || r == 0x7f }) {
+			t.Fatalf("control byte in subject %q", got)
+		}
+	})
+}
+
+func FuzzSubjectAddressBoundaries(f *testing.F) {
+	f.Add(` T="smtp password" `)
+	f.Add("\\\n\" T=\"smtp password\"")
+	f.Add(` H=(client) [192.0.2.1] U=remote for recipient@example.net`)
+	f.Fuzz(func(t *testing.T, text string) {
+		text = strings.ReplaceAll(text, "\x00", "?")
+		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(text)
+		address := `part."` + quoted + `"@example.com`
+		for _, fields := range []string{
+			address + ` U=sender P=local S=900`,
+			`sender@example.com U=sender P=local S=900 id=` + eximPrintingForTest(address, false),
+			`sender@example.com U=sender P=local S=900 id*=` + eximPrintingForTest(address, true),
+		} {
+			line := `2026-01-01 10:00:00 1abc23-000456-AB <= ` + fields
+			if got, ok := Subject(line + ` for recipient@example.net`); ok || got != "" {
+				t.Fatalf("address supplied subject %q, %v from %q", got, ok, line)
+			}
+			if got, ok := Subject(line + ` T="Hello" for recipient@example.net`); !ok || got != "Hello" {
+				t.Fatalf("address changed subject to %q, %v from %q", got, ok, line)
+			}
+		}
+	})
+}
+
+// string_printing leaves tabs and backslashes alone, including the backslashes
+// receive.c adds. Unlike string_printing2 with SP_TAB, it does not escape tabs.
+// print_topbitchars controls whether non-ASCII bytes are written literally.
+func eximPrintingForTest(s string, topbit bool) string {
+	var b strings.Builder
+	controls := "\n\r\b\v\f\t"
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\t', c >= 0x20 && c < 0x7f, topbit && c >= 0x80:
+			b.WriteByte(c)
+		case strings.IndexByte(controls, c) >= 0:
+			b.WriteByte('\\')
+			b.WriteByte("nrbvft"[strings.IndexByte(controls, c)])
+		default:
+			fmt.Fprintf(&b, `\%03o`, c)
+		}
+	}
+	return b.String()
+}
+
 func FuzzLocalSubmissionAddressSyntax(f *testing.F) {
 	f.Add(`quote" space \\ for buyer@example.net`)
 	f.Add("'notice")

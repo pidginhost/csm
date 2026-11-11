@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/mailfwd/intel"
@@ -493,25 +494,9 @@ func topMailSenders(tailLines, topK int) []senderEntry {
 
 	counts := make(map[string]int)
 	for _, line := range lines {
-		idx := strings.Index(line, " <= ")
-		if idx < 0 {
-			continue
+		if domain := checks.ArrivalSenderDomain(line); domain != "" {
+			counts[domain]++
 		}
-		rest := line[idx+4:]
-		fields := strings.Fields(rest)
-		if len(fields) < 1 {
-			continue
-		}
-		sender := fields[0]
-		atIdx := strings.LastIndex(sender, "@")
-		if atIdx < 0 {
-			continue
-		}
-		domain := sender[atIdx+1:]
-		if domain == "" || sender == "<>" || strings.HasPrefix(sender, "cPanel") {
-			continue
-		}
-		counts[domain]++
 	}
 
 	var entries []senderEntry

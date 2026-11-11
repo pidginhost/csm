@@ -26,10 +26,10 @@ var mailStatsPersistInterval = time.Minute
 // account: Exim's own bounces come from mailnull, which resolves to none,
 // and an account must not hide its mail behind <>.
 func (d *Daemon) recordMailStatsExim(line string, at time.Time) {
-	if i := strings.Index(line, " <= "); i >= 0 {
+	if _, sender, ok := eximlog.Arrival(line); ok {
 		if id := eximlog.Submitter(line); id != "" {
 			owner := mailAccountOwner(id)
-			if owner != "" || !strings.HasPrefix(line[i+len(" <= "):], "<> ") {
+			if owner != "" || sender != "<>" {
 				d.mailStats.RecordSend(mailstats.LineTime(line, time.Local, at), owner)
 			}
 		}

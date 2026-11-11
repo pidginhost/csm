@@ -164,6 +164,59 @@ func TestParseEximLogLine_CredentialLeakInSubject(t *testing.T) {
 	}
 }
 
+func TestParseEximLogLine_CredentialLeakAfterEscapedQuote(t *testing.T) {
+	cfg := &config.Config{}
+	line := `2026-04-11 12:00:00 1abc23-000456-AB <= alice@example.com H=(h) [192.0.2.10]:5123 P=esmtpsa A=dovecot_login:alice@example.com S=900 T="Re: \"order\" smtp.example.net:587,alice@example.com,Secret1" for bob@example.net`
+
+	for _, f := range parseEximLogLine(line, cfg) {
+		if f.Check == "email_credential_leak" && strings.Contains(f.Message, "SMTP credentials leaked") {
+			return
+		}
+	}
+	t.Fatal("credentials after an escaped quote in the subject raised no critical finding")
+}
+
+func TestParseEximLogLine_CredentialLeakNamesQuotedSender(t *testing.T) {
+	cfg := &config.Config{}
+	line := `2026-04-11 12:00:00 1abc23-000456-AB <= "first last"@example.com H=(h) [192.0.2.10]:5123 P=esmtpsa A=dovecot_login:user@example.com S=900 T="smtp.example.net:587,user@example.com,Secret1" for bob@example.net`
+
+	for _, f := range parseEximLogLine(line, cfg) {
+		if f.Check == "email_credential_leak" && strings.Contains(f.Message, "SMTP credentials leaked") {
+			if f.Domain != "example.com" || f.Mailbox != `"first last"@example.com` {
+				t.Fatalf("sender = mailbox %q domain %q, want the whole quoted sender", f.Mailbox, f.Domain)
+			}
+			return
+		}
+	}
+	t.Fatal("no critical credential leak finding")
+}
+
+func TestParseEximLogLine_SubjectFieldBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		want         int
+	}{
+		{"real subject", `H=(client) [192.0.2.10]:5123 P=esmtp S=900 T="smtp password"`, 1},
+		{"helo", `H=(client T="smtp password") [192.0.2.10]:5123 P=esmtp S=900 T="Hello"`, 0},
+		{"message id", `U=sender P=local S=900 id=part." T=\"smtp password\" "@example.com T="Hello"`, 0},
+		{"remote ident", `H=(client) [192.0.2.10]:5123 U=remote T="smtp password" P=esmtp S=900 T="Hello"`, 0},
+		{"mail auth", `H=(client) [192.0.2.10]:5123 P=esmtpsa A=dovecot_login:sender@example.com:other@example.net T="smtp password" S=900 T="Hello"`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com ` + tc.fields
+			count := 0
+			for _, finding := range parseEximLogLine(line, &config.Config{}) {
+				if finding.Check == "email_credential_leak" {
+					count++
+				}
+			}
+			if count != tc.want {
+				t.Fatalf("got %d credential leak findings, want %d", count, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseEximLogLine_DovecotAuthFailure(t *testing.T) {
 	cfg := &config.Config{}
 	line := `2026-04-11 12:00:00 dovecot_login authenticator failed for H=(mail.example.com) [198.51.100.40]:54321: 535 Incorrect authentication data (set_id=user@example.com)`

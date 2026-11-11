@@ -27,21 +27,6 @@ func TestExtractEximDomainEndOfLine(t *testing.T) {
 	}
 }
 
-// --- extractEximSubject -----------------------------------------------
-
-func TestExtractEximSubjectStandard(t *testing.T) {
-	line := `2026-04-12 H=host T="Hello World" F=<a@b.com>`
-	if got := extractEximSubject(line); got != "Hello World" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractEximSubjectMissing(t *testing.T) {
-	if got := extractEximSubject("no subject"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
 // --- parseCpanelSessionLogin ------------------------------------------
 
 func TestParseCpanelSessionLoginStandard(t *testing.T) {

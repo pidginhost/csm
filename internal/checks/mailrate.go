@@ -36,29 +36,8 @@ func CheckMailPerAccount(ctx context.Context, cfg *config.Config, _ *state.Store
 	}
 	counts := make(map[string]volume)
 	for _, line := range lines {
-		// Look for message arrivals (<=).
-		idx := strings.Index(line, " <= ")
-		if idx < 0 {
-			continue
-		}
-
-		// Extract sender address
-		rest := line[idx+4:]
-		fields := strings.Fields(rest)
-		if len(fields) < 1 {
-			continue
-		}
-		sender := fields[0]
-
-		// Extract the domain part
-		atIdx := strings.LastIndex(sender, "@")
-		if atIdx < 0 {
-			continue
-		}
-		domain := sender[atIdx+1:]
-
-		// Skip system/bounce messages
-		if domain == "" || sender == "<>" || strings.HasPrefix(sender, "cPanel") {
+		domain := ArrivalSenderDomain(line)
+		if domain == "" {
 			continue
 		}
 
@@ -99,4 +78,19 @@ func CheckMailPerAccount(ctx context.Context, cfg *config.Config, _ *state.Store
 	}
 
 	return findings
+}
+
+// ArrivalSenderDomain returns the envelope-sender domain of an Exim arrival
+// record, or "" for other records, bounces, cPanel system mail and senders
+// without a domain.
+func ArrivalSenderDomain(line string) string {
+	_, sender, ok := eximlog.Arrival(line)
+	if !ok || sender == "<>" || strings.HasPrefix(sender, "cPanel") {
+		return ""
+	}
+	at := strings.LastIndex(sender, "@")
+	if at < 0 {
+		return ""
+	}
+	return sender[at+1:]
 }
