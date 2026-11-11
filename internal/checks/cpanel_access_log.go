@@ -11,7 +11,7 @@ import (
 // where ident is "-" or "proxy",
 // then up to four quoted fields and an optional listener port.
 type CpanelAccessRecord struct {
-	IP     string // the connecting peer, as cpsrvd wrote it
+	IP     string // the leading address: the connecting peer unless Proxy
 	User   string // client text; "-" when the request named no user
 	Method string
 	Target string // the raw request target, log escapes kept
@@ -23,7 +23,7 @@ type CpanelAccessRecord struct {
 	// client may then have written the time it would be dated by.
 	At time.Time
 	// Proxy marks the "proxy" ident cpsrvd writes on service-subdomain
-	// requests.
+	// requests. Its address is unverified and must never act as a peer.
 	Proxy bool
 }
 
@@ -129,8 +129,7 @@ func cpanelAccessLogTime(line string) (time.Time, bool) {
 }
 
 // evidenceTime is the time a scan may date an observation by. Only direct
-// records are dated: whether a proxy record's leading address is the
-// client is for the HTTP attribution work to decide.
+// records are dated: a proxy record's leading address is unverified.
 func (r CpanelAccessRecord) evidenceTime() time.Time {
 	if r.Proxy {
 		return time.Time{}

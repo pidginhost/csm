@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -577,17 +576,5 @@ func TestParseAccessLogLineEnhanced_QuoteInUserKeepsRequest(t *testing.T) {
 	findings := parseAccessLogLineEnhanced(line, &config.Config{})
 	if len(findings) != 1 || findings[0].Check != "whm_unauth_scripts_realtime" {
 		t.Fatalf("findings = %v, want one whm_unauth_scripts_realtime", findings)
-	}
-}
-
-// cpsrvd writes "proxy" as the ident on service-subdomain requests. Those
-// lines alert and attribute as they did before the shared parser; how far
-// their leading address can be trusted is the HTTP attribution work's call.
-func TestParseAccessLogLineEnhanced_ProxyIdentUnchanged(t *testing.T) {
-	line := `192.0.2.76 proxy - [11/09/2026:12:00:00 -0000] "GET /execute/Themes/list HTTP/1.1" 401 0 "-" "agent" "-" "198.51.100.7" 2083`
-	got := parseAccessLogLineEnhanced(line, &config.Config{})
-	if len(got) != 1 || got[0].Check != "api_auth_failure_realtime" || got[0].SourceIP != "192.0.2.76" ||
-		got[0].Attribution != admission.AttributionPeer {
-		t.Fatalf("findings = %+v, want the peer-attributed API failure", got)
 	}
 }

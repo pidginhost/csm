@@ -2,13 +2,179 @@ package checks
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
+
+func TestCpanelAccessRecordProxyIdent(t *testing.T) {
+	for _, ip := range []string{"192.0.2.66", "2001:db8::66"} {
+		for _, user := range []string{"-", `user name " [11/10/2026:09:00:00 -0000] "fake`} {
+			line := ip + ` proxy ` + user + ` [11/09/2026:12:00:00 -0000] "GET /scripts2/listaccts HTTP/1.1" 401 0 "-" "agent" "-" "198.51.100.7" 2087`
+			got, ok := ParseCpanelAccessRecord(line)
+			if !ok || got.IP != ip || got.User != user || got.Method != "GET" || got.Target != "/scripts2/listaccts" || got.Status != "401" || got.Port != "2087" {
+				t.Fatalf("proxy record lost or changed: %+v (%v)", got, ok)
+			}
+			if user != "-" && !got.At.IsZero() {
+				t.Fatalf("proxy user supplied an observation time: %v", got.At)
+			}
+		}
+	}
+}
+
+func TestCpanelProxyRequestsCannotExplainDirectFailures(t *testing.T) {
+	line := `192.0.2.66 proxy alice [11/09/2026:12:00:00 -0000] "GET /cpsess123/execute/Themes/list HTTP/1.1" 401 0 "-" "agent" "s" "198.51.100.7" 2083`
+	if got, ok := ParseStaleSessionRequest(line); ok {
+		t.Fatalf("proxy record can explain direct failures: %+v", got)
+	}
+}
+
+func TestCpanelProxyScansDoNotSupplyPeerEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		check     string
+		request   string
+		port      string
+		threshold int
+		run       func() []alert.Finding
+	}{
+		{"api_auth_failure", "GET /execute/Themes/list", "2083", apiFailThreshold, func() []alert.Finding {
+			return CheckAPIAuthFailures(context.Background(), &config.Config{}, nil)
+		}},
+		{"webmail_bruteforce", "POST /login/", "2096", webmailThreshold, func() []alert.Finding {
+			return CheckWebmailLogins(context.Background(), &config.Config{}, nil)
+		}},
+	} {
+		t.Run(tc.check, func(t *testing.T) {
+			for _, stamp := range []string{"11/09/2026:12:00:00 -0000", "bad -0000", "12/31/2099:00:00:00 -0000"} {
+				for _, direct := range []bool{false, true} {
+					line := `192.0.2.66 proxy - [` + stamp + `] "` + tc.request + ` HTTP/1.1" 401 0 "-" "agent" "-" "198.51.100.7" ` + tc.port
+					lines := make([]string, tc.threshold)
+					for i := range lines {
+						lines[i] = line
+					}
+					if direct {
+						lines = append(lines, `192.0.2.66 - - [11/09/2026:12:00:01 -0000] "`+tc.request+` HTTP/1.1" 401 0 "-" "agent" "-" "-" `+tc.port)
+					}
+					cpanelScanLog(t, lines)
+					got := tc.run()
+					if len(got) != 1 || got[0].Check != tc.check || got[0].Attribution != admission.AttributionUnknown {
+						t.Fatalf("proxy count lost or promoted to peer evidence (stamp %q, direct %v): %+v", stamp, direct, got)
+					}
+					if got[0].SourceIP != "" || !strings.Contains(got[0].Details, "192.0.2.66") || extractIPFromFinding(got[0]) != "" {
+						t.Fatalf("unverified address escaped the finding details: %+v", got[0])
+					}
+					if !strings.HasSuffix(got[0].Message, ": "+strconv.Itoa(tc.threshold)+" attempts") {
+						t.Fatalf("direct requests changed the proxy count: %s", got[0].Message)
+					}
+					if _, _, err := AdmissionEvidence(got[0]); err == nil {
+						t.Fatal("proxy count authorized an IP response")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCpanelProxyScansCannotBlockOrScoreLoggedAddress(t *testing.T) {
+	withTestThreatStore(t)
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockCpanelLogins = true
+	setAutoResponseLive(cfg)
+	var lines []string
+	for range apiFailThreshold {
+		lines = append(lines, `192.0.2.66 proxy - [11/09/2026:12:00:00 -0000] "GET /execute/Themes/list HTTP/1.1" 401 0 "-" "agent" "-" "198.51.100.7" 2083`)
+	}
+	cpanelScanLog(t, lines)
+	findings := CheckAPIAuthFailures(context.Background(), cfg, nil)
+	if len(findings) != 1 {
+		t.Fatalf("proxy requests produced %d findings, want one", len(findings))
+	}
+	if actions := AutoBlockIPs(cfg, findings); len(actions) != 0 || len(blocker.blocked) != 0 {
+		t.Fatalf("proxy requests authorized blocks: actions %+v, blocked %v", actions, blocker.blocked)
+	}
+	db := attackdb.NewForTest(nil)
+	db.RecordFinding(findings[0])
+	if got := db.LookupIP("192.0.2.66"); got != nil {
+		t.Fatalf("proxy requests created an address history: %+v", got)
+	}
+}
+
+func TestCpanelProxyScansCannotDowngradeDirectCounts(t *testing.T) {
+	for _, tc := range []struct {
+		check     string
+		request   string
+		port      string
+		threshold int
+		run       func() []alert.Finding
+	}{
+		{"api_auth_failure", "GET /execute/Themes/list", "2083", apiFailThreshold, func() []alert.Finding {
+			return CheckAPIAuthFailures(context.Background(), &config.Config{}, nil)
+		}},
+		{"webmail_bruteforce", "POST /login/", "2096", webmailThreshold, func() []alert.Finding {
+			return CheckWebmailLogins(context.Background(), &config.Config{}, nil)
+		}},
+	} {
+		t.Run(tc.check, func(t *testing.T) {
+			line := `192.0.2.66 - - [11/09/2026:12:00:00 -0000] "` + tc.request + ` HTTP/1.1" 401 0 "-" "agent" "-" "-" ` + tc.port
+			lines := make([]string, tc.threshold)
+			for i := range lines {
+				lines[i] = line
+			}
+			lines = append(lines, strings.Replace(line, " - - [", " proxy - [", 1))
+			cpanelScanLog(t, lines)
+			got := tc.run()
+			if len(got) != 1 || got[0].Check != tc.check || got[0].SourceIP != "192.0.2.66" || got[0].Attribution != admission.AttributionPeer {
+				t.Fatalf("proxy request downgraded direct evidence: %+v", got)
+			}
+			if !strings.HasSuffix(got[0].Message, ": "+strconv.Itoa(tc.threshold)+" attempts") {
+				t.Fatalf("proxy request changed the direct count: %s", got[0].Message)
+			}
+		})
+	}
+}
+
+func TestCpanelProxyScansDoNotTrustAddressExemptions(t *testing.T) {
+	for _, tc := range []struct {
+		check, request, port, status string
+		count                        int
+		run                          func(context.Context, *config.Config, *state.Store) []alert.Finding
+	}{
+		{"api_auth_failure", "GET /execute/Themes/list", "2083", "401", apiFailThreshold, CheckAPIAuthFailures},
+		{"webmail_bruteforce", "POST /login/", "2096", "401", webmailThreshold, CheckWebmailLogins},
+		{"cpanel_file_upload", "POST /fileman/upload_files", "2083", "200", 1, CheckCpanelFileManager},
+		{"whm_password_change", "POST /json-api/passwd", "2087", "200", 1, CheckWHMAccess},
+		{"whm_account_action", "POST /json-api/createacct", "2087", "200", 1, CheckWHMAccess},
+	} {
+		t.Run(tc.check, func(t *testing.T) {
+			line := `192.0.2.66 proxy - [11/09/2026:12:00:00 -0000] "` + tc.request + ` HTTP/1.1" ` + tc.status + ` 0 "-" "agent" "-" "198.51.100.7" ` + tc.port
+			lines := make([]string, tc.count)
+			for i := range lines {
+				lines[i] = line
+			}
+			cpanelScanLog(t, lines)
+			got := tc.run(context.Background(), &config.Config{InfraIPs: []string{"192.0.2.66"}}, nil)
+			if len(got) != 1 || got[0].Check != tc.check || got[0].SourceIP != "" || got[0].Attribution != admission.AttributionUnknown {
+				t.Fatalf("unverified proxy address hid an alert or supplied evidence: %+v", got)
+			}
+			if strings.Contains(got[0].Message, "192.0.2.66") || !strings.Contains(got[0].Details, "192.0.2.66") {
+				t.Fatalf("unverified address escaped the finding details: %+v", got[0])
+			}
+		})
+	}
+}
 
 func TestCpanelAccessRecordLongMethod(t *testing.T) {
 	method := strings.Repeat("M", 64)
@@ -211,10 +377,10 @@ func TestCpanelAccessRecordWebmailLogin(t *testing.T) {
 	}
 }
 
-// A "proxy" ident record parses as before the shared parser: it counts
-// under its leading address and can match stale-session evidence, but it
-// never dates a scan observation.
-func TestCpanelAccessProxyIdentKeepsReleaseBehaviour(t *testing.T) {
+// A "proxy" ident record parses, but its leading address came through a
+// service subdomain: it never dates a scan observation and never explains
+// a failure as a stale browser session.
+func TestCpanelAccessProxyIdentIsNotPeerEvidence(t *testing.T) {
 	line := `192.0.2.77 proxy - [11/09/2026:12:00:00 -0000] "GET /cpsess0123456789/execute/Themes/list HTTP/1.1" 401 0 "-" "agent" "-" "198.51.100.7" 2083`
 	rec, ok := ParseCpanelAccessRecord(line)
 	if !ok || rec.IP != "192.0.2.77" || rec.Port != "2083" || rec.Status != "401" {
@@ -223,7 +389,7 @@ func TestCpanelAccessProxyIdentKeepsReleaseBehaviour(t *testing.T) {
 	if at, ok := cpanelAccessLogTime(line); ok || !at.IsZero() {
 		t.Fatalf("proxy record dated %v", at)
 	}
-	if r, ok := ParseStaleSessionRequest(line); !ok || r.IP != "192.0.2.77" || r.Token != "0123456789" {
-		t.Fatalf("stale session request = %+v (%v)", r, ok)
+	if r, ok := ParseStaleSessionRequest(line); ok {
+		t.Fatalf("proxy record parsed as stale session evidence: %+v", r)
 	}
 }
