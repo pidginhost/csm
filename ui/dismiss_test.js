@@ -14,7 +14,9 @@ function section(source, from, to) {
     return source.slice(start, end);
 }
 
-function findingsPage(selected = []) {
+// selected rows are keys, or {key, sha} for a row that showed a content hash.
+// opts.reject makes the post fail with that error; opts.response replaces its answer.
+function findingsPage(selected = [], opts = {}) {
     const requests = [], confirms = [], offers = [], toasts = [];
     let refreshed = 0;
     const context = vm.createContext({
@@ -23,14 +25,20 @@ function findingsPage(selected = []) {
             confirm(message) { confirms.push(message); return Promise.resolve(); },
             post(url, body) {
                 requests.push({ url, body });
+                if (opts.reject) return Promise.reject(Object.assign(new Error(opts.reject.message), opts.reject));
+                if (opts.response) return Promise.resolve(opts.response);
                 const count = body.keys ? body.keys.length : 1;
                 return Promise.resolve({ ok: true, count, undo_token: 'undo-1' });
             },
+            errorText(err) { return err && err.message ? err.message : 'request failed'; },
             toast(message, kind) { toasts.push({ message, kind }); },
             undo: { offer(entry) { offers.push(entry); } }
         },
         getSelectedRows() {
-            return selected.map(key => ({ getAttribute(name) { return name === 'data-key' ? key : ''; } }));
+            return selected.map(row => {
+                const { key, sha } = typeof row === 'string' ? { key: row, sha: '' } : row;
+                return { getAttribute(name) { return name === 'data-key' ? key : name === 'data-content-sha256' ? sha : ''; } };
+            });
         },
         refreshFindings() { refreshed++; }
     });
@@ -81,4 +89,41 @@ test('bulk dismiss over the server limit sends nothing', async () => {
     assert.equal(requests.length, 0);
     assert.equal(confirms.length, 0);
     assert.ok(toasts.some(t => /500/.test(t.message)));
+});
+
+const changedMessage = 'The file changed since the page loaded. Review the finding again.';
+
+test('dismiss sends the content the row showed', async () => {
+    const { context, requests } = findingsPage();
+    context.dismissOne('webshell:x', 'a'.repeat(64));
+    await tick();
+    assert.deepEqual({ ...requests[0].body.contents }, { 'webshell:x': 'a'.repeat(64) });
+});
+
+test('bulk dismiss sends the content of every row', async () => {
+    const { context, requests } = findingsPage([{ key: 'a:1', sha: 'a'.repeat(64) }, { key: 'b:2', sha: '' }]);
+    context.bulkAction('dismiss');
+    await tick();
+    assert.deepEqual({ ...requests[0].body.contents }, { 'a:1': 'a'.repeat(64), 'b:2': '' });
+});
+
+test('a refused dismiss warns and reloads the list', async () => {
+    const { context, toasts, offers, refreshed } = findingsPage([], { reject: { status: 409, message: changedMessage } });
+    context.dismissOne('webshell:x', 'a'.repeat(64));
+    await tick();
+    await tick();
+    assert.ok(toasts.some(t => t.message === changedMessage && t.kind === 'warning'), JSON.stringify(toasts));
+    assert.equal(offers.length, 0);
+    assert.equal(refreshed(), 1);
+});
+
+test('bulk dismiss says how many rows changed and were not dismissed', async () => {
+    const response = { ok: true, count: 1, refused: ['b:2'], undo_token: 'undo-1' };
+    const { context, toasts, offers, refreshed } = findingsPage([{ key: 'a:1', sha: 'a' }, { key: 'b:2', sha: 'b' }], { response });
+    context.bulkAction('dismiss');
+    await tick();
+    await tick();
+    assert.ok(toasts.some(t => /\b1\b.*not dismissed/.test(t.message) && t.kind === 'warning'), JSON.stringify(toasts));
+    assert.equal(offers.length, 1);
+    assert.equal(refreshed(), 1);
 });

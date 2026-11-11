@@ -146,6 +146,7 @@ function renderFindings(data) {
             ' data-details="' + CSM.esc(f.details || '') + '"' +
             ' data-context="' + CSM.esc(f.context || '') + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
+            ' data-content-sha256="' + CSM.esc(f.content_sha256 || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
             ' data-block-ip="' + CSM.esc(f.block_ip || '') + '"' +
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
@@ -231,7 +232,8 @@ function buildActionButtons(row) {
     if (verifyBtn) verifyBtn.addEventListener('click', function() { verifyOne(this); });
     var dismissBtn = cell.querySelector('.dismiss-btn');
     if (dismissBtn) dismissBtn.addEventListener('click', function() {
-        dismissOne(row.getAttribute('data-key') || (row.getAttribute('data-check') + ':' + row.getAttribute('data-message')));
+        dismissOne(row.getAttribute('data-key') || (row.getAttribute('data-check') + ':' + row.getAttribute('data-message')),
+            row.getAttribute('data-content-sha256') || '');
     });
     var suppressBtn = cell.querySelector('.suppress-btn');
     if (suppressBtn) suppressBtn.addEventListener('click', function() {
@@ -493,18 +495,32 @@ function verifyOne(btn) {
 // Dismissal marks the finding as known: it stops alerting while its details
 // stay the same, but a later scan that still reports it lists it again. The
 // only way back is the short undo window, so the wording says so.
-var DISMISS_EXPLAINED = 'Dismissed findings stop alerting while they stay unchanged. A later scan that still finds them lists them again; use Suppress to hide them for good. You can undo for 30 seconds.';
+var DISMISS_EXPLAINED = 'Dismissed findings stop alerting while they stay unchanged; a malware finding alerts again if its file changes. A later scan that still finds them lists them again; use Suppress to hide them for good. You can undo for 30 seconds.';
 
 function offerDismissUndo(data, label) {
     if (data && data.undo_token && CSM.undo) CSM.undo.offer({ token: data.undo_token, label: label });
 }
 
-function dismissOne(key) {
+// sha is the content hash the row showed; the server refuses the dismissal
+// with 409 when the file changed since the page loaded.
+function dismissOne(key, sha) {
+    var body = {key: key};
+    if (typeof sha === 'string') {
+        body.contents = {};
+        body.contents[key] = sha;
+    }
     CSM.confirm('Dismiss this finding?\n\n' + DISMISS_EXPLAINED).then(function() {
-        CSM.post('/api/v1/dismiss', {key: key}).then(function(data) {
+        CSM.post('/api/v1/dismiss', body).then(function(data) {
             offerDismissUndo(data, 'Dismissed 1 finding');
             refreshFindings();
-        }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
+        }).catch(function(e) {
+            if (e && e.status === 409) {
+                CSM.toast(CSM.errorText(e), 'warning');
+                refreshFindings();
+                return;
+            }
+            CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error');
+        });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -611,6 +627,7 @@ function bulkAction(action) {
             message: row.getAttribute('data-message'),
             details: row.getAttribute('data-details') || '',
             file_path: row.getAttribute('data-filepath') || '',
+            content_sha256: row.getAttribute('data-content-sha256') || '',
             fixable: row.getAttribute('data-hasFix') === 'true'
         };
     });
@@ -634,10 +651,19 @@ function bulkAction(action) {
             CSM.toast('Too many findings selected (' + items.length + '); the bulk dismiss limit is ' + CSM.DISMISS_BULK_MAX + '. Narrow the selection and repeat.', 'error');
             return;
         }
-        var keys = items.map(function(i) { return i.key || (i.check + ':' + i.message); });
+        var keys = [], contents = {};
+        items.forEach(function(i) {
+            var key = i.key || (i.check + ':' + i.message);
+            keys.push(key);
+            contents[key] = i.content_sha256;
+        });
         CSM.confirm('Dismiss ' + items.length + ' finding(s)?\n\n' + DISMISS_EXPLAINED).then(function() {
-            return CSM.post('/api/v1/dismiss', { keys: keys }).then(function(data) {
-                offerDismissUndo(data, 'Dismissed ' + (data.count || keys.length) + ' finding(s)');
+            return CSM.post('/api/v1/dismiss', { keys: keys, contents: contents }).then(function(data) {
+                var refused = (data && data.refused) || [];
+                if (refused.length > 0) {
+                    CSM.toast(refused.length + ' finding(s) changed since the page loaded and were not dismissed. Review them again.', 'warning');
+                }
+                offerDismissUndo(data, 'Dismissed ' + data.count + ' finding(s)');
                 refreshFindings();
             }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
@@ -1006,7 +1032,7 @@ function toggleFindingDetail(row) {
             });
             var dismissBtn = panel.querySelector('[data-csm-finding-dismiss]');
             if (dismissBtn) dismissBtn.addEventListener('click', function() {
-                dismissOne(key);
+                dismissOne(key, row.getAttribute('data-content-sha256') || '');
                 CSM.detailPanel.close();
             });
             var suppressBtn = panel.querySelector('[data-csm-finding-suppress]');
