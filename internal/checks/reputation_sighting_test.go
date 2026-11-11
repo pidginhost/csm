@@ -253,7 +253,8 @@ func TestReputationSightingScanTimeBoundaries(t *testing.T) {
 // An Exim sighting carries the instant Exim wrote: fractional seconds, its
 // zone when logged, and local time otherwise. A time its zone makes stale,
 // or an invalid zone, leaves the address without a sighting; a prefix the
-// RCPT parser rejects contributes no address at all.
+// RCPT parser rejects, including any zone Exim cannot write, contributes no
+// address at all.
 func TestReputationEximSightingUsesFullServerTime(t *testing.T) {
 	// The server zone comes from the scan clock; time.Local stays untouched,
 	// since other goroutines read it.
@@ -281,7 +282,7 @@ func TestReputationEximSightingUsesFullServerTime(t *testing.T) {
 		// Read in the local zone, this day-old record would look recent.
 		{"auth stale in its zone", "203.0.113.105", authFail(now.Add(-25*time.Hour).In(line).Format(zoned), "203.0.113.105"), true, time.Time{}},
 		{"auth invalid zone", "203.0.113.106", authFail(recent.In(server).Format(time.DateTime)+" +9999", "203.0.113.106"), true, time.Time{}},
-		{"rcpt out-of-range zone", "203.0.113.107", rcpt(recent.In(server).Format(time.DateTime)+" +2400", "203.0.113.107"), true, time.Time{}},
+		{"rcpt out-of-range zone", "203.0.113.107", rcpt(recent.In(server).Format(time.DateTime)+" +2400", "203.0.113.107"), false, time.Time{}},
 		{"rcpt invalid zone", "203.0.113.108", rcpt(recent.In(server).Format(time.DateTime)+" +9999", "203.0.113.108"), false, time.Time{}},
 	}
 	var lines []string

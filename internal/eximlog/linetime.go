@@ -1,31 +1,14 @@
 package eximlog
 
-import (
-	"strings"
-	"time"
-)
+import "time"
 
 // LineTime is the time Exim wrote at the start of line: the date, the time
 // with any fraction log_selector +millisec adds, and the zone log_timezone
 // adds, else the time in local. An explicit zone that is not a valid offset
 // dates nothing; client text later in the line is never read.
 func LineTime(line string, local *time.Location) (time.Time, bool) {
-	date, rest, _ := strings.Cut(line, " ")
-	clock, rest, _ := strings.Cut(rest, " ")
-	stamp := date + " " + clock
-	// Arrival metadata accepts extra spacing here; it must not hide a zone
-	// and silently turn an explicit offset into local time.
-	rest = strings.TrimLeft(rest, " \t")
-	if rest != "" && (rest[0] == '+' || rest[0] == '-') {
-		zone, _, _ := strings.Cut(rest, " ")
-		if !validOffset(zone) {
-			return time.Time{}, false
-		}
-		at, err := time.Parse(time.DateTime+" -0700", stamp+" "+zone)
-		return at, err == nil
-	}
-	at, err := time.ParseInLocation(time.DateTime, stamp, local)
-	return at, err == nil
+	p, _, ok := SplitPrefix(line, local)
+	return p.Time, ok
 }
 
 // validOffset reports whether zone is +hhmm or -hhmm with hh below 24 and

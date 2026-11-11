@@ -436,6 +436,8 @@ Tunable via the `thresholds.smtp_bruteforce_*`, `thresholds.smtp_probe_*` and `t
 
 Detects authenticated outbound Exim deliveries where the same mailbox is sending through public-cloud relay sources. The realtime Exim mainlog watcher evaluates new accepted deliveries, and a bounded startup replay covers recent lines already on disk.
 
+Startup replay reads the time zone and process ID that Exim's `log_timezone` and `pid` log selector add, and a restart does not repeat an alert for sends already reported.
+
 The finding is `email_cloud_relay_abuse`. Under the global auto-response and dry-run settings, the abused mailbox's logins and outgoing mail are suspended, with the account-wide mail hold as the fallback. Operators with legitimate cloud mailers can opt out specific mailboxes or domains under `email_protection.cloud_relay`, or use `email_protection.high_volume_senders` for known high-volume senders.
 
 ## Authenticated Sender Profile

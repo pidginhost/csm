@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/eximlog"
 )
 
 const phpRelayHistoryMaxLineBytes = 1024 * 1024
@@ -88,7 +89,7 @@ func emitPHPRelayHistoryLine(line []byte, eng *evaluator, now time.Time, emit fu
 	// real exim timestamp. Without this every historical line was stamped `now`,
 	// so a whole day of sends collapsed into one hour and fired a false
 	// "account sent >= N in the last hour" Critical on every daemon start.
-	ts, ok := parseEximTimestamp(s)
+	ts, ok := eximlog.LineTime(s, time.Local)
 	if !ok || ts.Before(now.Add(-phpRelayAccountWindowDur)) || ts.After(now) {
 		return
 	}

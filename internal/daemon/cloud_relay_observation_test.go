@@ -65,6 +65,45 @@ func TestEximHistoryScanNamesItsNewestSend(t *testing.T) {
 	})
 }
 
+func TestEximHistoryFractionalTimeDedup(t *testing.T) {
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.Local)
+	base := now.Add(-2 * time.Hour)
+	for _, metadata := range []string{"", " [12345]", " " + base.Format("-0700") + " [12345]"} {
+		t.Run(metadata, func(t *testing.T) {
+			lines := retroSends(base)
+			for i := range lines {
+				at := base.Add(time.Duration(i)*time.Minute + 125*time.Millisecond)
+				lines[i] = stampedAs(lines[i], at.Format(time.DateTime+".000")+metadata)
+			}
+			path := writeEximFixture(t, lines)
+			withGlobalStore(t, func(*store.DB) {
+				cfg := &config.Config{}
+				if got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour); len(got) != 1 {
+					t.Fatalf("first scan returned %d findings, want one", len(got))
+				}
+				if got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour); len(got) != 0 {
+					t.Fatalf("unchanged fractional timestamps repeated %d findings", len(got))
+				}
+
+				// A later send in the same second is new evidence, not a repeat.
+				at := base.Add(17*time.Minute + 250*time.Millisecond)
+				line := eximLine(at, "info@example.com", retroTestPTR, "203.0.113.22", "subject")
+				lines = append(lines, stampedAs(line, at.Format(time.DateTime+".000")+metadata))
+				path = writeEximFixture(t, lines)
+				got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour)
+				if len(got) != 1 || got[0].SourceIP != "203.0.113.22" ||
+					!got[0].Observation.ObservedAt.Equal(at) ||
+					!sameRef(got[0].Observation, recordRef(t, path, offsetOf(lines, 18), lines[18])) {
+					t.Fatalf("later fractional send did not name its own peer and record: %+v", got)
+				}
+				if got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour); len(got) != 0 {
+					t.Fatalf("later fractional send repeated %d findings", len(got))
+				}
+			})
+		})
+	}
+}
+
 // The realtime watcher and the retrospective scan read the same mainlog
 // record; both name it alike, so independence counts it once. The watcher
 // reads the lines through its own framing, with either line ending.
@@ -155,8 +194,8 @@ func TestCloudRelayAtTheEventCapNamesTheCurrentSend(t *testing.T) {
 func stampedAs(line, prefix string) string { return prefix + line[len(time.DateTime):] }
 
 // The history observation carries the instant Exim wrote, read from its
-// whole prefix: fractional seconds and, when logged, the zone. The legacy
-// detection still reads the first 19 bytes, so the finding is unchanged.
+// whole prefix: fractional seconds and, when logged, the zone. Counting reads
+// the same time.
 func TestEximHistoryObservationUsesFullServerTime(t *testing.T) {
 	// The server zone comes from the scan clock; time.Local stays untouched,
 	// since other goroutines read it.
@@ -200,20 +239,23 @@ func TestEximHistoryObservationUsesFullServerTime(t *testing.T) {
 			})
 		})
 	}
-	// An explicit zone outside the offsets Exim writes dates nothing: the
-	// send still counts, but names no observation, and no older line stands
-	// in.
+	// An explicit zone outside the offsets Exim writes dates nothing, so the
+	// send is not counted and the newest dated send names itself: the peer
+	// and the record always come from the same line.
 	t.Run("invalid zone", func(t *testing.T) {
 		lines := retroSends(base)
 		lines[17] = stampedAs(lines[17], base.Add(17*time.Minute).Format(time.DateTime)+" +2400")
 		path := writeEximFixture(t, lines)
 		withGlobalStore(t, func(*store.DB) {
 			findings := ScanEximHistoryForCloudRelay(&config.Config{}, path, now, 48*time.Hour)
-			if len(findings) != 1 || findings[0].SourceIP != "203.0.113.21" || findings[0].Attribution != admission.AttributionPeer {
-				t.Fatalf("findings %+v, want the legacy finding read as the peer", findings)
+			if len(findings) != 1 || findings[0].SourceIP != "203.0.113.20" || findings[0].Attribution != admission.AttributionPeer {
+				t.Fatalf("findings %+v, want one naming the newest dated send's peer", findings)
 			}
-			if findings[0].Observation != (alert.Observation{}) {
-				t.Fatalf("invalid zone named %+v", findings[0].Observation)
+			if !strings.Contains(findings[0].Details, "total cloud-PTR sends (48h): 17\n") {
+				t.Fatalf("undated send was counted: %s", findings[0].Details)
+			}
+			if !sameRef(findings[0].Observation, recordRef(t, path, offsetOf(lines, 16), lines[16])) {
+				t.Fatalf("observation %+v does not name the newest dated send", findings[0].Observation)
 			}
 		})
 	})
@@ -275,7 +317,7 @@ func TestEximHistoryRecordBindingAcrossAccounts(t *testing.T) {
 }
 
 // Prefix spacing must neither hide a valid zone nor let an invalid one
-// borrow local time. The newest peer and the legacy burst remain unchanged.
+// borrow local time. A send counts only when its time is readable.
 func TestEximHistoryObservationZoneAfterWhitespace(t *testing.T) {
 	now := time.Date(2026, 1, 2, 22, 0, 0, 0, time.UTC).In(time.FixedZone("local", 2*3600))
 	base := now.Add(-12 * time.Hour)
@@ -287,19 +329,21 @@ func TestEximHistoryObservationZoneAfterWhitespace(t *testing.T) {
 			path := writeEximFixture(t, lines)
 			withGlobalStore(t, func(*store.DB) {
 				findings := ScanEximHistoryForCloudRelay(&config.Config{}, path, now, 48*time.Hour)
-				if len(findings) != 1 || findings[0].SourceIP != "203.0.113.21" || findings[0].Attribution != admission.AttributionPeer {
-					t.Fatalf("findings %+v, want the legacy finding for the newest peer", findings)
-				}
-				if !strings.Contains(findings[0].Message, "sent 18 authenticated messages from 2 cloud-provider IPs") {
-					t.Fatalf("legacy burst changed: %s", findings[0].Message)
-				}
-				o := findings[0].Observation
 				if zone == "+2400" || zone == "-0060" {
-					if o != (alert.Observation{}) {
-						t.Fatalf("invalid zone named %+v", o)
+					if len(findings) != 1 || findings[0].SourceIP != "203.0.113.20" ||
+						!strings.Contains(findings[0].Details, "total cloud-PTR sends (48h): 17\n") {
+						t.Fatalf("findings %+v, want the undated send left uncounted", findings)
+					}
+					if o := findings[0].Observation; !sameRef(o, recordRef(t, path, offsetOf(lines, 16), lines[16])) {
+						t.Fatalf("invalid zone named %+v, want the newest dated send", o)
 					}
 					return
 				}
+				if len(findings) != 1 || findings[0].SourceIP != "203.0.113.21" || findings[0].Attribution != admission.AttributionPeer ||
+					!strings.Contains(findings[0].Details, "total cloud-PTR sends (48h): 18\n") {
+					t.Fatalf("findings %+v, want the zoned send counted for the newest peer", findings)
+				}
+				o := findings[0].Observation
 				want, err := time.Parse(time.DateTime+" -0700", strings.Replace(prefix, "  ", " ", 1))
 				if err != nil {
 					t.Fatal(err)

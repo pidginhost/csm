@@ -336,3 +336,26 @@ func TestBuildReportCountsLinesRead(t *testing.T) {
 		t.Errorf("an empty report leaves out lines: %s", empty)
 	}
 }
+
+// Exim's +pid log selector and log_timezone put a PID and a zone between the
+// time and the message ID; deferrals in either form still count.
+func TestParseDeferralLineWithZoneAndPID(t *testing.T) {
+	const tail = ` 1tAbCd-000123-Ab == bob@yahoo.com R=dkim_lookuphost T=remote_smtp defer (-46) H=mta7.am0.yahoodns.net [203.0.113.40]: SMTP error from remote mail server after end of data: 421 4.7.0 [TSS04] Messages from 198.51.100.7 temporarily deferred`
+	for _, prefix := range []string{
+		"2026-06-07 10:15:23 [12345]",
+		"2026-06-07 10:15:23 +0300",
+		"2026-06-07 10:15:23 +0300 [12345]",
+	} {
+		d, ok := parseDeferralLine(prefix + tail)
+		if !ok {
+			t.Errorf("%s: deferral not parsed", prefix)
+			continue
+		}
+		if d.Recipient != "bob@yahoo.com" || d.ReasonCode != "TSS04" {
+			t.Errorf("%s: recipient, reason = %q, %q", prefix, d.Recipient, d.ReasonCode)
+		}
+		if strings.Contains(prefix, "+0300") && !d.Time.Equal(time.Date(2026, 6, 7, 7, 15, 23, 0, time.UTC)) {
+			t.Errorf("%s: time = %v, want 07:15:23 UTC", prefix, d.Time)
+		}
+	}
+}

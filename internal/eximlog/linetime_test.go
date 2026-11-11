@@ -25,8 +25,14 @@ func TestLineTimeZoneAfterWhitespace(t *testing.T) {
 				{"+2400", time.Time{}}, {"-0060", time.Time{}},
 			} {
 				line := stamp + spacing.gap + tc.zone + body
-				if got := AuthenticatedUser(line); got != "info@example.com" {
-					t.Fatalf("fixture user = %q", got)
+				// One prefix reader: a zone Exim cannot write voids the
+				// arrival as well as its time.
+				wantUser := "info@example.com"
+				if tc.want.IsZero() {
+					wantUser = ""
+				}
+				if got := AuthenticatedUser(line); got != wantUser {
+					t.Fatalf("user = %q, want %q", got, wantUser)
 				}
 				got, ok := LineTime(line, local)
 				if ok != !tc.want.IsZero() || !got.Equal(tc.want) {
@@ -34,5 +40,17 @@ func TestLineTimeZoneAfterWhitespace(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLineTimeLocalAndInvalid(t *testing.T) {
+	ts, ok := LineTime("2026-04-22 14:55:43 1wFWBE-000000036n0-1PMK <= ...", time.UTC)
+	if !ok || !ts.Equal(time.Date(2026, 4, 22, 14, 55, 43, 0, time.UTC)) {
+		t.Fatalf("LineTime = %v, %v", ts, ok)
+	}
+	for _, line := range []string{"too short", "not-a-date-here-at-all 12345"} {
+		if _, ok := LineTime(line, time.UTC); ok {
+			t.Errorf("LineTime(%q) parsed", line)
+		}
 	}
 }

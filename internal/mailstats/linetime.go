@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/eximlog"
 )
 
 // LineTime reads the time a mail log line starts with: Exim's date and time
@@ -21,18 +23,11 @@ func LineTime(line string, loc *time.Location, fallback time.Time) time.Time {
 }
 
 func lineTime(line string, loc *time.Location, fallback time.Time) (time.Time, bool) {
-	first, rest, _ := strings.Cut(line, " ")
+	first, _, _ := strings.Cut(line, " ")
 	if t, err := time.Parse(time.RFC3339, first); err == nil {
 		return t, true
 	}
-	clock, rest, _ := strings.Cut(rest, " ")
-	stamp := first + " " + clock
-	zone, _, _ := strings.Cut(rest, " ")
-	if strings.HasPrefix(zone, "+") || strings.HasPrefix(zone, "-") {
-		t, err := time.Parse(time.DateTime+" -0700", stamp+" "+zone)
-		return t, err == nil
-	}
-	if t, err := time.ParseInLocation(time.DateTime, stamp, loc); err == nil {
+	if t, ok := eximlog.LineTime(line, loc); ok {
 		return t, true
 	}
 	if len(line) >= 15 && (len(line) == 15 || line[15] == ' ') {
