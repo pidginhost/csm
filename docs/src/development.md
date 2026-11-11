@@ -292,7 +292,11 @@ baseline are still removed.
 and `ScanCarryForward` snapshots neither adopt content nor revoke a dismissal.
 Revocation deletes the entry, invalidating pending delivery and resolution
 callbacks tied to it. Finding keys and fingerprints stay unchanged. The daemon
-calls it before `FilterNew` in `dispatchBatch` and `respondToInitialScan`.
+calls it before deduplication, `FilterNew` and delivery in `dispatchBatch`, and
+before filtering and delivery in `respondToInitialScan`. Every observation in
+the batch contributes content evidence even when notification deduplication
+keeps only one finding. Pending shutdown findings retain `ScanCarryForward`
+in their private storage format so replay cannot treat stale content as fresh.
 
 Undo restores the previous content hash only when the dismissal created the
 baseline or changed its content. Content adopted after a dismissal that left

@@ -1644,9 +1644,10 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// actions between old and new policy.
 	cfg := d.currentCfg()
 
-	findings = alert.Deduplicate(findings)
-	// Before FilterNew and delivery: a dismissed file with new content alerts in this batch.
+	// Reconcile every observation before deduplication can discard new content
+	// behind an unchanged, hashless or carried finding with the same key.
 	d.store.ReconcileDismissedContent(findings)
+	findings = alert.Deduplicate(findings)
 	d.noteFTPCustomers(findings)
 	suppressions := d.store.LoadSuppressions()
 	remediableFindings := filterUnsuppressedFindings(d.store, findings, suppressions)
