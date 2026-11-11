@@ -78,8 +78,6 @@ omitted; the finding still fires.
 
 ## Caveats
 
-- `firewall.smtp_allow_users` suppresses detector findings but does not
-  exempt hosted UIDs from BPF denial. See [BPF enforcement](bpf-enforcement.md).
 - `2525` is intentionally NOT in the default port list. Many operators
   run unrelated services on it. Add it to `ports` if your infra uses
   it for submission.

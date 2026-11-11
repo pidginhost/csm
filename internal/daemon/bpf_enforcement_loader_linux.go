@@ -32,6 +32,8 @@ func installBPFEnforcementPolicy(objs *connection_bpfprog.ConnectionObjects, pol
 
 // installSafeUIDs repopulates the safe_uids BPF map. Called periodically
 // (T7 refresher) and at startup (T10).
+// shortcut: only adds UIDs, so a deleted account stays exempt until restart;
+// delete stale keys if UID reuse within one daemon run becomes a concern.
 func installSafeUIDs(objs *connection_bpfprog.ConnectionObjects, uids map[uint32]bool) error {
 	for uid := range uids {
 		if err := objs.SafeUids.Update(uid, uint8(1), ebpf.UpdateAny); err != nil {

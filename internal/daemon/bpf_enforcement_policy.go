@@ -56,14 +56,14 @@ func connectionTrackerAllowsBPF(cfg *config.Config) bool {
 }
 
 // safeUIDsFromPasswd returns a map of UIDs that should be exempt from
-// in-kernel deny: UID 0 (root), UIDs <1000 (system accounts), and any
+// in-kernel deny: UID 0 (root), UIDs <1000 (system accounts), any
 // platform-known MTA users that happen to live above 1000 on some
-// distros. Hosted account UIDs (>=1000) are NOT in the safe map; their
-// connections will be evaluated by the in-kernel deny path when
-// enforcement is active.
+// distros, and accounts listed in firewall.smtp_allow_users. Other hosted
+// account UIDs (>=1000) are NOT in the safe map; their connections will be
+// evaluated by the in-kernel deny path when enforcement is active.
 //
 // Caller passes a /etc/passwd path; production wiring uses /etc/passwd.
-func safeUIDsFromPasswd(path string) (map[uint32]bool, error) {
+func safeUIDsFromPasswd(path string, cfg *config.Config) (map[uint32]bool, error) {
 	f, err := os.Open(path) // #nosec G304 -- caller-controlled; production passes /etc/passwd
 	if err != nil {
 		return nil, err
@@ -96,9 +96,10 @@ func safeUIDsFromPasswd(path string) (map[uint32]bool, error) {
 			out[uid] = true
 			continue
 		}
-		// Hosted UIDs (>=1000): NOT safe by default. Exception:
-		// platform-known MTA users on distros that put them above 1000.
-		if mta.IsMTAUser(user, uid) {
+		// Hosted UIDs (>=1000): NOT safe by default. Exceptions:
+		// platform-known MTA users on distros that put them above 1000,
+		// and accounts the operator allows to send direct SMTP.
+		if mta.IsMTAUser(user, uid) || checks.SMTPAllowedUser(cfg, user) {
 			out[uid] = true
 		}
 	}
