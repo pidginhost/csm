@@ -27,7 +27,8 @@ func (fm *FileMonitor) checkRemovedFileRestored(event fileEvent, procInfo string
 	if err := unix.Fstat(event.fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Size != removed.Size {
 		return false
 	}
-	if hashEventFD(event.fd, nil, st.Size) != removed.SHA256 {
+	// A removal too large to hash and a failed read both leave no digest.
+	if digest := hashEventFD(event.fd, nil, st.Size); digest == "" || digest != removed.SHA256 {
 		return false
 	}
 	f := removedFileRestoredFinding(event.path, removed, procInfo, event.pid)

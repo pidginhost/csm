@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -129,5 +131,29 @@ func TestRemovedFileRestoredFindingAttributesByPath(t *testing.T) {
 	res := checks.CorrelateFindings([]alert.Finding{f, {Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "carol"}, {Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "dave"}})
 	if len(res.Derived) != 1 || len(res.Unattributed) != 0 {
 		t.Fatalf("path-attributed restore finding did not aggregate: %+v", res)
+	}
+}
+
+// A removal of a file too large to hash leaves no digest, and a read that
+// fails yields none either. Two missing digests are not a match.
+func TestRemovedFileWithoutDigestIsNeverMatched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.php")
+	if err := os.WriteFile(path, []byte(restoredPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removed := removalOf(path, restoredPayload, 7)
+	removed.SHA256 = ""
+	stubRemovedFileAt(t, map[string]checks.RemovedFile{path: removed})
+	// A descriptor that cannot be read makes hashing fail.
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+
+	if fm.checkRemovedFileRestored(fileEvent{path: path, fd: fd, pid: writerPID}, "") {
+		t.Fatalf("an unhashed removal matched an unreadable write: %+v", <-ch)
 	}
 }
