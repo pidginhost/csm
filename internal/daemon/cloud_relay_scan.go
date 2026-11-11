@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -31,9 +32,6 @@ import (
 // because it is purely an event-log replay; the realtime watcher owns
 // live state thereafter.
 
-// cloudRelayScanPathDefault is where cPanel exim writes its mainlog.
-const cloudRelayScanPathDefault = "/var/log/exim_mainlog"
-
 // Memory caps for the retro scan. A compromised account or a crafted log
 // can otherwise grow byUser without bound. The thresholds are set well
 // above the volume detector (cloudRelayHighVolumeEvents=15 in a 60-min
@@ -46,7 +44,7 @@ const (
 
 // CloudRelayScanPath is the log file path scanned at startup. Exported
 // via var (not const) for tests.
-var CloudRelayScanPath = cloudRelayScanPathDefault
+var CloudRelayScanPath = platform.EximMainLog
 
 // ScanEximHistoryForCloudRelay replays the tail of exim_mainlog for the
 // last `lookback` duration and returns a finding per mailbox that

@@ -6,11 +6,9 @@ import (
 	"io"
 	"os"
 	"strings"
-)
 
-// eximMainLog is the cPanel/exim delivery log. Deferrals to remote providers
-// are recorded here; CSM only reads it.
-const eximMainLog = "/var/log/exim_mainlog"
+	"github.com/pidginhost/csm/internal/platform"
+)
 
 // Default read bounds: enough recent history to see a throttle pattern without
 // reading an unbounded multi-gigabyte log.
@@ -41,7 +39,7 @@ type EximSource struct {
 // NewEximSource returns a source reading the standard exim_mainlog location.
 func NewEximSource() *EximSource {
 	return &EximSource{
-		path:      eximMainLog,
+		path:      platform.EximMainLog,
 		tailBytes: defaultTailBytes,
 		tailLines: defaultTailLines,
 		readTail:  tailLines,

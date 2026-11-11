@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -38,7 +39,7 @@ func startPHPRelayLinux(d *Daemon) {
 	startPHPRelayLinuxAt(d, phpRelayPaths{
 		cpanelConfig: "/var/cpanel/cpanel.config",
 		spool:        "/var/spool/exim/input",
-		historyLog:   "/var/log/exim_mainlog",
+		historyLog:   platform.EximMainLog,
 		auditLog:     phpRelayAuditPath,
 	})
 }

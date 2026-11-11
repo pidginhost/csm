@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/mailfwd/intel"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/systemdrun"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -468,7 +469,7 @@ func queueSnapshot(now time.Time) emailQueueState {
 // topMailSenders parses the last N lines of exim_mainlog and returns the
 // top K sender domains by outbound message count.
 func topMailSenders(tailLines, topK int) []senderEntry {
-	f, err := os.Open("/var/log/exim_mainlog")
+	f, err := os.Open(platform.EximMainLog)
 	if err != nil {
 		return nil
 	}

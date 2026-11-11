@@ -8,6 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -27,7 +28,7 @@ func CheckMailPerAccount(ctx context.Context, cfg *config.Config, _ *state.Store
 	if cfg != nil && cfg.Thresholds.MailLogTailLines > 0 {
 		tailLines = cfg.Thresholds.MailLogTailLines
 	}
-	lines := tailFile("/var/log/exim_mainlog", tailLines)
+	lines := tailFile(platform.EximMainLog, tailLines)
 
 	// Keep the existing sender-domain volume calculation.
 	type volume struct {
