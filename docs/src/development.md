@@ -291,8 +291,8 @@ baseline are still removed.
 `ReconcileDismissedContent` accepts fresh content evidence only. Empty hashes
 and `ScanCarryForward` snapshots neither adopt content nor revoke a dismissal.
 Revocation deletes the entry, invalidating pending delivery and resolution
-callbacks tied to it. Finding keys and fingerprints stay unchanged. These
-state primitives do not by themselves enable daemon or API integration.
+callbacks tied to it. Finding keys and fingerprints stay unchanged. The daemon
+calls it before `FilterNew` in `dispatchBatch` and `respondToInitialScan`.
 
 ### Response admission primitives
 

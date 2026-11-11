@@ -1645,6 +1645,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	cfg := d.currentCfg()
 
 	findings = alert.Deduplicate(findings)
+	// Before FilterNew and delivery: a dismissed file with new content alerts in this batch.
+	d.store.ReconcileDismissedContent(findings)
 	d.noteFTPCustomers(findings)
 	suppressions := d.store.LoadSuppressions()
 	remediableFindings := filterUnsuppressedFindings(d.store, findings, suppressions)
@@ -1769,6 +1771,8 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	// As in dispatchBatch: a record with no parseable time takes its receipt
 	// time, or the customer set would drop its login as expired.
 	alert.FillTimestamps(initialFindings, time.Now())
+	// Before FilterNew and delivery: a dismissed file with new content alerts in this scan.
+	d.store.ReconcileDismissedContent(initialFindings)
 	// The realtime watcher starts at the end of the log, so FTP logins made
 	// while the daemon was down reach the set only through this scan.
 	d.noteFTPCustomers(initialFindings)

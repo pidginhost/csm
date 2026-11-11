@@ -342,6 +342,10 @@ rule to hide similar findings for good). A finding cleared by Fix or Re-check
 is new again when a later scan finds it, so a reinfection alerts. A detection
 or dismissal that arrives while Fix or Re-check runs stays in place.
 
+Dismissing a finding about a file's content, such as a malware match, covers
+that content only. When the file changes, the finding alerts again as a new
+detection, and automatic responses can act on it.
+
 Dismissal undo preserves later dismissals, successful re-checks and baseline resets.
 Findings first received in real time stop alerting when dismissed, even before
 the next scheduled scan records them.
