@@ -35,9 +35,12 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		}
 		ip := rec.IP
 
-		// Skip infra IPs
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
+		if !rec.Proxied && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
 			continue
+		}
+		source, dedup := "non-infra IP: "+ip, ""
+		if rec.Proxied {
+			source, dedup = "a service subdomain (client address unverified)", "proxy:"+ip
 		}
 
 		// Check for password change actions
@@ -52,8 +55,9 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "whm_password_change",
-					Message:  fmt.Sprintf("WHM password change from non-infra IP: %s", ip),
+					Message:  fmt.Sprintf("WHM password change from %s", source),
 					Details:  truncateString(line, 200),
+					DedupKey: dedup,
 				})
 				break
 			}
@@ -68,8 +72,9 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 				findings = append(findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "whm_account_action",
-					Message:  fmt.Sprintf("WHM account action from non-infra IP: %s", ip),
+					Message:  fmt.Sprintf("WHM account action from %s", source),
 					Details:  truncateString(line, 200),
+					DedupKey: dedup,
 				})
 				break
 			}

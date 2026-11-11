@@ -7,10 +7,10 @@ import (
 )
 
 // CpanelAccessRecord is one line of cpsrvd's access_log:
-// `<ip> - <user> [01/02/2006:15:04:05 -0700] "<method> <target> <proto>" <status> <size>`,
+// `<ip> <ident> <user> [01/02/2006:15:04:05 -0700] "<method> <target> <proto>" <status> <size>`,
 // then up to four quoted fields and an optional listener port.
 type CpanelAccessRecord struct {
-	IP     string // the connecting peer, as cpsrvd wrote it
+	IP     string // the leading address, as cpsrvd wrote it
 	User   string // client text; "-" when the request named no user
 	Method string
 	Target string // the raw request target, log escapes kept
@@ -21,6 +21,9 @@ type CpanelAccessRecord struct {
 	// At is zero when the line holds a second timestamp candidate: the
 	// client may then have written the time it would be dated by.
 	At time.Time
+	// Proxied marks the service-subdomain ident. Its address is not verified
+	// as a transport peer and must never supply peer evidence.
+	Proxied bool
 }
 
 // ParseCpanelAccessRecord reads line by cpsrvd's grammar and rejects any
@@ -35,11 +38,11 @@ func ParseCpanelAccessRecord(line string) (CpanelAccessRecord, bool) {
 	if !ok || net.ParseIP(peer) == nil {
 		return CpanelAccessRecord{}, false
 	}
-	rest, ok = strings.CutPrefix(rest, "- ")
-	if !ok {
+	ident, rest, ok := strings.Cut(rest, " ")
+	if !ok || ident != "-" && ident != "proxy" {
 		return CpanelAccessRecord{}, false
 	}
-	rec := CpanelAccessRecord{IP: peer}
+	rec := CpanelAccessRecord{IP: peer, Proxied: ident == "proxy"}
 	candidates, matches := 0, 0
 	// Candidates never overlap, so one pass bounds the work by the line.
 	for i := 0; i < len(rest); i++ {
@@ -57,7 +60,7 @@ func ParseCpanelAccessRecord(line string) (CpanelAccessRecord, bool) {
 			continue
 		}
 		candidates++
-		r := CpanelAccessRecord{IP: peer}
+		r := CpanelAccessRecord{IP: peer, Proxied: rec.Proxied}
 		if r.parseFrom(rest, i, after) {
 			matches++
 			r.At, _ = time.Parse("01/02/2006:15:04:05 -0700", rest[i+1:end])
@@ -93,7 +96,7 @@ func (r *CpanelAccessRecord) parseUndated(rest string) bool {
 		if len(after) == len(rest)-i-1 || after == "" || after[0] != '"' {
 			continue
 		}
-		candidate := CpanelAccessRecord{IP: r.IP}
+		candidate := CpanelAccessRecord{IP: r.IP, Proxied: r.Proxied}
 		if candidate.parseFrom(rest, open, after) {
 			matches++
 			if matches > 1 {
