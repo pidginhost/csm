@@ -2172,7 +2172,7 @@
                     .then(function() { CSM.toast('Released', 'success'); })
                     .catch(function(err) { CSM.toast('Release failed: ' + CSM.errorText(err), 'error'); });
             })
-            .catch(function() {})
+            .catch(function() { /* cancelled: the row stays suspended */ })
             .then(function() {
                 delete _suspendedBusy[r.id];
                 loadSuspended();
