@@ -1642,20 +1642,25 @@ func findWebServerConfigPath(info platform.Info) string {
 		return ""
 	}
 
-	var candidates []string
-	if info.IsCPanel() {
-		candidates = append(candidates, "/etc/apache2/conf/httpd.conf")
-	}
-	if info.ApacheConfigDir != "" {
+	// A selected root is authoritative even when its main file is missing.
+	// Falling back could report another server's direct logs as this one's.
+	if root := info.ApacheConfigDir; root != "" {
 		switch {
-		case info.IsDebianFamily() && !info.IsCPanel():
-			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "apache2.conf"))
-		case info.IsRHELFamily() && !info.IsCPanel():
-			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "conf", "httpd.conf"))
+		case info.IsCPanel() && filepath.Base(filepath.Clean(root)) == "conf":
+			// Older cPanel detection supplies the conf directory itself.
+			return filepath.Join(root, "httpd.conf")
+		case info.IsCPanel(), info.IsRHELFamily():
+			return filepath.Join(root, "conf", "httpd.conf")
+		case info.IsDebianFamily():
+			return filepath.Join(root, "apache2.conf")
 		default:
-			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "httpd.conf"))
+			return filepath.Join(root, "httpd.conf")
 		}
 	}
+	if info.IsCPanel() {
+		return "/etc/apache2/conf/httpd.conf"
+	}
+	var candidates []string
 	switch {
 	case info.IsDebianFamily():
 		candidates = append(candidates, "/etc/apache2/apache2.conf")

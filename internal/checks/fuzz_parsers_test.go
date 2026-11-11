@@ -1596,3 +1596,35 @@ func FuzzKnownProxyPeerAddressBoundary(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, raw string) { checkKnownProxyAddressBoundary(t, raw) })
 }
+
+// An nginx file never panics the reader, and the same text commented out
+// yields no directive, so text inside a comment never configures realip.
+func FuzzNginxDirectives(f *testing.F) {
+	for _, seed := range []string{
+		"set_real_ip_from 192.0.2.0/24;\nreal_ip_header CF-Connecting-IP;",
+		"http { include conf.d/*.conf; }",
+		"log_format x '$remote_addr \\' set_real_ip_from;';",
+		"\"unterminated",
+		"}}}{{{;;;",
+		"log_format peer foo#bar; set_real_ip_from 192.0.2.0/24;",
+		"a esc\\ aped ${host} \"q\\\"q\";",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, text string) {
+		got, _ := parseNginxDirectives(text, "nginx.conf")
+		for _, d := range got {
+			if d.Name == "" || d.File != "nginx.conf" {
+				t.Fatalf("directive %+v from %q", d, text)
+			}
+		}
+		quoted := `log_format x "` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(text) + `";`
+		if got, ok := parseNginxDirectives(quoted, "nginx.conf"); !ok || len(got) != 1 || got[0].Name != "log_format" || len(got[0].Args) != 2 || got[0].Args[1] != text {
+			t.Fatalf("quoted text %q yields %+v (complete %v)", text, got, ok)
+		}
+		commented := "#" + strings.NewReplacer("\n", " ", "\r", " ").Replace(text)
+		if got, ok := parseNginxDirectives(commented, "nginx.conf"); len(got) != 0 || !ok {
+			t.Fatalf("commented text %q yields %+v (complete %v)", commented, got, ok)
+		}
+	})
+}

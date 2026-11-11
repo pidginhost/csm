@@ -90,10 +90,10 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 	defer delete(a.activePaths, abs)
 
 	if info, statErr := osFS.Stat(path); statErr == nil && info.IsDir() {
-		entries, globErr := osFS.Glob(filepath.Join(path, "*"))
-		if globErr != nil {
+		// An unreadable directory is not an empty one.
+		entries, listed := checkedWebRootGlob(filepath.Join(path, "*"))
+		if !listed {
 			a.complete = false
-			return dst
 		}
 		sort.Strings(entries)
 		for _, entry := range entries {
@@ -119,7 +119,7 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 	for _, physical := range lines {
 		line := continued + physical
 		if prefix, continues := apacheContinuationPrefix(line); continues {
-			continued = prefix + " "
+			continued = prefix
 			continue
 		}
 		continued = ""
@@ -166,12 +166,14 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 				a.complete = false
 				continue
 			}
-			paths, expanded := expandApacheInclude(fields[1], a.serverRoot)
+			paths, globbed, expanded := expandApacheInclude(fields[1], a.serverRoot)
 			if !expanded || (!optionalInclude && len(paths) == 0) {
 				a.complete = false
 			}
+			// A file a glob found must be read; only an absent literal
+			// IncludeOptional target may be missing.
 			for _, included := range paths {
-				dst = a.appendPath(dst, included, optionalInclude, depth+1)
+				dst = a.appendPath(dst, included, optionalInclude && !globbed, depth+1)
 			}
 		default:
 			dst = append(dst, apacheConfigLine{File: path, Text: line})
@@ -187,28 +189,26 @@ func apacheArgumentHasVariable(arg string) bool {
 	return strings.Contains(arg, "${")
 }
 
-func expandApacheInclude(target, serverRoot string) ([]string, bool) {
+// expandApacheInclude resolves an Include target. A glob reports whether
+// every directory it walked could be read: filepath.Glob drops those
+// errors, so an unreadable directory would look empty.
+func expandApacheInclude(target, serverRoot string) (paths []string, globbed, complete bool) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(serverRoot, target)
 	}
 	if !strings.ContainsAny(target, "*?[") {
-		return []string{target}, true
+		return []string{target}, false, true
 	}
-	matches, err := osFS.Glob(target)
-	if err != nil {
-		return nil, false
-	}
+	matches, complete := checkedWebRootGlob(target)
 	sort.Strings(matches)
-	return matches, true
+	return matches, true, complete
 }
 
 func apacheContinuationPrefix(line string) (string, bool) {
-	line = strings.TrimRight(line, " \t\r")
-	backslashes := 0
-	for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
-		backslashes++
-	}
-	if backslashes%2 == 0 {
+	// Only a backslash immediately before LF or CRLF continues a line.
+	// Spaces after a comment's backslash must not swallow the next setting.
+	line = strings.TrimSuffix(line, "\r")
+	if !strings.HasSuffix(line, "\\") {
 		return line, false
 	}
 	return line[:len(line)-1], true
