@@ -371,8 +371,8 @@ func TestCustomerBlockAlertRepeatedScanBlock(t *testing.T) {
 	}
 }
 
-// A promotion that reaches CSM apart from its block sends its own message
-// (P3-R29), naming the promotion.
+// A promotion that reaches CSM apart from its block sends its own message,
+// naming the promotion.
 func TestCustomerBlockAlertPromotionApart(t *testing.T) {
 	const ip = "203.0.113.18"
 	d, _, _, capture := customerBlockSetup(t)
@@ -507,7 +507,7 @@ func TestWouldBlockCustomerInSummary(t *testing.T) {
 // an FTP login after brute force from the same address (or IPv6 /64) and
 // account, sends no customer alert: the Critical finding already names that
 // login. A block of the address for another check, or a compromise of
-// another mailbox or through another login kind, still alerts (P3-R33).
+// another mailbox or through another login kind, still alerts.
 func TestCustomerBlockSkipsItsOwnCauseLogin(t *testing.T) {
 	compromise := func(ip, mailbox string) alert.Finding {
 		return alert.Finding{Severity: alert.Critical, Check: "mail_account_compromised", SourceIP: ip, Mailbox: mailbox, Timestamp: time.Now(),
@@ -563,7 +563,7 @@ func TestCustomerBlockSkipsItsOwnCauseLogin(t *testing.T) {
 }
 
 // A customer alert whose email fails still reaches the operator: the next
-// daily summary lists the block (P3-R32).
+// daily summary lists the block.
 func TestCustomerBlockListedInSummaryWhenAlertFails(t *testing.T) {
 	const ip = "203.0.113.19"
 	d, _, blocker, capture := customerBlockSetup(t)

@@ -292,7 +292,7 @@ func TestBuildBlockDigestAlwaysBuilds(t *testing.T) {
 	}
 }
 
-// block_digest.channel selects live alerts only (P3-R16): the summary follows
+// block_digest.channel selects live alerts only: the summary follows
 // the enabled alert channels, with or without block_digest.
 func TestDailySummaryIgnoresLiveChannelSelection(t *testing.T) {
 	previousActive := config.Active()

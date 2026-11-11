@@ -2227,10 +2227,9 @@ func (d *Daemon) heartbeat() {
 	}
 }
 
-// startPHPRelay implements the platform gate from Stage 1 spec section
-// 9 (O1). Emits a Warning if the host is not cPanel; otherwise locates
-// the exim binary for AutoFreeze and (in O2) wires the spool watcher,
-// pipeline, and Flow E ticker.
+// startPHPRelay applies the platform gate: it emits a Warning if the host
+// is not cPanel; otherwise it locates the exim binary for AutoFreeze and
+// wires the spool watcher, pipeline, and Flow E ticker.
 func (d *Daemon) startPHPRelay() {
 	info := platform.Detect()
 	if !info.IsCPanel() {
@@ -3360,7 +3359,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 // markAppliedBlocks sets the attack database's blocked marker for each
 // address a Critical auto_block finding names: a block that applied. A
 // dry-run "would be blocked" Warning never marks an address blocked
-// (spec 5.5: only verified full-address blocks call MarkBlocked).
+// (only verified full-address blocks call MarkBlocked).
 func markAppliedBlocks(findings []alert.Finding) {
 	adb := attackdb.Global()
 	if adb == nil {

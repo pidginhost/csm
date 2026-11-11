@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// recordModSecEvent escalation semantics (confidence-gated). See
-// docs/superpowers/specs/2026-06-27-modsec-escalation-fp-options.md.
+// recordModSecEvent escalation semantics (confidence-gated).
 
 func resetModSecCounters() {
 	modsecBlockCount = sync.Map{}

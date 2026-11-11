@@ -184,7 +184,7 @@ func TestOperatorFlushClearsAllSprayMarkers(t *testing.T) {
 	bucketMatches(t, db, m)
 }
 
-// P2-R11: a self-service unban drops only the re-block marker, so the
+// A self-service unban drops only the re-block marker, so the
 // unban sticks. Failure evidence, verdict state and the per-IP counts stay,
 // so renewed spraying is blocked again on the usual rules.
 func TestPanelUnbanKeepsFailureHistory(t *testing.T) {

@@ -617,7 +617,7 @@ func TestAntispamProbeReportsOutageAndRecovery(t *testing.T) {
 }
 
 // Disabled antispam sends no probe, and disabling clears the outage and
-// scan-error findings without a recovery notice (spec section 7).
+// scan-error findings without a recovery notice.
 func TestAntispamProbeStopsWhenDisabled(t *testing.T) {
 	d := newTestDaemon(t)
 	enableAntispam(t, d, true)
@@ -721,7 +721,7 @@ func TestStartAntispamKeepsReloadDuringSetup(t *testing.T) {
 }
 
 // A reload applies the antispam switch to health tracking at once: scan
-// markers count after enabling, and disabling forgets them (spec section 7).
+// markers count after enabling, and disabling forgets them.
 func TestReconcileAntispamFollowsTheReloadedSwitch(t *testing.T) {
 	usePanel(t, platform.PanelCPanel)
 	useAntispamHost(t)
@@ -777,7 +777,7 @@ func TestEximLogFeedsAntispamScanHealth(t *testing.T) {
 }
 
 // A config reload, from SIGHUP or a web UI save, starts a pass that reads
-// the new config and points health at the new switch (spec section 4.3).
+// the new config and points health at the new switch.
 func TestConfigReloadReconcilesAntispam(t *testing.T) {
 	usePanel(t, platform.PanelCPanel)
 	passes := useAntispamHost(t)

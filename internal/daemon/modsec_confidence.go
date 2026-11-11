@@ -5,8 +5,7 @@ import "strings"
 // modsecConfidence classifies how strongly a single ModSecurity deny indicates
 // a real attack, independent of the rule's blocking action. It drives whether a
 // deny may auto-escalate to a 24h firewall ban (high/unknown) or only counts
-// toward the low-confidence visibility/backstop path (low). See
-// docs/superpowers/specs/2026-06-27-modsec-escalation-fp-options.md.
+// toward the low-confidence visibility/backstop path (low).
 type modsecConfidence int
 
 const (

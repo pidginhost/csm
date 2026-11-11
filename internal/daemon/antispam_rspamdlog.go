@@ -19,7 +19,7 @@ import (
 const rspamdLogReopenInterval = 5 * time.Minute
 
 // rspamdLogLoop reads scan records from the rspamd log file the last
-// reconcile pass named on a Postfix host (spec section 5.2), following that
+// reconcile pass named on a Postfix host, following that
 // file when a pass names another.
 func (d *Daemon) rspamdLogLoop(ctx context.Context) {
 	var tail rspamdLogTail

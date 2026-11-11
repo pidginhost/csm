@@ -129,8 +129,8 @@ func (w *sigWatcher) loadInitial(sdb *store.DB) {
 
 // tick performs one walk of the rules dir and queues a rescan when any
 // tracked file's content changed. Removed files drop out of
-// the persisted map without triggering a rescan -- the spec calls out
-// only a change to an existing file as a trigger.
+// the persisted map without triggering a rescan -- only a change to
+// an existing file is a trigger.
 func (w *sigWatcher) tick() {
 	cfg := w.cfgFunc()
 	if !cfg.SignatureRescanEnabled() {
@@ -178,7 +178,7 @@ func (w *sigWatcher) tick() {
 		next[path] = state
 		switch {
 		case !seen:
-			// New file. The spec treats first-observation as a
+			// New file. First observation is a
 			// non-event so a fresh `update-rules` install does not
 			// cause a rescan when the daemon also starts cold.
 		case old.SHA256 != "":

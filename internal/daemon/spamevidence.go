@@ -14,7 +14,7 @@ import (
 )
 
 // spamEvidence reads one scan as a verdict about the sender of the scanned
-// message (feeds spec 7). never excludes whitelisted and the host's own
+// message. never excludes whitelisted and the host's own
 // addresses; weight is the CSM_IP score the last written map gives the
 // sender, in tenths.
 func spamEvidence(s antispam.Scan, as config.AntispamConfig, never func(netip.Addr) bool, weight func(netip.Addr) int) (string, ipmap.Verdict) {
