@@ -558,6 +558,9 @@ type fileEvent struct {
 	mask          uint64
 	dropperOnly   bool
 	phpExecutable bool
+	// at is when the event was read, the latest moment the writer is known
+	// to have existed under its PID.
+	at time.Time
 }
 
 func (fm *FileMonitor) currentCfg() *config.Config {
@@ -993,8 +996,9 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 
 	// Send to analyzer pool (with backpressure)
 	fm.initQueueHealth()
-	ticket := fm.analyzerHealth.Begin(time.Now())
-	event.queueTicket, event.pid, event.mask = ticket, pid, mask
+	read := time.Now()
+	ticket := fm.analyzerHealth.Begin(read)
+	event.queueTicket, event.pid, event.mask, event.at = ticket, pid, mask, read
 	select {
 	case fm.analyzerCh <- event:
 		admitted = true

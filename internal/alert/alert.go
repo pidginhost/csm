@@ -121,6 +121,10 @@ type Finding struct {
 	// already considered the finding in this process, so alert delivery does
 	// not signal the process again, including after a refused attempt.
 	AutoProcessResponseEvaluated bool `json:"-"`
+	// WriterChain lists, writer first, the processes that wrote back a file
+	// CSM had removed, named when the write was seen. Process-local: a
+	// finding replayed after a restart never signals a stale PID.
+	WriterChain []int `json:"-"`
 
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".

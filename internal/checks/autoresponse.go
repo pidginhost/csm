@@ -56,7 +56,8 @@ var signalProcess = processhandle.Signal
 var errProcessNotEligible = errors.New("process is no longer eligible for termination")
 
 // AutoKillProcesses kills processes that match critical findings.
-// Only targets: fake kernel threads, reverse shells, GSocket processes.
+// Only targets: fake kernel threads, reverse shells, GSocket processes, and
+// the processes that wrote back a file CSM had removed.
 // Never kills root system services or cPanel processes.
 // Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
@@ -69,7 +70,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 	for i, f := range findings {
 		// Only act on specific high-confidence critical checks
 		switch f.Check {
-		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution":
+		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution", RemovedFileRestoredCheck:
 		default:
 			continue
 		}
@@ -79,6 +80,19 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		// A scan hands its findings to alert delivery, which must not
 		// signal the same process again.
 		findings[i].AutoProcessResponseEvaluated = true
+
+		if f.Check == RemovedFileRestoredCheck {
+			// The parents go first so a loop cannot start another writer.
+			// The chain was vetted when the write was seen; an interpreter
+			// is the expected target here, so only panel and service
+			// binaries are refused.
+			for j := len(f.WriterChain) - 1; j >= 0; j-- {
+				if action, ok := killFindingProcess(ctx, f, f.WriterChain[j], restoreWriterExeAllowed); ok {
+					actions = append(actions, action)
+				}
+			}
+			continue
+		}
 
 		// Use structured PID field when available, fall back to text extraction
 		pid := fmt.Sprintf("%d", f.PID)
@@ -93,34 +107,45 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		if !validPID {
 			continue
 		}
-		pid = strconv.Itoa(pidInt)
-		var uid, exe string
-		err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
-			uid, exe = getProcessUID(pid), getProcessExe(pid)
-			if uid == "0" || uid == "" || exe == "" || isSafeProcess(exe) || !processStartedBefore(pid, f.Timestamp) {
-				return errProcessNotEligible
-			}
-			return nil
-		})
-		if err != nil {
-			if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
-				csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
-			}
-			recordKillAction(&f, pid, exe, err)
-			continue
+		if action, ok := killFindingProcess(ctx, f, pidInt, func(exe string) bool { return !isSafeProcess(exe) }); ok {
+			actions = append(actions, action)
 		}
-		recordKillAction(&f, pid, exe, nil)
-
-		actions = append(actions, alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "auto_response",
-			Message:   fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
-			Timestamp: time.Now(),
-			Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
-		})
 	}
 
 	return actions
+}
+
+// killFindingProcess signals one process for f after verifying, through the
+// captured handle, that it is still a non-root process with an executable
+// allowExe accepts that started before the finding.
+func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowExe func(string) bool) (alert.Finding, bool) {
+	pid := strconv.Itoa(pidInt)
+	var uid, exe string
+	err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
+		uid, exe = getProcessUID(pid), getProcessExe(pid)
+		if uid == "0" || uid == "" || exe == "" || !allowExe(exe) || !processStartedBefore(pid, f.Timestamp) {
+			return errProcessNotEligible
+		}
+		return nil
+	})
+	recordKillAction(&f, pid, exe, err)
+	if err != nil {
+		if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
+			csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
+		}
+		return alert.Finding{}, false
+	}
+	return alert.Finding{
+		Severity:  alert.Critical,
+		Check:     "auto_response",
+		Message:   fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
+		Timestamp: time.Now(),
+		Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
+	}, true
+}
+
+func restoreWriterExeAllowed(exe string) bool {
+	return isServerPHPExe(exe) || !isControlPlaneExe(exe)
 }
 
 // recordKillAction writes the unified action record for one termination

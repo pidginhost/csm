@@ -6,7 +6,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 
 | Action | Description |
 |--------|-------------|
-| **Kill processes** | Fake kernel threads, reverse shells, GSocket. Never kills root or system processes. |
+| **Kill processes** | Fake kernel threads, reverse shells, GSocket, and loops that write back a file CSM removed. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
 | **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
@@ -169,6 +169,17 @@ then does what it did before: it quarantines the file again, or cleans it
 again. This memory does not survive a daemon restart. A restore from the web
 UI quarantine page, CSM's own writes and official WordPress release files are
 never treated as the file coming back.
+
+With `kill_processes` on, CSM also stops the process that wrote the file back,
+together with its parent processes of the same account, parents first, so a
+loop cannot start another writer. It does so only when those processes trace
+back to the web server or run detached under init, the shape of a loop a
+webshell leaves behind. A PHP worker that serves the site is not stopped unless
+it wrote the file itself. A process with a terminal, or one started from an
+SSH, cPanel or cron session, is left running and the file is still handled;
+root processes are never stopped. The processes are named when the write is
+seen, and each is checked again through a kernel process handle before the
+signal, as described above.
 
 ### Restoring quarantined files
 

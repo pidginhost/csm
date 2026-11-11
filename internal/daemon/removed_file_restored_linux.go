@@ -30,9 +30,15 @@ func (fm *FileMonitor) checkRemovedFileRestored(event fileEvent, procInfo string
 	if hashEventFD(event.fd, nil, st.Size) != removed.SHA256 {
 		return false
 	}
-	fm.sendFileFinding(removedFileRestoredFinding(event.path, removed, procInfo, event.pid))
+	f := removedFileRestoredFinding(event.path, removed, procInfo, event.pid)
+	// Named now: the writer can exit before the response runs.
+	f.WriterChain = restoreWriterChain(int(event.pid), event.at)
+	fm.sendFileFinding(f)
 	return true
 }
+
+// restoreWriterChain lets tests observe what the detector captures.
+var restoreWriterChain = checks.RestoreWriterChain
 
 func removedFileRestoredFinding(path string, removed checks.RemovedFile, procInfo string, pid int32) alert.Finding {
 	return alert.Finding{
