@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -155,9 +156,9 @@ func main() {
 	case "incidents":
 		runIncidents()
 	case "enable":
-		runEnable()
+		runPHPShieldSwitch("enable", (*Installer).EnablePHPShield)
 	case "disable":
-		runDisable()
+		runPHPShieldSwitch("disable", (*Installer).DisablePHPShield)
 	case "config":
 		runConfig()
 	case "store":
@@ -588,20 +589,15 @@ func runInstall() {
 	}
 }
 
-func runEnable() {
+// runPHPShieldSwitch turns PHP Shield on or off through the installer.
+func runPHPShieldSwitch(verb string, apply func(*Installer) error) {
 	cfgPath, configExplicit, pathErr := resolveConfigPathFromArgs(os.Args)
 	if pathErr != nil {
 		fmt.Fprintf(os.Stderr, "config path: %v\n", pathErr)
 		os.Exit(1)
 	}
-	feature := ""
-	for _, arg := range os.Args {
-		if arg == "--php-shield" {
-			feature = "php-shield"
-		}
-	}
-	if feature == "" {
-		fmt.Fprintln(os.Stderr, "Usage: csm enable --php-shield [--config <path>]")
+	if !slices.Contains(os.Args, "--php-shield") {
+		fmt.Fprintf(os.Stderr, "Usage: csm %s --php-shield [--config <path>]\n", verb)
 		os.Exit(1)
 	}
 
@@ -612,43 +608,9 @@ func runEnable() {
 		LogPath:        defaultLogPath,
 		ConfigExplicit: configExplicit,
 	}
-	if feature == "php-shield" {
-		if err := installer.EnablePHPShield(); err != nil {
-			fmt.Fprintf(os.Stderr, "Enable failed: %v\n", err)
-			os.Exit(1)
-		}
-	}
-}
-
-func runDisable() {
-	cfgPath, configExplicit, pathErr := resolveConfigPathFromArgs(os.Args)
-	if pathErr != nil {
-		fmt.Fprintf(os.Stderr, "config path: %v\n", pathErr)
+	if err := apply(installer); err != nil {
+		fmt.Fprintf(os.Stderr, "%s failed: %v\n", strings.ToUpper(verb[:1])+verb[1:], err)
 		os.Exit(1)
-	}
-	feature := ""
-	for _, arg := range os.Args {
-		if arg == "--php-shield" {
-			feature = "php-shield"
-		}
-	}
-	if feature == "" {
-		fmt.Fprintln(os.Stderr, "Usage: csm disable --php-shield [--config <path>]")
-		os.Exit(1)
-	}
-
-	installer := &Installer{
-		BinaryPath:     binaryPath,
-		ConfigPath:     cfgPath,
-		StatePath:      defaultStatePath,
-		LogPath:        defaultLogPath,
-		ConfigExplicit: configExplicit,
-	}
-	if feature == "php-shield" {
-		if err := installer.DisablePHPShield(); err != nil {
-			fmt.Fprintf(os.Stderr, "Disable failed: %v\n", err)
-			os.Exit(1)
-		}
 	}
 }
 
