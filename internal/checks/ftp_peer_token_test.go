@@ -11,25 +11,25 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func TestExtractIPFromLogPureFTPDUsesOnlyPeerToken(t *testing.T) {
+func TestPureFTPDClientIPPureFTPDUsesOnlyPeerToken(t *testing.T) {
 	cases := map[string]string{
 		`Apr 11 10:00:00 host pure-ftpd: (?@client.example.com) [WARNING] Authentication failed for user [x 198.51.100.7]`:       "",
 		`Apr 11 10:00:00 host pure-ftpd: (?@client.example.com) [WARNING] Authentication failed for user [x (a@198.51.100.7) y]`: "",
 		`Apr 11 10:00:00 host pure-ftpd: (?@203.0.113.5) [WARNING] Authentication failed for user [x 198.51.100.7]`:              "203.0.113.5",
 	}
 	for line, want := range cases {
-		if got := extractIPFromLog(line); got != want {
-			t.Errorf("extractIPFromLog(%q) = %q, want %q", line, got, want)
+		if got := PureFTPDClientIP(line); got != want {
+			t.Errorf("PureFTPDClientIP(%q) = %q, want %q", line, got, want)
 		}
 	}
 }
 
-func TestExtractIPFromLogPureFTPDPeerPosition(t *testing.T) {
+func TestPureFTPDClientIPPureFTPDPeerPosition(t *testing.T) {
 	for _, peer := range []string{"", "(unknown)", "(?@)", "(?@client.example.com)", "(?@203.0.113.5", "(?@client.example.com)junk"} {
 		for _, user := range []string{"x 198.51.100.7 y", "x (a@198.51.100.7) y"} {
 			line := "Apr 11 10:00:00 192.0.2.1 pure-ftpd[1]: " + peer + " [WARNING] Authentication failed for user [" + user + "]"
-			if got := extractIPFromLog(line); got != "" {
-				t.Errorf("extractIPFromLog(%q) = %q, want no address", line, got)
+			if got := PureFTPDClientIP(line); got != "" {
+				t.Errorf("PureFTPDClientIP(%q) = %q, want no address", line, got)
 			}
 		}
 	}

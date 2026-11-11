@@ -139,46 +139,37 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 	}
 
 	for _, line := range lines {
-		// Only check cPanel (port 2083) entries
-		if !strings.Contains(line, "2083") {
+		rec, ok := ParseCpanelAccessRecord(line)
+		// Only check cPanel (port 2083) entries. Skip rejected requests - no
+		// write occurred - when the line names its status unambiguously.
+		if !ok || rec.Port != "2083" || rec.Status == "401" || rec.Status == "403" {
 			continue
 		}
+		ip := rec.IP
 
-		// Skip rejected requests - no write occurred
-		if strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ") {
+		if !rec.Proxy && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
 			continue
 		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
-			continue
-		}
-		ip := fields[0]
-
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-			continue
+		source, dedup := "non-infra IP: "+ip, ""
+		if rec.Proxy {
+			source, dedup = "a service subdomain (client address unverified)", "proxy:"+ip
 		}
 
-		// Extract request URI (between first pair of quotes) to avoid
-		// matching "upload" in referer URLs like upload-ajax.html
-		requestURI := extractRequestURIChecks(line)
-		// Common log format: the authenticated cPanel user is the third
-		// field, "-" when the request was unauthenticated.
+		// Match the request target only: the referer can name upload pages
+		// like upload-ajax.html. The user is "-" when unauthenticated.
 		owner := ""
-		if len(fields) >= 3 && fields[2] != "-" {
-			owner = HostingAccountForUser(fields[2])
+		if rec.User != "-" && rec.User != "" {
+			owner = HostingAccountForUser(rec.User)
 		}
-		for _, action := range filemanWriteActions {
-			if strings.Contains(strings.ToLower(requestURI), strings.ToLower(action)) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "cpanel_file_upload",
-					Message:  fmt.Sprintf("cPanel File Manager write operation from non-infra IP: %s", ip),
-					Details:  truncateString(line, 300),
-					TenantID: owner,
-				})
-				break
-			}
+		if rec.TargetContains(filemanWriteActions...) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "cpanel_file_upload",
+				Message:  fmt.Sprintf("cPanel File Manager write operation from %s", source),
+				Details:  truncateString(line, 300),
+				DedupKey: dedup,
+				TenantID: owner,
+			})
 		}
 	}
 
@@ -197,18 +188,4 @@ func multiIPWindowMin(cfg *config.Config) int {
 		return cfg.Thresholds.MultiIPLoginWindowMin
 	}
 	return defaultMultiIPWindowMin
-}
-
-// extractRequestURIChecks extracts the request line from an access log entry.
-// Format: ... "METHOD /path HTTP/1.1" ... → returns "METHOD /path HTTP/1.1"
-func extractRequestURIChecks(line string) string {
-	start := strings.Index(line, "\"")
-	if start < 0 {
-		return ""
-	}
-	end := strings.Index(line[start+1:], "\"")
-	if end < 0 {
-		return ""
-	}
-	return line[start+1 : start+1+end]
 }

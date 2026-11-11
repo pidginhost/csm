@@ -43,21 +43,6 @@ func TestMultiIPWindowMinConfigured(t *testing.T) {
 	}
 }
 
-// --- extractRequestURIChecks ------------------------------------------
-
-func TestExtractRequestURIChecksStandard(t *testing.T) {
-	line := `203.0.113.5 - - [12/Apr/2026] "POST /login HTTP/1.1" 200 1234`
-	if got := extractRequestURIChecks(line); got != "POST /login HTTP/1.1" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractRequestURIChecksNoQuotes(t *testing.T) {
-	if got := extractRequestURIChecks("no quotes here"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
 // --- CheckCpanelLogins session_log records ----------------------------
 
 // A host without a zone in session_log writes "[2006-01-02 15:04:05]". The

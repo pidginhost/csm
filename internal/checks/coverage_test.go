@@ -1013,45 +1013,32 @@ func TestIsExternalDestNoAtSign(t *testing.T) {
 
 // parseVfilterExternalDests is already covered by forwarder_test.go.
 
-// --- extractIPFromLog / countBruteForce (bruteforce.go) --------------
+// --- PureFTPDClientIP / countBruteForce (bruteforce.go) --------------
 
-func TestExtractIPFromLogStandard(t *testing.T) {
-	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "GET /wp-login.php HTTP/1.1" 200 1234`
-	if got := extractIPFromLog(line); got != "203.0.113.5" {
-		t.Errorf("got %q, want 203.0.113.5", got)
-	}
-}
-
-func TestExtractIPFromLogWebLineIgnoresParenPeerLookalike(t *testing.T) {
+func TestPureFTPDClientIPWebLineIgnoresParenPeerLookalike(t *testing.T) {
 	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 1234 "-" "Mozilla (user@198.51.100.9) curl"`
-	if got := extractIPFromLog(line); got != "203.0.113.5" {
-		t.Errorf("got %q, want leading client IP 203.0.113.5", got)
+	if got := PureFTPDClientIP(line); got != "" {
+		t.Errorf("got %q, want no address from a web line", got)
 	}
 }
 
-func TestExtractIPFromLogWebLineIgnoresQueryParenPeerLookalike(t *testing.T) {
+func TestPureFTPDClientIPWebLineIgnoresQueryParenPeerLookalike(t *testing.T) {
 	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "GET /?email=(user@198.51.100.9) HTTP/1.1" 200 1234 "-" "Mozilla/5.0"`
-	if got := extractIPFromLog(line); got != "203.0.113.5" {
-		t.Errorf("got %q, want leading client IP 203.0.113.5", got)
+	if got := PureFTPDClientIP(line); got != "" {
+		t.Errorf("got %q, want no address from a web line", got)
 	}
 }
 
-func TestExtractIPFromLogWebLineIgnoresPureFTPDUserAgentPeer(t *testing.T) {
+func TestPureFTPDClientIPWebLineIgnoresPureFTPDUserAgentPeer(t *testing.T) {
 	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 1234 "-" "pure-ftpd[1]: (user@198.51.100.9) curl"`
-	if got := extractIPFromLog(line); got != "203.0.113.5" {
-		t.Errorf("got %q, want leading client IP 203.0.113.5", got)
+	if got := PureFTPDClientIP(line); got != "" {
+		t.Errorf("got %q, want no address from a web line", got)
 	}
 }
 
-func TestExtractIPFromLogNoIP(t *testing.T) {
-	if got := extractIPFromLog("no ip here"); got != "" {
+func TestPureFTPDClientIPNoIP(t *testing.T) {
+	if got := PureFTPDClientIP("no ip here"); got != "" {
 		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractIPFromLogStripsPunctuation(t *testing.T) {
-	if got := extractIPFromLog("from 198.51.100.1, banned"); got != "198.51.100.1" {
-		t.Errorf("got %q, want 198.51.100.1", got)
 	}
 }
 
@@ -1059,23 +1046,23 @@ func TestExtractIPFromLogStripsPunctuation(t *testing.T) {
 // unknown -- so the address is glued inside a parenthesised token, never a
 // standalone field. Missing this format is the regression that silently
 // disabled ftp_bruteforce autoblock in production.
-func TestExtractIPFromLogPureFTPDUnknownUser(t *testing.T) {
+func TestPureFTPDClientIPPureFTPDUnknownUser(t *testing.T) {
 	line := `Jun 20 21:16:26 host pure-ftpd[3390538]: (?@193.32.162.11) [WARNING] Authentication failed for user [iadelagat]`
-	if got := extractIPFromLog(line); got != "193.32.162.11" {
+	if got := PureFTPDClientIP(line); got != "193.32.162.11" {
 		t.Errorf("got %q, want 193.32.162.11", got)
 	}
 }
 
-func TestExtractIPFromLogPureFTPDKnownUser(t *testing.T) {
+func TestPureFTPDClientIPPureFTPDKnownUser(t *testing.T) {
 	line := `Jun 20 21:16:26 host pure-ftpd[1]: (alice@198.51.100.7) [INFO] alice is now logged in`
-	if got := extractIPFromLog(line); got != "198.51.100.7" {
+	if got := PureFTPDClientIP(line); got != "198.51.100.7" {
 		t.Errorf("got %q, want 198.51.100.7", got)
 	}
 }
 
-func TestExtractIPFromLogPureFTPDIPv6(t *testing.T) {
+func TestPureFTPDClientIPPureFTPDIPv6(t *testing.T) {
 	line := `Jun 20 21:16:26 host pure-ftpd[2]: (?@2001:db8::1) [WARNING] Authentication failed for user [bob]`
-	if got := extractIPFromLog(line); got != "2001:db8::1" {
+	if got := PureFTPDClientIP(line); got != "2001:db8::1" {
 		t.Errorf("got %q, want 2001:db8::1", got)
 	}
 }

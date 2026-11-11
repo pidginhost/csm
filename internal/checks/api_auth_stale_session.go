@@ -81,24 +81,18 @@ type StaleSessionRequest struct {
 // authentication failure. Token and password API calls use no session URL,
 // so they never parse here.
 func ParseStaleSessionRequest(line string) (StaleSessionRequest, bool) {
-	f := strings.Fields(line)
-	if len(f) < 9 || f[8] != "401" || !strings.HasPrefix(f[3], "[") || !strings.HasSuffix(f[4], "]") ||
-		!strings.HasPrefix(f[5], `"`) || !strings.HasSuffix(f[7], `"`) {
+	rec, ok := ParseCpanelAccessRecord(line)
+	// Evidence that excuses a failure needs a dated line with one request
+	// and one status.
+	if !ok || rec.Proxy || rec.Status != "401" || rec.At.IsZero() {
 		return StaleSessionRequest{}, false
 	}
-	ip := net.ParseIP(f[0])
-	if ip == nil {
-		return StaleSessionRequest{}, false
-	}
-	token, ok := cpsessToken(f[6])
+	q, _ := parseCpanelRequest(rec.first[1:])
+	token, ok := cpsessToken(q.Target)
 	if !ok {
 		return StaleSessionRequest{}, false
 	}
-	at, err := time.Parse("01/02/2006:15:04:05 -0700", f[3][1:]+" "+strings.TrimSuffix(f[4], "]"))
-	if err != nil || at.Nanosecond() != 0 {
-		return StaleSessionRequest{}, false
-	}
-	return StaleSessionRequest{IP: ip.String(), User: f[2], Token: token, At: at}, true
+	return StaleSessionRequest{IP: net.ParseIP(rec.IP).String(), User: rec.User, Token: token, At: rec.At}, true
 }
 
 // cpsessToken returns the digits of a leading "/cpsess<digits>/" segment.

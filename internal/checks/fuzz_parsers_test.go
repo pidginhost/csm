@@ -242,7 +242,7 @@ func FuzzFTPPeerPosition(f *testing.F) {
 			"":                   "",
 		} {
 			line := "pure-ftpd: " + peer + " [WARNING] Authentication failed for user [" + user + "]"
-			if got := extractIPFromLog(line); got != want {
+			if got := PureFTPDClientIP(line); got != want {
 				t.Fatalf("peer %q, user %q: got %q, want %q", peer, user, got, want)
 			}
 		}

@@ -496,7 +496,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		}
 		ip, account := ftpLoginFields(line)
 		if account == "" {
-			ip = extractIPFromLog(line)
+			ip = PureFTPDClientIP(line)
 		}
 		if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 			continue
@@ -591,7 +591,7 @@ func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 
 		ip, account := ftpLoginFields(line)
 		if account == "" {
-			ip = extractIPFromLog(line)
+			ip = PureFTPDClientIP(line)
 		}
 		if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 			continue
@@ -642,39 +642,42 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 	now := time.Now()
 
 	for _, rec := range records {
-		line := rec.text
-		// Webmail ports: 2095 (HTTP), 2096 (HTTPS)
-		if !strings.Contains(line, "2095") && !strings.Contains(line, "2096") {
+		// Count login attempts per IP on the webmail ports.
+		access, ok := ParseCpanelAccessRecord(rec.text)
+		if !ok || !access.WebmailLogin() {
 			continue
 		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
+		ip := access.IP
+		if !access.Proxy && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
 			continue
 		}
-		ip := fields[0]
-
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-			continue
+		key := ip
+		if access.Proxy {
+			key = "proxy:" + ip
 		}
-
-		// Count login attempts per IP
-		if strings.Contains(line, "POST") && (strings.Contains(line, "login") || strings.Contains(line, "auth")) {
-			loginAttempts[ip]++
-			at, _ := cpanelAccessLogTime(line)
-			keepNewest(newest, ip, scanned(rec, at), now)
-		}
+		loginAttempts[key]++
+		keepNewest(newest, key, scanned(rec, access.At), now)
 	}
 
-	for ip, count := range loginAttempts {
+	for key, count := range loginAttempts {
 		if count >= webmailThreshold {
+			ip, proxied := strings.CutPrefix(key, "proxy:")
+			sourceIP, source, details, dedup := ip, ip, "", ""
+			if proxied {
+				sourceIP = ""
+				source = "a service subdomain (client address unverified)"
+				details = "Unverified logged address: " + ip
+				dedup = "proxy:" + ip
+			}
 			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "webmail_bruteforce",
-				Message:  fmt.Sprintf("Webmail brute force from %s: %d attempts", ip, count),
-				SourceIP: ip,
+				Message:  fmt.Sprintf("Webmail brute force from %s: %d attempts", source, count),
+				SourceIP: sourceIP,
+				Details:  details,
+				DedupKey: dedup,
 			}
-			stampCpanelPeer(&f, newest[ip], cfg)
+			stampCpanelScan(&f, newest[key], cfg, proxied)
 			findings = append(findings, f)
 		}
 	}
@@ -706,46 +709,49 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 	now := time.Now()
 
 	for _, rec := range records {
-		line := rec.text
+		access, ok := ParseCpanelAccessRecord(rec.text)
 		// Look for 401/403 responses on API endpoints
-		if !strings.Contains(line, "\" 401 ") && !strings.Contains(line, "\" 403 ") {
+		// A status or target forged into client text can only count against
+		// the client that sent it, so any plausible reading counts.
+		if !ok || !access.MayHaveStatus("401", "403") || !access.TargetContains("json-api", "/execute/", "cpsess") {
+			continue
+		}
+		ip := access.IP
+		if !access.Proxy && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
+			continue
+		}
+		if r, ok := ParseStaleSessionRequest(rec.text); ok && evidence.Explains(r) {
 			continue
 		}
 
-		// Only API endpoints
-		if !strings.Contains(line, "json-api") && !strings.Contains(line, "/execute/") &&
-			!strings.Contains(line, "cpsess") {
-			continue
+		key := ip
+		if access.Proxy {
+			key = "proxy:" + ip
 		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
-			continue
-		}
-		ip := fields[0]
-
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-			continue
-		}
-		if r, ok := ParseStaleSessionRequest(line); ok && evidence.Explains(r) {
-			continue
-		}
-
-		failedAPI[ip]++
-		at, _ := cpanelAccessLogTime(line)
-		keepNewest(newest, ip, scanned(rec, at), now)
+		failedAPI[key]++
+		keepNewest(newest, key, scanned(rec, access.At), now)
 	}
 
-	for ip, count := range failedAPI {
+	for key, count := range failedAPI {
 		if count >= apiFailThreshold {
+			ip, proxied := strings.CutPrefix(key, "proxy:")
+			sourceIP, source, dedup := ip, ip, ""
+			details := "Possible API token brute force or unauthorized API access"
+			if proxied {
+				sourceIP = ""
+				source = "a service subdomain (client address unverified)"
+				details = "Unverified logged address: " + ip + "\n" + details
+				dedup = "proxy:" + ip
+			}
 			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "api_auth_failure",
-				Message:  fmt.Sprintf("cPanel API auth failures from %s: %d attempts", ip, count),
-				SourceIP: ip,
-				Details:  "Possible API token brute force or unauthorized API access",
+				Message:  fmt.Sprintf("cPanel API auth failures from %s: %d attempts", source, count),
+				SourceIP: sourceIP,
+				Details:  details,
+				DedupKey: dedup,
 			}
-			stampCpanelPeer(&f, newest[ip], cfg)
+			stampCpanelScan(&f, newest[key], cfg, proxied)
 			findings = append(findings, f)
 		}
 	}
@@ -753,140 +759,13 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 	return findings
 }
 
-// stampCpanelPeer names r as f's observation. cpsrvd logs the connecting
-// peer first, so f's address is that peer unless a trusted proxy connected:
-// its address stands for every visitor behind it.
-func stampCpanelPeer(f *alert.Finding, r scanRecord, cfg *config.Config) {
-	if !IsTrustedProxy(f.SourceIP, cfg) {
+// A service-subdomain address lacks peer provenance even when the scan
+// retained an observation timestamp. Its counts stay separate from peers.
+func stampCpanelScan(f *alert.Finding, r scanRecord, cfg *config.Config, proxied bool) {
+	if !proxied && !IsTrustedProxy(f.SourceIP, cfg) {
 		f.Attribution = admission.AttributionPeer
 	}
 	r.stamp(f, ProducerCpanelScan)
-}
-
-// cpanelAccessLogTime reads the time cpsrvd stamped on an access_log line:
-// `<ip> - <user> [01/02/2006:15:04:05 -0700] "<request>" <status> <size>`,
-// then up to four quoted fields and an optional listener port. The client
-// chooses the user, which may hold spaces, brackets and quotes, so only one
-// complete parse dates the line: a user holding its own timestamp followed by
-// a quote leaves the line with no time, never the time the client wrote.
-func cpanelAccessLogTime(line string) (time.Time, bool) {
-	peer, rest, ok := strings.Cut(line, " ")
-	if !ok || net.ParseIP(peer) == nil {
-		return time.Time{}, false
-	}
-	rest, ok = strings.CutPrefix(rest, "- ")
-	if !ok {
-		return time.Time{}, false
-	}
-	stamp, suffix, ok := cpanelUniqueStamp(rest)
-	if !ok || !cpanelAccessLogSuffix(suffix) {
-		return time.Time{}, false
-	}
-	at, err := time.Parse("01/02/2006:15:04:05 -0700", stamp)
-	return at, err == nil
-}
-
-// cpanelStampLen is the length of cpsrvd's `01/02/2006:15:04:05 -0700`.
-const cpanelStampLen = 25
-
-// cpanelUniqueStamp finds the bracketed timestamp, followed by blanks and a
-// quote, that ends a nonempty user field. Any second such timestamp anywhere
-// in the user, valid date or not, makes the split ambiguous. Candidates never
-// overlap, so one pass bounds the work by the line.
-func cpanelUniqueStamp(s string) (stamp, rest string, ok bool) {
-	found, at := 0, -1
-	for i := 0; i < len(s); i++ {
-		j := strings.IndexByte(s[i:], '[')
-		if j < 0 {
-			break
-		}
-		i += j
-		end := i + 1 + cpanelStampLen
-		if end >= len(s) || s[end] != ']' || !cpanelStampShape(s[i+1:end]) {
-			continue
-		}
-		after := strings.TrimLeft(s[end+1:], " \t")
-		if len(after) == len(s)-end-1 || after == "" || after[0] != '"' {
-			continue
-		}
-		found++
-		at, stamp, rest = i, s[i+1:end], after
-		i = end
-	}
-	if found != 1 || at < 2 || (s[at-1] != ' ' && s[at-1] != '\t') {
-		return "", "", false
-	}
-	return stamp, rest, true
-}
-
-// cpanelStampShape reports whether s has the shape of cpsrvd's timestamp.
-func cpanelStampShape(s string) bool {
-	const shape = "00/00/0000:00:00:00 +0000"
-	if len(s) != len(shape) {
-		return false
-	}
-	for i := range len(shape) {
-		switch c := s[i]; shape[i] {
-		case '0':
-			if c < '0' || c > '9' {
-				return false
-			}
-		case '+':
-			if c != '+' && c != '-' {
-				return false
-			}
-		default:
-			if c != shape[i] {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// cpanelAccessLogSuffix validates what cpsrvd writes after its timestamp,
-// through the end of the line.
-func cpanelAccessLogSuffix(s string) bool {
-	request, s, ok := patternQuotedField(s)
-	if !ok {
-		return false
-	}
-	method, afterMethod, hasMethod := strings.Cut(request, " ")
-	target, proto, hasProto := strings.Cut(afterMethod, " ")
-	method, methodOver := patternDecodeField(method, patternMaxMethod)
-	if !hasMethod || !hasProto || methodOver || !patternValidMethod(method) ||
-		!patternValidRawTarget(target) || !patternHTTPVersion(proto) {
-		return false
-	}
-	status, s := patternToken(s)
-	if len(status) != 3 || !patternDigitsOnly(status) || status[0] < '1' || status[0] > '5' {
-		return false
-	}
-	size, s := patternToken(s)
-	if size != "-" && !patternDigitsOnly(size) {
-		return false
-	}
-	for quoted := 0; ; quoted++ {
-		s = strings.TrimLeft(s, " \t")
-		if s == "" || s[0] != '"' {
-			break
-		}
-		if quoted == 4 {
-			return false
-		}
-		if _, s, ok = patternQuotedField(s); !ok {
-			return false
-		}
-	}
-	if s == "" {
-		return true
-	}
-	port, tail := patternToken(s)
-	if strings.TrimLeft(tail, " \t") != "" || len(port) > 5 || !patternDigitsOnly(port) {
-		return false
-	}
-	n := atoiSafe(port)
-	return n > 0 && n <= 65535
 }
 
 // FTPLoginFinding builds the finding for a successful pure-ftpd login line,
@@ -989,27 +868,6 @@ func ignoredFTPClientIP(ip string, infraIPs []string) bool {
 	}
 	parsed := net.ParseIP(ip)
 	return parsed == nil || parsed.IsLoopback()
-}
-
-// extractIPFromLog tries to extract an IP address from a log line.
-func extractIPFromLog(line string) string {
-	fields := strings.Fields(line)
-
-	if isPureFTPDLogFields(fields) {
-		return PureFTPDClientIP(line)
-	}
-
-	// Fallback: a bare space-delimited IPv4 field (web access logs,
-	// fail2ban-style "banned <ip>" lines).
-	for _, f := range fields {
-		// Simple IP detection: starts with digit, contains dots
-		if len(f) >= 7 && f[0] >= '0' && f[0] <= '9' && strings.Count(f, ".") == 3 {
-			// Strip trailing punctuation
-			f = strings.TrimRight(f, ",:;)([]")
-			return f
-		}
-	}
-	return ""
 }
 
 func isPureFTPDLogFields(fields []string) bool {

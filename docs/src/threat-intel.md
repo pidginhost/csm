@@ -2,6 +2,9 @@
 
 CSM tracks, scores, and correlates attacks using a local attack database enriched with external feeds and GeoIP data.
 
+cPanel service-subdomain alerts retain the logged address as unverified context,
+separate from per-IP reputation and attack history.
+
 ## Attack Database
 
 - Per-IP event tracking (brute force, reconnaissance, reputation, authenticated activity)

@@ -29,20 +29,18 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 200)
 
 	for _, line := range lines {
-		if !isWHMAccessLogLine(line) {
+		rec, ok := ParseCpanelAccessRecord(line)
+		if !ok || rec.Port != "2087" {
 			continue
 		}
+		ip := rec.IP
 
-		// Extract IP (first field)
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
+		if !rec.Proxy && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
 			continue
 		}
-		ip := fields[0]
-
-		// Skip infra IPs
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-			continue
+		source, dedup := "non-infra IP: "+ip, ""
+		if rec.Proxy {
+			source, dedup = "a service subdomain (client address unverified)", "proxy:"+ip
 		}
 
 		// Check for password change actions
@@ -50,73 +48,33 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			"passwd", "change_root_password", "chpasswd",
 			"force_password_change", "resetpass",
 		}
-		lineLower := strings.ToLower(line)
-		for _, action := range passwordActions {
-			if strings.Contains(lineLower, action) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "whm_password_change",
-					Message:  fmt.Sprintf("WHM password change from non-infra IP: %s", ip),
-					Details:  truncateString(line, 200),
-				})
-				break
-			}
+		// The request names the action; referer and user agent are client text.
+		if rec.TargetContains(passwordActions...) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "whm_password_change",
+				Message:  fmt.Sprintf("WHM password change from %s", source),
+				Details:  truncateString(line, 200),
+				DedupKey: dedup,
+			})
 		}
 
 		// Check for account management from unknown IPs
 		accountActions := []string{
 			"createacct", "killacct", "suspendacct", "unsuspendacct",
 		}
-		for _, action := range accountActions {
-			if strings.Contains(lineLower, action) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "whm_account_action",
-					Message:  fmt.Sprintf("WHM account action from non-infra IP: %s", ip),
-					Details:  truncateString(line, 200),
-				})
-				break
-			}
+		if rec.TargetContains(accountActions...) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "whm_account_action",
+				Message:  fmt.Sprintf("WHM account action from %s", source),
+				Details:  truncateString(line, 200),
+				DedupKey: dedup,
+			})
 		}
 	}
 
 	return findings
-}
-
-func isWHMAccessLogLine(line string) bool {
-	served := lastAccessLogField(line)
-	switch {
-	case served == "2087":
-		return accessLogQuotedFieldCount(line) >= 5
-	case strings.HasSuffix(served, ":2087"):
-		return accessLogQuotedFieldCount(line) >= 4
-	default:
-		return false
-	}
-}
-
-func lastAccessLogField(line string) string {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return ""
-	}
-	if strings.HasSuffix(line, "\"") {
-		end := len(line) - 1
-		start := strings.LastIndex(line[:end], "\"")
-		if start < 0 {
-			return ""
-		}
-		return line[start+1 : end]
-	}
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return ""
-	}
-	return fields[len(fields)-1]
-}
-
-func accessLogQuotedFieldCount(line string) int {
-	return strings.Count(line, "\"") / 2
 }
 
 var authLogPath = func() string { return platform.Detect().AuthLogPath() }
