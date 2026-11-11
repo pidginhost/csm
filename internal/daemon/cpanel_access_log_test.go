@@ -88,6 +88,45 @@ func TestCpanelProxyAlertsDoNotTrustAddressExemptions(t *testing.T) {
 	}
 }
 
+func TestCpanelProxyHandlerCannotUseStaleSessionEvidence(t *testing.T) {
+	oldTracker := purgeTracker
+	resetPurgeTrackerState()
+	t.Cleanup(func() { purgeTracker = oldTracker })
+	for _, denialFirst := range []bool{false, true} {
+		d := &Daemon{staleSession401: newStaleSession401s()}
+		now := time.Now()
+		obs := alert.Observation{Producer: string(checks.ProducerCpanelAccessLog), Stream: "test", Cursor: "1", ObservedAt: now}
+		if denialFirst {
+			d.staleSession401.observeSessionLine(staleTabDenialLine, now)
+		}
+		line := strings.Replace(staleTabSessionLine, " - alice ", " proxy alice ", 1)
+		got := d.cpanelAccessLogObservedHandler(line, obs, &config.Config{})
+		if len(got) != 1 || got[0].Check != "api_auth_failure_realtime" || got[0].SourceIP != "" ||
+			got[0].Attribution != admission.AttributionUnknown || got[0].Observation != obs {
+			t.Fatalf("proxy alert was held, suppressed or attributed (denial first %v): %+v", denialFirst, got)
+		}
+		if !denialFirst {
+			d.staleSession401.observeSessionLine(staleTabDenialLine, now)
+		}
+		got = d.cpanelAccessLogObservedHandler(staleTabDeadLine, obs, &config.Config{})
+		if len(got) != 0 {
+			t.Fatalf("direct session request was not held: %+v", got)
+		}
+		got = d.staleSession401.due(time.Now().Add(staleSession401Hold))
+		if len(got) != 1 || got[0].SourceIP != "198.51.100.7" || got[0].Attribution != admission.AttributionPeer || got[0].Observation != obs {
+			t.Fatalf("proxy request explained a direct failure (denial first %v): %+v", denialFirst, got)
+		}
+		got = d.cpanelAccessLogObservedHandler(staleTabSessionLine, obs, &config.Config{})
+		if len(got) != 0 {
+			t.Fatalf("direct named request lost its stale-session explanation: %+v", got)
+		}
+		got = d.staleSession401.due(time.Now().Add(staleSession401Hold))
+		if len(got) != 0 {
+			t.Fatalf("explained direct request was emitted: %+v", got)
+		}
+	}
+}
+
 func TestCpanelWHMAlertsIgnoreForgedUserRecords(t *testing.T) {
 	for _, stamp := range []string{"11/09/2026:12:00:00 -0000", "bad -0000", "09/Nov/2026:12:00:00 +0000"} {
 		for _, user := range []string{

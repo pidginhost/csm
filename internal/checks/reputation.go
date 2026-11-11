@@ -806,9 +806,12 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 	}
 
 	if info.IsCPanel() {
-		// cPanel/WHM access log. cpsrvd writes the peer first and dates
-		// the line itself.
+		// Service-subdomain records cannot nominate an address for an IP
+		// lookup, even when a malformed suffix prevents full parsing.
 		for _, rec := range tailFileRecords(reputationWHMAccessLog, 100) {
+			if fields := strings.Fields(rec.text); len(fields) > 1 && fields[1] == "proxy" {
+				continue
+			}
 			if ip := firstField(rec.text); ip != "" {
 				at, _ := cpanelAccessLogTime(rec.text)
 				// A trusted proxy in front of cpsrvd is not the visitor.

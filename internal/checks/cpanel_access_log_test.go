@@ -70,6 +70,9 @@ func TestCpanelProxyScansDoNotSupplyPeerEvidence(t *testing.T) {
 					if got[0].SourceIP != "" || !strings.Contains(got[0].Details, "192.0.2.66") || extractIPFromFinding(got[0]) != "" {
 						t.Fatalf("unverified address escaped the finding details: %+v", got[0])
 					}
+					if got[0].Observation != (alert.Observation{}) {
+						t.Fatalf("proxy count dated a scan observation: %+v", got[0].Observation)
+					}
 					if !strings.HasSuffix(got[0].Message, ": "+strconv.Itoa(tc.threshold)+" attempts") {
 						t.Fatalf("direct requests changed the proxy count: %s", got[0].Message)
 					}
