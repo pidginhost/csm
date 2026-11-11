@@ -187,6 +187,13 @@ func TestDispatchBatchReconcilesContentBeforeDeduplication(t *testing.T) {
 			if got := queuedPaths(*calls)[b.FilePath]; got != 1 {
 				t.Errorf("response findings = %d, want 1", got)
 			}
+			for _, call := range *calls {
+				for _, f := range call {
+					if f.FilePath == b.FilePath && f.ContentSHA256 != b.ContentSHA256 {
+						t.Errorf("response acted on content %q, want the new content", f.ContentSHA256)
+					}
+				}
+			}
 			if d.store.Acknowledged(b) {
 				t.Fatal("changed content in duplicate is still acknowledged")
 			}

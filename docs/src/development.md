@@ -295,8 +295,11 @@ callbacks tied to it. Finding keys and fingerprints stay unchanged. The daemon
 calls it before deduplication, `FilterNew` and delivery in `dispatchBatch`, and
 before filtering and delivery in `respondToInitialScan`. Every observation in
 the batch contributes content evidence even when notification deduplication
-keeps only one finding. Pending shutdown findings retain `ScanCarryForward`
-in their private storage format so replay cannot treat stale content as fresh.
+keeps only one finding. For an ended dismissal it returns the batch without
+that key's hashless, carried or previously dismissed observations, so
+deduplication keeps the new content, and it logs the ended dismissal. Pending
+shutdown findings retain `ScanCarryForward` in their private storage format so
+replay cannot treat stale content as fresh.
 
 Undo restores the previous content hash only when the dismissal created the
 baseline or changed its content. Content adopted after a dismissal that left
