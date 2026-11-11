@@ -1509,6 +1509,9 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Key  string   `json:"key"`
 		Keys []string `json:"keys"`
+		// Contents maps a key to the content hash its row showed (empty for
+		// none). A listed key whose content changed since is not dismissed.
+		Contents map[string]*string `json:"contents"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 1<<20, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
@@ -1541,24 +1544,60 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	keys = uniqueKeys
+	for _, shown := range req.Contents {
+		if shown == nil || (*shown != "" && !isContentSHA256(*shown)) {
+			writeJSONError(w, "Invalid content hash", http.StatusBadRequest)
+			return
+		}
+	}
 
 	undos := make([]state.DismissUndo, 0, len(keys))
+	applied := make([]string, 0, len(keys))
+	var refused []string
 	for _, key := range keys {
-		undos = append(undos, s.store.DismissFindingWithUndo(key))
+		var u state.DismissUndo
+		if shown, claimed := req.Contents[key]; claimed {
+			var ok bool
+			if u, ok = s.store.DismissFindingAsShown(key, *shown); !ok {
+				refused = append(refused, key)
+				continue
+			}
+		} else {
+			u = s.store.DismissFindingWithUndo(key)
+		}
+		undos = append(undos, u)
+		applied = append(applied, key)
 		s.auditLog(r, "dismiss", key, "")
 	}
-	resp := map[string]interface{}{"count": len(keys)}
-	summary := fmt.Sprintf("Dismissed %d findings", len(keys))
-	if len(keys) == 1 {
-		resp["key"] = keys[0]
-		check, _ := state.ParseKey(keys[0])
+	if len(keys) == 1 && len(refused) == 1 {
+		writeJSONError(w, "The file changed since the page loaded. Review the finding again.", http.StatusConflict)
+		return
+	}
+	resp := map[string]interface{}{"count": len(applied)}
+	if len(refused) > 0 {
+		resp["refused"] = refused
+	}
+	summary := fmt.Sprintf("Dismissed %d findings", len(applied))
+	if len(applied) == 1 {
+		check, _ := state.ParseKey(applied[0])
 		summary = "Dismissed " + check + " finding"
 	}
-	if token := s.recordUndoEntry(r, "dismiss", undoInverseFindingUndismiss, summary,
-		undoPayloadIPs{Dismissals: undos}); token != "" {
-		resp["undo_token"] = token
+	if len(keys) == 1 {
+		resp["key"] = keys[0]
+	}
+	if len(applied) > 0 {
+		if token := s.recordUndoEntry(r, "dismiss", undoInverseFindingUndismiss, summary,
+			undoPayloadIPs{Dismissals: undos}); token != "" {
+			resp["undo_token"] = token
+		}
 	}
 	writeOK(w, resp)
+}
+
+// isContentSHA256 reports a finding content hash: 64 lowercase hex characters.
+func isContentSHA256(s string) bool {
+	b, err := hex.DecodeString(s)
+	return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
 }
 
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.

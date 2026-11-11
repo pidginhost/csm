@@ -105,8 +105,8 @@ type Finding struct {
 	// audit explainability.
 	DetectLogic string `json:"detect_logic,omitempty"`
 	// ScanCarryForward marks an unchanged snapshot re-emitted only because the
-	// current scan could not examine its path. It is process-local provenance for
-	// the atomic latest-state merge, not part of the public finding contract.
+	// current scan could not examine its path. This internal provenance survives
+	// pending replay but is not part of the public finding contract.
 	ScanCarryForward bool `json:"-"`
 	// AutoFileResponseEvaluated records process-local delivery provenance.
 	// A detector or scan already considered automatic file remediation, so

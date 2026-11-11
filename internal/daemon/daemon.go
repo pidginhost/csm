@@ -1644,6 +1644,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// actions between old and new policy.
 	cfg := d.currentCfg()
 
+	// Reconcile every observation before deduplication can discard new content
+	// behind an unchanged, hashless or carried finding with the same key.
+	d.store.ReconcileDismissedContent(findings)
 	findings = alert.Deduplicate(findings)
 	d.noteFTPCustomers(findings)
 	suppressions := d.store.LoadSuppressions()
@@ -1769,6 +1772,8 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	// As in dispatchBatch: a record with no parseable time takes its receipt
 	// time, or the customer set would drop its login as expired.
 	alert.FillTimestamps(initialFindings, time.Now())
+	// Before FilterNew and delivery: a dismissed file with new content alerts in this scan.
+	d.store.ReconcileDismissedContent(initialFindings)
 	// The realtime watcher starts at the end of the log, so FTP logins made
 	// while the daemon was down reach the set only through this scan.
 	d.noteFTPCustomers(initialFindings)

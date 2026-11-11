@@ -49,14 +49,15 @@ func TestPendingFindingsKeepResponseFields(t *testing.T) {
 	}
 }
 
-// Delivery provenance is process-local on purpose: a finding read back from
-// storage gets a fresh evaluation.
-func TestPendingFindingsDropProcessLocalProvenance(t *testing.T) {
+// Response evaluation restarts with the process, but an unexamined snapshot
+// must remain distinguishable from a fresh detection.
+func TestPendingFindingsPreserveScanAndResetResponseProvenance(t *testing.T) {
 	st, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	parked := []alert.Finding{{Check: "webshell_realtime", Message: "x", AutoFileResponseEvaluated: true, ScanCarryForward: true, Timestamp: time.Now()}}
+	parked := []alert.Finding{{Check: "webshell_realtime", Message: "x", Timestamp: time.Now(),
+		AutoFileResponseEvaluated: true, AutoIPResponseEvaluated: true, AutoProcessResponseEvaluated: true, ScanCarryForward: true}}
 	if appendErr := st.AppendPendingFindings(parked); appendErr != nil {
 		t.Fatal(appendErr)
 	}
@@ -64,8 +65,14 @@ func TestPendingFindingsDropProcessLocalProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].AutoFileResponseEvaluated || got[0].ScanCarryForward {
-		t.Fatalf("replayed %+v, want one finding with process-local provenance cleared", got)
+	if len(got) != 1 {
+		t.Fatalf("replayed %d findings, want 1", len(got))
+	}
+	if got[0].AutoFileResponseEvaluated || got[0].AutoIPResponseEvaluated || got[0].AutoProcessResponseEvaluated {
+		t.Fatal("replayed finding must get a fresh response evaluation")
+	}
+	if !got[0].ScanCarryForward {
+		t.Fatal("replayed finding lost its unexamined-snapshot marker")
 	}
 }
 

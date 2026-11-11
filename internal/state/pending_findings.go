@@ -43,6 +43,8 @@ type pendingFinding struct {
 	// ResponseLoginAccount keeps an FTP login's authenticated name for
 	// customer history.
 	ResponseLoginAccount string `json:"response_login_account,omitempty"`
+	// A restart must not turn an unexamined snapshot into fresh content evidence.
+	ScanCarryForward bool `json:"scan_carry_forward,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
@@ -50,7 +52,8 @@ func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
 			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause, ResponseMailLoginFailure: f.MailLoginFailure,
-			ResponseBlockTTL: f.BlockTTL, ResponseLoginAccount: f.LoginAccount, ResponseAttribution: f.Attribution}
+			ResponseBlockTTL: f.BlockTTL, ResponseLoginAccount: f.LoginAccount, ResponseAttribution: f.Attribution,
+			ScanCarryForward: f.ScanCarryForward}
 		// An unencodable expiry costs only its intel, not the whole batch.
 		if f.Intel != nil {
 			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
@@ -86,6 +89,7 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i].BlockTTL = r.ResponseBlockTTL
 		findings[i].LoginAccount = r.ResponseLoginAccount
 		findings[i].Attribution = r.ResponseAttribution
+		findings[i].ScanCarryForward = r.ScanCarryForward
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
