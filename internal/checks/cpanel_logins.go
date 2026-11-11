@@ -162,12 +162,8 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 		}
 		ip := rec.IP
 
-		if !rec.Proxied && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
+		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 			continue
-		}
-		source, dedup := "non-infra IP: "+ip, ""
-		if rec.Proxied {
-			source, dedup = "a service subdomain (client address unverified)", "proxy:"+ip
 		}
 
 		// Match the request target only: the referer can name upload pages
@@ -182,9 +178,8 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "cpanel_file_upload",
-					Message:  fmt.Sprintf("cPanel File Manager write operation from %s", source),
+					Message:  fmt.Sprintf("cPanel File Manager write operation from non-infra IP: %s", ip),
 					Details:  truncateString(line, 300),
-					DedupKey: dedup,
 					TenantID: owner,
 				})
 				break

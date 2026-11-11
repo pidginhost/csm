@@ -8,9 +8,10 @@ import (
 
 // CpanelAccessRecord is one line of cpsrvd's access_log:
 // `<ip> <ident> <user> [01/02/2006:15:04:05 -0700] "<method> <target> <proto>" <status> <size>`,
+// where ident is "-" or "proxy",
 // then up to four quoted fields and an optional listener port.
 type CpanelAccessRecord struct {
-	IP     string // the leading address, as cpsrvd wrote it
+	IP     string // the connecting peer, as cpsrvd wrote it
 	User   string // client text; "-" when the request named no user
 	Method string
 	Target string // the raw request target, log escapes kept
@@ -21,9 +22,9 @@ type CpanelAccessRecord struct {
 	// At is zero when the line holds a second timestamp candidate: the
 	// client may then have written the time it would be dated by.
 	At time.Time
-	// Proxied marks the service-subdomain ident. Its address is not verified
-	// as a transport peer and must never supply peer evidence.
-	Proxied bool
+	// Proxy marks the "proxy" ident cpsrvd writes on service-subdomain
+	// requests.
+	Proxy bool
 }
 
 // ParseCpanelAccessRecord reads line by cpsrvd's grammar and rejects any
@@ -38,11 +39,12 @@ func ParseCpanelAccessRecord(line string) (CpanelAccessRecord, bool) {
 	if !ok || net.ParseIP(peer) == nil {
 		return CpanelAccessRecord{}, false
 	}
+	// cpsrvd writes "proxy" as the ident on service-subdomain requests.
 	ident, rest, ok := strings.Cut(rest, " ")
 	if !ok || ident != "-" && ident != "proxy" {
 		return CpanelAccessRecord{}, false
 	}
-	rec := CpanelAccessRecord{IP: peer, Proxied: ident == "proxy"}
+	rec := CpanelAccessRecord{IP: peer, Proxy: ident == "proxy"}
 	candidates, matches := 0, 0
 	// Candidates never overlap, so one pass bounds the work by the line.
 	for i := 0; i < len(rest); i++ {
@@ -60,7 +62,7 @@ func ParseCpanelAccessRecord(line string) (CpanelAccessRecord, bool) {
 			continue
 		}
 		candidates++
-		r := CpanelAccessRecord{IP: peer, Proxied: rec.Proxied}
+		r := CpanelAccessRecord{IP: peer, Proxy: rec.Proxy}
 		if r.parseFrom(rest, i, after) {
 			matches++
 			r.At, _ = time.Parse("01/02/2006:15:04:05 -0700", rest[i+1:end])
@@ -96,7 +98,7 @@ func (r *CpanelAccessRecord) parseUndated(rest string) bool {
 		if len(after) == len(rest)-i-1 || after == "" || after[0] != '"' {
 			continue
 		}
-		candidate := CpanelAccessRecord{IP: r.IP, Proxied: r.Proxied}
+		candidate := CpanelAccessRecord{IP: r.IP, Proxy: r.Proxy}
 		if candidate.parseFrom(rest, open, after) {
 			matches++
 			if matches > 1 {
@@ -122,7 +124,18 @@ func (r *CpanelAccessRecord) parseFrom(rest string, open int, after string) bool
 // no time, never the time the client wrote.
 func cpanelAccessLogTime(line string) (time.Time, bool) {
 	rec, ok := ParseCpanelAccessRecord(line)
-	return rec.At, ok && !rec.At.IsZero()
+	at := rec.evidenceTime()
+	return at, ok && !at.IsZero()
+}
+
+// evidenceTime is the time a scan may date an observation by. Only direct
+// records are dated: whether a proxy record's leading address is the
+// client is for the HTTP attribution work to decide.
+func (r CpanelAccessRecord) evidenceTime() time.Time {
+	if r.Proxy {
+		return time.Time{}
+	}
+	return r.At
 }
 
 // WebmailLogin reports whether the record is a login POST to webmail.

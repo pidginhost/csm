@@ -21,22 +21,12 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	}
 	ip := rec.IP
 
-	// Only a direct peer can claim address-based exemptions.
-	if !rec.Proxied && (isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 		return nil
 	}
 
 	target := strings.ToLower(rec.Target)
 	rejected := rec.Status == "401" || rec.Status == "403"
-	client, source := ip, "non-infra IP: "+ip
-	sourceIP, dedup := ip, ""
-	if rec.Proxied {
-		// Legacy responses and scoring trust SourceIP independently of
-		// attribution. The log details retain the unverified address.
-		sourceIP, dedup = "", "proxy:"+ip
-		client = "a service subdomain (client address unverified)"
-		source = client
-	}
 
 	// File Manager write operations (port 2083)
 	// Only match actual write actions - not read-only calls like get_homedir.
@@ -58,10 +48,9 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 					// not the single event.
 					Severity: alert.Warning,
 					Check:    "cpanel_file_upload_realtime",
-					Message:  fmt.Sprintf("cPanel File Manager write from %s", source),
+					Message:  fmt.Sprintf("cPanel File Manager write from non-infra IP: %s", ip),
 					Details:  truncateDaemon(line, 300),
-					SourceIP: sourceIP,
-					DedupKey: dedup,
+					SourceIP: ip,
 				})
 				break
 			}
@@ -75,21 +64,17 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// an attack. Real API abuse won't correlate with a recent purge for the same account.
 	// A failure counts as brute force against its source and can block it;
 	// a trusted proxy's address stands for every visitor behind it.
-	if rejected && (rec.Proxied || !checks.IsTrustedProxy(ip, cfg)) {
+	if rejected && !checks.IsTrustedProxy(ip, cfg) {
 		if strings.Contains(target, "json-api") || strings.Contains(target, "/execute/") {
-			if rec.Proxied || !purgeTracker.isPostPurge401(ip) {
-				attribution := admission.AttributionUnknown
-				if !rec.Proxied {
-					attribution = admission.AttributionPeer
-				}
+			if !purgeTracker.isPostPurge401(ip) {
 				findings = append(findings, alert.Finding{
-					Severity:    alert.High,
-					Check:       "api_auth_failure_realtime",
-					Message:     fmt.Sprintf("cPanel API auth failure from %s", client),
-					Details:     truncateDaemon(line, 300),
-					SourceIP:    sourceIP,
-					DedupKey:    dedup,
-					Attribution: attribution,
+					Severity: alert.High,
+					Check:    "api_auth_failure_realtime",
+					Message:  fmt.Sprintf("cPanel API auth failure from %s", ip),
+					Details:  truncateDaemon(line, 300),
+					SourceIP: ip,
+					// cpsrvd logs the connecting peer first.
+					Attribution: admission.AttributionPeer,
 				})
 			}
 		}
@@ -100,10 +85,9 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 		findings = append(findings, alert.Finding{
 			Severity: alert.Warning,
 			Check:    "webmail_login_realtime",
-			Message:  fmt.Sprintf("Webmail login attempt from %s", source),
+			Message:  fmt.Sprintf("Webmail login attempt from non-infra IP: %s", ip),
 			Details:  truncateDaemon(line, 200),
-			SourceIP: sourceIP,
-			DedupKey: dedup,
+			SourceIP: ip,
 		})
 	}
 
@@ -119,10 +103,9 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "whm_login_realtime",
-				Message:  fmt.Sprintf("WHM login attempt from %s", source),
+				Message:  fmt.Sprintf("WHM login attempt from non-infra IP: %s", ip),
 				Details:  truncateDaemon(line, 200),
-				SourceIP: sourceIP,
-				DedupKey: dedup,
+				SourceIP: ip,
 			})
 		}
 	}
@@ -140,10 +123,9 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "whm_unauth_scripts_realtime",
-			Message:  fmt.Sprintf("Tokenless WHM scripts request from %s (CVE-2026-41940 IOC)", client),
+			Message:  fmt.Sprintf("Tokenless WHM scripts request from %s (CVE-2026-41940 IOC)", ip),
 			Details:  truncateDaemon(line, 300),
-			SourceIP: sourceIP,
-			DedupKey: dedup,
+			SourceIP: ip,
 		})
 	}
 

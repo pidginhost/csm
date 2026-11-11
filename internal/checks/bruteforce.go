@@ -648,36 +648,22 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 			continue
 		}
 		ip := access.IP
-		if !access.Proxied && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
+		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 			continue
 		}
-		key := ip
-		if access.Proxied {
-			key = "proxy:" + ip
-		}
-		loginAttempts[key]++
-		keepNewest(newest, key, scanned(rec, access.At), now)
+		loginAttempts[ip]++
+		keepNewest(newest, ip, scanned(rec, access.evidenceTime()), now)
 	}
 
-	for key, count := range loginAttempts {
+	for ip, count := range loginAttempts {
 		if count >= webmailThreshold {
-			ip, proxied := strings.CutPrefix(key, "proxy:")
-			sourceIP, source, details, dedup := ip, ip, "", ""
-			if proxied {
-				sourceIP = ""
-				source = "a service subdomain (client address unverified)"
-				details = "Unverified logged address: " + ip
-				dedup = "proxy:" + ip
-			}
 			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "webmail_bruteforce",
-				Message:  fmt.Sprintf("Webmail brute force from %s: %d attempts", source, count),
-				SourceIP: sourceIP,
-				Details:  details,
-				DedupKey: dedup,
+				Message:  fmt.Sprintf("Webmail brute force from %s: %d attempts", ip, count),
+				SourceIP: ip,
 			}
-			stampCpanelScan(&f, newest[key], cfg, proxied)
+			stampCpanelPeer(&f, newest[ip], cfg)
 			findings = append(findings, f)
 		}
 	}
@@ -719,41 +705,27 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 			continue
 		}
 		ip := access.IP
-		if !access.Proxied && (isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1") {
+		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 			continue
 		}
 		if r, ok := ParseStaleSessionRequest(rec.text); ok && evidence.Explains(r) {
 			continue
 		}
 
-		key := ip
-		if access.Proxied {
-			key = "proxy:" + ip
-		}
-		failedAPI[key]++
-		keepNewest(newest, key, scanned(rec, access.At), now)
+		failedAPI[ip]++
+		keepNewest(newest, ip, scanned(rec, access.evidenceTime()), now)
 	}
 
-	for key, count := range failedAPI {
+	for ip, count := range failedAPI {
 		if count >= apiFailThreshold {
-			ip, proxied := strings.CutPrefix(key, "proxy:")
-			sourceIP, source, dedup := ip, ip, ""
-			details := "Possible API token brute force or unauthorized API access"
-			if proxied {
-				sourceIP = ""
-				source = "a service subdomain (client address unverified)"
-				details = "Unverified logged address: " + ip + "\n" + details
-				dedup = "proxy:" + ip
-			}
 			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "api_auth_failure",
-				Message:  fmt.Sprintf("cPanel API auth failures from %s: %d attempts", source, count),
-				SourceIP: sourceIP,
-				Details:  details,
-				DedupKey: dedup,
+				Message:  fmt.Sprintf("cPanel API auth failures from %s: %d attempts", ip, count),
+				SourceIP: ip,
+				Details:  "Possible API token brute force or unauthorized API access",
 			}
-			stampCpanelScan(&f, newest[key], cfg, proxied)
+			stampCpanelPeer(&f, newest[ip], cfg)
 			findings = append(findings, f)
 		}
 	}
@@ -761,10 +733,11 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 	return findings
 }
 
-// A service-subdomain address lacks peer provenance even when the scan
-// retained an observation timestamp. Its counts stay separate from peers.
-func stampCpanelScan(f *alert.Finding, r scanRecord, cfg *config.Config, proxied bool) {
-	if !proxied && !IsTrustedProxy(f.SourceIP, cfg) {
+// stampCpanelPeer names r as f's observation. cpsrvd logs the connecting
+// peer first, so f's address is that peer unless a trusted proxy connected:
+// its address stands for every visitor behind it.
+func stampCpanelPeer(f *alert.Finding, r scanRecord, cfg *config.Config) {
+	if !IsTrustedProxy(f.SourceIP, cfg) {
 		f.Attribution = admission.AttributionPeer
 	}
 	r.stamp(f, ProducerCpanelScan)

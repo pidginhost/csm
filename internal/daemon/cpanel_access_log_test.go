@@ -3,46 +3,9 @@ package daemon
 import (
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/pidginhost/csm/internal/admission"
-	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/attackdb"
-	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
-
-func TestCpanelProxyRecordsRetainAlertsWithoutPeerEvidence(t *testing.T) {
-	for _, tc := range []struct {
-		request, port, check string
-	}{
-		{"GET /scripts2/listaccts", "2087", "whm_unauth_scripts_realtime"},
-		{"POST /login/?login_only=1", "2087", "whm_login_realtime"},
-		{"POST /login/", "2096", "webmail_login_realtime"},
-		{"GET /execute/Themes/list", "2083", "api_auth_failure_realtime"},
-	} {
-		t.Run(tc.check, func(t *testing.T) {
-			line := `192.0.2.66 proxy - [11/09/2026:12:00:00 -0000] "` + tc.request + ` HTTP/1.1" 401 0 "-" "agent" "-" "198.51.100.7" ` + tc.port
-			got := parseAccessLogLineEnhanced(line, &config.Config{})
-			if len(got) != 1 || got[0].Check != tc.check || got[0].Attribution != admission.AttributionUnknown {
-				t.Fatalf("proxy alert lost or attributed as peer: %+v", got)
-			}
-			if got[0].SourceIP != "" || strings.Contains(got[0].Message, "192.0.2.66") || !strings.Contains(got[0].Details, "192.0.2.66") {
-				t.Fatalf("unverified address escaped the finding details: %+v", got[0])
-			}
-			db := attackdb.NewForTest(nil)
-			db.RecordFinding(got[0])
-			if rec := db.LookupIP("192.0.2.66"); rec != nil {
-				t.Fatalf("proxy alert created an address history: %+v", rec)
-			}
-			f := got[0]
-			f.Observation = alert.Observation{Producer: string(checks.ProducerCpanelAccessLog), Stream: "test", Cursor: "1", ObservedAt: time.Now()}
-			if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseKindNotAllowed {
-				t.Fatalf("proxy alert attribution: %v, want unknown address refused", err)
-			}
-		})
-	}
-}
 
 func TestCpanelWHMScriptsAlertWithLongMethod(t *testing.T) {
 	for _, method := range []string{strings.Repeat("M", 64), strings.Repeat(`\x4d`, 64)} {
@@ -51,40 +14,6 @@ func TestCpanelWHMScriptsAlertWithLongMethod(t *testing.T) {
 		if len(got) != 1 || got[0].Check != "whm_unauth_scripts_realtime" || got[0].SourceIP != "192.0.2.66" {
 			t.Fatalf("valid long method hid tokenless WHM request: %+v", got)
 		}
-	}
-}
-
-func TestCpanelProxyAlertsDoNotTrustAddressExemptions(t *testing.T) {
-	oldTracker := purgeTracker
-	resetPurgeTrackerState()
-	t.Cleanup(func() { purgeTracker = oldTracker })
-	purgeTracker.recordLogin("192.0.2.66", "alice")
-	purgeTracker.recordPurge("alice")
-	trustedProxy := &config.Config{}
-	trustedProxy.WebServer.TrustedProxies = []string{"192.0.2.66"}
-	for _, tc := range []struct {
-		name string
-		cfg  *config.Config
-	}{
-		{"session purge", &config.Config{}},
-		{"infrastructure", &config.Config{InfraIPs: []string{"192.0.2.66"}}},
-		{"trusted proxy", trustedProxy},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, request := range []struct {
-				target, port, check string
-			}{
-				{"POST /login/?login_only=1", "2087", "whm_login_realtime"},
-				{"GET /scripts2/listaccts", "2087", "whm_unauth_scripts_realtime"},
-				{"GET /execute/Themes/list", "2083", "api_auth_failure_realtime"},
-			} {
-				line := `192.0.2.66 proxy - [11/09/2026:12:00:00 -0000] "` + request.target + ` HTTP/1.1" 401 0 "-" "agent" "-" "198.51.100.7" ` + request.port
-				got := parseAccessLogLineEnhanced(line, tc.cfg)
-				if len(got) != 1 || got[0].Check != request.check || got[0].SourceIP != "" || got[0].Attribution != admission.AttributionUnknown {
-					t.Errorf("%s: unverified proxy address hid an alert or supplied evidence: %+v", request.check, got)
-				}
-			}
-		})
 	}
 }
 

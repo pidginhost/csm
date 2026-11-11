@@ -11,14 +11,11 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- cPanel service subdomain activity now raises alerts without authorizing IP blocks from unverified client addresses.
-- Requests with long HTTP methods remain visible to cPanel API failure and tokenless WHM request alerts.
 - A dismissed malware finding now alerts again when the file's content changes.
 - Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
 - Realtime WHM login alerts and the tokenless WHM request alert for CVE-2026-41940 now fire on the lines cPanel writes to its own access log.
 - A user name containing a quote can no longer hide a cPanel or WHM request from realtime alerts.
-- Crafted user names no longer hide cPanel or WHM activity when access records have an unreadable timestamp.
 - `.htaccess` checks now report suspicious handler extensions listed after a `#` on the same line, which Apache still applies.
 - A file CSM quarantined or cleaned now alerts again when it comes back, instead of being held back as a repeat.
 - CSM now raises a Critical alert when a process writes back a file CSM quarantined or cleaned, and repeats that response.
