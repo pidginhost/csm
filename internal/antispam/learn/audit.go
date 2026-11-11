@@ -255,7 +255,7 @@ func (p *Publisher) settle() error {
 }
 
 // pending lists targets not idle, in key order.
-// ponytail: full scan per call; index pending digests if Plan C's benchmark
+// ponytail: full scan per call; index pending digests if a benchmark
 // shows the scan in the turn budget.
 func (p *Publisher) pending() ([]Digest, error) {
 	var out []Digest

@@ -20,8 +20,8 @@ import (
 )
 
 // Engine limits. BenchmarkPublishTurn took 2.5 to 3.4 ms of ledger work for
-// a report joining a single-anchor ledger; spike S8 measured about 2 ms of
-// native calls per report. Larger ledgers need separate measurements.
+// a report joining a single-anchor ledger; native calls measured about 2 ms
+// per report. Larger ledgers need separate measurements.
 const (
 	EngineTick         = 10 * time.Second
 	RepairBatch        = 10

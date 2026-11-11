@@ -32,7 +32,7 @@ const (
 	ReasonRedisPersistence   = "redis_persistence"
 	ReasonRoundcube          = "roundcube_unavailable"
 	ReasonRemovalIncomplete  = "removal_incomplete"
-	// The learner's own (Plan B).
+	// The learner's own.
 	ReasonAnchorDrift       = "anchor_drift"
 	ReasonMutationUncertain = "mutation_uncertain"
 	ReasonAnchorBodyInvalid = "anchor_body_invalid"
@@ -159,7 +159,7 @@ func resolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 // RedisGuard reports whether new publications pause: at 75% of maxmemory,
 // staying paused until usage falls below 70%. No limit always pauses. The
 // reserve is headroom for synchronization peaks, not a fixed message count:
-// spike S8 saw a peak about four times a batch's steady growth.
+// a measured peak was about four times a batch's steady growth.
 func RedisGuard(used, max uint64, paused bool) bool {
 	if max == 0 {
 		return true

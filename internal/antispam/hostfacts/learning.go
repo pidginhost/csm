@@ -29,7 +29,7 @@ const (
 	cpanelPHP         = "/usr/local/cpanel/3rdparty/bin/php"
 	cpanelUsers       = "/var/cpanel/users"
 	// roundcubeIncludeGlob is the line cPanel's Roundcube configuration uses
-	// to load inc.d (spike S10).
+	// to load inc.d.
 	roundcubeIncludeGlob = `glob("/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/*.php")`
 	// fuzzyListenAddr is 127.0.0.1:11335 as /proc/net/udp prints it.
 	fuzzyListenAddr = "0100007F:2C47"
@@ -254,7 +254,7 @@ func (c collector) logGroups(f *antispam.HostFacts) {
 // 127.0.0.1:11335, and whether any other user's socket sits on that port of
 // the loopback or wildcard address. The port is unprivileged: a tenant socket
 // there would receive scan and learning datagrams. rspamd does not respawn a
-// fuzzy worker that exited (spike S4).
+// fuzzy worker that exited.
 func (c collector) fuzzyListening(rspamdUID int) (listening, foreign bool, err error) {
 	if rspamdUID < 0 {
 		return false, false, errors.New("rspamd's service user is unknown, so the fuzzy worker's socket cannot be judged")

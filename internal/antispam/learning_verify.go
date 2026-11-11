@@ -303,7 +303,7 @@ func checkLearningGroup(dump []byte) error {
 }
 
 // checkLearningSymbols reads the controller's /symbols reply, which shows
-// dynamic weight overrides configdump cannot (spike S2).
+// dynamic weight overrides configdump cannot.
 func checkLearningSymbols(reply []byte) error {
 	var groups []json.RawMessage
 	if json.Unmarshal(reply, &groups) != nil {

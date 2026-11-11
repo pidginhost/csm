@@ -12,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// largeFolderEntries is the largest Spam folder spike S8 found on a
+// largeFolderEntries is the largest Spam folder measured on a
 // production host.
 const largeFolderEntries = 51217
 

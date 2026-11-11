@@ -30,7 +30,7 @@ const (
 	// message that breaks the backend cannot stop every pass.
 	MaxEntryErrors = 3
 	// PassDeadline leaves time between passes even when discovery runs long;
-	// baselining a 51217-entry folder (spike S8's largest) took 1.5 s.
+	// baselining a 51217-entry folder took 1.5 s.
 	PassDeadline = 4 * time.Minute
 	// DiscoveryChunk bounds the listing work before another account's turn:
 	// about 15 ms per chunk at 29 microseconds per entry; during a
