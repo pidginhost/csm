@@ -52,6 +52,7 @@ var bucketNames = []string{
 	"incidents",
 	"fw:rollback",
 	adminEmailsBucket,
+	mailboxSuspensionsBucket,
 	"botverify",
 	botVerifyUnverifiableBucket,
 	prefsBucket,

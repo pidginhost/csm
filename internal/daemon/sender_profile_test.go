@@ -154,7 +154,7 @@ func TestSenderProfile_ChurnFromNovelCountryIsCriticalAndSuspends(t *testing.T) 
 	resetEmailRateState()
 	stubGeo(t, map[string]string{"198.51.100.1": "DE", "198.51.100.2": "DE", "198.51.100.3": "DE", "198.51.100.4": "DE"})
 	withUserdomains(t, "example.com: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 	withGlobalStore(t, func(db *store.DB) {
@@ -584,6 +584,34 @@ func TestSenderProfile_RepeatedRecipientIsStillIndividual(t *testing.T) {
 		}
 		if len(got) != 1 || got[0].Severity != alert.High {
 			t.Fatalf("duplicate copies of the same envelope recipient hid fan-out: %+v", got)
+		}
+	})
+}
+
+func TestForgetSenderEvidence_StopsRetrigger(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(db *store.DB) {
+		cfg := cloudRelayTestConfig()
+		user := "user@example.com"
+		for i := 0; i < 5; i++ {
+			if got := sendAt(t, cfg, senderTestNow.Add(time.Duration(i)*90*time.Minute), user, fmt.Sprintf("203.0.113.%d", i+1), "a@example.net"); len(got) != 0 {
+				t.Fatalf("send %d: unexpected %+v", i+1, got)
+			}
+		}
+		if err := forgetSenderEvidence(user, senderTestNow.Add(6*time.Hour+time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		profile, err := db.GetSenderProfile(user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if profile.Days[senderDayKey(senderTestNow)] != nil {
+			t.Fatalf("today's counts survived the release: %+v", profile.Days)
+		}
+		// Without the reset, this sixth address of the day raises a finding.
+		if got := sendAt(t, cfg, senderTestNow.Add(7*time.Hour+30*time.Minute), user, "203.0.113.6", "a@example.net"); len(got) != 0 {
+			t.Fatalf("sends from before the release triggered again: %+v", got)
 		}
 	})
 }

@@ -41,6 +41,7 @@ var collectionRoutes = []string{
 	"/api/v1/email/relay-abuse",
 	"/api/v1/email/forwarders",
 	"/api/v1/email/held",
+	"/api/v1/email/suspensions",
 	"/api/v1/threat/top-attackers",
 	"/api/v1/threat/events?ip=203.0.113.5",
 	"/api/v1/threat/whitelist",

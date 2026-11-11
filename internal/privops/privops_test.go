@@ -465,8 +465,10 @@ func TestAuditedOperationsArePinned(t *testing.T) {
 		"integrate.antispam_learn",
 		"integrate.firewall_ruleset",
 		"operate.manual_firewall",
+		"operate.release_mailbox",
 		"respond.block_ip",
 		"respond.clean_file",
+		"respond.hold_outgoing_mail",
 		"respond.kill_process",
 		"respond.quarantine_file",
 		"respond.suspend_mailbox",
@@ -620,6 +622,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"respond.quarantine_mail":       RiskContain,
 	"respond.restart_mail_auth":     RiskDestructive,
 	"respond.suspend_mailbox":       RiskReversible,
+	"operate.release_mailbox":       RiskReversible,
 	"respond.virtual_patch":         RiskContain,
 	"state.control_socket":          RiskObserve,
 	"state.mail_relay_policies":     RiskObserve,
@@ -705,6 +708,7 @@ var reviewedRecoveryGaps = map[string]string{
 	"respond.quarantine_mail":       "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 	"respond.restart_mail_auth":     "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
 	"respond.suspend_mailbox":       "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
+	"operate.release_mailbox":       "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 	"respond.virtual_patch":         "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 }
 

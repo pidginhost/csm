@@ -6,6 +6,7 @@ package privops
 var operations = []Op{
 	{
 		ID:               "respond.hold_outgoing_mail",
+		Audited:          true,
 		Risk:             RiskReversible,
 		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",
@@ -531,6 +532,20 @@ var operations = []Op{
 		DisableKey:       "auto_response.enabled",
 		DisableValue:     "false",
 		WithoutPrivilege: "the credential abuse finding is reported but the mailbox keeps logging in and sending",
+	},
+	{
+		ID:               "operate.release_mailbox",
+		Audited:          true,
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
+		Subsystem:        "response",
+		Summary:          "release a mailbox suspension or account outgoing-mail hold CSM made, on an operator's request",
+		Privileges:       []Privilege{Root},
+		Trigger:          Operator,
+		Writes:           []string{"cpanel:mailbox login and outgoing suspension", "cpanel:account outgoing mail hold"},
+		Unsandboxed:      true,
+		DisableReason:    "runs only when an operator releases a suspension",
+		WithoutPrivilege: "the suspension stays until it is released in cPanel",
 	},
 	{
 		ID:               "respond.freeze_mail",

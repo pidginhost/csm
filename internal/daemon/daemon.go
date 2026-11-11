@@ -1065,11 +1065,7 @@ func (d *Daemon) Run() error {
 					alert.RecordQueueLoss(d.alertCh, uint64(len(retro[i+1:])))
 					return
 				}
-				sender := extractSenderFromCloudRelayMessage(f.Message)
-				if sender == "" {
-					continue
-				}
-				handleCloudRelayCredentialAbuse(cfg, sender)
+				retroCloudRelayResponse(cfg, f)
 			}
 		})
 	}
@@ -1706,6 +1702,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 			responseFindings = append(responseFindings, freezeFindings...)
 		}
 	}
+	// A Critical login after brute force suspends the cracked mailbox; the
+	// outcome finding tells staff what was done and what is left to them.
+	responseFindings = append(responseFindings, stolenLoginResponses(cfg, remediableFindings)...)
 
 	if len(responseFindings) == 0 {
 		// A scan applies its own blocks and hands them over as findings,
@@ -2910,6 +2909,7 @@ func (d *Daemon) startWebUI() {
 	// change without a restart.
 	srv.SetConfigAppliedHook(d.applySavedConfig)
 	srv.SetHealthInfo(d.FanotifyActive, d.LogWatcherCount)
+	srv.SetMailboxSuspensions(mailboxSuspensionsAPI{})
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}
