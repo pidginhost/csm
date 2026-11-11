@@ -19,7 +19,7 @@ type State struct {
 }
 
 // Writer writes the map when its content changes and keeps the last written
-// map as the lookup spam evidence subtracts (spec 7.2).
+// map as the lookup spam evidence subtracts.
 type Writer struct {
 	Path    string
 	chown   func(path string, gid int) error

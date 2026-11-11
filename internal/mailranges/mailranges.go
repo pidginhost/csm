@@ -18,8 +18,8 @@ import (
 
 // embeddedSnapshot is the seed snapshot compiled into the binary. It contains
 // a handful of real Google and Microsoft outbound-mail CIDRs as placeholders.
-// Task 6, Step 5 replaces this file with resolver-generated content so the
-// shipped binary always carries a current snapshot.
+// Resolver-generated content is meant to replace it, so the shipped binary
+// always carries a current snapshot.
 //
 //go:embed snapshot.json
 var embeddedSnapshot []byte

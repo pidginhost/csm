@@ -4,8 +4,7 @@
 // It exists because the regex keylogger rule can only match a syntactically
 // direct capture. A keylogger that moves the keystroke through variables needs
 // variable identity to detect, which requires backreferences that neither
-// YARA-X nor RE2 provides. See
-// docs/superpowers/specs/2026-08-07-js-keystroke-taint-analyzer-design.md.
+// YARA-X nor RE2 provides.
 //
 // The package is pure: bytes in, report out. It touches no filesystem, config,
 // store, or process global, so callers own every I/O and persistence decision.

@@ -155,7 +155,7 @@ type verifyJob struct {
 // BotDomains maps each claimed-bot identity to the DNS suffix list
 // used for PTR + forward-A verification. Covers all bots that appear
 // frequently in production traffic and have no published static IP
-// range (Task 4 handles static-range bots via embedded JSON).
+// range (static-range bots are handled via embedded JSON).
 var BotDomains = map[string][]string{
 	"googlebot":     {"googlebot.com", "google.com"},
 	"bingbot":       {"search.msn.com"},

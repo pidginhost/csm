@@ -2,8 +2,7 @@
 // code-execution sink.
 //
 // It exists because binding an executed variable to a fetched one requires a
-// backreference, which neither YARA-X nor Go's RE2 provides. See
-// docs/superpowers/specs/2026-08-18-php-remote-source-taint-analyzer-design.md.
+// backreference, which neither YARA-X nor Go's RE2 provides.
 //
 // The package is pure: bytes in, report out. It touches no filesystem,
 // config, store, or process global that any caller can observe or that

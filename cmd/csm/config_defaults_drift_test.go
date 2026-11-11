@@ -163,8 +163,7 @@ func TestDefaultReferencesRestrictWebUIPort(t *testing.T) {
 }
 
 // The documented antispam block repeats the runtime defaults, so copying it
-// into csm.yaml changes nothing. Shipped templates carry no antispam block
-// (spec section 4.3).
+// into csm.yaml changes nothing. Shipped templates carry no antispam block.
 func TestAntispamReferenceMatchesRuntimeDefaults(t *testing.T) {
 	var ref struct {
 		EmailProtection struct {

@@ -469,8 +469,8 @@ func taintedLocalsFallback(f *scopeFacts, summaries summaryTables) taintState {
 
 // assignedVarName returns the root local variable written by an assignment,
 // flattening any array-element or property-fetch chain onto its base
-// variable. This remains the array-element behavior (the spec permits
-// over-approximating containers, and array keys are not tracked at all), and
+// variable. This remains the array-element behavior (containers are
+// over-approximated on purpose, and array keys are not tracked at all), and
 // it is also assignedTargetKey's fallback for a property chain it cannot key
 // more precisely -- see there for when that applies.
 func assignedVarName(target ast.Vertex) string {
@@ -515,7 +515,7 @@ func propertyFetchParts(n ast.Vertex) (base, prop ast.Vertex, ok bool) {
 // nested: each property fetch contributes its name to the compound key, and
 // each array-dim fetch is transparent, unwrapped without contributing a
 // segment of its own. That is what keeps array indices over-approximated
-// (the spec permits over-approximating containers: $a->log[] = X and
+// (containers are over-approximated on purpose: $a->log[] = X and
 // $a->log[3] = Y both key to "a->log" as a whole -- array keys are not
 // tracked) while still scoping precisely to the property chain around them.
 //

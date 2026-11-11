@@ -1280,7 +1280,7 @@ func (c *Correlator) EnforceActiveCap(now time.Time, maxActive, limit int) (clos
 	return closed, more
 }
 
-// validStatus reports whether s is one of the four spec-defined values.
+// validStatus reports whether s is one of the four incident statuses.
 // Guards SetStatus against arbitrary strings reaching the persisted
 // timeline; control-socket and webui handlers also reject early but
 // the correlator owns the type and must not trust callers.

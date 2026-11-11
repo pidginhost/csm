@@ -30,7 +30,7 @@ func TestBuildStrongestSourceWins(t *testing.T) {
 }
 
 // rspamd uses the most specific entry, so an address inside a listed
-// network carries the stronger of the two and nothing stacks (spec 6.1).
+// network carries the stronger of the two and nothing stacks.
 func TestBuildAddressInsideNetwork(t *testing.T) {
 	m := Build(Sources{Entries: map[string][]string{
 		Drop.Name:        {"198.51.100.0/24"},

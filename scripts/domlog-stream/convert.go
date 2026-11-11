@@ -24,7 +24,7 @@ import (
 	"github.com/pidginhost/csm/internal/threatintel"
 )
 
-// maxLine is the follower's line bound (spec 6.1): a longer line is
+// maxLine is the follower's line bound: a longer line is
 // counted and skipped, never buffered whole.
 const maxLine = 64 << 10
 

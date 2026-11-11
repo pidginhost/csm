@@ -19,7 +19,7 @@ func TestRecencyHalvesPerWeek(t *testing.T) {
 }
 
 // Two recent spam verdicts and no ham reach 50, the CSM_IP_SPAM listing
-// threshold (feeds spec 7.4); one alone does not.
+// threshold; one alone does not.
 func TestScore(t *testing.T) {
 	for _, tc := range []struct {
 		spam, total float64

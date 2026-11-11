@@ -10,7 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// MailEvidence is the attack DB record's mail section (feeds spec 7.3).
+// MailEvidence is the attack DB record's mail section.
 type MailEvidence = store.MailEvidence
 
 const (
@@ -63,7 +63,7 @@ func decayTo(m *MailEvidence, at time.Time) {
 // RecordMailVerdict adds one scan verdict for ip. Spam creates the record;
 // ham only updates a record that exists, so large legitimate senders never
 // fill the attack DB. Neither touches EventCount, AttackCounts or
-// ThreatScore, and no event is queued (feeds spec 7.3). Invalid addresses are
+// ThreatScore, and no event is queued. Invalid addresses are
 // ignored; a zero timestamp uses the current time, as RecordFinding does.
 func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
 	ip = normalizeRecordIP(ip)
@@ -105,7 +105,7 @@ func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
 	db.markDirtyLocked(ip)
 }
 
-// SpamScore is m's spam score at now, 0 to 100 (feeds spec 7.4).
+// SpamScore is m's spam score at now, 0 to 100.
 func SpamScore(m *MailEvidence, now time.Time) int {
 	if m == nil {
 		return 0

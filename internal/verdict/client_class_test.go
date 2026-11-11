@@ -43,7 +43,7 @@ func bound(v string) func(Request) Response {
 	}
 }
 
-// Every failed exchange carries one fixed class (spec 4.4). A caller can
+// Every failed exchange carries one fixed class. A caller can
 // report the class without the error text, which can hold a URL or panel
 // text. Configured signature opt-outs keep working, and no error carries
 // the secret.

@@ -87,7 +87,7 @@ func TestUnbanScopeReachesOnlyCheckAndUnban(t *testing.T) {
 	}
 }
 
-// P2-R11: an unban-scope token lifts the block without the operator
+// An unban-scope token lifts the block without the operator
 // release, so the address keeps its mail failure history. An admin unban
 // on the same route, by token or browser session, is an operator release.
 func TestUnbanScopeCannotReachTheOperatorRelease(t *testing.T) {

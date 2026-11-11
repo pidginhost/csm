@@ -111,8 +111,8 @@ func TestSummaryDeliversWhenStateCannotBeSaved(t *testing.T) {
 	}
 }
 
-// One failing destination must not stop the daily summary on the others
-// (P3-R20): at the next send time the stale pending summary is dropped,
+// One failing destination must not stop the daily summary on the others:
+// at the next send time the stale pending summary is dropped,
 // logged once, and the new window goes out as normal.
 func TestSummaryDropsStalePendingAtNextSend(t *testing.T) {
 	var subjects []string

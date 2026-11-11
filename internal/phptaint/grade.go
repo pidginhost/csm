@@ -14,7 +14,7 @@ func directGrade(c Confidence, b Basis) grade {
 	return grade{conf: c, basis: b, offset: -1}
 }
 
-// rankedBases is the spec's fixed tie priority, strongest first. It is also
+// rankedBases is the fixed tie priority, strongest first. It is also
 // the index order of gradeSet, so the two can never disagree.
 var rankedBases = [...]Basis{
 	BasisAlwaysRemote,

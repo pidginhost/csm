@@ -147,7 +147,7 @@ func TestAPIThreatStatsReturnsStatsWhenInitialized(t *testing.T) {
 }
 
 // Spam-only records score 0 and never reach a top-N list by threat score,
-// so the spam filter asks the server for spam senders (feeds spec 7.5).
+// so the spam filter asks the server for spam senders.
 func TestTopAttackersSpamOnly(t *testing.T) {
 	now := time.Now()
 	seedAttackDB(t, map[string]*attackdb.IPRecord{

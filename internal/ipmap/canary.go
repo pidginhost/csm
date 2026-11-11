@@ -3,7 +3,7 @@ package ipmap
 import "time"
 
 // CanaryGrace is how long rspamd may take to load a new map before the
-// canary counts against it (spec 8.4).
+// canary counts against it.
 const CanaryGrace = 5 * time.Minute
 
 // CanaryProblem judges the writer's state and one canary answer: seen is
