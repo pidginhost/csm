@@ -1,0 +1,302 @@
+[
+  {
+    "name": "non-API cPanel page",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/frontend/jupiter/index.html HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "non-API webmail page",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/3rdparty/roundcube/?_task=mail&_action=refresh HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2096",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "legacy XML API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /xml-api/cpanel?cpanel_xmlapi_module=Email&cpanel_xmlapi_func=listpopswithdisk HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "UAPI",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /execute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "WHM JSON API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /json-api/listaccts?api.version=1 HTTP/1.1\" 403 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2087",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "session UAPI",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/execute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "session XML API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/xml-api/cpanel HTTP/1.1\" 403 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "webmail UAPI",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/execute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2096",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded UAPI name",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /ex%65cute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded session UAPI name",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/%65xecute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded JSON API name",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /%6ason-api/listaccts HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2087",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded XML separator",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /xml%2Dapi/cpanel HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded slashes",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET %2fexecute%2fEmail%2flist_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "mixed case API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/ExEcUtE/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "malformed escape after API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /ex%65cute/Email/list_pops?x=%GG HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "malformed escape before API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /bad%GG/ex%65cute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "escaped log bytes",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /\\x65xecute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "escaped percent byte",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /ex\\x2565cute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "non-API WHM scripts",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /scripts/listaccts HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2087",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "legacy WHM DNS API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /scripts2/reloadbind_local HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2087",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "legacy session WHM DNS API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/scripts2/reloadbind_local HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2087",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "non-API WHM numbered scripts",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /scripts5/rename_mysql_user HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2087",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded WHM scripts",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /scr%69pts%32/reloadbind_local HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2087",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "token MySQL stream",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /websocket/MysqlDump HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "token home transfer",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpxfer/acctxferrsync HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "token mail transfer",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpxfer/dsync HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "token WP Toolkit",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /3rdparty/wpt/index.php HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "token Nova endpoint",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /3rdparty/nova/index.live.php HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded token endpoint",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /websocket/My%73qlDump HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "script name lookalike",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /scriptsxyz/page HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "script asset",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /scripts.js HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "API referer on page",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/frontend/jupiter/index.html HTTP/1.1\" 401 0 \"https://example.com/json-api/cpanel\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "API user agent on page",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/frontend/jupiter/index.html HTTP/1.1\" 401 0 \"-\" \"/execute/Email/list_pops\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "API string in query",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /cpsess0123456789/frontend/jupiter/index.html?next=/execute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "second request in user field",
+    "line": "203.0.113.50 - x [bad] \"GET / HTTP/1.1\" 200 0 [04/12/2026:07:00:05 -0000] \"GET /ex%65cute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "second status in user agent",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /ex%65cute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"agent\" 200 0 \"\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "forged failure status",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /ex%65cute/Email/list_pops HTTP/1.1\" 200 0 \"-\" \"agent\" 403 0 \"\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "forged target in user agent",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /frontend/jupiter/index.html HTTP/1.1\" 401 0 \"-\" \"agent [bad] \"GET /ex%65cute/Email/list_pops HTTP/1.1\" 200 0 \"\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "forged peer in user agent",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /frontend/jupiter/index.html HTTP/1.1\" 401 0 \"-\" \"agent 192.0.2.66 - - [bad] \"GET /xml-api/cpanel HTTP/1.1\" 403 0 \"\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "service-subdomain XML failure",
+    "line": "203.0.113.50 proxy - [04/12/2026:07:00:05 -0000] \"GET /xml-api/cpanel HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": ""
+  },
+  {
+    "name": "service-subdomain encoded failure",
+    "line": "203.0.113.50 proxy - [04/12/2026:07:00:05 -0000] \"GET /ex%65cute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": true,
+    "source_ip": ""
+  },
+  {
+    "name": "non-authentication response 200",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /execute/Email/list_pops HTTP/1.1\" 200 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "non-authentication response 302",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /execute/Email/list_pops HTTP/1.1\" 302 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "non-authentication response 400",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /execute/Email/list_pops HTTP/1.1\" 400 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "non-authentication response 404",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /execute/Email/list_pops HTTP/1.1\" 404 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "non-authentication response 500",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /execute/Email/list_pops HTTP/1.1\" 500 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "double encoded route",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /ex%2565cute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "malformed escape inside API",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /ex%GGcute/Email/list_pops HTTP/1.1\" 401 0 \"-\" \"Mozilla/5.0\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "WHM account page",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /scripts2/listaccts HTTP/1.1\" 401 0 \"-\" \"agent\" \"-\" \"-\" 2087",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  },
+  {
+    "name": "encoded status cannot supply failure",
+    "line": "203.0.113.50 - - [04/12/2026:07:00:05 -0000] \"GET /execute/Email/list_pops?x=%22%20401%200%20%22 HTTP/1.1\" 200 0 \"-\" \"agent\" \"-\" \"-\" 2083",
+    "counted": false,
+    "source_ip": "203.0.113.50"
+  }
+]

@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- cPanel API failure alerts now catch encoded requests and additional authenticated endpoints in both scheduled scans and realtime monitoring.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
 - Crafted or malformed cPanel session log entries can no longer fake or hide logins and password changes.
 - A dismissed malware finding now alerts again when the file's content changes.

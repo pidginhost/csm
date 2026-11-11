@@ -2,53 +2,61 @@ package checks
 
 import (
 	"context"
-	"strings"
+	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// apiAuthRuleCases are cpsrvd access_log records that the scheduled scan and
-// the realtime handler must judge the same way. The daemon package holds the
-// same cases for the realtime path.
-var apiAuthRuleCases = []struct {
-	name, target, status, port string
-	counted                    bool
-}{
-	// A session URL carries no credential to guess, only a cookie and the
-	// URL token cPanel purges after a few denials. These are expired tabs.
-	{"cpanel page on an expired session", "/cpsess0123456789/frontend/jupiter/index.html", "401", "2083", false},
-	{"webmail page on an expired session", "/cpsess0123456789/3rdparty/roundcube/?_task=mail&_action=refresh", "401", "2096", false},
-	// cpsrvd still routes the deprecated XML API, so guessing through it
-	// must count like the JSON API.
-	{"legacy XML API call", "/xml-api/cpanel?cpanel_xmlapi_module=Email&cpanel_xmlapi_func=listpopswithdisk", "401", "2083", true},
-	{"UAPI call", "/execute/Email/list_pops", "401", "2083", true},
-	{"WHM API call", "/json-api/listaccts?api.version=1", "403", "2087", true},
-	{"UAPI call on a session URL", "/cpsess0123456789/execute/Email/list_pops", "401", "2083", true},
-}
-
-func apiAuthRuleLine(ip, target, status, port string) string {
-	return ip + ` - - [04/12/2026:07:00:05 -0000] "GET ` + target + ` HTTP/1.1" ` + status + ` 0 "-" "Mozilla/5.0" "-" "-" ` + port
-}
-
+// The realtime handler reads this same corpus. Counts and peer attribution
+// must agree even when client text adds a request or status.
 func TestCheckAPIAuthFailuresCountsOnlyAPIRequests(t *testing.T) {
 	forceCPanelPlatform(t)
-	for _, tc := range apiAuthRuleCases {
-		t.Run(tc.name, func(t *testing.T) {
-			var access []string
-			for i := 0; i <= apiFailThreshold; i++ {
-				access = append(access, apiAuthRuleLine("203.0.113.50", tc.target, tc.status, tc.port))
+	data, err := os.ReadFile("testdata/api_auth_rule.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name, Line string
+		Counted    bool
+		SourceIP   string `json:"source_ip"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) == 0 {
+		t.Fatal("empty API authentication corpus")
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			access := make([]string, apiFailThreshold)
+			for i := range access {
+				access[i] = tc.Line
 			}
 			staleSessionLogs(t, access, nil)
 
-			got := false
-			for _, f := range CheckAPIAuthFailures(context.Background(), &config.Config{}, nil) {
-				if f.Check == "api_auth_failure" && strings.Contains(f.Message, "203.0.113.50") {
-					got = true
-				}
+			got := CheckAPIAuthFailures(context.Background(), &config.Config{}, nil)
+			want := 0
+			if tc.Counted {
+				want = 1
 			}
-			if got != tc.counted {
-				t.Fatalf("api_auth_failure reported = %v, want %v", got, tc.counted)
+			if len(got) != want {
+				t.Fatalf("got %+v, want %d API findings", got, want)
+			}
+			if want == 0 {
+				return
+			}
+			source, attribution := tc.SourceIP, admission.AttributionPeer
+			if source == "" {
+				source, attribution = "a service subdomain (client address unverified)", admission.AttributionUnknown
+			}
+			message := fmt.Sprintf("cPanel API auth failures from %s: %d attempts", source, len(access))
+			if got[0].Check != "api_auth_failure" || got[0].Message != message ||
+				got[0].SourceIP != tc.SourceIP || got[0].Attribution != attribution {
+				t.Fatalf("incorrect API count or attribution: %+v", got[0])
 			}
 		})
 	}
