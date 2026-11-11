@@ -587,3 +587,58 @@ func fileOwner(t *testing.T, path string) struct{ uid, gid int } {
 	}
 	return struct{ uid, gid int }{int(st.Uid), int(st.Gid)}
 }
+
+// An operator restore puts back the bytes CSM removed. The removal must be
+// forgotten before the file is written, or the restore reads as the removed
+// file coming back.
+func TestApiQuarantineRestoreForgetsTheRemovalBeforeWriting(t *testing.T) {
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	if err := os.MkdirAll(qdir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	restoreRoot := filepath.Join(tmp, "restore-target")
+	if err := os.MkdirAll(restoreRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, qdir)
+	withQuarantineRestoreRoots(t, restoreRoot)
+
+	id := "20260415-120000_file.php"
+	originalPath := filepath.Join(restoreRoot, "alice", "public_html", "file.php")
+	if err := os.WriteFile(filepath.Join(qdir, id), []byte("<?php echo 1;"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	mj, _ := json.Marshal(map[string]interface{}{
+		"original_path": originalPath,
+		"owner_uid":     os.Getuid(),
+		"group_gid":     os.Getgid(),
+		"mode":          "-rw-r--r--",
+	})
+	if err := os.WriteFile(filepath.Join(qdir, id+".meta"), mj, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var forgotten []string
+	writtenFirst := false
+	prev := forgetRemovedFile
+	forgetRemovedFile = func(path string) {
+		forgotten = append(forgotten, path)
+		if _, err := os.Lstat(path); err == nil {
+			writtenFirst = true
+		}
+	}
+	t.Cleanup(func() { forgetRemovedFile = prev })
+
+	w := httptest.NewRecorder()
+	newRestoreServer(t).apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": id}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if len(forgotten) != 1 || forgotten[0] != originalPath {
+		t.Fatalf("forgotten = %v, want [%s]", forgotten, originalPath)
+	}
+	if writtenFirst {
+		t.Fatal("the removal was forgotten after the file was already restored")
+	}
+}

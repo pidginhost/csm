@@ -156,6 +156,12 @@ opt-ins. Observe mode still forbids automatic changes. `dry_run` continues to
 control IP blocking and web-exposed-file virtual patches; it does not preview
 file quarantine or cleaning. Other response families have their own controls.
 
+### Files written back after removal
+
+When CSM quarantines or cleans a file, it clears the alert state it kept for
+that file. If a detection finds the file there again, the finding is reported
+as new instead of being held back as a repeat.
+
 ### Restoring quarantined files
 
 Regular-file quarantine and pre-clean backups write and sync the private content

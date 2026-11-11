@@ -91,6 +91,11 @@ func recordQuarantineAction(path, qPath string, metadata QuarantineMeta, before 
 			rec.Result = actionlog.Refused
 		}
 	}
+	// Only a regular file's retained copy carries a digest. Mail spool
+	// entries are not files a tenant can write back.
+	if rec.Result == actionlog.Applied && metadata.SpoolDir == "" && rec.Before != nil {
+		rememberRemovedFile(path, rec.Before.Digest, rec.Before.Size, "quarantine")
+	}
 	actionlog.Write(rec)
 }
 

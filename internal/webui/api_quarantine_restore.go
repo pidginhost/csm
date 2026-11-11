@@ -17,6 +17,9 @@ import (
 
 // apiQuarantineRestore restores a quarantined file to its original location.
 // POST /api/v1/quarantine-restore  body: {"id": "filename"}
+// forgetRemovedFile lets restore tests observe the ledger update.
+var forgetRemovedFile = checks.ForgetRemovedFile
+
 func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -93,6 +96,10 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	if meta.Mode != "" && len(meta.Mode) >= 10 {
 		restoredMode = parseModeString(meta.Mode)
 	}
+
+	// Before the write: the restore must not read as the removed file
+	// coming back.
+	forgetRemovedFile(restorePath)
 
 	if meta.RestoreAction != "" {
 		if filepath.Clean(filepath.Dir(entry.ItemPath)) != filepath.Join(quarantineDir, "pre_clean") {

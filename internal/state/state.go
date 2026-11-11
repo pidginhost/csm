@@ -99,6 +99,9 @@ type Entry struct {
 	KeptAt time.Time `json:"kept_at,omitzero"`
 	// ContentSHA256 is the file content a dismissal or baseline covers.
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// Path is the file the finding names, so alert state about a file CSM
+	// removed can be cleared.
+	Path string `json:"path,omitempty"`
 }
 
 // aliveAt is the last time the condition was reported or kept listed. An
@@ -452,6 +455,25 @@ func (s *Store) ReconcileDismissedContent(findings []alert.Finding) {
 	}
 }
 
+// ForgetFileAlerts deletes the alert state of every finding about path after
+// CSM removed or cleaned that file, so a report of the file coming back is new
+// again. Dismissals and internal keys stay.
+func (s *Store) ForgetFileAlerts(path string) {
+	if path == "" {
+		return
+	}
+	path = filepath.Clean(path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, entry := range s.entries {
+		if entry.Path != path || entry.IsBaseline || strings.HasPrefix(key, "_") {
+			continue
+		}
+		delete(s.entries, key)
+		s.dirty = true
+	}
+}
+
 func (s *Store) Update(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -469,13 +491,14 @@ func (s *Store) Update(findings []alert.Finding) {
 			exists = false
 		}
 		if !exists {
-			s.entries[key] = &Entry{
+			entry = &Entry{
 				observation: 1,
 				Hash:        hash,
 				FirstSeen:   now,
 				LastSeen:    now,
 				AlertSent:   now,
 			}
+			s.entries[key] = entry
 		} else {
 			entry.observation++
 			entry.Hash = hash
@@ -483,6 +506,9 @@ func (s *Store) Update(findings []alert.Finding) {
 			if entry.AlertSent.IsZero() {
 				entry.AlertSent = now
 			}
+		}
+		if f.FilePath != "" {
+			entry.Path = filepath.Clean(f.FilePath)
 		}
 	}
 

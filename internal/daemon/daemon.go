@@ -294,6 +294,9 @@ type Daemon struct {
 	automationActionMu     sync.Mutex
 	automationActionCache  *health.AutomationAction
 	automationActionCached time.Time
+
+	// removedFileSeq is the last file removal whose alert state was cleared.
+	removedFileSeq atomic.Uint64
 }
 
 const lastAutomationActionTTL = 5 * time.Second
@@ -1644,6 +1647,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// actions between old and new policy.
 	cfg := d.currentCfg()
 
+	// A file removed since the last batch may already be back in this one.
+	d.forgetRemovedFileAlerts(nil)
 	// Reconcile every observation before deduplication can discard new content
 	// behind an unchanged, hashless or carried finding with the same key.
 	d.store.ReconcileDismissedContent(findings)
@@ -1712,6 +1717,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 			fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 		}
 		d.store.Update(findings)
+		d.forgetRemovedFileAlerts(findings)
 		return
 	}
 
@@ -1763,6 +1769,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	d.store.Update(findings)
 	d.store.MarkAlerted(newFindings)
+	d.forgetRemovedFileAlerts(findings)
 }
 
 // respondToInitialScan records the baseline scan, runs its auto-response and
@@ -1882,6 +1889,36 @@ var autoFixWPCron = checks.AutoFixWPCron
 
 // Database wiring tests exercise suppression policy without a live MySQL host.
 var autoRespondDBMalware = checks.AutoRespondDBMalwareWithPolicy
+
+// removedFilesSince and removedFileAt let wiring tests stand in for the file
+// response ledger.
+var (
+	removedFilesSince = checks.RemovedFilesSince
+	removedFileAt     = checks.RemovedFileAt
+)
+
+// forgetRemovedFileAlerts clears the alert state about files CSM removed or
+// cleaned, so the file coming back is reported as new. A scan responds before
+// alert delivery sees its findings, and another batch may have taken the
+// removal by then: observed carries findings whose state Update has just
+// written, and those seen no later than their file's removal are cleared too.
+func (d *Daemon) forgetRemovedFileAlerts(observed []alert.Finding) {
+	removed, next := removedFilesSince(d.removedFileSeq.Load())
+	d.removedFileSeq.Store(next)
+	for _, r := range removed {
+		d.store.ForgetFileAlerts(r.Path)
+	}
+	var stale []alert.Finding
+	for _, f := range observed {
+		if f.FilePath == "" {
+			continue
+		}
+		if r, ok := removedFileAt(f.FilePath); ok && !f.Timestamp.After(r.At) {
+			stale = append(stale, f)
+		}
+	}
+	d.store.ForgetCleared(stale)
+}
 
 // queueCompanionSweeps lets wiring tests see what the dispatcher hands to the
 // companion sweep without touching the filesystem.
