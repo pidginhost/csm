@@ -18,6 +18,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 - Restoring a mail message quarantined from a phishing finding now returns it to the mail queue instead of failing.
+- Mail restores return complete messages and can be retried after failures without delivering the same message again.
 
 ## [4.11.0] - 2026-11-10
 

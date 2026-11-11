@@ -36,6 +36,9 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if s.resumeQuarantinedSpoolMessage(w, r, entry) {
+		return
+	}
 	if !quarantineEntryDeletable(entry) {
 		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
 		return
@@ -174,6 +177,7 @@ func writeRestoreError(w http.ResponseWriter, err error) {
 // its recorded owner, mode and modification time. The destination must not
 // exist; on failure nothing is left at target and the quarantine copy stays.
 func restoreQuarantineFile(itemPath, restorePath string, target *safepath.Target, restoredMode os.FileMode, meta checks.QuarantineMeta) error {
+	// #nosec G304 -- itemPath comes from resolveQuarantineEntry under the operator-owned quarantine directory.
 	src, readErr := os.Open(itemPath)
 	if readErr != nil {
 		return restoreFailed(http.StatusInternalServerError, "Cannot read quarantined file: %v", readErr)

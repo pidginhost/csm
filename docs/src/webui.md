@@ -178,7 +178,13 @@ quarantined evidence. A replacement created by another writer is preserved.
 
 A mail message quarantined from a phishing finding is listed as two files,
 its header and its body. Restoring either one returns the whole message to
-the mail queue, and Exim delivers it on its next queue run.
+the mail queue, and Exim delivers it on its next queue run. The complete body
+is returned before the header becomes visible to Exim. Restore refuses an
+incomplete message or a conflicting queue entry and keeps the quarantine copy.
+If restore or quarantine cleanup fails, retry the same entry. Progress survives
+a daemon restart, and a cleanup retry does not requeue an already delivered
+message. A header quarantined on its own can be restored if its body remains
+in the queue.
 
 Quarantine deletes large file selections in sequential batches.
 If a request fails, later batches are not sent; the page reports the confirmed
