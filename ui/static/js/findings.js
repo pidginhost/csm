@@ -501,6 +501,15 @@ function offerDismissUndo(data, label) {
     if (data && data.undo_token && CSM.undo) CSM.undo.offer({ token: data.undo_token, label: label });
 }
 
+function handleDismissError(err) {
+    if (err && err.status === 409) {
+        CSM.toast(CSM.errorText(err), 'warning');
+        refreshFindings();
+        return;
+    }
+    CSM.toast('Dismiss failed: ' + CSM.errorText(err), 'error');
+}
+
 // sha is the content hash the row showed; the server refuses the dismissal
 // with 409 when the file changed since the page loaded.
 function dismissOne(key, sha) {
@@ -513,14 +522,7 @@ function dismissOne(key, sha) {
         CSM.post('/api/v1/dismiss', body).then(function(data) {
             offerDismissUndo(data, 'Dismissed 1 finding');
             refreshFindings();
-        }).catch(function(e) {
-            if (e && e.status === 409) {
-                CSM.toast(CSM.errorText(e), 'warning');
-                refreshFindings();
-                return;
-            }
-            CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error');
-        });
+        }).catch(handleDismissError);
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -665,7 +667,7 @@ function bulkAction(action) {
                 }
                 offerDismissUndo(data, 'Dismissed ' + data.count + ' finding(s)');
                 refreshFindings();
-            }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
+            }).catch(handleDismissError);
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'suppress') {

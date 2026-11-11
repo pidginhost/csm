@@ -2,8 +2,10 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -26,7 +28,10 @@ func listedYARAFinding(s *Server, path, sha string) alert.Finding {
 
 func postDismiss(t *testing.T, s *Server, body any) *httptest.ResponseRecorder {
 	t.Helper()
-	raw, _ := json.Marshal(body)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rec := httptest.NewRecorder()
 	s.apiDismissFinding(rec, bearerRequest("POST", "/api/v1/dismiss", raw))
 	return rec
@@ -36,8 +41,13 @@ func pendingUndoID(t *testing.T, s *Server) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	s.apiUndoPending(rec, bearerRequest("GET", "/api/v1/undo/pending", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pending undo status=%d body=%s", rec.Code, rec.Body.String())
+	}
 	var entry undoPendingView
-	_ = json.Unmarshal(rec.Body.Bytes(), &entry)
+	if err := json.Unmarshal(rec.Body.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
 	return entry.ID
 }
 
@@ -63,12 +73,16 @@ func TestDismissRefusesRowChangedSincePageLoad(t *testing.T) {
 	if id := pendingUndoID(t, s); id != "" {
 		t.Fatalf("refused dismissal recorded undo %q", id)
 	}
+	if audit := readUIAuditLog(s.cfg.StatePath, 20); len(audit) != 0 {
+		t.Fatalf("refused dismissal was audited: %+v", audit)
+	}
 }
 
 func TestBulkDismissRefusesOnlyChangedRows(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	x := listedYARAFinding(s, "/home/a/public_html/x.php", dismissShaA)
 	y := listedYARAFinding(s, "/home/a/public_html/y.php", dismissShaB)
+	yBefore, _ := s.store.EntryForKey(y.Key())
 
 	rec := postDismiss(t, s, map[string]any{
 		"keys":     []string{x.Key(), y.Key()},
@@ -95,6 +109,10 @@ func TestBulkDismissRefusesOnlyChangedRows(t *testing.T) {
 	if e, _ := s.store.EntryForKey(y.Key()); e.IsBaseline {
 		t.Fatal("changed row dismissed")
 	}
+	audit := readUIAuditLog(s.cfg.StatePath, 20)
+	if len(audit) != 1 || audit[0].Action != "dismiss" || audit[0].Target != x.Key() {
+		t.Fatalf("audit must contain only the applied dismissal: %+v", audit)
+	}
 
 	runBody, _ := json.Marshal(undoRunRequest{ID: resp.UndoToken})
 	rec = httptest.NewRecorder()
@@ -102,11 +120,21 @@ func TestBulkDismissRefusesOnlyChangedRows(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("undo status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	var run undoRunResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	if run.Count != 1 {
+		t.Fatalf("undo count=%d, want only the applied dismissal", run.Count)
+	}
 	if e, _ := s.store.EntryForKey(x.Key()); e.IsBaseline {
 		t.Fatal("undo left the applied dismissal in place")
 	}
 	if n := len(s.store.LatestFindings()); n != 2 {
 		t.Fatalf("after undo %d rows listed, want 2", n)
+	}
+	if e, ok := s.store.EntryForKey(y.Key()); !ok || e != yBefore {
+		t.Fatalf("undo changed the refused finding: %+v", e)
 	}
 }
 
@@ -121,5 +149,105 @@ func TestDismissWithoutContentsRecordsListedHash(t *testing.T) {
 	}
 	if e, _ := s.store.EntryForKey(f.Key()); !e.IsBaseline || e.ContentSHA256 != dismissShaA {
 		t.Fatalf("entry = %+v; want the listed content recorded", e)
+	}
+}
+
+func TestDismissContentsCannotAddTargets(t *testing.T) {
+	for _, bulk := range []bool{false, true} {
+		for _, claimed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("bulk=%t/claimed=%t", bulk, claimed), func(t *testing.T) {
+				s := newTestServerWithBbolt(t, "tok")
+				x := listedYARAFinding(s, "/home/a/public_html/x.php", dismissShaA)
+				y := listedYARAFinding(s, "/home/a/public_html/y.php", dismissShaB)
+				yBefore, _ := s.store.EntryForKey(y.Key())
+				contents := map[string]string{y.Key(): dismissShaB}
+				if claimed {
+					contents[x.Key()] = dismissShaA
+				}
+				body := map[string]any{"contents": contents}
+				if bulk {
+					body["keys"] = []string{x.Key(), x.Key()}
+				} else {
+					body["key"] = x.Key()
+				}
+				rec := postDismiss(t, s, body)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				var resp struct {
+					Count int `json:"count"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+					t.Fatal(err)
+				}
+				if resp.Count != 1 {
+					t.Fatalf("count=%d, want 1", resp.Count)
+				}
+				if e, _ := s.store.EntryForKey(x.Key()); !e.IsBaseline || e.ContentSHA256 != dismissShaA {
+					t.Fatalf("requested finding was not dismissed: %+v", e)
+				}
+				if e, ok := s.store.EntryForKey(y.Key()); !ok || e != yBefore {
+					t.Fatalf("unrequested finding changed: %+v", e)
+				}
+				if latest := s.store.LatestFindings(); len(latest) != 1 || latest[0].Key() != y.Key() {
+					t.Fatalf("unrequested finding must remain listed: %+v", latest)
+				}
+				audit := readUIAuditLog(s.cfg.StatePath, 20)
+				if len(audit) != 1 || audit[0].Action != "dismiss" || audit[0].Target != x.Key() {
+					t.Fatalf("audit must contain only the requested dismissal: %+v", audit)
+				}
+			})
+		}
+	}
+}
+
+func TestBulkDismissAllChangedPreservesPendingUndo(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	z := listedYARAFinding(s, "/home/a/public_html/z.php", dismissShaA)
+	if rec := postDismiss(t, s, map[string]any{"key": z.Key()}); rec.Code != http.StatusOK {
+		t.Fatalf("initial dismissal status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	pending := pendingUndoID(t, s)
+	if pending == "" {
+		t.Fatal("initial dismissal has no undo")
+	}
+	x := listedYARAFinding(s, "/home/a/public_html/x.php", dismissShaB)
+	y := listedYARAFinding(s, "/home/a/public_html/y.php", dismissShaB)
+	xBefore, _ := s.store.EntryForKey(x.Key())
+	yBefore, _ := s.store.EntryForKey(y.Key())
+	latest := s.store.LatestFindings()
+	rec := postDismiss(t, s, map[string]any{
+		"keys":     []string{x.Key(), y.Key(), x.Key()},
+		"contents": map[string]string{x.Key(): dismissShaA, y.Key(): ""},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Count     int      `json:"count"`
+		Refused   []string `json:"refused"`
+		UndoToken string   `json:"undo_token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 0 || !reflect.DeepEqual(resp.Refused, []string{x.Key(), y.Key()}) || resp.UndoToken != "" {
+		t.Fatalf("all-refused response = %s", rec.Body.String())
+	}
+	if id := pendingUndoID(t, s); id != pending {
+		t.Fatalf("pending undo=%q, want original %q", id, pending)
+	}
+	if got := s.store.LatestFindings(); !reflect.DeepEqual(got, latest) {
+		t.Fatalf("refused dismissals changed the list: %+v", got)
+	}
+	if e, ok := s.store.EntryForKey(x.Key()); !ok || e != xBefore {
+		t.Fatalf("refused dismissal changed %q: %+v", x.Key(), e)
+	}
+	if e, ok := s.store.EntryForKey(y.Key()); !ok || e != yBefore {
+		t.Fatalf("refused dismissal changed %q: %+v", y.Key(), e)
+	}
+	audit := readUIAuditLog(s.cfg.StatePath, 20)
+	if len(audit) != 1 || audit[0].Action != "dismiss" || audit[0].Target != z.Key() {
+		t.Fatalf("refused dismissals changed the audit log: %+v", audit)
 	}
 }
