@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- ModSecurity escalation alerts retain validated event details, and malformed event fields no longer bypass repeat-offender bans.
 - Requests can no longer pose as a different ModSecurity rule or site to avoid repeat-offender firewall bans or to mislabel their alerts.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
 - Crafted or malformed cPanel session log entries can no longer fake or hide logins and password changes.

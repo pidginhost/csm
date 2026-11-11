@@ -197,7 +197,7 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	// Build message.
 	label := ruleID
 	if !ruleKnown {
-		label = "unknown (request text imitates rule fields)"
+		label = "unknown (ambiguous or incomplete log fields)"
 	}
 	message := fmt.Sprintf("ModSecurity rule %s", label)
 	if check == "modsec_block_realtime" {
@@ -364,7 +364,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Severity: alert.Critical,
 				Check:    check,
 				Message:  modsecEscalationMessage(label, ip, hits, win, outcome.singleHit),
-				Details:  truncateDaemon(line, 400),
+				Details:  f.Details,
 				SourceIP: ip,
 				// modsec.ErrorLogClientIP: the server's own client field.
 				Attribution: admission.AttributionHTTPPeer,
@@ -377,7 +377,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Check:    "modsec_low_confidence_burst",
 				Message: fmt.Sprintf("ModSecurity low-confidence burst: %d+ policy/anomaly denies from %s within %v (no attack signature; not auto-blocked)",
 					hits, ip, win),
-				Details:  truncateDaemon(line, 400),
+				Details:  f.Details,
 				SourceIP: ip,
 				Domain:   f.Domain,
 			})
@@ -388,7 +388,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Check:    "modsec_classifier_gap",
 				Message: fmt.Sprintf("ModSecurity rule %s from %s is unclassified (escalation-eligible; add it to the confidence table if it is a known policy/anomaly rule)",
 					ruleID, ip),
-				Details:  truncateDaemon(line, 400),
+				Details:  f.Details,
 				SourceIP: ip,
 				Domain:   f.Domain,
 			})

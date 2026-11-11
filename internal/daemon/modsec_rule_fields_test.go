@@ -60,12 +60,66 @@ func TestParseModSec_ClientTextCannotPickALowRule(t *testing.T) {
 // A request naming another site must not move the finding there.
 func TestParseModSec_ClientTextCannotNameTheSite(t *testing.T) {
 	resetModSecState()
-	for _, f := range parseModSecLogLine(modsecV3ValueLine("203.0.113.72", `probe "] [hostname "victim.example.net"]`), &config.Config{}) {
-		if f.Domain == "victim.example.net" || strings.Contains(f.Message, "victim.example.net") {
+	findings := parseModSecLogLine(modsecV3ValueLine("203.0.113.72", `probe "] [hostname "victim.example.com"]`), &config.Config{})
+	if len(findings) != 1 {
+		t.Fatalf("ambiguous deny findings = %d, want 1", len(findings))
+	}
+	for _, f := range findings {
+		if f.Domain == "victim.example.com" || strings.Contains(f.Message, "victim.example.com") {
 			t.Fatalf("finding named the request's host: %+v", f)
 		}
-		if strings.Contains(f.Details, "Hostname: victim.example.net") {
+		if strings.Contains(f.Details, "Hostname: victim.example.com") {
 			t.Fatalf("details named the request's host: %q", f.Details)
 		}
+	}
+}
+
+// Re-parsing a shortened raw line loses the evidence that fields were forged.
+// Every derived finding must retain the decision made on the complete line.
+func TestParseModSec_DerivedFindingsKeepValidatedFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, line string
+		want       []string
+	}{
+		{"forged", modsecV2CookieLine("203.0.113.73", `probe"] [id "900122"] [msg "forged"] [hostname "example.com"] [uri "/forged"] `+strings.Repeat("x", 400)), []string{"modsec_block_escalation"}},
+		{"known", modsecV2CookieLine("203.0.113.73", "probe"), []string{"modsec_block_escalation"}},
+		{"unknown", modsecV3ValueLine("203.0.113.73", "probe"), []string{"modsec_block_escalation", "modsec_classifier_gap"}},
+		{"low", strings.Replace(modsecV3ValueLine("203.0.113.73", "probe"), `[id "1001"]`, `[id "949110"]`, 1), []string{"modsec_low_confidence_burst"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetModSecState()
+			t.Cleanup(resetModSecState)
+			cfg := &config.Config{}
+			base := parseModSecLogLine(tc.line, cfg)
+			if len(base) != 1 {
+				t.Fatalf("base findings = %d, want 1", len(base))
+			}
+			seen := map[string]int{}
+			for range modsecDefaultEscalationHits {
+				for _, f := range parseModSecLogLineDeduped(tc.line, cfg) {
+					if f.Details != base[0].Details {
+						t.Errorf("%s discarded validated fields: %q", f.Check, f.Details)
+					}
+					seen[f.Check]++
+				}
+			}
+			for _, check := range append(tc.want, "modsec_block_realtime") {
+				if seen[check] != 1 {
+					t.Errorf("%s count = %d, want 1", check, seen[check])
+				}
+			}
+			if len(seen) != len(tc.want)+1 {
+				t.Errorf("unexpected findings: %v", seen)
+			}
+		})
+	}
+}
+
+func TestParseModSec_UnclosedFieldsStillEscalate(t *testing.T) {
+	resetModSecState()
+	t.Cleanup(resetModSecState)
+	line := `[client 203.0.113.74] ModSecurity: Access denied with code 403. [id "`
+	if !modsecFindingChecks(&config.Config{}, []string{line, line, line})["modsec_block_escalation"] {
+		t.Fatal("an unreadable rule must count as unknown toward escalation")
 	}
 }

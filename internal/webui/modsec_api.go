@@ -341,9 +341,10 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 // Both log the same block within the same second - keep one with merged fields.
 func deduplicateModSecFindings(findings []alert.Finding) []alert.Finding {
 	type dedupKey struct {
-		second time.Time
-		ip     string
-		rule   string
+		second     time.Time
+		ip         string
+		rule       string
+		escalation bool
 	}
 	seen := make(map[dedupKey]int) // key → index in result
 	var result []alert.Finding
@@ -352,7 +353,9 @@ func deduplicateModSecFindings(findings []alert.Finding) []alert.Finding {
 		ip := extractModSecIP(f)
 		rule := extractModSecRule(f)
 		ts := f.Timestamp.UTC().Truncate(time.Second)
-		key := dedupKey{second: ts, ip: ip, rule: rule}
+		// An escalation and its HTTP event share fields but both must survive:
+		// the blocks view uses one for ban status and the other for hit counts.
+		key := dedupKey{second: ts, ip: ip, rule: rule, escalation: isModSecEscalation(f.Check)}
 
 		if idx, ok := seen[key]; ok {
 			// Merge richer details into existing entry
@@ -463,11 +466,14 @@ func extractModSecRule(f alert.Finding) string {
 
 // modsecDetailField reads a field the realtime handler stored. Structured
 // details keep the raw line too, whose request text can imitate any field, so
-// only raw-line details (escalations and older findings) are parsed, and only
-// through the reader that refuses imitated fields.
+// only complete raw-line details from older findings are parsed. A truncated
+// prefix can lose the duplicate fields that reveal an imitation.
 func modsecDetailField(f alert.Finding, prefix string, field func(modsec.LogRule) string) string {
 	if v := extractDetailField(f.Details, prefix); v != "" || strings.HasPrefix(f.Details, "Rule: ") {
 		return v
+	}
+	if strings.HasSuffix(f.Details, "...") {
+		return ""
 	}
 	rule, _ := modsec.ErrorLogRule(f.Details)
 	return field(rule)

@@ -2,6 +2,7 @@ package modsec
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -32,8 +33,8 @@ func TestErrorLogRuleReadsServerFields(t *testing.T) {
 	}
 	v2 := LogRule{
 		ID: "942100", File: "/etc/modsecurity/rules/REQUEST-942-APPLICATION-ATTACK-SQLI.conf",
-		Msg: `Custom hit probe\\`, Tags: []string{"application-multi", "attack-sqli"},
-		Hostname: "192.0.2.10", URI: `/c\\`,
+		Msg: `Custom hit probe\\"] [id \\"949110\\"]`, Tags: []string{"application-multi", "attack-sqli"},
+		Hostname: "192.0.2.10", URI: `/c\\"] [tag \\"x\\"]`,
 	}
 	for _, tt := range []struct {
 		name, line string
@@ -50,15 +51,44 @@ func TestErrorLogRuleReadsServerFields(t *testing.T) {
 				`[tag "event-correlation"] [hostname "192.0.2.10"] [uri "/s"] [unique_id "AAAA"]`,
 			LogRule{ID: "980130", File: "/etc/modsecurity/rules/RESPONSE-980-CORRELATION.conf", Msg: "Inbound Anomaly Score Exceeded",
 				Tags: []string{"event-correlation"}, Hostname: "192.0.2.10", URI: "/s"}},
-		{"unclosed and empty values",
-			`[Wed Nov 11 10:00:00.000001 2026] [security2:error] [pid 100:tid 101] [client 203.0.113.60:50000] ModSecurity: Warning. [id ""] [msg "unclosed`,
-			LogRule{}},
+		{"empty values", `[client 203.0.113.60] ModSecurity: Warning. [id ""] [msg ""]`, LogRule{}},
 		{"no rule fields", `[Wed Nov 11 10:00:00.000001 2026] [security2:notice] [pid 100:tid 101] ModSecurity: Status engine is currently disabled.`, LogRule{}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := ErrorLogRule(tt.line)
 			if !ok || !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("ErrorLogRule = %#v, %v; want %#v, true", got, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestErrorLogRulePreservesValueDelimiters(t *testing.T) {
+	for _, value := range []string{`probe"] suffix`, `probe\"] suffix`, `probe\\"] suffix`, `probe\\`, `probe"] [other "text"]`} {
+		t.Run(value, func(t *testing.T) {
+			line := strings.Replace(ruleTestV3, `[msg "SQL Injection Attack Detected via libinjection"]`, `[msg "`+value+`"]`, 1)
+			line = strings.Replace(line, `[uri "/q"]`, `[uri "`+value+`"]`, 1)
+			rule, ok := ErrorLogRule(line)
+			if !ok || rule.Msg != value || rule.URI != value || rule.ID != "942100" {
+				t.Fatalf("value was truncated or changed: %#v, %v", rule, ok)
+			}
+		})
+	}
+}
+
+func TestErrorLogRuleRefusesUnclosedFields(t *testing.T) {
+	for _, fields := range []string{
+		`[id "`,
+		`[id "942100"] [msg "unclosed`,
+		`[id "942100 [msg "text"]`,
+		`[id "942100"] [msg "text [severity "CRITICAL"]`,
+		`[id "942100"] [tag "unclosed`,
+		`[id "942100"] [tag "unclosed [hostname "example.com"]`,
+	} {
+		t.Run(fields, func(t *testing.T) {
+			rule, ok := ErrorLogRule(`[client 203.0.113.60] ModSecurity: Access denied with code 403. ` + fields)
+			if ok || !reflect.DeepEqual(rule, LogRule{}) {
+				t.Fatalf("unclosed fields were trusted: %#v, %v", rule, ok)
 			}
 		})
 	}

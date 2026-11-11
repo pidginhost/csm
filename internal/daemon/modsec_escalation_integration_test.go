@@ -309,13 +309,11 @@ func TestParseModSec_FileManagerRequiresRepeatedDenies(t *testing.T) {
 				uri, _, _ := strings.Cut(tc.uri, "?")
 				line = strings.Replace(line, `[uri "/checkout"]`, `[uri "`+uri+`"]`, 1)
 				if server == "litespeed" {
+					// Native LiteSpeed logs no request data with a trigger.
 					line = strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"900107"`, 1)
-				}
-				// Engines write [data] after [msg], before [severity].
-				data := ` [data "` + tc.method + ` ` + tc.uri + `"]`
-				if server == "litespeed" {
-					line += data
 				} else {
+					// Apache writes [data] after [msg], before [severity].
+					data := ` [data "` + tc.method + ` ` + tc.uri + `"]`
 					line = strings.Replace(line, ` [severity "`, data+` [severity "`, 1)
 				}
 				for hit := 1; hit <= cfg.Thresholds.ModSecEscalationHits; hit++ {
@@ -324,6 +322,9 @@ func TestParseModSec_FileManagerRequiresRepeatedDenies(t *testing.T) {
 					case 1:
 						if len(findings) != 1 || findings[0].Check != "modsec_block_realtime" {
 							t.Fatalf("first endpoint deny findings = %+v", findings)
+						}
+						if !strings.HasPrefix(findings[0].Details, "Rule: 900107\n") {
+							t.Fatalf("endpoint deny lost its rule: %q", findings[0].Details)
 						}
 					case cfg.Thresholds.ModSecEscalationHits:
 						if len(findings) != 1 || findings[0].Check != "modsec_csm_block_escalation" {
