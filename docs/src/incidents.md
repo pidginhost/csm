@@ -561,8 +561,8 @@ branches:
   not change that identity or the peer.
   Subject credential alerts read the arrival's subject, with Exim's quote
   and backslash escapes decoded; escapes for non-printing characters stay
-  as written. Sender addresses,
-  greetings, message IDs and recipients cannot supply that subject.
+  as written. Literal tabs remain as logged. Sender addresses, greetings,
+  message IDs and recipients cannot supply that subject.
   Records with remote ident or optional MAIL AUTH text are skipped for
   subject alerts because those unquoted values can imitate later fields.
   Subject text remains sender-controlled and is not proof of authentication.

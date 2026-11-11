@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Mail subject alerts detect credentials after quoted text, keep non-printing characters escaped, and ignore unrelated message details.
 - A dismissed malware finding now alerts again when the file's content changes.
 - Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
@@ -28,7 +29,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
 - The web server hardening audit reads Apache continuations, section comments and include names correctly, and warns when its configuration cannot be read completely.
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
-- SMTP credentials in a mail subject are now detected when the subject contains double quotes, and text elsewhere in the message no longer raises that alert.
 - High mail volume alerts and the Web UI top senders list now count senders with quoted addresses and no longer count delivery failures as sent mail.
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 - Restoring a mail message quarantined from a phishing finding now returns the whole message to the mail queue instead of failing, and a failed restore can be retried.

@@ -23,14 +23,16 @@ func FuzzSubjectRoundTrip(f *testing.F) {
 		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(subject)
 		logged := eximPrintingForTest(quoted, topbit)
 		line := `2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com U=sender P=local S=900 T="` + logged + `" for recipient@example.net`
-		// Only the quote and backslash escapes are undone; the printing
-		// escapes stay as text, so no control byte leaves the parser.
-		want := strings.NewReplacer(`\\`, `\`, `\"`, `"`).Replace(logged)
-		if got, ok := Subject(line); !ok || got != want {
+		// Derive the expected rendering from the header, independently of
+		// how the parser removes the log's quote and backslash escapes.
+		want := eximPrintingForTest(subject, topbit)
+		got, ok := Subject(line)
+		if !ok || got != want {
 			t.Fatalf("Subject(%q) = %q, %v; want %q, true", line, got, ok, want)
 		}
-		if strings.ContainsFunc(want, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-			t.Fatalf("control byte in subject %q", want)
+		// Exim leaves tabs literal; all other ASCII controls stay escaped.
+		if strings.ContainsFunc(got, func(r rune) bool { return r < 0x20 && r != '\t' || r == 0x7f }) {
+			t.Fatalf("control byte in subject %q", got)
 		}
 	})
 }
@@ -59,7 +61,8 @@ func FuzzSubjectAddressBoundaries(f *testing.F) {
 	})
 }
 
-// string_printing leaves backslashes alone, including those receive.c adds.
+// string_printing leaves tabs and backslashes alone, including the backslashes
+// receive.c adds. Unlike string_printing2 with SP_TAB, it does not escape tabs.
 // print_topbitchars controls whether non-ASCII bytes are written literally.
 func eximPrintingForTest(s string, topbit bool) string {
 	var b strings.Builder
@@ -67,7 +70,7 @@ func eximPrintingForTest(s string, topbit bool) string {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c >= 0x20 && c < 0x7f, topbit && c >= 0x80:
+		case c == '\t', c >= 0x20 && c < 0x7f, topbit && c >= 0x80:
 			b.WriteByte(c)
 		case strings.IndexByte(controls, c) >= 0:
 			b.WriteByte('\\')

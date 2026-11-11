@@ -50,9 +50,8 @@ func Subject(line string) (string, bool) {
 }
 
 // unescapeSubject undoes only the \" and \\ quoting receive.c adds. The
-// \n, \t and \ooo escapes string_printing writes stay as text, so a sender
-// cannot put control bytes, such as terminal escapes or line breaks, into a
-// finding.
+// non-printing escapes stay as text rather than becoming terminal controls
+// or line breaks in a finding. Literal tabs pass through as Exim logs them.
 func unescapeSubject(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

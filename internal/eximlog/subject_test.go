@@ -1,6 +1,20 @@
 package eximlog
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestSubjectLogPrintingPreservesTabs(t *testing.T) {
+	const subject = "before\t\"quoted\"\\\t\nend"
+	const wantLogged = "before\t\\\"quoted\\\"\\\\\t\\nend"
+	quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(subject)
+	for _, topbit := range []bool{false, true} {
+		if got := eximPrintingForTest(quoted, topbit); got != wantLogged {
+			t.Errorf("logged subject with topbit=%v = %q, want %q", topbit, got, wantLogged)
+		}
+	}
+}
 
 func TestSubject(t *testing.T) {
 	cases := []struct {
@@ -78,6 +92,7 @@ func TestSubject(t *testing.T) {
 
 func TestSubjectPrintingEscapes(t *testing.T) {
 	for _, tc := range []struct{ name, logged, want string }{
+		{"literal tabs stay literal", "before\t\\\"quoted\\\"\\\\\tend", "before\t\"quoted\"\\\tend"},
 		{"named controls stay escaped", `line\nnext\r\t\b\v\fend`, `line\nnext\r\t\b\v\fend`},
 		{"octal bytes stay escaped", `\033[2Jcaf\303\251\001\177\377`, `\033[2Jcaf\303\251\001\177\377`},
 		{"literal escapes", `\\n \\t \\303`, `\n \t \303`},
