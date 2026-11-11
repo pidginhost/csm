@@ -285,9 +285,13 @@ func parseApacheContainerTag(line string) (apacheParsedContainerTag, bool, bool)
 	if !strings.HasPrefix(text, "<") {
 		return apacheParsedContainerTag{}, false, true
 	}
-	if !strings.HasSuffix(text, ">") {
+	// httpd ends a section tag at the line's last '>' and ignores the rest,
+	// a trailing comment included.
+	end := strings.LastIndexByte(text, '>')
+	if end < 0 {
 		return apacheParsedContainerTag{}, true, false
 	}
+	text = text[:end+1]
 
 	closing := strings.HasPrefix(text, "</")
 	prefix := "<"

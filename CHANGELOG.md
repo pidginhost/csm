@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- `.htaccess` checks now report PHP handler mappings that follow a `#` on the same line, which Apache applies rather than treating as a comment.
+- `.htaccess` checks now report suspicious handler extensions listed after a `#` on the same line, which Apache still applies.
 
 ### Changed
 
