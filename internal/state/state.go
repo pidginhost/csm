@@ -1616,25 +1616,56 @@ type DismissUndo struct {
 	ClearBaseline bool            `json:"clear_baseline,omitempty"`
 	CreatedEntry  bool            `json:"created_entry,omitempty"`
 	Removed       []alert.Finding `json:"removed,omitempty"`
+	// PrevContent is the content the entry covered before the dismissal.
+	PrevContent string `json:"prev_content,omitempty"`
 }
 
 // DismissFindingWithUndo marks a finding as baseline and removes it from the
 // latest list as one operation. Latest-only findings also need alert state:
 // realtime findings can reach the UI before the next scan updates dedup state.
+// The dismissal covers the content of the listed row.
 func (s *Store) DismissFindingWithUndo(key string) DismissUndo {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	u, _ := s.dismissLocked(key, nil)
+	return u
+}
 
+// DismissFindingAsShown dismisses key only while every listed row for it
+// still carries shown, the content hash the operator judged (empty for a
+// finding without one). A row whose content changed since it was shown is
+// refused with nothing changed, so new content is reviewed before it is
+// dismissed.
+func (s *Store) DismissFindingAsShown(key, shown string) (DismissUndo, bool) {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dismissLocked(key, &shown)
+}
+
+// dismissLocked runs under latestMu and mu. A nil shown makes no claim.
+func (s *Store) dismissLocked(key string, shown *string) (DismissUndo, bool) {
 	u := DismissUndo{Key: key}
 	var kept []alert.Finding
 	for _, f := range s.latestFindings {
 		if f.Key() == key {
+			if shown != nil && f.ContentSHA256 != *shown {
+				return DismissUndo{Key: key}, false
+			}
 			u.Removed = append(u.Removed, f)
 			continue
 		}
 		kept = append(kept, f)
+	}
+	var content string
+	switch {
+	case shown != nil:
+		content = *shown
+	case len(u.Removed) > 0:
+		content = u.Removed[0].ContentSHA256
 	}
 	entry := s.entries[key]
 	if entry == nil && len(u.Removed) > 0 {
@@ -1645,14 +1676,18 @@ func (s *Store) DismissFindingWithUndo(key string) DismissUndo {
 	}
 	if entry != nil {
 		u.ClearBaseline = !entry.IsBaseline
+		u.PrevContent = entry.ContentSHA256
 		entry.IsBaseline = true
+		if content != "" {
+			entry.ContentSHA256 = content
+		}
 		entry.DismissalID = rand.Text()
 		u.DismissalID, u.Hash = entry.DismissalID, entry.Hash
 		s.dirty = true
 	}
 	s.latestFindings = kept
 	s.persistLatestLocked()
-	return u
+	return u, true
 }
 
 // UndoDismiss reverses only the dismissal that still owns the entry. A copy
@@ -1668,6 +1703,7 @@ func (s *Store) UndoDismiss(u DismissUndo) bool {
 		return false
 	}
 	entry.DismissalID = ""
+	entry.ContentSHA256 = u.PrevContent
 	if u.CreatedEntry {
 		delete(s.entries, u.Key)
 	} else if u.ClearBaseline {

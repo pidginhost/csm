@@ -175,3 +175,148 @@ func TestDismissedContentSurvivesReopen(t *testing.T) {
 		t.Fatalf("recorded content after reopen = %q, want A", e.ContentSHA256)
 	}
 }
+
+func listedContentFinding(t *testing.T, s *Store, sha string) alert.Finding {
+	t.Helper()
+	f := contentFinding("yara_match_scheduled", sha)
+	s.Update([]alert.Finding{f})
+	s.SetLatestFindings([]alert.Finding{f})
+	return f
+}
+
+func TestDismissRecordsListedRowContent(t *testing.T) {
+	s := openTestStore(t)
+	a := listedContentFinding(t, s, shaA)
+
+	s.DismissFindingWithUndo(a.Key())
+
+	if e, _ := s.EntryForKey(a.Key()); !e.IsBaseline || e.ContentSHA256 != shaA {
+		t.Fatalf("entry = %+v; want baseline with the listed content", e)
+	}
+}
+
+func TestDismissAsShownRefusesChangedRow(t *testing.T) {
+	s := openTestStore(t)
+	b := listedContentFinding(t, s, shaB)
+
+	if _, ok := s.DismissFindingAsShown(b.Key(), shaA); ok {
+		t.Fatal("a row whose content changed since it was shown must not be dismissed")
+	}
+	if e, _ := s.EntryForKey(b.Key()); e.IsBaseline || e.DismissalID != "" {
+		t.Fatalf("refusal changed the entry: %+v", e)
+	}
+	if latest := s.LatestFindings(); len(latest) != 1 || latest[0].ContentSHA256 != shaB {
+		t.Fatalf("refusal changed the list: %+v", latest)
+	}
+}
+
+func TestDismissAsShownTreatsEmptyAgainstHashAsChanged(t *testing.T) {
+	t.Run("row hash, shown empty", func(t *testing.T) {
+		s := openTestStore(t)
+		b := listedContentFinding(t, s, shaB)
+		if _, ok := s.DismissFindingAsShown(b.Key(), ""); ok {
+			t.Fatal("shown empty against a hashed row must be refused")
+		}
+	})
+	t.Run("row empty, shown hash", func(t *testing.T) {
+		s := openTestStore(t)
+		f := listedContentFinding(t, s, "")
+		if _, ok := s.DismissFindingAsShown(f.Key(), shaA); ok {
+			t.Fatal("shown hash against an unhashed row must be refused")
+		}
+	})
+}
+
+func TestDismissAsShownAcceptsBothEmpty(t *testing.T) {
+	s := openTestStore(t)
+	f := dismissTestFinding()
+	s.Update([]alert.Finding{f})
+	s.SetLatestFindings([]alert.Finding{f})
+
+	if _, ok := s.DismissFindingAsShown(f.Key(), ""); !ok {
+		t.Fatal("a finding without content must be dismissable")
+	}
+	if e, _ := s.EntryForKey(f.Key()); !e.IsBaseline || e.ContentSHA256 != "" {
+		t.Fatalf("entry = %+v; want baseline without content", e)
+	}
+}
+
+func TestDismissAsShownRecordsShownWhenUnlisted(t *testing.T) {
+	s := openTestStore(t)
+	a := contentFinding("yara_match_scheduled", shaA)
+	s.Update([]alert.Finding{a})
+
+	if _, ok := s.DismissFindingAsShown(a.Key(), shaA); !ok {
+		t.Fatal("an unlisted finding must be dismissable")
+	}
+	if e, _ := s.EntryForKey(a.Key()); !e.IsBaseline || e.ContentSHA256 != shaA {
+		t.Fatalf("entry = %+v; want the shown content recorded", e)
+	}
+}
+
+func TestRedismissKeepsRecordedContent(t *testing.T) {
+	s := openTestStore(t)
+	a := contentFinding("yara_match_scheduled", shaA)
+	s.SetBaseline([]alert.Finding{a})
+	s.SetLatestFindings([]alert.Finding{a})
+
+	if _, ok := s.DismissFindingAsShown(a.Key(), shaA); !ok {
+		t.Fatal("re-dismissing a re-listed finding with the same content must be accepted")
+	}
+	if e, _ := s.EntryForKey(a.Key()); e.ContentSHA256 != shaA {
+		t.Fatalf("recorded content = %q, want A", e.ContentSHA256)
+	}
+
+	s.DismissFindingWithUndo(a.Key())
+
+	if e, _ := s.EntryForKey(a.Key()); !e.IsBaseline || e.ContentSHA256 != shaA {
+		t.Fatalf("entry = %+v; a dismissal with no content must keep the recorded one", e)
+	}
+}
+
+func TestUndoRestoresPreviousContent(t *testing.T) {
+	t.Run("active finding", func(t *testing.T) {
+		s := openTestStore(t)
+		a := listedContentFinding(t, s, shaA)
+		u := s.DismissFindingWithUndo(a.Key())
+
+		if !s.UndoDismiss(u) {
+			t.Fatal("undo refused")
+		}
+		if e, _ := s.EntryForKey(a.Key()); e.IsBaseline || e.ContentSHA256 != "" {
+			t.Fatalf("entry = %+v; want active without recorded content", e)
+		}
+	})
+	t.Run("baseline from before content was recorded", func(t *testing.T) {
+		s := openTestStore(t)
+		s.SetBaseline([]alert.Finding{contentFinding("yara_match_scheduled", "")})
+		a := contentFinding("yara_match_scheduled", shaA)
+		s.SetLatestFindings([]alert.Finding{a})
+		u, ok := s.DismissFindingAsShown(a.Key(), shaA)
+		if !ok {
+			t.Fatal("dismiss refused")
+		}
+
+		if !s.UndoDismiss(u) {
+			t.Fatal("undo refused")
+		}
+		if e, _ := s.EntryForKey(a.Key()); !e.IsBaseline || e.ContentSHA256 != "" {
+			t.Fatalf("entry = %+v; want the earlier baseline without content", e)
+		}
+	})
+}
+
+func TestUndoAfterRevocationFails(t *testing.T) {
+	s := openTestStore(t)
+	a := listedContentFinding(t, s, shaA)
+	u := s.DismissFindingWithUndo(a.Key())
+
+	s.ReconcileDismissedContent([]alert.Finding{contentFinding("yara_match_scheduled", shaB)})
+
+	if s.UndoDismiss(u) {
+		t.Fatal("undo must not reach a dismissal that changed content ended")
+	}
+	if _, ok := s.EntryForKey(a.Key()); ok {
+		t.Fatal("the revoked entry must stay gone")
+	}
+}
