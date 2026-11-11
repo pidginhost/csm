@@ -1148,26 +1148,6 @@ func TestExtractEximDomain_WithHasExceeded(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractEximSubject — realistic
-// ---------------------------------------------------------------------------
-
-func TestExtractEximSubject_Standard(t *testing.T) {
-	line := `2026-04-12 <= user@example.com T="Hello World" S=1234`
-	got := extractEximSubject(line)
-	if got != "Hello World" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractEximSubject_NoT(t *testing.T) {
-	line := `2026-04-12 <= user@example.com S=1234`
-	got := extractEximSubject(line)
-	if got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // parseEximLogLine — bulk mail service detection (branch #5)
 // ---------------------------------------------------------------------------
 
@@ -1284,7 +1264,7 @@ func TestParseEximLogLine_SuspiciousSMTPPasswordSubject(t *testing.T) {
 	cfg.EmailProtection.RateCritThreshold = 200
 	cfg.EmailProtection.RateWindowMin = 60
 
-	line := `2026-04-12 10:00:00 1abc23 <= user@example.com H=mail.example.com [203.0.113.42] P=esmtpsa A=dovecot_login:user@example.com S=1234 T="Your SMTP password has been compromised"`
+	line := `2026-04-12 10:00:00 1abc23-000456-AB <= user@example.com H=mail.example.com [203.0.113.42] P=esmtpsa A=dovecot_login:user@example.com S=1234 T="Your SMTP password has been compromised"`
 
 	findings := parseEximLogLine(line, cfg)
 	var found bool

@@ -556,26 +556,6 @@ func TestIsInfraIPDaemon_IPv6ExactNoMatch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractEximSubject edge cases
-// ---------------------------------------------------------------------------
-
-func TestExtractEximSubject_NoClosingQuote(t *testing.T) {
-	line := `T="unclosed subject`
-	got := extractEximSubject(line)
-	// When no closing quote is found, the function returns the rest of the string.
-	if got != "unclosed subject" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractEximSubject_EmptySubject(t *testing.T) {
-	line := `T="" more stuff`
-	if got := extractEximSubject(line); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // extractEximSender edge cases
 // ---------------------------------------------------------------------------
 

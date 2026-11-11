@@ -643,8 +643,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// 4. SMTP credentials leaked in subject - compromised account
 	// Pattern: T="...host:port,user@domain,PASSWORD..." in the subject field
-	if strings.Contains(line, " <= ") && strings.Contains(line, "T=\"") {
-		subject := extractEximSubject(line)
+	if subject, ok := eximlog.Subject(line); ok {
 		subjectLower := strings.ToLower(subject)
 		// Detect credential patterns: host:port,user,password or
 		// SMTP credentials in subject (common in credential stuffing attacks)
@@ -824,20 +823,6 @@ func extractEximDomain(line string) string {
 		return rest[:sp]
 	}
 	return rest
-}
-
-// extractEximSubject extracts the subject from T="..." in an exim log line.
-func extractEximSubject(line string) string {
-	idx := strings.Index(line, "T=\"")
-	if idx < 0 {
-		return ""
-	}
-	rest := line[idx+3:]
-	end := strings.Index(rest, "\"")
-	if end < 0 {
-		return rest
-	}
-	return rest[:end]
 }
 
 // --- Helpers (avoid import cycle with checks package) ---
