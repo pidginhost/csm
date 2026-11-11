@@ -1,10 +1,21 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
 )
+
+func TestCpanelWHMScriptsAlertWithLongMethod(t *testing.T) {
+	for _, method := range []string{strings.Repeat("M", 64), strings.Repeat(`\x4d`, 64)} {
+		line := `192.0.2.66 - - [11/09/2026:12:00:00 -0000] "` + method + ` /scripts2/listaccts HTTP/1.1" 401 0 "-" "agent" "-" "-" 2087`
+		got := parseAccessLogLineEnhanced(line, &config.Config{})
+		if len(got) != 1 || got[0].Check != "whm_unauth_scripts_realtime" || got[0].SourceIP != "192.0.2.66" {
+			t.Fatalf("valid long method hid tokenless WHM request: %+v", got)
+		}
+	}
+}
 
 func TestCpanelWHMAlertsIgnoreForgedUserRecords(t *testing.T) {
 	for _, stamp := range []string{"11/09/2026:12:00:00 -0000", "bad -0000", "09/Nov/2026:12:00:00 +0000"} {

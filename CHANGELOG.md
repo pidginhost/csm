@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Requests with long HTTP methods remain visible to cPanel API failure and tokenless WHM request alerts.
 - A dismissed malware finding now alerts again when the file's content changes.
 - Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.

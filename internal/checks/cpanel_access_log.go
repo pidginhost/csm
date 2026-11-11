@@ -168,8 +168,10 @@ func (r *CpanelAccessRecord) parseSuffix(s string) bool {
 	}
 	method, afterMethod, hasMethod := strings.Cut(request, " ")
 	target, proto, hasProto := strings.Cut(afterMethod, " ")
-	method, methodOver := patternDecodeField(method, patternMaxMethod)
-	if !hasMethod || !hasProto || methodOver || !patternValidMethod(method) ||
+	// Method tokens have no fixed length. Rejecting a long one would hide
+	// the whole request, including checks that do not depend on its method.
+	method, _ = patternDecodeField(method, len(method))
+	if !hasMethod || !hasProto || !patternValidMethod(method) ||
 		!patternValidRawTarget(target) || !patternHTTPVersion(proto) {
 		return false
 	}

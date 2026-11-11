@@ -10,6 +10,33 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+func TestCpanelAccessRecordLongMethod(t *testing.T) {
+	method := strings.Repeat("M", 64)
+	for _, raw := range []string{method, strings.Repeat(`\x4d`, 64)} {
+		line := `192.0.2.66 - - [11/09/2026:12:00:00 -0000] "` + raw + ` /execute/Themes/list HTTP/1.1" 401 0 "-" "agent" "-" "-" 2083`
+		got, ok := ParseCpanelAccessRecord(line)
+		if !ok || got.Method != method || got.Target != "/execute/Themes/list" || got.Status != "401" || got.Port != "2083" ||
+			!got.At.Equal(time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)) {
+			t.Fatalf("valid long method lost its request: %+v (%v)", got, ok)
+		}
+		var lines []string
+		for range apiFailThreshold {
+			lines = append(lines, line)
+		}
+		cpanelScanLog(t, lines)
+		findings := CheckAPIAuthFailures(context.Background(), &config.Config{}, nil)
+		if len(findings) != 1 || findings[0].Check != "api_auth_failure" || findings[0].SourceIP != "192.0.2.66" {
+			t.Fatalf("valid long methods hid API failures: %+v", findings)
+		}
+	}
+	for _, invalid := range []string{method + "(", method + `\x00`, method + `\x20`} {
+		line := `192.0.2.66 - - [11/09/2026:12:00:00 -0000] "` + invalid + ` /execute/Themes/list HTTP/1.1" 401 0 "-" "agent" "-" "-" 2083`
+		if got, ok := ParseCpanelAccessRecord(line); ok || got != (CpanelAccessRecord{}) {
+			t.Fatalf("invalid bytes after a long method were ignored: %+v (%v)", got, ok)
+		}
+	}
+}
+
 func TestCpanelScansCountUndatedForgedUserRecords(t *testing.T) {
 	for _, tc := range []struct {
 		check     string
