@@ -257,8 +257,7 @@ password carry no session URL and are reported at once. The periodic
 `api_auth_failures` check counts failures the same way.
 
 Password-change suppression applies only to confirmed 401 responses.
-Ambiguous authentication failures remain visible. Panel requests with uncertain
-listener or timing information do not supply that information to other checks.
+Ambiguous authentication failures remain visible.
 
 The wait covers both matching-window edges and the log watchers' polling
 delay. It ends at a fixed deadline. Evidence read after that
