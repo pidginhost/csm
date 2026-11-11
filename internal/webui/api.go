@@ -409,9 +409,9 @@ func sortEnrichedBySeverity(items []enrichedFinding) {
 	})
 }
 
-// enrichedFindingsVersion changes when the listed findings or their
-// severities do. A client that polls only to learn whether the list changed
-// asks for ?fields=version and compares. ip_reputation rows are identified by
+// enrichedFindingsVersion changes when the listed findings, their severities
+// or their file content do. A client that polls only to learn whether the
+// list changed asks for ?fields=version and compares. ip_reputation rows are identified by
 // their message, which carries the merged sources.
 func enrichedFindingsVersion(items []enrichedFinding) string {
 	ids := make([]string, 0, len(items))
@@ -420,7 +420,7 @@ func enrichedFindingsVersion(items []enrichedFinding) string {
 		if f.Check == "ip_reputation" {
 			id = f.Check + ":" + f.Message
 		}
-		ids = append(ids, id+"|"+f.Severity)
+		ids = append(ids, id+"|"+f.Severity+"|"+f.ContentSHA256)
 	}
 	sort.Strings(ids)
 	h := sha256.New()

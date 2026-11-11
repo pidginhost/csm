@@ -355,7 +355,8 @@ or dismissal that arrives while Fix or Re-check runs stays in place.
 Dismissing a finding about a file's content, such as a malware match, covers
 that content only. When the file changes, the finding alerts again as a new
 detection, and automatic responses can act on it. A scan that could not read
-the file does not end its dismissal. If the file changed after the page loaded,
+the file does not end its dismissal. The "new findings" banner appears when a
+listed file's content changes. If the file changed after the page loaded,
 the dismissal is refused and the list refreshes with a warning. A bulk
 dismissal still dismisses the unchanged findings, and undo covers only those.
 

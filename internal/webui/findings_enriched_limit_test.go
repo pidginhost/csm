@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,5 +117,21 @@ func TestEnrichedFindingsVersionOnly(t *testing.T) {
 	})
 	if v2 := getEnriched(t, s, "fields=version"); v2.Version == v1.Version {
 		t.Fatal("version unchanged after a finding appeared")
+	}
+}
+
+// A listed file whose content changes is a new detection with the same key;
+// the page must offer the new list, or a dismiss from it is refused as stale.
+func TestEnrichedFindingsVersionTracksContent(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "YARA rule match [webshell_generic]: /home/a/public_html/x.php",
+		FilePath: "/home/a/public_html/x.php", ContentSHA256: strings.Repeat("a", 64), Timestamp: time.Now()}
+	s.store.SetLatestFindings([]alert.Finding{f})
+	before := getEnriched(t, s, "fields=version").Version
+
+	f.ContentSHA256 = strings.Repeat("b", 64)
+	s.store.SetLatestFindings([]alert.Finding{f})
+	if after := getEnriched(t, s, "fields=version").Version; after == before {
+		t.Fatal("version unchanged after the listed file's content changed")
 	}
 }
