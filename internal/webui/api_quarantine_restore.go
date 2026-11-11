@@ -36,6 +36,9 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if s.resumeQuarantinedSpoolMessage(w, r, entry) {
+		return
+	}
 	if !quarantineEntryDeletable(entry) {
 		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
 		return
@@ -50,6 +53,11 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	var meta checks.QuarantineMeta
 	if unmarshalErr := json.Unmarshal(metaData, &meta); unmarshalErr != nil {
 		writeJSONError(w, "Invalid metadata", http.StatusInternalServerError)
+		return
+	}
+
+	if meta.SpoolDir != "" {
+		s.restoreQuarantinedSpoolMessage(w, r, entry, meta)
 		return
 	}
 
@@ -126,126 +134,10 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// File restore: use O_EXCL to prevent overwriting an existing file
-		src, readErr := os.Open(entry.ItemPath)
-		if readErr != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", readErr), http.StatusInternalServerError)
+		if err := restoreQuarantineFile(entry.ItemPath, restorePath, target, restoredMode, meta); err != nil {
+			writeRestoreError(w, err)
 			return
 		}
-		defer src.Close()
-		// Allocate cleanup space before creating the destination. A copy may
-		// fail because the filesystem is full, when mkdir can fail as well.
-		stage, stageName, stageErr := target.Parent.CreatePrivateTemp()
-		if stageErr != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot stage restored file: %v", stageErr), http.StatusInternalServerError)
-			return
-		}
-		defer func() {
-			_ = stage.Close()
-			_ = target.Parent.RemoveDir(stageName)
-		}()
-		const stagedName = "restore"
-		dst, createErr := stage.OpenFile(stagedName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if createErr != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot create restored file: %v", createErr), http.StatusInternalServerError)
-			return
-		}
-		// Even a failed first stat can be cleaned safely inside this private
-		// directory; no tenant can substitute a different file under its name.
-		defer func() { _ = stage.Remove(stagedName) }()
-		defer dst.Close()
-		createdInfo, statErr := statQuarantineCreatedFile(dst)
-		if statErr != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot stat restored file: %v", statErr), http.StatusInternalServerError)
-			return
-		}
-		// Keep the inode pinned after dst.Close, preventing inode reuse from
-		// making a foreign file pass cleanup's identity check.
-		guard, guardErr := stage.OpenFile(stagedName, os.O_RDONLY, 0)
-		if guardErr != nil {
-			writeJSONError(w, "Cannot pin restored file; quarantine retained", http.StatusInternalServerError)
-			return
-		}
-		defer guard.Close()
-		if err := target.Check(); err != nil {
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		if err := stage.RenameTo(stagedName, target.Parent, target.Name); err != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot restore - file already exists at original path: %v", err), http.StatusConflict)
-			return
-		}
-		keepDestination := false
-		defer func() {
-			if !keepDestination {
-				if err := discardQuarantineRestore(target, createdInfo, stage, stageName); err != nil {
-					log.Printf("webui: restore cleanup failed: %v", err)
-				}
-			}
-		}()
-		if quarantineRestoreAfterCreateForTest != nil {
-			quarantineRestoreAfterCreateForTest(restorePath)
-		}
-		if _, err := ensureOpenFileStillAtTarget(dst, target); err != nil {
-			_ = src.Close()
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		_, copyErr := io.Copy(dst, src)
-		if closeErr := src.Close(); copyErr == nil && closeErr != nil {
-			copyErr = closeErr
-		}
-		if copyErr != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
-			return
-		}
-		if quarantineRestoreBeforeFinalizeForTest != nil {
-			quarantineRestoreBeforeFinalizeForTest(restorePath)
-		}
-		if _, err := ensureOpenFileStillAtTarget(dst, target); err != nil {
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		if err := dst.Chown(meta.Owner, meta.Group); err != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot restore file ownership; quarantine retained: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := dst.Chmod(restoredMode); err != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot restore file mode: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if !meta.OriginalModTime.IsZero() {
-			if err := restoreQuarantineModTime(dst, meta.OriginalModTime); err != nil {
-				writeJSONError(w, fmt.Sprintf("Cannot restore modification time; quarantine retained: %v", err), http.StatusInternalServerError)
-				return
-			}
-		}
-		restoredInfo, err := ensureOpenFileStillAtTarget(dst, target)
-		if err != nil {
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		if err := syncQuarantineRestoredFile(dst); err != nil {
-			writeJSONError(w, fmt.Sprintf("Restored file could not be synced; quarantine retained: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := dst.Close(); err != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := ensureTargetStillNamesInfo(target, restoredInfo); err != nil {
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		if err := syncQuarantineRestoredParent(target.Parent); err != nil {
-			writeJSONError(w, fmt.Sprintf("Restored directory could not be synced; quarantine retained: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := ensureTargetStillNamesInfo(target, restoredInfo); err != nil {
-			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
-			return
-		}
-		keepDestination = true
 	}
 
 	if err := removeRestoredQuarantineEvidence(entry.ItemPath, entry.MetaPath); err != nil {
@@ -258,6 +150,135 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		"path":    restorePath,
 		"warning": "File restored to original location. Re-scan recommended.",
 	})
+}
+
+// restoreStatusError carries the HTTP status a restore failure answers with.
+type restoreStatusError struct {
+	status int
+	msg    string
+}
+
+func (e restoreStatusError) Error() string { return e.msg }
+
+func restoreFailed(status int, format string, args ...any) error {
+	return restoreStatusError{status: status, msg: fmt.Sprintf(format, args...)}
+}
+
+func writeRestoreError(w http.ResponseWriter, err error) {
+	var statusErr restoreStatusError
+	if errors.As(err, &statusErr) {
+		writeJSONError(w, statusErr.msg, statusErr.status)
+		return
+	}
+	writeJSONError(w, err.Error(), http.StatusInternalServerError)
+}
+
+// restoreQuarantineFile copies a quarantined regular file to target with
+// its recorded owner, mode and modification time. The destination must not
+// exist; on failure nothing is left at target and the quarantine copy stays.
+func restoreQuarantineFile(itemPath, restorePath string, target *safepath.Target, restoredMode os.FileMode, meta checks.QuarantineMeta) error {
+	// #nosec G304 -- itemPath comes from resolveQuarantineEntry under the operator-owned quarantine directory.
+	src, readErr := os.Open(itemPath)
+	if readErr != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot read quarantined file: %v", readErr)
+	}
+	defer src.Close()
+	// Allocate cleanup space before creating the destination. A copy may
+	// fail because the filesystem is full, when mkdir can fail as well.
+	stage, stageName, stageErr := target.Parent.CreatePrivateTemp()
+	if stageErr != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot stage restored file: %v", stageErr)
+	}
+	defer func() {
+		_ = stage.Close()
+		_ = target.Parent.RemoveDir(stageName)
+	}()
+	const stagedName = "restore"
+	dst, createErr := stage.OpenFile(stagedName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if createErr != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot create restored file: %v", createErr)
+	}
+	// Even a failed first stat can be cleaned safely inside this private
+	// directory; no tenant can substitute a different file under its name.
+	defer func() { _ = stage.Remove(stagedName) }()
+	defer dst.Close()
+	createdInfo, statErr := statQuarantineCreatedFile(dst)
+	if statErr != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot stat restored file: %v", statErr)
+	}
+	// Keep the inode pinned after dst.Close, preventing inode reuse from
+	// making a foreign file pass cleanup's identity check.
+	guard, guardErr := stage.OpenFile(stagedName, os.O_RDONLY, 0)
+	if guardErr != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot pin restored file; quarantine retained")
+	}
+	defer guard.Close()
+	if err := target.Check(); err != nil {
+		return restoreFailed(http.StatusConflict, "Cannot restore - destination changed during restore")
+	}
+	if err := stage.RenameTo(stagedName, target.Parent, target.Name); err != nil {
+		return restoreFailed(http.StatusConflict, "Cannot restore - file already exists at original path: %v", err)
+	}
+	keepDestination := false
+	defer func() {
+		if !keepDestination {
+			if err := discardQuarantineRestore(target, createdInfo, stage, stageName); err != nil {
+				log.Printf("webui: restore cleanup failed: %v", err)
+			}
+		}
+	}()
+	if quarantineRestoreAfterCreateForTest != nil {
+		quarantineRestoreAfterCreateForTest(restorePath)
+	}
+	if _, err := ensureOpenFileStillAtTarget(dst, target); err != nil {
+		_ = src.Close()
+		return restoreFailed(http.StatusConflict, "Cannot restore - destination changed during restore")
+	}
+	_, copyErr := io.Copy(dst, src)
+	if closeErr := src.Close(); copyErr == nil && closeErr != nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot write restored file: %v", copyErr)
+	}
+	if quarantineRestoreBeforeFinalizeForTest != nil {
+		quarantineRestoreBeforeFinalizeForTest(restorePath)
+	}
+	if _, err := ensureOpenFileStillAtTarget(dst, target); err != nil {
+		return restoreFailed(http.StatusConflict, "Cannot restore - destination changed during restore")
+	}
+	if err := dst.Chown(meta.Owner, meta.Group); err != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot restore file ownership; quarantine retained: %v", err)
+	}
+	if err := dst.Chmod(restoredMode); err != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot restore file mode: %v", err)
+	}
+	if !meta.OriginalModTime.IsZero() {
+		if err := restoreQuarantineModTime(dst, meta.OriginalModTime); err != nil {
+			return restoreFailed(http.StatusInternalServerError, "Cannot restore modification time; quarantine retained: %v", err)
+		}
+	}
+	restoredInfo, err := ensureOpenFileStillAtTarget(dst, target)
+	if err != nil {
+		return restoreFailed(http.StatusConflict, "Cannot restore - destination changed during restore")
+	}
+	if err := syncQuarantineRestoredFile(dst); err != nil {
+		return restoreFailed(http.StatusInternalServerError, "Restored file could not be synced; quarantine retained: %v", err)
+	}
+	if err := dst.Close(); err != nil {
+		return restoreFailed(http.StatusInternalServerError, "Cannot write restored file: %v", err)
+	}
+	if err := ensureTargetStillNamesInfo(target, restoredInfo); err != nil {
+		return restoreFailed(http.StatusConflict, "Cannot restore - destination changed during restore")
+	}
+	if err := syncQuarantineRestoredParent(target.Parent); err != nil {
+		return restoreFailed(http.StatusInternalServerError, "Restored directory could not be synced; quarantine retained: %v", err)
+	}
+	if err := ensureTargetStillNamesInfo(target, restoredInfo); err != nil {
+		return restoreFailed(http.StatusConflict, "Cannot restore - destination changed during restore")
+	}
+	keepDestination = true
+	return nil
 }
 
 // quarantineRestoreAfterCreateForTest lets race tests replace the path
