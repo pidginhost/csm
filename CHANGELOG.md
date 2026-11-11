@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Mail subject alerts detect credentials after quoted text, keep non-printing characters escaped, and ignore unrelated message details.
+- Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
 - A dismissed malware finding now alerts again when the file's content changes.
 - Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
