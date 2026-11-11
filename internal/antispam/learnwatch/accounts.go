@@ -1,5 +1,5 @@
 // Package learnwatch finds new reports in tenants' Spam folders and hands
-// them to the learning engine (spec 7.1 to 7.3).
+// them to the learning engine.
 package learnwatch
 
 import (

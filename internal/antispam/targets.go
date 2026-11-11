@@ -11,7 +11,7 @@ import (
 // GeneratedEximConfPath is the configuration cPanel's buildeximconf writes.
 const GeneratedEximConfPath = "/etc/exim.conf"
 
-// Files CSM writes on a cPanel host (spec section 4.1).
+// Files CSM writes on a cPanel host.
 const (
 	HookRCPTPath      = "/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_CHECK_BLOCK/custom_begin_spam_scan_check"
 	HookScanPath      = "/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_BLOCK/custom_begin_spam_scan"
@@ -22,7 +22,7 @@ const (
 	ActionsPath = RspamdLocalDir + "/actions.conf"
 )
 
-// Files CSM writes only on a Postfix host (spec section 5.1): the headers
+// Files CSM writes only on a Postfix host: the headers
 // rspamd's milter adds and removes, and the Lua that scopes enforcement.
 const (
 	MilterHeadersPath   = RspamdLocalDir + "/milter_headers.conf"
@@ -41,7 +41,7 @@ const (
 	TargetEximLocal
 	// TargetRspamdOptional is an rspamd file CSM owns outright while a feed
 	// or map redirect needs it. A file CSM cannot own never blocks core: the
-	// daemon leaves the feed or redirect out instead (feeds spec 5.3). On a
+	// daemon leaves the feed or redirect out instead. On a
 	// Postfix host actions.conf is one too, needed only to enforce.
 	TargetRspamdOptional
 	// TargetLuaOptional is an rspamd Lua plugin CSM owns outright while
@@ -56,7 +56,7 @@ const (
 )
 
 // RoundcubeIncludePath is the Roundcube include that points the Junk button
-// at the Spam folder learning reads (spec 6.4).
+// at the Spam folder learning reads.
 const RoundcubeIncludePath = "/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/zz-csm-antispam.inc.php"
 
 // WholeFile reports whether CSM owns the target's entire content.
@@ -101,9 +101,9 @@ type Target struct {
 }
 
 // MutationTargets lists every file CSM writes on a host of stack, rspamd
-// first as in the apply transaction (spec section 6.3). A Postfix host gets
+// first as in the apply transaction. A Postfix host gets
 // the milter headers and the scope Lua and no cPanel file; its actions.conf
-// is optional, because a dry run leaves it to the host (spec 9.2). Any other
+// is optional, because a dry run leaves it to the host. Any other
 // stack gets the cPanel list.
 func MutationTargets(stack MailStack) []Target {
 	postfix := stack == StackPostfix
@@ -162,7 +162,7 @@ type TargetFacts struct {
 }
 
 // CheckRemoval applies the target rules that still hold when CSM removes its
-// integration (spec section 6.4): it never writes through an unsafe path or
+// integration: it never writes through an unsafe path or
 // edits a file whose markers it cannot identify. A foreign local.d file stays
 // in place and a missing directory has nothing to remove. targets must be
 // the facts of MutationTargets(stack).
@@ -180,10 +180,10 @@ func CheckRemoval(stack MailStack, targets []TargetFacts) []Problem {
 // rebuild a configuration the host does not have.
 var stackUnknown = Problem{Code: CodePlatform, Severity: Temporary, Detail: "CSM cannot tell which mail server this host runs, for example while Postfix restarts"}
 
-// checkTargets applies spec section 6.2 item 9: every file CSM writes is a
+// checkTargets checks that every file CSM writes is a
 // regular root-owned file without symlinks, in root-owned directories nobody
 // else can write, and a shared file has room for CSM's block. A whole file
-// that is not CSM's is backed up and replaced by the worker (spec 5.5).
+// that is not CSM's is backed up and replaced by the worker.
 // For removal only the rules that protect an edit apply.
 func checkTargets(stack MailStack, targets []TargetFacts, removal bool) []Problem {
 	var out []Problem

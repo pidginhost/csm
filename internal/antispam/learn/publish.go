@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Publication limits (spec 7.4). Provisional until Plan C's benchmark
+// Publication limits. Provisional until Plan C's benchmark
 // records a measurement.
 const (
 	PublishTurnAttempts = 3
@@ -34,8 +34,7 @@ type nativeClient interface {
 }
 
 // Publisher drives one target at a time toward its value through native
-// calls, persisting the phase before every send (spec 7.4 "Publishing a
-// target"). Only the engine goroutine uses it.
+// calls, persisting the phase before every send. Only the engine goroutine uses it.
 type Publisher struct {
 	client   nativeClient
 	ledger   *Ledger
@@ -50,7 +49,7 @@ type Publisher struct {
 	onUnstable func(detail string)
 }
 
-// NewPublisher returns a publisher with the spec's limits.
+// NewPublisher returns a publisher with the default verify and retry limits.
 func NewPublisher(c nativeClient, l *Ledger, b *Bodies) *Publisher {
 	return &Publisher{client: c, ledger: l, bodies: b, now: time.Now, poll: VerifyPollEvery, deadline: VerifyDeadline, attempts: PublishTurnAttempts}
 }

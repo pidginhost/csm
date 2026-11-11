@@ -97,7 +97,7 @@ func TestLoopPassesAtStartAndOnTrigger(t *testing.T) {
 }
 
 // Triggers during a pass coalesce into one more pass, which reads the
-// latest configuration after the running one ends (spec section 6.5).
+// latest configuration after the running one ends.
 func TestLoopCoalescesTriggersDuringAPass(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := newRecorder()

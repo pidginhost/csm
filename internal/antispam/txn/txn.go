@@ -17,7 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// Time limits from spec section 6.3.
+// Transaction time limits.
 const (
 	// forwardBudget is when rollback must start at the latest.
 	forwardBudget = 150 * time.Second
@@ -203,7 +203,7 @@ func (t *tx) cmd(ctx context.Context, limit time.Duration, name string, args ...
 }
 
 // cmdErr describes a failed command by name and timeout only: command
-// output can carry configuration text (spec section 7).
+// output can carry configuration text.
 func cmdErr(what string, r antispam.CommandResult) error {
 	switch {
 	case errors.Is(r.Err, context.DeadlineExceeded):
@@ -353,7 +353,7 @@ func (t *tx) write(c change) error {
 		return fmt.Errorf("%s %w", p, errConflict)
 	}
 	// An operator file at a path CSM owns outright is kept before it is
-	// replaced (spec 5.5).
+	// replaced.
 	backup := ""
 	if takeover {
 		if backup, err = t.backup(c.target.Path, before.content); err != nil {
@@ -552,7 +552,7 @@ func (t *tx) eximSettings(ctx context.Context) (map[string]string, error) {
 }
 
 // exim writes the Exim edits, rebuilds and validates the configuration, then
-// reloads Exim and probes it (spec section 6.3 steps 3 to 5). hooks says
+// reloads Exim and probes it. hooks says
 // whether the result holds CSM ACL hooks, which need the named lists.
 func (t *tx) exim(changes []change, hooks bool, verify func(conf, rcptACL, dataACL string) error) (string, error) {
 	for _, c := range changes {
@@ -653,7 +653,7 @@ func (t *tx) checkRollbackExim(ctx context.Context) error {
 }
 
 // validateExim checks the generated configuration and, when it holds CSM
-// ACL hooks, the named lists they use (spec section 6.2 item 7). A missing list
+// ACL hooks, the named lists they use. A missing list
 // makes the hooks defer mail, so taking them out must not depend on it.
 func (t *tx) validateExim(ctx context.Context, hooks bool) error {
 	if r := t.cmd(ctx, commandLimit, "exim", "-bV"); r.Err != nil {
@@ -687,8 +687,7 @@ func (t *tx) probeExim(ctx context.Context) error {
 }
 
 // checkRspamd validates staged rspamd files and, for an apply, compares the
-// loaded thresholds, modules and phishtank switch with CSM's settings (spec
-// 6.2 item 10).
+// loaded thresholds, modules and phishtank switch with CSM's settings.
 func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if r := t.cmd(ctx, commandLimit, "rspamadm", "configtest"); r.Err != nil {
 		return cmdErr("rspamadm configtest", r)
@@ -808,7 +807,7 @@ func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antis
 	return errors.Join(errLearningLoaded, err)
 }
 
-// reloadRspamd reloads rspamd and waits for its probe (spec 6.3 step 2).
+// reloadRspamd reloads rspamd and waits for its probe.
 func (t *tx) reloadRspamd(ctx context.Context, probe func(context.Context) error) error {
 	t.rspamdReloaded = true
 	if r := t.cmd(ctx, commandLimit, "systemctl", "reload", antispam.RspamdUnit); r.Err != nil {
@@ -922,7 +921,7 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		case err != nil:
 			errs = append(errs, err)
 		case !active:
-			// Spec 6.3 step 5: an Exim that stopped is started on the restored
+			// An Exim that stopped is started on the restored
 			// configuration; this is not a restart of a running daemon.
 			if r := t.cmd(ctx, commandLimit, "systemctl", "start", antispam.EximUnit); r.Err != nil {
 				errs = append(errs, cmdErr("systemctl start exim", r))

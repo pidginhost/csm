@@ -12,7 +12,7 @@ import (
 // RspamdLuaDir holds local Lua plugins rspamd loads at startup.
 const RspamdLuaDir = "/etc/rspamd/lua.local.d"
 
-// Learning files (spec 6.1). The check and worker files hold secrets.
+// Learning files. The check and worker files hold secrets.
 var (
 	LearningCheckPath  = path.Join(RspamdOverrideDir, "fuzzy_check.conf")
 	LearningWorkerPath = path.Join(RspamdOverrideDir, "worker-fuzzy.inc")
@@ -28,7 +28,7 @@ const LuaManagedHeader = "-- csm-managed-version: 1"
 //go:embed learning_plugin.lua
 var LearningPlugin string
 
-// Values the learning rules and worker pin (spec 6.2, 6.3).
+// Values the learning rules and worker pin.
 const (
 	learningServer   = "127.0.0.1:11335"
 	learningMaxScore = "18.0"

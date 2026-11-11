@@ -11,8 +11,8 @@ import (
 
 var errEximInactive = errors.New("exim is not running; CSM changes its configuration only while it can confirm the reload")
 
-// Apply installs or updates CSM's integration for s (spec section 6.3). An
-// equal installation changes nothing and reloads nothing (spec 6.5).
+// Apply installs or updates CSM's integration for s. An
+// equal installation changes nothing and reloads nothing.
 func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	t := h.begin()
 	defer t.cancel()
@@ -192,8 +192,7 @@ func (t *tx) applyPostfix(s antispam.Settings, f antispam.HostFacts, installed m
 		return failed(StepPreconditions, err)
 	}
 	if s.HostActions() {
-		// The host's own thresholds decide again, not rspamd's built-in ones
-		// (spec 9.2).
+		// The host's own thresholds decide again, not rspamd's built-in ones.
 		if err = t.restoreCopies(changes, func(p string) bool { return p == antispam.ActionsPath }); err != nil {
 			return failed(StepPreconditions, err)
 		}
@@ -259,7 +258,7 @@ func (t *tx) recorded(installed map[string]string, generation string) (bool, err
 }
 
 // rspamd writes the rspamd edits, validates them against s, reloads rspamd
-// and probes it, then verifies learning as loaded (spec 6.3 step 2).
+// and probes it, then verifies learning as loaded.
 func (t *tx) rspamd(changes []change, s *antispam.Settings, f antispam.HostFacts) (string, error) {
 	for _, c := range changes {
 		if err := t.write(c); err != nil {

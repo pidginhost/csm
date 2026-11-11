@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Interval is how often a pass runs without a trigger (spec section 6.5).
+// Interval is how often a pass runs without a trigger.
 const Interval = 15 * time.Minute
 
 // Loop runs passes one at a time: at start, after each trigger, every

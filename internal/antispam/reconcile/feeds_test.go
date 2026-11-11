@@ -792,8 +792,7 @@ func TestPassMarksTheIPMapActive(t *testing.T) {
 }
 
 // A failed CSM_IP rule check holds the IP map off like the DNS feeds, so the
-// next pass applies without it instead of failing the same check again
-// (feeds spec 8.2).
+// next pass applies without it instead of failing the same check again.
 func TestHeldFeedsDropTheIPMap(t *testing.T) {
 	st := NewFeedState()
 	configured := feedDesired(antispam.FeedCSMIPMap, antispam.FeedRspamdMaps).Settings

@@ -275,7 +275,7 @@ func TestAssessEnabledReportsUnsafeRemoval(t *testing.T) {
 }
 
 // Once CSM's files are installed, the settings rspamd loaded must match
-// them (spec section 6.5). A defeating override is a definite conflict.
+// them. A defeating override is a definite conflict.
 func TestAssessComparesLoadedRspamdSettings(t *testing.T) {
 	s := enforceSettings()
 	for _, tc := range []struct {
@@ -664,7 +664,7 @@ func TestAssessUnusableFeedRulesKeepCore(t *testing.T) {
 }
 
 // An override that drops or changes the CSM_IP rule is feed drift: core
-// stays and the operator gets a warning (feeds spec 8.2).
+// stays and the operator gets a warning.
 func TestAssessIPMapRuleDriftWarns(t *testing.T) {
 	s := defaults(false)
 	s.Feeds = []string{FeedCSMIPMap}

@@ -138,7 +138,7 @@ func TestSchedulerRemovedRejectsTornRegistry(t *testing.T) {
 	}
 }
 
-// Spec 7.4: unsent reservations cancel on loss of eligibility, and a
+// Unsent reservations cancel on loss of eligibility, and a
 // removed account has lost it. Only UIDs no registry account holds count.
 func TestSchedulerDeletedAccountCancelsReservations(t *testing.T) {
 	f := newWatch(t, 2)

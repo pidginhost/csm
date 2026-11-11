@@ -28,7 +28,7 @@ type StatusCluster struct {
 }
 
 // RequestStatus reads the given request IDs, or every unfinished request
-// when ids is empty (spec 8). It only reads, so it is safe beside a running
+// when ids is empty. It only reads, so it is safe beside a running
 // engine and when none runs.
 func RequestStatus(l *Ledger, ids []string) ([]Status, error) {
 	var out []Status

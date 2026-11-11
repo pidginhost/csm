@@ -16,7 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
-// CodeLearning is the problem code of every learning finding (spec 10).
+// CodeLearning is the problem code of every learning finding.
 const CodeLearning = "learning"
 
 // Learning reason keys. Plans B and C add the learner's own.
@@ -56,7 +56,7 @@ type LearningGate struct {
 }
 
 // stockFuzzyRule is the public rule rspamd ships; CSM's override replaces it
-// on purpose (spec 6.1).
+// on purpose.
 const stockFuzzyRule = "rspamd.com"
 
 var (
@@ -281,7 +281,7 @@ func checkLearningRedisVersion(c *learningCheck, r RedisFacts) {
 	}
 }
 
-// checkLearningController requires a clean controller (spec 9), one private
+// checkLearningController requires a clean controller, one private
 // Unix controller socket owned by rspamd with mode 0600, and a private
 // rspamadm control socket.
 func checkLearningController(c *learningCheck, f HostFacts) {
@@ -366,7 +366,7 @@ func checkLearningControlSocket(c *learningCheck, f HostFacts) {
 
 // privateControllerSockets lists the controller's Unix sockets that only
 // root and rspamd can use: owned by rspamd, mode 0600, behind protected
-// directories (spec 9).
+// directories.
 func privateControllerSockets(f HostFacts) []string {
 	host := f.ControllerHost
 	var out []string
@@ -414,7 +414,7 @@ func withSocket(host ControllerHostFacts, p string, s SocketFacts) ControllerHos
 }
 
 // checkLearningRedis requires a socket-only Redis no tenant can reach, with
-// a finite maxmemory and noeviction (spec 6.3). On Postfix it must be a
+// a finite maxmemory and noeviction. On Postfix it must be a
 // Redis dedicated to learning (decision 7): rspamd's own serves tenants'
 // modules too.
 func checkLearningRedis(c *learningCheck, s Settings, f HostFacts) {
@@ -472,7 +472,7 @@ func checkLearningRedisEndpoint(c *learningCheck, f HostFacts) {
 	if r.SharedErr != nil {
 		c.add(ReasonBackendUnavailable, "CSM cannot tell whether another rspamd module uses the learning Redis")
 	}
-	// A protected socket as well as protected directories (spec 6.3):
+	// A protected socket as well as protected directories:
 	// no access for others and no ACL CSM cannot evaluate.
 	if r.Socket.Socket.Mode.Perm()&0o007 != 0 || r.Socket.Socket.ExtACL {
 		c.add(ReasonUnsafe, "the Redis socket is open to other users or carries extra ACL entries")
@@ -550,8 +550,8 @@ func redisExposure(r RedisFacts, rspamdUser string, untrusted map[string]bool, u
 	return fmt.Sprintf("the Redis socket: %s", why)
 }
 
-// checkLearningLogs requires rspamd's log to be unreadable to tenants (spec
-// 11): file permissions, or CageFS confining every account with no rspamd
+// checkLearningLogs requires rspamd's log to be unreadable to tenants:
+// file permissions, or CageFS confining every account with no rspamd
 // log in its skeleton.
 func checkLearningLogs(c *learningCheck, f HostFacts) {
 	exposed, _ := f.RspamdLog.exposed(f.Socket.RspamdUID, func(gid int) bool {
@@ -588,7 +588,7 @@ func cageFSProtectsLog(cage CageFSFacts, log LogFacts) bool {
 }
 
 // checkLearningConflicts finds operator fuzzy configuration CSM's override
-// would hide (spec 6.1). Once CSM's files are installed, verification of the
+// would hide. Once CSM's files are installed, verification of the
 // loaded rules takes over.
 func checkLearningConflicts(c *learningCheck, s Settings, f HostFacts) {
 	for _, t := range f.Targets {
@@ -627,7 +627,7 @@ func checkLearningConflicts(c *learningCheck, s Settings, f HostFacts) {
 }
 
 // checkLearningStillLoaded compares what rspamd loads now with CSM's files,
-// on every pass after install (spec 6.1, 6.2): a runtime weight change, a
+// on every pass after install: a runtime weight change, a
 // higher-priority group cap or score rescaling is a conflict. Files that
 // drifted from CSM's text are left to the next apply, whose own check
 // verifies the result.
@@ -762,7 +762,7 @@ func fuzzyWorkerEnabled(section json.RawMessage) (bool, error) {
 	return false, nil
 }
 
-// roundcubeUsable decides the Junk-button include alone (spec 6.4): any
+// roundcubeUsable decides the Junk-button include alone: any
 // failure reports it and leaves learning on.
 func roundcubeUsable(c *learningCheck, f HostFacts) bool {
 	rc := f.Roundcube

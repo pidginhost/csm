@@ -17,7 +17,7 @@ const RoundcubeUnavailable = "unavailable: "
 const RoundcubeJunkFolder = "INBOX.spam"
 
 // RenderRoundcube returns the include that points Roundcube's Junk button
-// at the Spam folder (spec 6.4). Its marker follows the PHP opening tag.
+// at the Spam folder. Its marker follows the PHP opening tag.
 func RenderRoundcube() string {
 	return "<?php\n" + ManagedHeader + "\n" +
 		"$config['junk_mbox'] = '" + RoundcubeJunkFolder + "';\n" +
@@ -52,7 +52,7 @@ func (r RoundcubeState) Applied() bool {
 	return r.MarkAsJunk && r.JunkMbox == RoundcubeJunkFolder && r.SpamMbox == RoundcubeJunkFolder
 }
 
-// cPanel's Roundcube and its PHP runtime (spec 6.4, spike S10).
+// cPanel's Roundcube and its PHP runtime.
 const (
 	roundcubeDir = "/usr/local/cpanel/base/3rdparty/roundcube/"
 	cpanelPHP    = "/usr/local/cpanel/3rdparty/bin/php"

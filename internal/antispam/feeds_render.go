@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/ipmap"
 )
 
-// Map redirect names, for Settings.SkipMaps (feeds spec section 5.4).
+// Map redirect names, for Settings.SkipMaps.
 const (
 	RedirectForgedRecipients = "forged_recipients"
 	RedirectMID              = "mid"
@@ -26,7 +26,7 @@ func MapRedirectNames() []string {
 }
 
 // Optional rspamd files: CSM writes each only while a feed or map redirect
-// needs it (feeds spec section 5.2).
+// needs it.
 const (
 	RspamdOverrideDir = "/etc/rspamd/override.d"
 	FeedRBLPath       = RspamdOverrideDir + "/rbl.conf"
@@ -110,7 +110,7 @@ func RenderFeeds(s Settings) (map[string]string, error) {
 }
 
 // ipMapRule is the multimap rule that reads the CSM IP map: each line names
-// one of these symbols with a multiplier on the rule's score (spec 6.1).
+// one of these symbols with a multiplier on the rule's score.
 func ipMapRule() string {
 	var names []string
 	for _, s := range ipmap.Symbols() {

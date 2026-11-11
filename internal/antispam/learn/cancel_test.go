@@ -12,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// Spec 5 and 7.4: an observed opt-out cancels the account's reservations
+// An observed opt-out cancels the account's reservations
 // that sent nothing under their revision; sent ones keep publishing.
 
 func (f *auditFixture) failReads(d Digest) {

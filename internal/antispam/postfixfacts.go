@@ -298,8 +298,8 @@ func RspamdMilters(f HostFacts) (addrs, names []string, err error) {
 	return addrs, names, nil
 }
 
-// ScanSource is where CSM reads a Postfix host's scan records (spec section
-// 5.2): Log is the rspamd log file, "" when rspamd logs elsewhere, and
+// ScanSource is where CSM reads a Postfix host's scan records:
+// Log is the rspamd log file, "" when rspamd logs elsewhere, and
 // Milters are the milters that reach rspamd as smtpd_milters names them,
 // the way postfix's warnings name a milter that failed. MilterAction is
 // milter_default_action, what postfix does with mail while a milter fails.

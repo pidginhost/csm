@@ -25,8 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// Native tests run against real pinned containers (Plan B task 10 harness:
-// docs/superpowers/e2e/antispam-learning/containers.sh). They fail, never
+// Native tests run against real pinned containers. They fail, never
 // skip, without their environment:
 //
 //	CSM_LEARN_CONTROLLER  rspamd's private controller socket
@@ -577,8 +576,8 @@ func TestNativeTemplateOverlapFixtures(t *testing.T) {
 	}
 	// Mostly boilerplate: a long fixed template with a short fill, the
 	// shape of legitimate newsletters from one sender. Recorded, not
-	// asserted: whether these join is the false-positive risk spec 14 asks
-	// to measure.
+	// asserted: whether these join is a false-positive risk to
+	// measure.
 	boiler := e.text(140)
 	heavy := e.anchor(t, message(append(append([]string(nil), boiler...), e.text(10)...)), 2)
 	for i := range 5 {

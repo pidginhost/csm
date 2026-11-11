@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Feed names an operator can enable (feeds spec section 4.2).
+// Feed names an operator can enable.
 const (
 	FeedMailspike   = "mailspike"
 	FeedPSBL        = "psbl"
@@ -146,7 +146,7 @@ var spamhausErrors = map[string]string{
 	"127.0.2.255":     "the domain age list was asked about an IP address",
 }
 
-// catalogue lists every feed (feeds spec section 4.2). Weights start from
+// catalogue lists every feed. Weights start from
 // rspamd's stock weights, or Spamhaus's for DQS, capped at 5. SURBL and DQS
 // are reduced further so all positive symbols together stay below the
 // default reject score. Domain lists can hit several symbols per message;

@@ -1,5 +1,5 @@
 // Package learn turns Spam folder reports and operator requests into anchor
-// values in rspamd's local fuzzy storage (spec 7.4): a strict controller
+// values in rspamd's local fuzzy storage: a strict controller
 // client, the ledger, anchor bodies, assignment, publication and audits.
 package learn
 

@@ -224,7 +224,7 @@ func TestCheckRspamdModulesAllowsRBLWithDNSFeeds(t *testing.T) {
 	}
 }
 
-// In a Postfix dry run the host's own actions keep enforcing (spec 9.2),
+// In a Postfix dry run the host's own actions keep enforcing,
 // so their thresholds are not CSM's to compare. Enforce on Postfix and every
 // Exim mode still compare them.
 func TestCheckRspamdActionsSkippedInPostfixDryRun(t *testing.T) {

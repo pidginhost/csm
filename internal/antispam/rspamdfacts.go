@@ -56,7 +56,7 @@ func EnabledModules(out string) (map[string]bool, error) {
 type Actions struct {
 	Reject, AddHeader, Greylist, RewriteSubject *float64
 	// GrowFactor rescales scores above the reject threshold; learning's
-	// score table assumes none (spec 6.2).
+	// score table assumes none.
 	GrowFactor *float64
 }
 

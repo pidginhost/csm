@@ -14,7 +14,7 @@ import (
 // RecordPath is CSM's completion record. Its directory is root-only 0700.
 const RecordPath = "/var/lib/csm/antispam/installed.json"
 
-// RecordFormat is the format of installed.json (spec section 6.3 step 6).
+// RecordFormat is the format of installed.json.
 const RecordFormat = 1
 
 // MaxRecordBytes bounds a completion record read from disk.
@@ -95,7 +95,7 @@ func Generation(content map[string]string) string {
 // Optional files appear only while a feed, map redirect, learning or the
 // Roundcube include needs them; the symbol weights appear unless the
 // operator owns that file. A Postfix host has no Exim file or Roundcube
-// include, and in dry run its own actions.conf keeps enforcing (spec 9.2).
+// include, and in dry run its own actions.conf keeps enforcing.
 func ManagedContent(s Settings) (map[string]string, error) {
 	out := make(map[string]string)
 	if s.Stack == StackPostfix {

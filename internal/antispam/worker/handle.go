@@ -12,8 +12,8 @@ import (
 	"github.com/pidginhost/csm/internal/eximlock"
 )
 
-// Transactor performs the apply and remove transactions (spec sections 6.3
-// and 6.4). Handle calls it only with a validated request, under the lock.
+// Transactor performs the apply and remove transactions. Handle
+// calls it only with a validated request, under the lock.
 type Transactor interface {
 	Apply(antispam.Settings) antispam.Result
 	Remove() antispam.Result

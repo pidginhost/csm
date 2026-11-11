@@ -213,7 +213,7 @@ func nameserverEndpoint(s string) (netip.AddrPort, error) {
 
 // ownResolver reports whether rspamd's queries stay on this host, a private
 // network, or a resolver the operator lists in infra_ips. Lists refuse public
-// resolvers (feeds spec 4.4). The test is a plain prefix match: the wider
+// resolvers. The test is a plain prefix match: the wider
 // infra test also trusts Cloudflare's ranges, which hold a public resolver.
 func ownResolver(a netip.Addr, infra []netip.Prefix) bool {
 	a = a.WithZone("").Unmap()
@@ -267,7 +267,7 @@ const resolverFix = "DNS blocklists refuse queries from public resolvers. Point 
 // file CSM cannot own are skipped; DNS feeds go off when their files cannot
 // be written or rspamd's resolver is not local; spamhaus_dqs goes off when
 // its key file or rspamd's group is unusable. Each is a Warning: a feed
-// problem never blocks core (feeds spec section 8.1).
+// problem never blocks core.
 func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 	// Dropping a temporarily unusable feed must not alter the desired settings
 	// that callers retain for the next pass.

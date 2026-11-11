@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// The systemd units CSM reloads. It never restarts either (spec section 6.3).
+// The systemd units CSM reloads. It never restarts either.
 const (
 	RspamdUnit = "rspamd.service"
 	EximUnit   = "exim.service"
@@ -35,9 +35,9 @@ func ParseUnitShow(out string) map[string]string {
 	return props
 }
 
-// checkServices applies spec section 6.2 item 1: CSM mutates only through
-// systemd-run, and the services it reloads must reload in place. Postfix,
-// which CSM only reads, must be running.
+// checkServices checks that CSM mutates only through systemd-run and that
+// the services it reloads reload in place. Postfix, which CSM only reads,
+// must be running.
 func checkServices(f HostFacts) []Problem {
 	var out []Problem
 	add := func(sev Severity, format string, args ...any) {
@@ -80,8 +80,8 @@ func checkServices(f HostFacts) []Problem {
 	return out
 }
 
-// checkEximLog applies the log half of spec section 6.2 item 5: CSM reads
-// scan markers only from the Exim main log it already monitors.
+// checkEximLog checks that CSM reads scan markers only from the Exim main
+// log it already monitors.
 func checkEximLog(settings map[string]string, monitored string) []Problem {
 	var out []Problem
 	add := func(sev Severity, format string, args ...any) {

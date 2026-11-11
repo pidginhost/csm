@@ -16,7 +16,7 @@ import (
 )
 
 // BusyRetry is how soon a pass runs again while another CSM transaction
-// holds the Exim lock (spec section 6.5).
+// holds the Exim lock.
 const BusyRetry = 20 * time.Second
 
 // codeObserve reports an integration that observe mode leaves in place.
@@ -139,7 +139,7 @@ type LearnerTarget struct {
 	Prefix         string
 }
 
-// Pass brings the host towards d once (spec sections 6.1 and 6.5). A
+// Pass brings the host towards d once. A
 // disabled pass reads only the host's mail stack and CSM's own files, and
 // runs no other command unless it finds something to remove.
 func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {

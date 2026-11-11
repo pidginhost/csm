@@ -46,7 +46,7 @@ type rawResult struct {
 	Confirmed *bool           `json:"confirmed"`
 }
 
-// ParseInspection validates a plugin reply (spec 7.4). explicit is the
+// ParseInspection validates a plugin reply. explicit is the
 // digest list of an exact-only check, nil for a body inspection. Anything
 // missing, unexpected, duplicate, malformed or failed invalidates the whole
 // inspection; it never reads as a miss. Errors are fixed text.

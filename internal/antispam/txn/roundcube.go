@@ -9,7 +9,7 @@ import (
 
 // roundcube applies the webmail include change after rspamd and Exim are
 // verified, then checks what a fresh Roundcube request loads through
-// cPanel's PHP (spec 6.4). An include that does not take effect, or whose
+// cPanel's PHP. An include that does not take effect, or whose
 // check fails, is put back to its prior state alone and reported; learning
 // and the rest of the transaction stand. A removal is reported, never
 // undone. The include still rolls back with an enclosing failure.

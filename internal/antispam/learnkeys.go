@@ -23,7 +23,7 @@ const (
 // last, so a crash during first generation leaves an incomplete set.
 var LearningKeyNames = []string{KeyFuzzy, KeyShingles, KeyRead, KeyWrite, KeyPrefix}
 
-// Hash-affecting values both CSM fuzzy rules pin (spec 6.2). Changing any of
+// Hash-affecting values both CSM fuzzy rules pin. Changing any of
 // them changes every digest, so they are part of the hash generation.
 const (
 	LearningMinLength    = 32

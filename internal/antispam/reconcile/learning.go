@@ -8,7 +8,7 @@ import (
 
 // LearningState remembers a learning configuration whose apply failed the
 // learning check, so learning stays off instead of reloading rspamd with the
-// same failing configuration every pass (spec 6.1).
+// same failing configuration every pass.
 type LearningState struct {
 	mu sync.Mutex
 	// generation is the held learning configuration; empty holds nothing.

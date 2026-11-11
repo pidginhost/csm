@@ -15,7 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 )
 
-// Limits of the native calls (spec 7.4, 14). RequestTimeout is provisional
+// Limits of the native calls. RequestTimeout is provisional
 // until Plan C's benchmark records a measurement.
 const (
 	RequestTimeout = 5 * time.Second
@@ -45,7 +45,7 @@ var (
 	ErrPeer      = errors.New("controller socket is not served by rspamd")
 )
 
-// Client speaks the native calls of spec 7.4 over rspamd's private
+// Client speaks the native learning calls over rspamd's private
 // controller socket. Mutations are never repeated automatically.
 type Client struct {
 	Controller string

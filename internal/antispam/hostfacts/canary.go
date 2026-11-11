@@ -24,7 +24,7 @@ const (
 // Canary scans one message from the canary address with only the CSM_IP
 // rule enabled and returns the generation its CSM_IP_CANARY option names
 // ("" when the symbol is absent). no_log and no_stat keep the scan out of
-// rspamd's history and statistics (spec 8.4). Errors never repeat the reply.
+// rspamd's history and statistics. Errors never repeat the reply.
 func Canary(ctx context.Context, socket string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, canaryTimeout)
 	defer cancel()

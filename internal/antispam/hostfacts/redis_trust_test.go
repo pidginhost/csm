@@ -401,7 +401,7 @@ func TestCollectLearningBoundsDovecot(t *testing.T) {
 	}
 }
 
-// The controller trusts rspamd's uid (ruling P6). A user that may run
+// The controller trusts rspamd's uid. A user that may run
 // tenant code and resolves to it is a proven share. When CSM cannot rule a
 // share out, because the account list, a uid lookup or /etc/passwd cannot
 // be read, that is an error, not a share. A proven share wins over another

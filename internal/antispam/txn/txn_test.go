@@ -580,7 +580,7 @@ func TestApplyRollsBackEveryStep(t *testing.T) {
 	}
 }
 
-// Spec 6.3 step 5: when Exim is inactive after the reload, rollback starts
+// When Exim is inactive after the reload, rollback starts
 // it on the restored configuration, and a reload refused because the unit
 // is stopped does not count against the restore.
 func TestApplyStartsEximThatStoppedAfterReload(t *testing.T) {

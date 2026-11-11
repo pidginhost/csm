@@ -201,7 +201,7 @@ func TestBackupNameClashFailsTheWrite(t *testing.T) {
 }
 
 // Removal on cPanel deletes CSM's files and never restores or deletes a
-// backup (spec 5.5); Postfix restores them (TestRemovePostfixRestoresCopies).
+// backup; Postfix restores them (TestRemovePostfixRestoresCopies).
 func TestRemoveKeepsBackups(t *testing.T) {
 	f := newFake(t)
 	writeTest(t, f.root+actionsPath, foreignActions, 0o644)

@@ -6,7 +6,7 @@ import (
 )
 
 // An engine that found its ledger out of step with storage turns learning
-// off like any other state mismatch (spec 10: core-only reconcile).
+// off like any other state mismatch (core-only reconcile).
 func TestResolveLearningLearnerMismatch(t *testing.T) {
 	f := safeLearningFacts()
 	f.LearnerMismatch = true

@@ -40,7 +40,7 @@ type Charge struct {
 	Usage    Usage `json:"usage"`
 }
 
-// Phase is a target's publication phase (spec 7.4 "Publishing a target").
+// Phase is a target's publication phase.
 type Phase string
 
 // Publication phases. The phase is persisted before every native send.

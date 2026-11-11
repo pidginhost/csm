@@ -453,7 +453,7 @@ func TestSchedulerOptOutCancelsUnsent(t *testing.T) {
 	}
 }
 
-// Spec 5: an observed opt-out cancels the learner's unsent reservations
+// An observed opt-out cancels the learner's unsent reservations
 // too, including when no folder state is left to reset.
 func TestSchedulerOptOutCancelsLearnerReservations(t *testing.T) {
 	f := newWatch(t, 2)

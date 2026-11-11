@@ -8,7 +8,7 @@ const (
 	MaxHeaderFields = 2048
 )
 
-// Verdict is the X-Spam-Status rule of spec 7.3.
+// Verdict is what a message's X-Spam-Status header says.
 type Verdict int
 
 // Verdicts. Only VerdictEligible may become a report.

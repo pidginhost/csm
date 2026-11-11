@@ -8,14 +8,14 @@ import (
 	"github.com/pidginhost/csm/internal/antispam"
 )
 
-// Consecutive probe results that change rspamd's state (spec section 7).
+// Consecutive probe results that change rspamd's state.
 const (
 	pingDown = 3
 	pingUp   = 2
 )
 
 // Health tracks rspamd's scan socket and the scans the mail logs record
-// while antispam is enabled (spec section 7). The probe loop and the log
+// while antispam is enabled. The probe loop and the log
 // watchers use it concurrently.
 type Health struct {
 	mu      sync.Mutex

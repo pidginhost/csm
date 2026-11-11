@@ -8,7 +8,7 @@ import (
 )
 
 // ReplacedDir holds a root-only copy of each operator file CSM replaced,
-// until the operator deletes it (spec 5.5). The copies are the durable
+// until the operator deletes it. The copies are the durable
 // record: the daemon reports one warning per file found here.
 const ReplacedDir = "/var/lib/csm/antispam/replaced"
 

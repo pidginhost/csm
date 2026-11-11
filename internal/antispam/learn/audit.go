@@ -19,7 +19,7 @@ import (
 const AuditBatch = 50
 
 // Retention is how long a cluster lives after its latest committed or
-// reserved admission (spec 7.4).
+// reserved admission.
 const Retention = 90 * 24 * time.Hour
 
 const (
@@ -58,7 +58,7 @@ type auditState struct {
 }
 
 // FreshMatchingAllowed reports whether a full audit and repair rotation has
-// completed since start or since anchors were found missing (spec 7.4).
+// completed since start or since anchors were found missing.
 func (p *Publisher) FreshMatchingAllowed() bool { return p.audit.covered }
 
 // RebuildNeeded reports live anchors found missing and not yet restored by a

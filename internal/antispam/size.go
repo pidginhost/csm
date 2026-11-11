@@ -128,8 +128,8 @@ func dumpObjectAs[T any](out []byte, section string) (map[string]T, error) {
 	return fields, nil
 }
 
-// checkMessageSize applies spec section 6.2 item 10: rspamd must accept
-// every message Exim accepts, with the envelope Exim adds.
+// checkMessageSize checks that rspamd accepts every message Exim accepts,
+// with the envelope Exim adds.
 func checkMessageSize(settings map[string]string, options CommandResult) []Problem {
 	var out []Problem
 	add := func(sev Severity, format string, args ...any) {
