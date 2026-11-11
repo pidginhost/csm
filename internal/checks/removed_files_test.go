@@ -71,6 +71,77 @@ func TestFailedQuarantineIsNotRemembered(t *testing.T) {
 	}
 }
 
+// Audit hashing is bounded, but a successful quarantine must rearm alerts
+// even when the retained file is too large to have an audit digest.
+func TestQuarantineRemembersUnhashedRemovedFile(t *testing.T) {
+	withActionSink(t)
+	path := filepath.Join(t.TempDir(), "large.php")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	const size = 65 << 20
+	if truncateErr := f.Truncate(size); truncateErr != nil {
+		t.Fatal(truncateErr)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, seq := RemovedFilesSince(0)
+	qPath := filepath.Join(t.TempDir(), "large.php")
+	if err := quarantineTarget(path, qPath, info, quarantineMetadata(path, info, "webshell")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("source was not removed: %v", err)
+	}
+	if retained := actionlog.Stat(qPath); !retained.Exists || retained.Size != size || retained.Digest != "" {
+		t.Fatalf("expected an unhashed retained file: %+v", retained)
+	}
+	got, ok := RemovedFileAt(path)
+	if !ok || got.SHA256 != "" || got.Size != size || got.Action != "quarantine" {
+		t.Fatalf("successful unhashed quarantine not remembered: %+v, ok=%t", got, ok)
+	}
+	newer, next := RemovedFilesSince(seq)
+	if len(newer) != 1 || newer[0].Path != path || next != got.Seq {
+		t.Fatalf("removals = %+v, sequence = %d; want the unhashed file", newer, next)
+	}
+}
+
+func TestQuarantineDoesNotRememberDirectoryOrSpool(t *testing.T) {
+	withActionSink(t)
+	for _, directory := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "entry")
+		if directory {
+			if err := os.Mkdir(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(path, []byte("mail body"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := quarantineMetadata(path, info, "test")
+		if !directory {
+			meta.SpoolDir = filepath.Dir(path)
+		}
+		qPath := filepath.Join(t.TempDir(), "entry")
+		if err := quarantineTarget(path, qPath, info, meta); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := RemovedFileAt(path); ok {
+			t.Fatalf("directory=%t: unexpected removal entry: %+v", directory, got)
+		}
+	}
+}
+
 // A clean replaces the file in place. What it took away is the original
 // content, which is what a restore loop writes back.
 func TestCleanRemembersOriginalContent(t *testing.T) {
@@ -110,7 +181,7 @@ func TestRemovedFileLookupNormalisesThePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a", "index.php")
 	rememberRemovedFile(path, "digest", 10, "quarantine")
 
-	if _, ok := RemovedFileAt(filepath.Join(filepath.Dir(path), ".", "index.php")); !ok {
+	if _, ok := RemovedFileAt(filepath.Dir(path) + "/./index.php"); !ok {
 		t.Fatal("an equivalent spelling of the path missed the removal")
 	}
 }

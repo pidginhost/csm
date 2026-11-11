@@ -1028,8 +1028,6 @@ func (d *Daemon) Run() error {
 		initialFindings = withoutFixedFindings(initialFindings, permFixedKeys)
 	}
 
-	d.store.Update(initialFindings)
-	d.store.MarkAlerted(newFindings)
 	// Merge initial scan findings into the existing set. Previous deep scan
 	// results (outdated_plugins, wp_core, etc.) persist across restarts until
 	// the next deep scan replaces them. ClearLatestFindings is NOT called
@@ -1785,6 +1783,7 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	// while the daemon was down reach the set only through this scan.
 	d.noteFTPCustomers(initialFindings)
 	d.store.AppendHistory(initialFindings)
+	d.forgetRemovedFileAlerts(nil)
 	unfilteredNew := d.store.FilterNew(initialFindings)
 	suppressions := d.store.LoadSuppressions()
 	// Copy: with no rules the filter returns its input, and newFindings grows.
@@ -1833,6 +1832,9 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
 	candidates := d.deliveryCandidates(filterUnsuppressedFindings(d.store, initialFindings, suppressions), newFindings, suppressions)
 	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, candidates, operatorAlertableFindings, d.store)
+	d.store.Update(withoutFixedFindings(initialFindings, permFixedKeys))
+	d.store.MarkAlerted(newFindings)
+	d.forgetRemovedFileAlerts(initialFindings)
 	return newFindings, permFixedKeys
 }
 

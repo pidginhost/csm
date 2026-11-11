@@ -28,7 +28,8 @@ func TestForgetFileAlertsClearsEveryFindingAboutThePath(t *testing.T) {
 	other := alert.Finding{Check: "obfuscated_php", Message: "other file", FilePath: "/home/alice/public_html/other.php"}
 	noPath := alert.Finding{Check: "webshell", Message: "no path"}
 	all := []alert.Finding{realtime, scanned, other, noPath, dismissed}
-	s.Update([]alert.Finding{realtime, scanned, other, noPath})
+	internal := alert.Finding{Check: "_internal", Message: "sentinel", FilePath: removedPath}
+	s.Update([]alert.Finding{realtime, scanned, other, noPath, dismissed, internal})
 	if got := s.FilterNew(all); len(got) != 0 {
 		t.Fatalf("setup: findings already new before the removal: %v", newKeys(got))
 	}
@@ -41,6 +42,46 @@ func TestForgetFileAlertsClearsEveryFindingAboutThePath(t *testing.T) {
 	}
 	if entry, ok := s.EntryForKey(dismissed.Key()); !ok || !entry.IsBaseline {
 		t.Fatalf("dismissal forgotten: %+v ok=%t", entry, ok)
+	}
+	if entry, ok := s.EntryForKey(internal.Key()); !ok || entry.Path != removedPath {
+		t.Fatalf("internal entry forgotten: %+v ok=%t", entry, ok)
+	}
+}
+
+// Delivery creates entries before Update, including for action findings that
+// never reach Update. A removal must clear them and invalidate old receipts.
+func TestForgetFileAlertsClearsDeliveryEntries(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		s := openTestStore(t)
+		f := alert.Finding{Check: "webshell", Message: "delivered", FilePath: "/home/alice/public_html/wp-includes/./index.php"}
+		batch := []alert.Finding{f}
+		selected, finish := s.BeginDelivery(batch)
+		if len(selected) != 1 {
+			t.Fatal("setup: first delivery was not selected")
+		}
+		if completed {
+			finish(selected)
+		}
+
+		s.ForgetFileAlerts(removedPath)
+
+		if entry, ok := s.EntryForKey(f.Key()); ok {
+			t.Fatalf("completed=%t: delivery entry survived removal: %+v", completed, entry)
+		}
+		returned, finishReturn := s.BeginDelivery(batch)
+		if len(returned) != 1 {
+			t.Fatal("return of removed file was not offered for delivery")
+		}
+		if !completed {
+			finish(selected)
+			if entry, _ := s.EntryForKey(f.Key()); entry.Emailed != "" {
+				t.Fatal("old delivery muted the returned file")
+			}
+		}
+		finishReturn(returned)
+		if got := offered(s, batch...); len(got) != 0 {
+			t.Fatal("return's delivery receipt was lost")
+		}
 	}
 }
 

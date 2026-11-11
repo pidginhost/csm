@@ -161,6 +161,9 @@ file quarantine or cleaning. Other response families have their own controls.
 When CSM quarantines or cleans a file, it clears the alert state it kept for
 that file. If a detection finds the file there again, the finding is reported
 as new instead of being held back as a repeat.
+This also applies when the quarantine audit record has no content digest or
+notification delivery is still in progress. The initial scan clears this state
+before live alert dispatch starts. Dismissals remain in effect.
 
 CSM also remembers, for seven days, the content each quarantine or clean took
 away. A process that writes the same bytes back to the same path raises

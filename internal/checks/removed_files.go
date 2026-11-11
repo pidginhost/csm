@@ -34,7 +34,7 @@ var removedFiles struct {
 }
 
 func rememberRemovedFile(path, digest string, size int64, action string) {
-	if path == "" || digest == "" {
+	if path == "" {
 		return
 	}
 	now := removedFilesNow()

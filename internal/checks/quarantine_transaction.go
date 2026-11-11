@@ -30,9 +30,8 @@ func quarantineVersionedTargetFD(path, qPath string, info os.FileInfo, metadata 
 }
 
 func quarantineTargetWith(path, qPath string, info os.FileInfo, metadata QuarantineMeta, move func(string, string, os.FileInfo, []byte) error) (err error) {
-	before := actionlog.FromInfo(info)
 	existed := actionlog.Metadata(qPath).Exists
-	defer func() { recordQuarantineAction(path, qPath, metadata, before, existed, err) }()
+	defer func() { recordQuarantineAction(path, qPath, metadata, info, existed, err) }()
 	data, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding quarantine metadata: %w", err)
@@ -62,14 +61,14 @@ var quarantineTargetFn = func(path, qPath string, info os.FileInfo, data []byte)
 // recordQuarantineAction writes the unified action record for one quarantine.
 // The digest of the removed content is the evidence a reviewer needs: it
 // distinguishes "this exact file left the account" from "something was moved".
-func recordQuarantineAction(path, qPath string, metadata QuarantineMeta, before *actionlog.FileState, existed bool, err error) {
+func recordQuarantineAction(path, qPath string, metadata QuarantineMeta, info os.FileInfo, existed bool, err error) {
 	rec := actionlog.Record{
 		Op:        "respond.quarantine_file",
 		Actor:     actionlog.DefaultActor(),
 		Target:    path,
 		Reason:    metadata.Reason,
 		FindingID: metadata.FindingID,
-		Before:    before,
+		Before:    actionlog.FromInfo(info),
 		After:     actionlog.Metadata(path),
 		Result:    actionlog.Applied,
 	}
@@ -91,9 +90,9 @@ func recordQuarantineAction(path, qPath string, metadata QuarantineMeta, before 
 			rec.Result = actionlog.Refused
 		}
 	}
-	// Only a regular file's retained copy carries a digest. Mail spool
-	// entries are not files a tenant can write back.
-	if rec.Result == actionlog.Applied && metadata.SpoolDir == "" && rec.Before != nil {
+	// Audit hashing can omit a digest; a successful removal still rearms
+	// alerts. Mail spool entries are not files a tenant can write back.
+	if rec.Result == actionlog.Applied && info.Mode().IsRegular() && metadata.SpoolDir == "" {
 		rememberRemovedFile(path, rec.Before.Digest, rec.Before.Size, "quarantine")
 	}
 	actionlog.Write(rec)
