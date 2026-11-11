@@ -23,6 +23,10 @@ func (*funnelBlocker) UnblockIP(string) error { return nil }
 func (*funnelBlocker) IsBlocked(string) bool  { return false }
 
 func TestFunnelHandsTheOwnerCanonicalAddressEvidence(t *testing.T) {
+	// The finding is an HTTP peer from a web server that logs it directly.
+	prev := checks.CurrentHTTPRewrite()
+	checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteNone})
+	t.Cleanup(func() { checks.SetHTTPRewrite(prev) })
 	for _, challenged := range []bool{false, true} {
 		t.Run(map[bool]string{false: "block", true: "challenge"}[challenged], func(t *testing.T) {
 			fixture := newOwnerFixture(t)

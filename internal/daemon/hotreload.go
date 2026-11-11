@@ -61,6 +61,11 @@ func recordReloadResult(result string) {
 //
 // ROADMAP item 7.
 func (d *Daemon) reloadConfig() {
+	// Every reload attempt re-reads the web server, including one that
+	// changes no setting or fails: an operator who changed the web server
+	// reloads CSM to have it read again.
+	d.refreshHTTPRewrite()
+
 	// Settings saves use the same lock through signing and publication. A
 	// reload must not sign their bytes or overwrite their newer live snapshot.
 	configMu := integrity.ConfigWriteMutex()
@@ -224,6 +229,7 @@ func (d *Daemon) reconcileHotReloadables() {
 // failing step is logged rather than refused: the operator sees the saved
 // values and the log explains what did not reach a subsystem.
 func (d *Daemon) applySavedConfig() {
+	d.refreshHTTPRewrite()
 	cfg := d.activeOrStartupCfg()
 	if err := installAccountExtractorFromConfig(cfg); err != nil {
 		csmlog.Error("settings save: account extractor update failed", "err", err)

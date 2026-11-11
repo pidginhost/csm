@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/processctx"
 )
@@ -21,6 +22,11 @@ func TestMain(m *testing.M) {
 	// not change shape on a Debian-based test host. Tests that need another
 	// directory override it with withCronSpoolDir.
 	cronSpoolWatchDir = "/var/spool/cron"
+	// The test host's web server is not the one a test describes. The
+	// production reader stays reachable for the test that exercises it.
+	productionDetectHostHTTPRewrite = detectHostHTTPRewrite
+	detectHostHTTPRewrite = func() checks.HTTPRewrite { return checks.HTTPRewrite{State: checks.RewriteNone} }
+	checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteNone})
 	os.Exit(m.Run())
 }
 

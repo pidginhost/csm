@@ -159,6 +159,8 @@ func (d *Daemon) startAdmissionWith(opts admissionowner.Options) {
 	if d.admission != nil {
 		return
 	}
+	// The owner mints from its start: publish the web server state first.
+	d.refreshHTTPRewrite()
 	d.admission = admissionowner.Start(opts)
 	ownerKeepsDryRunExamples.Store(d.admission.OwnsDryRunExamples())
 	setResponseAdmission(d.admission)

@@ -839,8 +839,12 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 
 // accessLogSighting is the record of an access-log line its parser reads as
 // a request from ip itself. A trusted proxy's own address is never a
-// sighting: the requests it carries are its clients'.
+// sighting: the requests it carries are its clients'. Nor is a line from a
+// web server that replaces the peer address it logs.
 func accessLogSighting(rec syslogRecord, ip string, cfg *config.Config) scanRecord {
+	if CurrentHTTPRewrite().State != RewriteNone {
+		return scanRecord{}
+	}
 	parsed, ok := parseAccessLogRecord(rec.text)
 	if !ok || parsed.RemoteIP != ip || IsTrustedProxy(parsed.RemoteIP, cfg) {
 		return scanRecord{}

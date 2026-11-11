@@ -108,10 +108,13 @@ const (
 	// operator did not configure as trusted, which carries many visitors
 	// and cannot be blocked as one of them (spec 5.8).
 	CauseProxyPeer
+	// CauseRewrittenLog: the web server may replace the logged address;
+	// this build reads no separate connecting peer (spec 5.8).
+	CauseRewrittenLog
 	causeEnd
 )
 
-var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable", "proxy_peer"}
+var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable", "proxy_peer", "rewritten_log"}
 
 func (c Cause) Valid() bool { return c > 0 && c < causeEnd }
 

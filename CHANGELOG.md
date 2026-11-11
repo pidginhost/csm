@@ -9,8 +9,13 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Changed
+
+- Automatic response forecasts refuse web findings when Apache, nginx or LiteSpeed rewrites logged client addresses or CSM cannot read that setting.
+
 ### Fixed
 
+- On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
 - The web server hardening audit reads continued settings correctly and warns when the selected configuration or its includes cannot be read.
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 

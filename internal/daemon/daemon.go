@@ -2072,6 +2072,12 @@ func (d *Daemon) deepScanner() {
 }
 
 func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
+	// A web server can start or stop rewriting client addresses without
+	// telling CSM; re-read it every critical tick.
+	if tier == checks.TierCritical {
+		d.refreshHTTPRewrite()
+	}
+
 	// Snapshot the live config ONCE for the whole tick. Calling
 	// d.currentCfg() twice (once for integrity, once for RunTier)
 	// lets a SIGHUP land between the two reads and split the tick

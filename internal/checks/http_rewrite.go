@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -35,6 +36,30 @@ type HTTPRewrite struct {
 	Directive string
 	File      string
 	Reason    string
+}
+
+func (s RewriteState) String() string {
+	switch s {
+	case RewriteNone:
+		return "none"
+	case RewriteActive:
+		return "active"
+	}
+	return "unknown"
+}
+
+// httpRewrite is the state the daemon last read; nil until it reads one.
+var httpRewrite atomic.Pointer[HTTPRewrite]
+
+// SetHTTPRewrite publishes the web server state admission reads.
+func SetHTTPRewrite(r HTTPRewrite) { httpRewrite.Store(&r) }
+
+// CurrentHTTPRewrite is the published state, unknown before the first.
+func CurrentHTTPRewrite() HTTPRewrite {
+	if r := httpRewrite.Load(); r != nil {
+		return *r
+	}
+	return HTTPRewrite{}
 }
 
 // lswsConfigPath is LiteSpeed's own server configuration.
