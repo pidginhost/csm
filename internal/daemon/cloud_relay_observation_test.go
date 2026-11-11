@@ -65,6 +65,45 @@ func TestEximHistoryScanNamesItsNewestSend(t *testing.T) {
 	})
 }
 
+func TestEximHistoryFractionalTimeDedup(t *testing.T) {
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.Local)
+	base := now.Add(-2 * time.Hour)
+	for _, metadata := range []string{"", " [12345]", " " + base.Format("-0700") + " [12345]"} {
+		t.Run(metadata, func(t *testing.T) {
+			lines := retroSends(base)
+			for i := range lines {
+				at := base.Add(time.Duration(i)*time.Minute + 125*time.Millisecond)
+				lines[i] = stampedAs(lines[i], at.Format(time.DateTime+".000")+metadata)
+			}
+			path := writeEximFixture(t, lines)
+			withGlobalStore(t, func(*store.DB) {
+				cfg := &config.Config{}
+				if got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour); len(got) != 1 {
+					t.Fatalf("first scan returned %d findings, want one", len(got))
+				}
+				if got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour); len(got) != 0 {
+					t.Fatalf("unchanged fractional timestamps repeated %d findings", len(got))
+				}
+
+				// A later send in the same second is new evidence, not a repeat.
+				at := base.Add(17*time.Minute + 250*time.Millisecond)
+				line := eximLine(at, "info@example.com", retroTestPTR, "203.0.113.22", "subject")
+				lines = append(lines, stampedAs(line, at.Format(time.DateTime+".000")+metadata))
+				path = writeEximFixture(t, lines)
+				got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour)
+				if len(got) != 1 || got[0].SourceIP != "203.0.113.22" ||
+					!got[0].Observation.ObservedAt.Equal(at) ||
+					!sameRef(got[0].Observation, recordRef(t, path, offsetOf(lines, 18), lines[18])) {
+					t.Fatalf("later fractional send did not name its own peer and record: %+v", got)
+				}
+				if got := ScanEximHistoryForCloudRelay(cfg, path, now, 24*time.Hour); len(got) != 0 {
+					t.Fatalf("later fractional send repeated %d findings", len(got))
+				}
+			})
+		})
+	}
+}
+
 // The realtime watcher and the retrospective scan read the same mainlog
 // record; both name it alike, so independence counts it once. The watcher
 // reads the lines through its own framing, with either line ending.

@@ -25,11 +25,9 @@ func SplitPrefix(line string, local *time.Location) (Prefix, string, bool) {
 	field, after := nextField(rest)
 	if isPID(field) {
 		// Exim writes the zone with the time, then the PID. A zone after
-		// the PID is read too; anything else there is text.
+		// the PID is read too.
 		p.PID, rest = field[1:len(field)-1], after
-		if field, after = nextField(rest); !validOffset(field) {
-			field = ""
-		}
+		field, after = nextField(rest)
 	}
 	stamp := date + " " + clock
 	var err error

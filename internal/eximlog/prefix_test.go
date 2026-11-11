@@ -81,3 +81,18 @@ func TestSplitPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitPrefixRejectsInvalidZoneAfterPID(t *testing.T) {
+	local := time.FixedZone("local", 3*3600)
+	for _, zone := range []string{"+2400", "-0060", "+2500", "+030", "-03:00"} {
+		t.Run(zone, func(t *testing.T) {
+			line := "2026-11-09 10:00:00 [12345] " + zone + " 1tAbCd-000123-Ab Completed"
+			if p, rest, ok := SplitPrefix(line, local); ok || p != (Prefix{}) || rest != "" {
+				t.Errorf("invalid zone returned prefix %+v, rest %q, ok %v", p, rest, ok)
+			}
+			if at, ok := LineTime(line, local); ok || !at.IsZero() {
+				t.Errorf("invalid zone dated the line at %v", at)
+			}
+		})
+	}
+}

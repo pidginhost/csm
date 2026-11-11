@@ -491,5 +491,5 @@ func markReportedRetro(user string, latestEvent time.Time) {
 	if db == nil {
 		return
 	}
-	_ = db.SetMetaString("cloudrelay_retro:"+user, latestEvent.Format(time.RFC3339))
+	_ = db.SetMetaString("cloudrelay_retro:"+user, latestEvent.Format(time.RFC3339Nano))
 }

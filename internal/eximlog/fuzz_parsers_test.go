@@ -198,3 +198,26 @@ func FuzzEximLineTime(f *testing.F) {
 		}
 	})
 }
+
+func FuzzSplitPrefix(f *testing.F) {
+	f.Add("Completed")
+	f.Add("<= sender@example.com H=(client) [192.0.2.10] P=esmtpa")
+	f.Add("+2500 [123] 1a-b-C Frozen")
+	f.Fuzz(func(t *testing.T, suffix string) {
+		local := time.FixedZone("local", 3*3600)
+		want := time.Date(2026, 11, 9, 10, 0, 0, 125e6, local)
+		for _, metadata := range []string{" [123]", " +0300 [123]", " [123] +0300"} {
+			line := "2026-11-09 10:00:00.125" + metadata + " 1a-b-C " + suffix
+			p, rest, ok := SplitPrefix(line, local)
+			if !ok || !p.Time.Equal(want) || p.PID != "123" || p.MessageID != "1a-b-C" || rest != strings.TrimLeft(suffix, " \t") {
+				t.Fatalf("payload changed prefix or text: %+v, %q, %v", p, rest, ok)
+			}
+		}
+		for _, metadata := range []string{" +2400 [123]", " [123] +2400", " -0060 [123]", " [123] -0060"} {
+			line := "2026-11-09 10:00:00.125" + metadata + " 1a-b-C " + suffix
+			if p, rest, ok := SplitPrefix(line, local); ok || p != (Prefix{}) || rest != "" {
+				t.Fatalf("invalid zone returned prefix %+v, rest %q, ok %v", p, rest, ok)
+			}
+		}
+	})
+}
