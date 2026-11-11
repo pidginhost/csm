@@ -1379,6 +1379,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-tab-delays"`,
 		`id="email-tab-sending"`,
 		`id="email-held-tbody"`,
+		`id="email-tab-suspended"`,
+		`id="email-suspended-tbody"`,
 		`class="csm-toolbar"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -1433,6 +1435,9 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`/api/v1/email/held`,
 		`renderHeld`,
 		`/api/v1/email/checks`,
+		`/api/v1/email/suspensions`,
+		`renderSuspended`,
+		`releaseSuspended`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("email.js missing phase-8 hook %q", want)
@@ -1490,6 +1495,38 @@ func TestEmailForwardersRenderEscapesInventoryValues(t *testing.T) {
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("email.js forwarder renderer missing escape fragment %q", fragment)
+		}
+	}
+}
+
+// TestEmailSuspendedRenderBuildsNoMarkup ensures mailbox names, reasons and
+// actors from mail logs are set as text, never parsed as HTML, and that the
+// finding link and Release action carry values through safe channels.
+func TestEmailSuspendedRenderBuildsNoMarkup(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	start := strings.Index(text, "// ---------- Suspended mailboxes tab")
+	end := strings.Index(text, "// ---------- Forwarders tab")
+	if start < 0 || end < start {
+		t.Fatal("email.js missing suspended mailboxes block before the forwarders tab")
+	}
+	block := text[start:end]
+	for _, banned := range []string{`innerHTML`, `outerHTML`, `insertAdjacentHTML`} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("suspended mailboxes renderer builds markup from strings: %q", banned)
+		}
+	}
+	for _, fragment := range []string{
+		`rejectCell('Mailbox or account', r.subject)`,
+		`link.href = '/findings?check=' + encodeURIComponent(r.check || '');`,
+		`node('div', 'text-muted small', r.reason || '')`,
+		`'/api/v1/email/suspensions/' + encodeURIComponent(r.id) + '/release'`,
+	} {
+		if !strings.Contains(block, fragment) {
+			t.Fatalf("email.js suspended mailboxes renderer missing fragment %q", fragment)
 		}
 	}
 }

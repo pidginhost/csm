@@ -109,6 +109,11 @@
             </button>
         </li>
         <li class="nav-item" role="presentation">
+            <button class="nav-link" id="email-tab-suspended" data-bs-toggle="tab" data-bs-target="#email-pane-suspended" type="button" role="tab" aria-controls="email-pane-suspended" aria-selected="false">
+                <i class="ti ti-user-off"></i>&nbsp;Suspended<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-rejects" data-bs-toggle="tab" data-bs-target="#email-pane-rejects" type="button" role="tab" aria-controls="email-pane-rejects" aria-selected="false">
                 <i class="ti ti-mail-off"></i>&nbsp;Rejects<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
@@ -321,6 +326,32 @@
                         </thead>
                         <tbody id="email-held-tbody">
                             <tr><td colspan="9" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Suspended: mailboxes and accounts CSM suspended, with Release -->
+        <div class="tab-pane fade" id="email-pane-suspended" role="tabpanel" aria-labelledby="email-tab-suspended" tabindex="0">
+            <div class="card">
+                <div class="card-body border-bottom">
+                    <div class="text-muted small">Releasing does not change the password. Have the customer change it first.</div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-suspended-table">
+                        <thead>
+                            <tr>
+                                <th>Mailbox or account</th>
+                                <th>Suspended</th>
+                                <th>Reason</th>
+                                <th>Applied</th>
+                                <th>Status</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-suspended-tbody">
+                            <tr><td colspan="6" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
