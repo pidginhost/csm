@@ -46,7 +46,7 @@ func TestRemoveRollbackRequiresSuccessfulCommands(t *testing.T) {
 	}
 }
 
-// Spec 6.3 step 5, which 6.4 shares: a stopped Exim is started on the
+// Apply and remove alike: a stopped Exim is started on the
 // restored configuration, never restarted; one that stays down fails the
 // restore.
 func TestRemoveStartsStoppedEximButNeverRestarts(t *testing.T) {
@@ -427,7 +427,7 @@ func TestRemoveWaitsForStableServiceActivity(t *testing.T) {
 	}
 }
 
-// A missing cPanel list makes installed hooks defer mail (spec 3), so
+// A missing cPanel list makes installed hooks defer mail, so
 // taking the hooks out must not depend on that list.
 func TestRemoveIgnoresMissingNamedLists(t *testing.T) {
 	f := installedForRemoval(t)

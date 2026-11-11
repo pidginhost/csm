@@ -96,7 +96,7 @@ func stageLearningOnlyDatabase(stageRoot, stateDir string) error {
 	return os.Rename(prepared, target)
 }
 
-// markRestoredLearning holds restored learning state (spec 7.4): a
+// markRestoredLearning holds restored learning state: a
 // restored ledger or key set waits for the operator's confirmation before
 // the learner resumes it.
 func markRestoredLearning(stateDir string, restoredKeys bool) error {
@@ -358,7 +358,7 @@ func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
 	}
 	if staged.hasLearning && dst.LearningDir != "" {
 		// The replaced keys and anchors stay until the operator approves
-		// their privacy cleanup (spec 7.4).
+		// their privacy cleanup.
 		if err := os.MkdirAll(filepath.Dir(dst.LearningDir), 0o700); err != nil {
 			return err
 		}

@@ -3,7 +3,6 @@
 // This file holds the access-log line parser, the per-scan aggregator
 // struct (domlogStats), the UA classifier, the bot-classifier interface,
 // and the static allowlist classifier that consults embedded bot IP ranges.
-// The rDNS verifying classifier arrives in Task 5.
 package checks
 
 import (
@@ -259,10 +258,10 @@ func (s *domlogStats) trustedFor(cfg *config.Config) clientaddr.Trusted {
 	return s.trusted
 }
 
-// scan updates counters for one parsed record. cfg is allowed to be nil
-// at Task 1 (parity tests pass nil); later tasks read thresholds from
-// it. bot is consulted before any count so a verified Googlebot does
-// not contribute to either legacy or new metrics.
+// scan updates counters for one parsed record. cfg may be nil
+// (parity tests pass nil); otherwise thresholds come from it. bot is
+// consulted before any count so a verified Googlebot does not contribute
+// to either legacy or new metrics.
 func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClassifier) {
 	// A per-vhost domlog never names a proxied request by path.
 	if rec.Central && rec.proxyPath {
@@ -420,7 +419,7 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 	// http_asn_crawl uses its OWN lookback window (default 60 min), which is
 	// wider than the flood window (default 5 min), so it must gate on its own
 	// window OUTSIDE the flood block; nesting it would cap the detector at the
-	// flood window and defeat spec section 4.1. ip is already infra/verified-bot
+	// flood window. ip is already infra/verified-bot
 	// filtered and proxy-resolved above, so it is valid here.
 	if asnCrawlWithinWindow(rec.Time, cfg, s.scanTime) {
 		s.observeASNCrawl(ip, rec, cfg)
@@ -1195,7 +1194,7 @@ func atoiSafe(s string) int {
 var errListedClient = errors.New("the resolved address is a listed proxy")
 
 // recordClient resolves rec's client: the direct peer, or the client a
-// trusted proxy chain names (spec 5.8). A trusted peer whose chain resolves
+// trusted proxy chain names. A trusted peer whose chain resolves
 // to nobody is refused, never read as the client, and so is a listed address
 // whose header is not trusted (an address of this host, or any listed address
 // while the interface set cannot be read).
@@ -1224,7 +1223,7 @@ func IsTrustedProxy(addr string, cfg *config.Config) bool {
 
 // classifyUA maps a User-Agent string to a uaKind. Matching is performed
 // on a lower-cased copy of the UA because scanner and impersonation tools
-// routinely vary case. Precedence order follows spec section 6: scanner
+// routinely vary case. Precedence order: scanner
 // signatures win over claimed-bot, claimed-bot wins over headless, etc.
 func classifyUA(ua, method string) uaKind {
 	const maxUALen = 512

@@ -52,7 +52,7 @@ func compareInputs(t *testing.T, findings []alert.AuditEvent, actions []anonActi
 	return []string{"compare", "--findings", fp, "--actions", ap}
 }
 
-// R11: every legacy automatic block in the preview window is matched by an
+// Every legacy automatic block in the preview window is matched by an
 // admission step for its finding, by a coalesced admission or a designed
 // refusal for its check in that hour or the next, or reported unexplained;
 // Invalid and overflow refusals are totalled, and what the streams cannot

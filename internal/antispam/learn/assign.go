@@ -8,7 +8,7 @@ import (
 // JoinBoundary is the probability at which a near match joins a live anchor.
 const JoinBoundary = 0.75
 
-// Contribution weights (spec 7.4 rule 5).
+// Contribution weights.
 const (
 	UIDWeight      = 2
 	OperatorWeight = 18
@@ -95,7 +95,7 @@ type resolved struct {
 	miss    bool
 }
 
-// Assign applies spec 7.4's assignment rules to a complete inspection.
+// Assign applies the assignment rules to a complete inspection.
 // gaps holds clusters with a known publication gap (anchor missing, being
 // deleted and re-added, or awaiting first publication); while any exists no
 // fresh match or seed is resolved, since a miss may be that anchor. A ledger

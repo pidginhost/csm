@@ -19,7 +19,7 @@ type IPIntelligence struct {
 	// Internal attack history
 	AttackRecord *attackdb.IPRecord `json:"attack_record,omitempty"`
 	LocalScore   int                `json:"local_score"`
-	// SpamScore is the record's spam evidence score (feeds spec 7.4).
+	// SpamScore is the record's spam evidence score.
 	SpamScore int `json:"spam_score,omitempty"`
 
 	// ThreatDB (feeds + permanent blocklist)

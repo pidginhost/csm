@@ -26,7 +26,7 @@ func (b *dryRunBlocker) BlockIP(ip, reason string, timeout time.Duration) error 
 	return err
 }
 
-// Spec 5.5: only a verified full-address block marks an address blocked
+// Only a verified full-address block marks an address blocked
 // in the attack database. In dry run a scan's would-be block is a Warning
 // finding, not a block, so the attack database keeps the address
 // unblocked; a block that applied still marks it.

@@ -729,7 +729,7 @@ func TestDeliveryPolicySeesEvent(t *testing.T) {
 }
 
 // A destination that keeps failing backs off from one minute, doubling up to
-// one hour (P3-R19). Its loss counts once for the pending summary, and it
+// one hour. Its loss counts once for the pending summary, and it
 // warns on the first failure and when the backoff reaches the hour only.
 func TestSummaryRetryBacksOffToHourly(t *testing.T) {
 	failing := true

@@ -34,7 +34,7 @@ type Scan struct {
 	MsgID    string
 }
 
-// ParseScan reads the marker CSM's scan hook logs (spec section 7). The
+// ParseScan reads the marker CSM's scan hook logs. The
 // marker must follow the line's timestamp and message ID directly and match
 // the rendered grammar in full, so text a sender controls cannot pose as one.
 func ParseScan(line string) (Scan, bool) {
@@ -52,8 +52,8 @@ func ParseScan(line string) (Scan, bool) {
 	return scanOf(m, fields[len(fields)-1])
 }
 
-// ParseRspamdScan reads the record CSM's Postfix Lua logs into rspamd's log
-// (spec section 5.2). rspamd writes "<time> #<pid>(<process>) <<task>>; ",
+// ParseRspamdScan reads the record CSM's Postfix Lua logs into rspamd's log.
+// rspamd writes "<time> #<pid>(<process>) <<task>>; ",
 // then "<module>; <function>: " and the message. The record must take the
 // module and function places, so only csm_scope.lua logs it: before the
 // first "; " a message would follow a function's ": ", and what follows

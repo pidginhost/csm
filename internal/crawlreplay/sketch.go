@@ -9,8 +9,9 @@ import (
 )
 
 // SketchParams size the disposable per-minute summaries that phase 1 uses
-// to choose m and h. They are prototypes of spec 6.3, not the production
-// sketch; plan 1.3 must reproduce these bounds against the same oracle.
+// to choose m and h. They are prototypes, not the production
+// sketch; a production sketch must reproduce these bounds against the same
+// oracle.
 type SketchParams struct {
 	M    int    `json:"m"`    // Space-Saving counters per key-minute; must exceed K
 	H    int    `json:"h"`    // smallest binding hashes kept per key-minute; at least D+K
@@ -133,7 +134,7 @@ func (k *keySketch) insert(binding string, h uint64) {
 	k.hs.add(h)
 }
 
-// sketchWindow is the spec 6.3 composition of one key's W minute summaries.
+// sketchWindow is the composition of one key's W minute summaries.
 type sketchWindow struct {
 	N     int64            // exact bound requests in the window
 	B     int64            // sum of the minute floors: bound for any absent binding
@@ -145,7 +146,7 @@ type sketchWindow struct {
 }
 
 // composeSketches composes W minute summaries into the conservative
-// residual bounds of spec 6.3. The union is recomputed from whole minutes;
+// residual bounds. The union is recomputed from whole minutes;
 // nothing is subtracted or recompressed.
 func composeSketches(minutes []*keySketch, k, h int) sketchWindow {
 	w := sketchWindow{Upper: map[string]int64{}}

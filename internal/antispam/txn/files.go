@@ -1,5 +1,5 @@
-// Package txn runs CSM's antispam apply and remove transactions on a cPanel
-// host (spec sections 6.3 and 6.4). It runs as root in the antispam worker,
+// Package txn runs CSM's antispam apply and remove transactions on cPanel
+// and Postfix hosts. It runs as root in the antispam worker,
 // under the shared Exim mutation lock and outside the daemon's sandbox.
 package txn
 
@@ -37,7 +37,7 @@ func sameContent(a, b fileState) bool {
 }
 
 // readFile reads p without following a final symbolic link or blocking on a
-// FIFO. The caller has checked p's parent directories (spec 6.2 item 9).
+// FIFO. The caller has checked p's parent directories.
 func readFile(p string) (fileState, error) {
 	// #nosec G304 -- fixed cPanel, rspamd and CSM paths from antispam.MutationTargets and the record path.
 	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -78,7 +78,7 @@ func fileMode(mode fs.FileMode) fs.FileMode {
 }
 
 // errConflict marks a file someone else changed during the transaction. It
-// is never overwritten from a stale snapshot (spec section 6.3 step 1).
+// is never overwritten from a stale snapshot.
 var errConflict = errors.New("changed by another writer during the transaction")
 
 // errDurability means the edit reached the destination but was not fsynced.

@@ -17,7 +17,7 @@ import (
 )
 
 // Timeout bounds one worker run. systemd stops the transient unit at the
-// same limit (spec section 4.2).
+// same limit.
 const Timeout = 5 * time.Minute
 
 // Command is the hidden csm subcommand that runs Handle as root.

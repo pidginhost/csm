@@ -23,7 +23,7 @@ func TestBasisValid(t *testing.T) {
 	}
 }
 
-// The order is the spec's: confidence first, then basis priority, then the
+// Grades compare confidence first, then basis priority, then the
 // lowest resolution offset. Each row pins one rule so ablating any one of
 // them fails a named case.
 func TestGradeStronger(t *testing.T) {
@@ -131,7 +131,7 @@ eval($d);`},
 // The Certain upgrade must not make the reported basis depend on the order
 // the solver happens to visit values. Both statement orders below hold the
 // same facts: $a carries a High always-remote value and a Certain literal
-// value, and $b decodes $a, so both become Certain and the spec's priority
+// value, and $b decodes $a, so both become Certain and the basis priority
 // picks always-remote.
 func TestBasisIndependentOfStatementOrder(t *testing.T) {
 	const (

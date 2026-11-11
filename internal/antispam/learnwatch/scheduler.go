@@ -18,18 +18,19 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/learn"
 )
 
-// Scheduler constants (spec 7.5). bench_test.go measures fixed synthetic
+// Scheduler constants. bench_test.go measures fixed synthetic
 // workloads on an 8-core development host with SSD storage; listing
 // latency depends on the host and filesystem.
 const (
-	// PassEvery and MaxAttempts are the spec's schedule and budget.
+	// PassEvery sets the pass interval; MaxAttempts caps submission attempts
+	// per account per pass, shared across its folders.
 	PassEvery   = 5 * time.Minute
 	MaxAttempts = 20
 	// MaxEntryErrors bounds the failed submissions of one entry, so a
 	// message that breaks the backend cannot stop every pass.
 	MaxEntryErrors = 3
 	// PassDeadline leaves time between passes even when discovery runs long;
-	// baselining a 51217-entry folder (spike S8's largest) took 1.5 s.
+	// baselining a 51217-entry folder took 1.5 s.
 	PassDeadline = 4 * time.Minute
 	// DiscoveryChunk bounds the listing work before another account's turn:
 	// about 15 ms per chunk at 29 microseconds per entry; during a
@@ -132,7 +133,7 @@ type Watcher struct {
 	submitStopped bool
 	stoppedBy     int
 	// answered: storage answered a digest query earlier this pass, so a
-	// later failure can be the message's fault (spec 7.5: a backend
+	// later failure can be the message's fault (a backend
 	// failure leaves work pending).
 	answered bool
 
@@ -214,7 +215,7 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 }
 
 // cancelRemoved cancels the unsent reservations of accounts gone from the
-// registry: a removed account has lost its eligibility (spec 7.4). Only a
+// registry: a removed account has lost its eligibility. Only a
 // complete registry read gets here. An account CSM cannot read still holds
 // its UID, and a reused UID keeps the reservation. Failures retry next pass.
 // False stops the pass so stale account data cannot authorize later opt-outs.
@@ -663,7 +664,7 @@ func (r *accountRun) owner(k FolderKey) int {
 // new baselines on re-entry.
 func (r *accountRun) eligible(ctx context.Context, rep *PassReport) bool {
 	if r.w.cfg.Postfix != nil {
-		return true // Postfix has no Spam Filters switch (spec decision 4).
+		return true // Postfix has no Spam Filters switch.
 	}
 	global, err := GlobalOptIn(r.w.cfg.GlobalPath)
 	if err != nil {

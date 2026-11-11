@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam"
 )
 
-// Remove takes out CSM's integration (spec section 6.4): Exim first, then
+// Remove takes out CSM's integration: Exim first, then
 // CSM's rspamd files, then the record. Foreign local.d files stay. A stopped
 // service is not reloaded, and the scan socket is not needed. Postfix mail
 // never passes through Exim, so there it removes rspamd files only, and it

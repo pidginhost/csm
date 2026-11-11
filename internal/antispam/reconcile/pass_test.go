@@ -158,7 +158,7 @@ func TestPassReportsProblemsAndResults(t *testing.T) {
 	}
 }
 
-// A held lock is retried soon and is not a failure (spec section 6.5).
+// A held lock is retried soon and is not a failure.
 func TestPassRetriesBusyLock(t *testing.T) {
 	h := &fakeHost{
 		assessment: antispam.Assessment{Action: antispam.Install},
@@ -182,7 +182,7 @@ func TestPassKeepsWorkerError(t *testing.T) {
 }
 
 // Observe mode reports and never changes the host, even when the
-// assessment asks for a change (spec section 4.3).
+// assessment asks for a change.
 func TestPassObserveReportsOnly(t *testing.T) {
 	d := desired(false)
 	d.Observe = true
@@ -604,7 +604,7 @@ func TestPassRendersForTheCollectedStack(t *testing.T) {
 // The replaced-file warning says what CSM will do with the copy, and must be
 // true in every state. On Postfix, removal restores the newest copy of each
 // file over CSM's own, and returning to dry run does so for actions.conf;
-// an older copy is never restored. cPanel restores nothing (spec 5.5).
+// an older copy is never restored. cPanel restores nothing.
 func TestPassReplacedFileAdvice(t *testing.T) {
 	dir := antispam.ReplacedDir + "/"
 	newestActions := antispam.Replacement{Path: antispam.ActionsPath, Backup: dir + "20260102T030405Z_actions"}

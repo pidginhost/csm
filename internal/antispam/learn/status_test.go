@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// Spec 8: root-only status exposes pending request IDs and per-cluster
+// Root-only status exposes pending request IDs and per-cluster
 // phases, so a lost CLI reply can be looked up.
 func TestRequestStatusReportsPhases(t *testing.T) {
 	f := newAuditFixture(t)

@@ -11,8 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/dovecot"
 )
 
-// Severity says what a failed precondition means for an installation
-// (spec section 6.1).
+// Severity says what a failed precondition means for an installation.
 type Severity int
 
 const (
@@ -31,7 +30,7 @@ type Problem struct {
 	Severity Severity
 	Detail   string
 	// Key separates findings of one code: the feed name, or rspamd_maps
-	// for a map redirect (feeds spec section 8).
+	// for a map redirect.
 	Key string
 }
 
@@ -160,7 +159,7 @@ type HostFacts struct {
 	// RspamdLog is where rspamd writes its log, which can hold DQS lookup
 	// names.
 	RspamdLog LogFacts
-	// IPMap is the CSM IP map file rspamd reads (feeds spec 6).
+	// IPMap is the CSM IP map file rspamd reads.
 	IPMap FileFacts
 	// GroupFiles are the operator's local.d/*_group.conf files, keyed by
 	// group; an absent file reads as empty.
@@ -249,7 +248,7 @@ type HostFacts struct {
 	RedisGuardPaused bool
 }
 
-// CheckHost evaluates the host preconditions of spec section 6.2 that hold
+// CheckHost evaluates the host preconditions that hold
 // before CSM writes anything, for the host's mail stack. Staged rspamd
 // settings are checked separately with CheckRspamd.
 func CheckHost(f HostFacts) []Problem {
@@ -385,7 +384,7 @@ func CheckHost(f HostFacts) []Problem {
 	return out
 }
 
-// checkPostfixHost applies the Postfix preconditions of spec section 5.1:
+// checkPostfixHost applies the Postfix preconditions:
 // rspamd's side of the scan socket, rspamd itself, the milter wiring, the
 // message size limits, the services and CSM's targets. CSM only reads
 // postfix's configuration.

@@ -173,7 +173,7 @@ func learnFile(action, path string, out, errOut io.Writer) bool {
 }
 
 // readLearnFile reads an operator file under the same rules as a watched
-// candidate (spec 7.1): a regular file, never a symlink, with one link,
+// candidate: a regular file, never a symlink, with one link,
 // within the size limit, unchanged while it is read.
 func readLearnFile(path string) ([]byte, error) {
 	absolute, err := filepath.Abs(path)

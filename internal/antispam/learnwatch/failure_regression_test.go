@@ -202,7 +202,7 @@ func TestSchedulerBackendRotationSurvivesDiscoveryDeadline(t *testing.T) {
 	}
 }
 
-// Spec 7.5: backend failure leaves work pending. While nothing gets an
+// Backend failure leaves work pending. While nothing gets an
 // answer, failures are not charged to the messages, however long it lasts.
 func TestSchedulerBackendOutageKeepsReports(t *testing.T) {
 	for _, outcomeError := range []bool{false, true} {
@@ -464,7 +464,8 @@ func TestSchedulerFailedInspectionChargedWhenProbeAnswers(t *testing.T) {
 	}
 }
 
-// Spec 7.5 still holds when the probe gets no answer: the failure is the
+// A backend failure still leaves work pending when the probe gets no
+// answer: the failure is the
 // backend's, nothing is charged and the pass stops at the first report.
 func TestSchedulerFailedInspectionKeptWhenProbeFails(t *testing.T) {
 	f := newWatch(t, 1)

@@ -129,7 +129,7 @@ func TestPublishActiveConfigKeepsDryRunBlocksInDryRunMode(t *testing.T) {
 	}
 }
 
-// Spec 3.6: an admission owner that runs blocks keeps the dry_run_blocks
+// An admission owner that runs blocks keeps the dry_run_blocks
 // bucket alone, so neither the live publication purge nor the periodic
 // prune touches it; without such an owner both still run.
 func TestLegacyDryRunPurgeLeavesAnOwnedBucket(t *testing.T) {

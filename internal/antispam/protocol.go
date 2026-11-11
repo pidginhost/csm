@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// MaxRequestBytes bounds one worker request (spec section 4.2).
+// MaxRequestBytes bounds one worker request.
 const MaxRequestBytes = 16 << 10
 
 // Worker operations.
@@ -266,7 +266,7 @@ type Result struct {
 	Generation string `json:"generation,omitempty"`
 	Error      string `json:"error,omitempty"`
 	// Roundcube is set when a successful transaction could not verify the
-	// webmail include; the rest of the change stands (spec 6.4).
+	// webmail include; the rest of the change stands.
 	Roundcube string `json:"roundcube,omitempty"`
 }
 

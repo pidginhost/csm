@@ -1,5 +1,5 @@
 // Package ipmap builds and writes the CSM IP map: one rspamd multimap file
-// listing CSM's own evidence about sender addresses (feeds spec 6).
+// listing CSM's own evidence about sender addresses.
 package ipmap
 
 import (
@@ -18,7 +18,7 @@ type Symbol struct {
 	Multiplier float64
 }
 
-// The CSM_IP rule's symbols, strongest first (spec 6.1). rspamd scores a
+// The CSM_IP rule's symbols, strongest first. rspamd scores a
 // symbol not in the rule's list at the rule's full score, so the writer
 // emits only these.
 var (
@@ -102,7 +102,7 @@ func listable(a netip.Addr) bool {
 // Build makes the map from src: one line per address or network, with the
 // strongest symbol winning and excluded addresses omitted. A nested address
 // or network is kept only when its symbol is stronger, because rspamd uses
-// the most specific match (spec 6.1).
+// the most specific match.
 func Build(src Sources) Map {
 	never := make([]netip.Addr, len(src.Never))
 	for i, a := range src.Never {

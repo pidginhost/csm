@@ -15,7 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam"
 )
 
-// Probe limits from spec section 7.
+// Probe limits.
 const (
 	pingTimeout = 3 * time.Second
 	maxPingBody = 4 << 10

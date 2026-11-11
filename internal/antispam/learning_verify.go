@@ -33,8 +33,8 @@ var (
 	learningRuleLearn = append(slices.Clone(learningRuleCommon), "mode", "retransmits", "write_encryption_key")
 )
 
-// CheckLearningLoaded compares what rspamd loaded with CSM's learning files
-// (spec 6.1 to 6.3): exactly the rules csm and csm_learn with the pinned
+// CheckLearningLoaded compares what rspamd loaded with CSM's learning files:
+// exactly the rules csm and csm_learn with the pinned
 // attributes and only flag 1, one fuzzy worker with the pinned transport
 // and two keypairs, the fuzzy group cap, the effective CSM_FUZZY_SPAM weight
 // from the controller's /symbols, and no score rescaling. With a dedicated
@@ -303,7 +303,7 @@ func checkLearningGroup(dump []byte) error {
 }
 
 // checkLearningSymbols reads the controller's /symbols reply, which shows
-// dynamic weight overrides configdump cannot (spike S2).
+// dynamic weight overrides configdump cannot.
 func checkLearningSymbols(reply []byte) error {
 	var groups []json.RawMessage
 	if json.Unmarshal(reply, &groups) != nil {

@@ -13,7 +13,7 @@ import (
 )
 
 // ErrStateMismatch: the ledger does not belong to the current hash keys and
-// storage, or holds records without a binding (spec 10 state_mismatch).
+// storage, or holds records without a binding.
 var ErrStateMismatch = errors.New("learning ledger does not match the current storage")
 
 const bindingKey = "binding"

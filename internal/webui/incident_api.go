@@ -243,7 +243,7 @@ const defaultIncidentPageSize = 50
 // limit defaults to defaultIncidentPageSize; total counts every incident
 // the status filter matches, so a client pages on through offset.
 //
-// status accepts the four spec values (open/contained/resolved/dismissed)
+// status accepts the four incident statuses (open/contained/resolved/dismissed)
 // plus the UI-only convenience "active" that means
 // open+contained. An empty string means all statuses. Anything else is
 // rejected with 400 Bad Request rather than silently widening to all,

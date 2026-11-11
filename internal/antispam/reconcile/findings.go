@@ -1,7 +1,7 @@
 // Package reconcile runs CSM's antispam integration from the daemon: it
 // decides on each pass whether to install, remove or keep the integration,
 // asks the root worker to do it, and turns preconditions, worker results
-// and rspamd health into findings (spec sections 6.5 and 7).
+// and rspamd health into findings.
 package reconcile
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam"
 )
 
-// Finding checks (spec section 7).
+// Finding checks.
 const (
 	CheckPrecondition    = "antispam_precondition"
 	CheckApplyFailed     = "antispam_apply_failed"
@@ -49,7 +49,7 @@ func feedFinding(p antispam.Problem, now time.Time) alert.Finding {
 }
 
 // controllerFinding reports one rspamd controller listener that tenant
-// processes can use for admin or read-only requests (learning spec 9).
+// processes can use for admin or read-only requests.
 func controllerFinding(p antispam.Problem, now time.Time) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Warning,
@@ -65,7 +65,7 @@ func controllerFinding(p antispam.Problem, now time.Time) alert.Finding {
 }
 
 // IPMapFinding reports that rspamd is not using CSM's current IP map, or
-// that the map could not be written (feeds spec 8.4, 8.5).
+// that the map could not be written.
 func IPMapFinding(detail string, now time.Time) alert.Finding {
 	return alert.Finding{
 		Severity:  alert.Warning,
@@ -178,7 +178,7 @@ func milterEffect(action string) string {
 // replacedFinding reports one operator file CSM backed up and replaced,
 // until the backup is gone. On a Postfix host removal puts the newest copy
 // of each file back over CSM's own, and so does a return to dry run for
-// actions.conf; cPanel restores nothing (spec 5.5).
+// actions.conf; cPanel restores nothing.
 func replacedFinding(rep antispam.Replacement, postfix, newest bool, now time.Time) alert.Finding {
 	var advice string
 	switch {

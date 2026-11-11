@@ -14,7 +14,7 @@ const (
 	HamVerdict
 )
 
-// Judge turns one scan into a verdict about its sender (spec 7.2): the
+// Judge turns one scan into a verdict about its sender: the
 // score, in Exim tenths, less the weight CSM's own map gave the sender; spam
 // at or above the reject score, ham below the tag score, nothing between or
 // on a failed scan. Dry run, enforce and an opted-out recipient judge the
@@ -34,7 +34,7 @@ func Judge(scanOK bool, score, mapTenths, rejectScore, tagScore int) Verdict {
 }
 
 // Recordable reports whether evidence about a may be recorded: only
-// addresses the map could ever list (spec 7.2).
+// addresses the map could ever list.
 func Recordable(a netip.Addr, never []netip.Addr) bool {
 	if a.Zone() != "" {
 		return false

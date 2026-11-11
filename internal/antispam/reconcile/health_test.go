@@ -124,7 +124,7 @@ func assertScanErrors(t *testing.T, got []alert.Finding, count int, first, last 
 }
 
 // One finding identity covers every failed scan; a later success clears it
-// and a ping never does (spec section 7).
+// and a ping never does.
 func TestHealthTracksScanErrors(t *testing.T) {
 	h := enabledHealth()
 	first, recovered := h.Line(scanErrorLine, at(0))
@@ -279,7 +279,7 @@ func TestHealthIgnoresMalformedScanSenders(t *testing.T) {
 }
 
 // Disabling forgets every count and active finding without a recovery
-// notice, and markers after it are ignored (spec section 7).
+// notice, and markers after it are ignored.
 func TestHealthDisableResets(t *testing.T) {
 	h := enabledHealth()
 	for i := range 3 {

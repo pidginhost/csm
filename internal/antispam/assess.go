@@ -12,7 +12,7 @@ import (
 // CodeRspamdConfig reports rspamd's loaded settings defeating CSM's files.
 const CodeRspamdConfig = "rspamd_config"
 
-// Action is what reconcile does next (spec section 6.1).
+// Action is what reconcile does next.
 type Action int
 
 const (
@@ -34,9 +34,9 @@ type Assessment struct {
 	Problems []Problem
 }
 
-// Assess decides what reconcile does (spec sections 6.1 and 6.5). For a
-// disabled integration f needs only Targets, GeneratedConf and Record, as
-// hostfacts.CollectInstalled reads them; enabled, f is a full collection.
+// Assess decides what reconcile does. For a disabled integration f needs
+// only Stack, Targets, GeneratedConf and Record, as hostfacts.CollectInstalled
+// reads them; enabled, f is a full collection.
 func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 	a := Assessment{Installed: leftovers(f)}
 	if !enabled {
@@ -251,7 +251,7 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 					Detail: "cannot read the blocklist rules rspamd loaded; check rspamadm configdump"})
 			} else {
 				for _, c := range CheckFeedsLoaded(modules, rules, s) {
-					// Feed drift never removes core (feeds spec 8.2).
+					// Feed drift never removes core.
 					out = append(out, Problem{Code: CodeFeed, Severity: Warning, Key: "rbl", Detail: c})
 				}
 			}

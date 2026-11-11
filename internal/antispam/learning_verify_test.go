@@ -166,7 +166,7 @@ func TestCheckLearningLoadedConflicts(t *testing.T) {
 }
 
 // A dynamic /savesymbols override is invisible to configdump; only the
-// controller's /symbols shows the effective weight (spec 6.2, spike S2).
+// controller's /symbols shows the effective weight.
 func TestCheckLearningLoadedDynamicWeight(t *testing.T) {
 	d := newLoadedDumps(syntheticLearningKeys())
 	d.symbols[1].(map[string]any)["rules"].([]any)[0].(map[string]any)["weight"] = 20.0

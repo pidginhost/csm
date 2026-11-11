@@ -17,7 +17,7 @@ import (
 )
 
 // compare sets the legacy path's automatic blocks against what the
-// admission preview did with the same findings (ruling R11). It reads the
+// admission preview did with the same findings. It reads the
 // anonymized streams of one verified joined run, so a report repeats no host
 // identity; it is still private, since it describes one host's responses.
 //
@@ -30,7 +30,7 @@ const (
 	errCompareCount cliError = "comparison count overflow"
 )
 
-// compareMinWindow is the shortest preview the comparison accepts (R11).
+// compareMinWindow is the shortest preview the comparison accepts.
 const compareMinWindow = 7 * 24 * time.Hour
 
 // legacyAutomatic are the reason kinds of the legacy automatic block paths.

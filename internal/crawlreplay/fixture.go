@@ -10,7 +10,7 @@ var ErrFixture = errors.New("crawlreplay: invalid fixture")
 
 var fixtureName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
-// Fixture is a synthetic acceptance workload from spec 13: Train minutes
+// Fixture is a synthetic acceptance workload: Train minutes
 // of healthy background on one L1 key, then an attack on a sibling L1 key
 // for Minutes, sent by fresh clients of Q requests each. The attack rate
 // rises linearly from one request to PerMinute over the first RampMinutes

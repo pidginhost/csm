@@ -57,7 +57,7 @@ func TestRecorderSkipsExcludedSenders(t *testing.T) {
 }
 
 // The map's own weight is subtracted before judging, so CSM's listing
-// cannot turn a borderline message into new spam evidence (spec 7.2).
+// cannot turn a borderline message into new spam evidence.
 func TestRecorderSubtractsTheMapWeight(t *testing.T) {
 	as := config.AntispamConfig{Enabled: true, RejectScore: 15, TagScore: 6}
 	line := strings.Replace(spamLine("198.51.100.71"), "score=200", "score=170", 1)
@@ -79,7 +79,7 @@ func TestAntispamWiresTheIPMap(t *testing.T) {
 }
 
 // A map CSM cannot write raises antispam_ip_map; the next good write
-// clears it (spec 6.2, 8.5).
+// clears it.
 func TestRefreshIPMapReportsAWriteFailure(t *testing.T) {
 	d := newTestDaemon(t)
 	prevPath, prevGroup := antispamIPMapPath, antispamRspamdGroup
@@ -258,7 +258,7 @@ func TestIPMapProbeIdlesWithoutTheMap(t *testing.T) {
 
 // ipmapSources reads the real threat and attack databases: each source maps
 // to its symbol, and whitelisted, host and infra addresses never appear,
-// even when a feed or the attack DB lists them (feeds spec 6.1).
+// even when a feed or the attack DB lists them.
 func TestIPMapSourcesFromTheThreatAndAttackDBs(t *testing.T) {
 	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
 	tdb := checks.GetThreatDB()

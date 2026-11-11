@@ -33,11 +33,11 @@ type Settings struct {
 	Socket      string
 	RejectScore int
 	TagScore    int
-	// Feeds are the feed names to render (feeds spec section 4); the daemon
+	// Feeds are the feed names to render; the daemon
 	// has already dropped those whose preconditions fail.
 	Feeds []string
 	// SkipMaps names map redirects left out because CSM cannot own their
-	// file (feeds spec section 5.3).
+	// file.
 	SkipMaps []string
 	// SkipScores leaves out the symbol weights file because CSM cannot own
 	// it.
@@ -160,7 +160,7 @@ func validateLearning(s Settings) error {
 func (s Settings) HasFeed(name string) bool { return slices.Contains(s.Feeds, name) }
 
 // HostActions reports whether the host's own actions decide, not CSM's
-// actions.conf: a Postfix dry run, so the host keeps enforcing (spec 9.2).
+// actions.conf: a Postfix dry run, so the host keeps enforcing.
 func (s Settings) HostActions() bool { return s.Stack == StackPostfix && s.DryRun }
 
 // DNSFeeds returns the catalogue entries of s's DNS feeds in catalogue

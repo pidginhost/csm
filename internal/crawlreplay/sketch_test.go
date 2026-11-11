@@ -178,7 +178,7 @@ func exactOfArrivals(minutes []string, k int) (int64, int64) {
 	return exactOf(split, k)
 }
 
-// checkComposition asserts the bounds spec 6.3 promises for any window.
+// checkComposition asserts the composition bounds for any window.
 func checkComposition(t *testing.T, got sketchWindow, exactN, exactD int64, k, m int) {
 	t.Helper()
 	switch {

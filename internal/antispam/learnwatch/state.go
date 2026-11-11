@@ -10,8 +10,8 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// SeenRetention keeps entries absent from their folder this long (spec
-// 7.2); lastSeenRefresh bounds presence writes to one per entry per day.
+// SeenRetention keeps entries absent from their folder this long;
+// lastSeenRefresh bounds presence writes to one per entry per day.
 const (
 	SeenRetention   = 90 * 24 * time.Hour
 	lastSeenRefresh = 24 * time.Hour

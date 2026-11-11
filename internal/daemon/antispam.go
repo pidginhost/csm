@@ -26,7 +26,7 @@ import (
 )
 
 // antispamProbeInterval is how often rspamd's scan socket is probed while
-// antispam is enabled (spec section 7).
+// antispam is enabled.
 const antispamProbeInterval = 20 * time.Second
 
 type antispamHealthState struct {
@@ -55,8 +55,8 @@ var (
 	antispamIPMapPath   = ipmap.DefaultPath
 )
 
-// antispamIPMapInterval is how often the CSM IP map is rebuilt (feeds spec
-// 6.2); antispamCanaryDelay bounds the wait for a canary check, including
+// antispamIPMapInterval is how often the CSM IP map is rebuilt;
+// antispamCanaryDelay bounds the wait for a canary check, including
 // after writes made by reconciliation and after the load grace expires.
 const (
 	antispamIPMapInterval = 10 * time.Minute
@@ -108,7 +108,7 @@ func (d *Daemon) startAntispam() {
 
 // startAntispamLoop starts antispam reconciliation once, on a host it
 // supports: a pass at start, after each config reload, every 15 minutes,
-// and 20 seconds after a busy lock (spec section 6.5). It also starts the
+// and 20 seconds after a busy lock. It also starts the
 // rspamd probe. Shutdown cancels a running pass or probe. It reports
 // whether the host is supported.
 func (d *Daemon) startAntispamLoop() bool {
@@ -292,7 +292,7 @@ func (d *Daemon) checkIPMap(ctx context.Context, now time.Time, rebuild bool) bo
 	return wrote
 }
 
-// ipmapSources gathers what the CSM IP map lists (feeds spec 6.1). infra
+// ipmapSources gathers what the CSM IP map lists. infra
 // holds infra_ips entries: like whitelisted and host addresses, nothing in
 // them is listed.
 func ipmapSources(now time.Time, infra []string) ipmap.Sources {
@@ -373,7 +373,7 @@ func warnAntispamUnsupported(cfg *config.Config) {
 
 // syncAntispamHealth points health tracking at the configured socket while
 // antispam is enabled. Disabling forgets every outage and scan error
-// without a recovery notice (spec section 7).
+// without a recovery notice.
 func (d *Daemon) syncAntispamHealth() {
 	h := &d.antispamHealth
 	h.mu.Lock()
@@ -474,7 +474,7 @@ func (d *Daemon) storeAntispamHealthLocked() {
 
 // reportAntispamHealth delivers rspamd outage and recovery notices to
 // history and notification directly. Alert-state dedup would hide a second
-// outage on the same day, and spec section 7 wants one notice per outage.
+// outage on the same day, and each outage gets one notice.
 func (d *Daemon) reportAntispamHealth(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return

@@ -18,8 +18,8 @@ import (
 // it.
 var learningDir = antispam.DefaultLearningDir
 
-// handleAntispamLearnFresh provisions a fresh learning namespace (spec
-// 7.4). With learning disabled it moves the learning directory aside, keys
+// handleAntispamLearnFresh provisions a fresh learning namespace.
+// With learning disabled it moves the learning directory aside, keys
 // and anchors included, and empties the ledger and watcher state, so the
 // next enable creates new keys and a new prefix. Nothing is deleted and
 // Redis is never flushed; the old directory stays until the operator

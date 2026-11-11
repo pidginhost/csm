@@ -25,7 +25,7 @@ func TestJudge(t *testing.T) {
 }
 
 // A message rejected only because CSM's map listed its sender is not new
-// evidence; the map would otherwise feed itself (spec 7.2).
+// evidence; the map would otherwise feed itself.
 func TestVerdictSubtractsTheMapWeight(t *testing.T) {
 	if got := Judge(true, 170, Drop.Tenths(), 15, 6); got != NoVerdict {
 		t.Fatalf("170 - 40 = 130 is between tag and reject, got %v", got)

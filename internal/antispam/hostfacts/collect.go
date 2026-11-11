@@ -24,8 +24,7 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// commandTimeout bounds each command (spec section 6.3 allows 10s for
-// commands other than buildeximconf).
+// commandTimeout bounds the collector's runCommand calls.
 const commandTimeout = 10 * time.Second
 
 // maxConfigBytes bounds each configuration file the collector reads; cPanel's

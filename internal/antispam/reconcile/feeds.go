@@ -34,7 +34,7 @@ type FeedState struct {
 // IPMapHooks keep the CSM IP map in step with the CSM_IP rule.
 type IPMapHooks struct {
 	// Write builds and writes the map now, so a pass that adds the rule
-	// never applies it without its file (feeds spec 6.2).
+	// never applies it without its file.
 	Write func(ctx context.Context) error
 	// Remove deletes the map once no rule reads it.
 	Remove func() error

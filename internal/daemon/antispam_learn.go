@@ -246,7 +246,7 @@ func withWatcherCapacity(problems []antispam.Problem, w learnWatcher) []antispam
 }
 
 // confirmRestoreIfDisabled treats learning seen disabled as the operator's
-// confirmation of a restore (spec 7.4): the next enable resumes the
+// confirmation of a restore: the next enable resumes the
 // restored ledger. Observe mode and shutdown confirm nothing.
 func (d *Daemon) confirmRestoreIfDisabled() {
 	cfg := d.currentCfg()

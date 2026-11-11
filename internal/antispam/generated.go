@@ -10,7 +10,7 @@ import (
 // CheckGenerated verifies that a generated exim.conf carries CSM's hooks
 // exactly as rendered: the scanner block in the main configuration, the RCPT
 // hook in the RCPT ACL, and the scan hook before the post hook in the DATA
-// ACL (spec sections 6.2 item 5 and 6.3 step 3). rcptACL and dataACL come
+// ACL. rcptACL and dataACL come
 // from `exim -bP acl_smtp_rcpt acl_smtp_data`. Errors name blocks, never
 // configuration text. Conditional blocks or boundaries cannot prove that the
 // hooks are active; macro substitution must leave their statements unchanged.

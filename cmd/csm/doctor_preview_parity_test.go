@@ -13,7 +13,7 @@ import (
 )
 
 // Freeze the existing preview wording independently of the mode-aware renderer.
-// Held execution warns while admission previews or forecasts (ruling C2).
+// Held execution warns while admission previews or forecasts.
 func baselineOwnerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	o := a.Owner
 	if o == nil {

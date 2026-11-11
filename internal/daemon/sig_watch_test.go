@@ -639,7 +639,7 @@ func TestSigWatchRemovedFileDoesNotArmRescan(t *testing.T) {
 // --- New file added after baseline is silent ------------------------------
 
 func TestSigWatchNewFilePostBaselineIsSilent(t *testing.T) {
-	// Per the spec: first observation of a file is not a trigger.
+	// First observation of a file is not a trigger.
 	// This avoids a fresh `update-rules` install causing a rescan
 	// when the daemon also starts cold and the rules dir is brand
 	// new.

@@ -604,7 +604,7 @@ func TestRecordClient_RejectsSpoofedLeftmost(t *testing.T) {
 
 // An appended entry inside a trusted range is a trusted proxy's hop, and the
 // entry left of it is the client that proxy saw: the walk removes configured
-// trusted hops and stops at the first other address (spec 5.8).
+// trusted hops and stops at the first other address.
 func TestRecordClient_WalksPastAnAppendedTrustedHop(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}

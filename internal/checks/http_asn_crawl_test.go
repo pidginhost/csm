@@ -346,7 +346,7 @@ func TestCollapseASNCrawlCIDRs(t *testing.T) {
 // TestScanFeedsASNCrawlOutsideFloodWindow drives records through scan() and
 // asserts the detector's own 60-min window governs accumulation, not the
 // 5-min flood window. Records 30 min old (inside asn window, outside flood)
-// must accumulate; a 90-min-old record must not. See spec section 4.1.
+// must accumulate; a 90-min-old record must not.
 func TestScanFeedsASNCrawlOutsideFloodWindow(t *testing.T) {
 	SetASNLookup(func(ip string) (uint, string) { return 45102, "Alibaba" })
 	t.Cleanup(func() { SetASNLookup(nil) })
@@ -398,7 +398,7 @@ func TestScanFeedsASNCrawlOutsideFloodWindow(t *testing.T) {
 }
 
 // TestObserveASNCrawlSkipsEmptyDomain asserts central-log records (empty
-// Domain) feed no scope or accumulation. See spec section 4.
+// Domain) feed no scope or accumulation.
 func TestObserveASNCrawlSkipsEmptyDomain(t *testing.T) {
 	SetASNLookup(func(ip string) (uint, string) { return 45102, "Alibaba" })
 	t.Cleanup(func() { SetASNLookup(nil) })
@@ -429,7 +429,7 @@ func (f *allowFake) IsAllowed(ip string) bool                    { return f.allo
 
 // TestEmitASNCrawlDropsFirewallAllowedCIDR asserts a candidate /24 containing a
 // firewall-allowed observed IP is removed from the emitted finding's CIDRs,
-// while a clean /24 remains. See spec section 6.2.
+// while a clean /24 remains.
 func TestEmitASNCrawlDropsFirewallAllowedCIDR(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	s := newDomlogStatsAt(mustTime("2026-06-24T12:30:00Z"))
@@ -485,7 +485,7 @@ func TestEmitASNCrawlDropsFirewallAllowedCIDR(t *testing.T) {
 
 // TestEmitASNCrawlStage2UsesSaturationConfig asserts the primary
 // http_asn_crawl_saturation threshold (not only the PHPProcessWarnPerUser
-// fallback) drives Stage-2 escalation. See spec section 5.2.
+// fallback) drives Stage-2 escalation.
 func TestEmitASNCrawlStage2UsesSaturationConfig(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	cfg.Thresholds.HTTPASNCrawlSaturation = 50

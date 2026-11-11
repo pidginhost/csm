@@ -32,7 +32,7 @@ var antispamLearnOperator = func(d *Daemon) learnOperator {
 	return nil
 }
 
-// handleAntispamLearn runs csm antispam learn for one file (spec 8). Every
+// handleAntispamLearn runs csm antispam learn for one file. Every
 // request is recorded in the action log, refusals and failures included,
 // with its request ID and digests but never message content.
 func (c *ControlListener) handleAntispamLearn(argsRaw json.RawMessage) (any, error) {
@@ -135,7 +135,7 @@ func learnReason(requestID string, res learn.OperatorResult) string {
 const maxStatusRequests = 100
 
 // handleAntispamLearnStatus reads recorded outcomes of operator requests
-// from the learning ledger, or lists the unfinished ones (spec 8). It reads
+// from the learning ledger, or lists the unfinished ones. It reads
 // only, so it answers in any mode and with no learner running.
 func (c *ControlListener) handleAntispamLearnStatus(argsRaw json.RawMessage) (any, error) {
 	var args control.AntispamLearnStatusArgs

@@ -18,7 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/safepath"
 )
 
-// DefaultBodiesDir holds one anchor body per cluster (spec 7.4).
+// DefaultBodiesDir holds one anchor body per cluster.
 const DefaultBodiesDir = antispam.DefaultLearningDir + "/anchors"
 
 const stagePrefix = ".stage-"

@@ -306,7 +306,7 @@ func TestResolveLearningDovecotListingFailure(t *testing.T) {
 
 // A user that may run tenant code and shares rspamd's uid could reach the
 // controller as rspamd: learning refuses on either stack. When CSM cannot
-// rule a share out, learning waits instead (ruling P6): an installation
+// rule a share out, learning waits instead: an installation
 // stays and publishes nothing new, a first one is not made.
 func TestResolveLearningRspamdUIDShared(t *testing.T) {
 	for stack, pair := range map[MailStack]struct {

@@ -27,7 +27,7 @@ import (
 // lands later, this file's helpers become reusable across CMSes by
 // swapping the credential discovery, not the queries.
 //
-// Per spec: detection only, no auto-drop. Operators drop manually
+// Detection only, no auto-drop. Operators drop manually
 // via `csm db-clean drop-object`.
 
 // dbPersistenceMalwarePatterns supplements dbMalwarePatterns from
@@ -339,7 +339,7 @@ func (h dbObjectFinding) toFinding() alert.Finding {
 	}
 }
 
-// allowlistKey shapes the suppression key per spec:
+// allowlistKey shapes the suppression key:
 // `<account>:<schema>:<type>:<name>`. Used for the Warning tier
 // only -- Critical malware-pattern hits always fire.
 func allowlistKey(h dbObjectFinding) string {

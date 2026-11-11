@@ -12,8 +12,8 @@ import (
 // refuses every further call: its state may be partly advanced.
 var ErrSession = errors.New("crawlreplay: invalid replay session input")
 
-// Learning states a segment declares for a site's or key's minutes (spec
-// 6.4). The detector freezes learning in every state but normal, and the
+// Learning states a segment declares for a site's or key's minutes.
+// The detector freezes learning in every state but normal, and the
 // harness also freezes it for anomalous minutes and while a finding is
 // active. A minute no declaration covers is unknown and never learned.
 const (

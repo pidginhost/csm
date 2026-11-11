@@ -24,7 +24,7 @@ func (c *ControlListener) handleActionShow(argsRaw json.RawMessage) (result any,
 	return c.d.admission.Action(args.ID)
 }
 
-// Reads are operator operations too (spec 6). Keep their audit outside the
+// Reads are operator operations too. Keep their audit outside the
 // owner and its outbox so an audit outage cannot disable a diagnostic read.
 func recordActionShow(ref string, err error) {
 	record := actionlog.Record{

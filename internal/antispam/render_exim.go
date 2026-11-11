@@ -24,7 +24,7 @@ type EximHooks struct {
 }
 
 // eligible skips authenticated sessions and the peers cPanel exempts from
-// its own spam scan (spec section 5.1).
+// its own spam scan.
 const eligible = "  !authenticated = *\n" +
 	"  !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks\n"
 

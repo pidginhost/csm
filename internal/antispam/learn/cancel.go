@@ -13,7 +13,7 @@ import (
 )
 
 // CancelUnsent cancels uid's Spam folder reservations that sent nothing
-// under their revision (spec 5: an observed opt-out cancels unsent work).
+// under their revision (an observed opt-out cancels unsent work).
 // Their targets return to what they replaced. Sent clusters keep
 // publishing and committed ones keep their votes. Only the ledger changes,
 // so it runs whatever the gate. When supplied, confirm rechecks eligibility

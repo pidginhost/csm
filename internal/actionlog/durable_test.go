@@ -212,7 +212,7 @@ func (f batchSinkFunc) Write(Record) error {
 }
 func (f batchSinkFunc) WriteDurableBatch(rs []Record) error { return f(rs) }
 
-// Spec 5.5: a delivery batch is written and synced once. Every record gets
+// A delivery batch is written and synced once. Every record gets
 // the stream's defaults, and an empty batch writes nothing.
 func TestFileSinkDurableBatchSyncsOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.jsonl")

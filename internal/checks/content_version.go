@@ -13,8 +13,7 @@ import (
 // ContentLogicVersion identifies the current shape of the PHP content-analysis
 // heuristic set (analyzePHPContent and its helpers). BUMP IT in the same commit
 // as any change to those heuristics, so findings produced by the previous logic
-// are re-verified and cleared by the daemon sweep. See
-// docs/superpowers/specs/2026-06-20-stale-content-finding-reverification-design.md.
+// are re-verified and cleared by the daemon sweep.
 const ContentLogicVersion = 2
 
 // ContentScannerVersion identifies scanner behavior that is not represented by

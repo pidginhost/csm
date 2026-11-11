@@ -734,8 +734,8 @@ func (s *Server) clientIP(w http.ResponseWriter, r *http.Request) (string, bool)
 	return ip, true
 }
 
-// extractIP returns the client of the request, or "" when there is none
-// (spec 5.8). X-Forwarded-For is read only behind a trusted proxy, right to
+// extractIP returns the client of the request, or "" when there is none.
+// X-Forwarded-For is read only behind a trusted proxy, right to
 // left past further trusted proxies; proxies can append a field line instead
 // of extending the first, so all lines are read. An unreadable, overlong or
 // all-trusted chain names nobody: none falls back to the proxy. A listed

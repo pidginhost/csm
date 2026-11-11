@@ -107,8 +107,8 @@ func TestTaintFlowsBackThroughReferenceAlias(t *testing.T) {
 
 // TestArrayElementWriteTaintsContainingValue locks in the still-accepted
 // half of the version-1 container over-approximation: an array element
-// write taints its whole containing variable, because the spec permits
-// over-approximating containers and array keys are not tracked.
+// write taints its whole containing variable, because containers are
+// over-approximated on purpose and array keys are not tracked.
 func TestArrayElementWriteTaintsContainingValue(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $a['payload'] = curl_exec($c);")
 	if _, ok := st["a"]; !ok {

@@ -232,7 +232,7 @@ func WriteDurable(r Record) error {
 }
 
 // WriteDurableBatch acknowledges records only after a sink's one durable
-// write of all of them: a delivery batch is synced once (spec 5.5). Like
+// write of all of them: a delivery batch is synced once. Like
 // WriteDurable it delivers at least once.
 func WriteDurableBatch(rs []Record) error {
 	if len(rs) == 0 {

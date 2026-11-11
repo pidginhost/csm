@@ -40,8 +40,7 @@ func TestSpamVerdictCreatesAMailOnlyRecord(t *testing.T) {
 	}
 }
 
-// No sequence of verdicts changes EventCount, AttackCounts or ThreatScore
-// (feeds spec 9.1).
+// No sequence of verdicts changes EventCount, AttackCounts or ThreatScore.
 func TestVerdictsNeverChangeThreatState(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{Check: "smtp_bruteforce", SourceIP: "203.0.113.30", Timestamp: mailNow, Message: "x"})
@@ -164,7 +163,7 @@ func TestCloneCopiesMail(t *testing.T) {
 }
 
 // One spam verdict among many ham never lists a busy legitimate sender, and
-// the listing starts exactly at a spam score of 50 (feeds spec 7.4).
+// the listing starts exactly at a spam score of 50.
 func TestSpamListingNeedsScoreFifty(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordMailVerdict("198.51.100.90", true, mailNow)

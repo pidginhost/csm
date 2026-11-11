@@ -549,7 +549,7 @@ func TestFileIndexAuditModeFindsWithoutWritingState(t *testing.T) {
 	}
 }
 
-// --- CHK-R02: shrink-guard wedge self-heals ------------------------------
+// --- Shrink-guard wedge self-heals ---------------------------------------
 
 // stateAwareFileIndexMock builds a mockOS that virtualizes the /home tree for
 // one account's uploads dir while passing every state-file operation under
@@ -777,7 +777,7 @@ func TestCheckFileIndexCanceledWhileLiveScanActiveDoesNotBlock(t *testing.T) {
 	}
 }
 
-// --- CHK-R02: evaluateFileIndexShrink threshold logic --------------------
+// --- evaluateFileIndexShrink threshold logic -----------------------------
 
 func TestEvaluateFileIndexShrinkNonShrinkResetsCounter(t *testing.T) {
 	setFileIndexShrinkSkips(t, 2) // pretend two shrinks happened
@@ -853,7 +853,7 @@ func TestEvaluateFileIndexShrinkEmptyCurrentDoesNotPromote(t *testing.T) {
 	}
 }
 
-// --- CHK-R03: new file deep in an unchanged parent subtree ---------------
+// --- New file deep in an unchanged parent subtree ------------------------
 
 // A webshell dropped into uploads/2026/07 bumps only 07's mtime, not the mtime
 // of uploads or 2026. A scan that finds the top directory unchanged must still
@@ -961,7 +961,7 @@ func TestScanDirForExecutablesDetectsNewFileInUnchangedParentDir(t *testing.T) {
 
 // A fully stable subtree (nothing changed anywhere) still takes the cache
 // shortcut: entries come straight from the previous index with no ReadDir.
-// This pins that the CHK-R03 descent does not defeat the mtime optimization.
+// This pins that the deep-subtree descent does not defeat the mtime optimization.
 func TestScanDirForPHPStableSubtreeUsesCacheShortcut(t *testing.T) {
 	root := t.TempDir()
 	mid := filepath.Join(root, "2026")

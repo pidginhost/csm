@@ -16,7 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/safepath"
 )
 
-// Folders are the observed folders of every mailbox (spec 7.1): .spam is
+// Folders are the observed folders of each cPanel mailbox: .spam is
 // Dovecot's Junk special-use folder, .Junk the folder cPanel creates.
 var Folders = []string{".spam", ".Junk"}
 
@@ -265,7 +265,7 @@ func (f *Folder) Stat(name string) (Meta, ReadStatus, error) {
 	return m, ReadOK, nil
 }
 
-// classify applies the per-file rules of spec 7.1 to descriptor metadata.
+// classify applies the per-file read rules to descriptor metadata.
 func classify(fi os.FileInfo, m Meta, uid int) ReadStatus {
 	switch {
 	case !fi.Mode().IsRegular():

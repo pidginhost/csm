@@ -20,8 +20,8 @@ import (
 )
 
 // Engine limits. BenchmarkPublishTurn took 2.5 to 3.4 ms of ledger work for
-// a report joining a single-anchor ledger; spike S8 measured about 2 ms of
-// native calls per report. Larger ledgers need separate measurements.
+// a report joining a single-anchor ledger; native calls measured about 2 ms
+// per report. Larger ledgers need separate measurements.
 const (
 	EngineTick         = 10 * time.Second
 	RepairBatch        = 10
@@ -35,7 +35,7 @@ const (
 	ActionForget = "forget"
 )
 
-// Per-cluster and overall operator results (spec 8). A skipped part reads
+// Per-cluster and overall operator results. A skipped part reads
 // "skipped:<reason>".
 const (
 	ResultCommitted = "committed"
@@ -129,7 +129,7 @@ type request struct {
 }
 
 // Engine is the one owner of the learning ledger and of every native
-// mutation (spec 4): one goroutine serializes assignment, reservation,
+// mutation: one goroutine serializes assignment, reservation,
 // publication, audits, retirement and operator requests.
 type Engine struct {
 	cfg      EngineConfig
@@ -1280,7 +1280,7 @@ func mergeOutcomes(prior, update []ClusterOutcome) []ClusterOutcome {
 }
 
 // summarize derives the overall outcome: zero exit only for fully committed
-// or all-duplicate spam and completely forgotten files (spec 8).
+// or all-duplicate spam and completely forgotten files.
 func summarize(action string, cs []ClusterOutcome) (string, bool) {
 	count := map[string]int{}
 	for _, c := range cs {
@@ -1359,7 +1359,7 @@ func admissionOutcomes(a admitResult) []ClusterOutcome {
 
 // forget resolves accepted aliases first, then live anchors matched at or
 // above the join boundary, supersedes each resolved cluster with T=0 and
-// waits for verified absence and body removal (spec 8).
+// waits for verified absence and body removal.
 func (e *Engine) forget(ctx context.Context, r OperatorRequest) ([]ClusterOutcome, []Digest, error) {
 	var out []ClusterOutcome
 	var digests []Digest
