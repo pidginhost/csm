@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"strings"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -33,6 +34,21 @@ type SenderDay struct {
 // or someone else's.
 type SenderProfile struct {
 	Days map[string]*SenderDay `json:"days"`
+}
+
+// SenderProfileKeys returns the stored spellings of a mailbox. Authentication
+// logs can vary in case while cPanel suspends and releases the same mailbox.
+func (db *DB) SenderProfileKeys(mailbox string) ([]string, error) {
+	var keys []string
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(senderProfileBucket)).ForEach(func(k, _ []byte) error {
+			if strings.EqualFold(string(k), mailbox) {
+				keys = append(keys, string(k))
+			}
+			return nil
+		})
+	})
+	return keys, err
 }
 
 // SetSenderProfile stores the sending profile for a mailbox.

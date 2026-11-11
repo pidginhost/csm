@@ -154,7 +154,7 @@ func TestSenderProfile_ChurnFromNovelCountryIsCriticalAndSuspends(t *testing.T) 
 	resetEmailRateState()
 	stubGeo(t, map[string]string{"198.51.100.1": "DE", "198.51.100.2": "DE", "198.51.100.3": "DE", "198.51.100.4": "DE"})
 	withUserdomains(t, "example.com: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 	withGlobalStore(t, func(db *store.DB) {
@@ -599,7 +599,9 @@ func TestForgetSenderEvidence_StopsRetrigger(t *testing.T) {
 				t.Fatalf("send %d: unexpected %+v", i+1, got)
 			}
 		}
-		forgetSenderEvidence(user, senderTestNow.Add(6*time.Hour+time.Minute))
+		if err := forgetSenderEvidence(user, senderTestNow.Add(6*time.Hour+time.Minute)); err != nil {
+			t.Fatal(err)
+		}
 		profile, err := db.GetSenderProfile(user)
 		if err != nil {
 			t.Fatal(err)

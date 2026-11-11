@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // --- Cloud-relay compromise detection -----------------------------------
@@ -240,6 +241,8 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 	// Registered before the unlock defer so owner I/O runs after it.
 	defer func() { stampMailAccountOwner(findings, user) }()
 	now := time.Now()
+	unlock := lockMailResponse(store.MailboxSuspensionID(activeMailBackend.name(), user))
+	defer unlock()
 	w := lockCloudRelayWindowForUpdate(user, now)
 	defer w.mu.Unlock()
 
@@ -317,11 +320,12 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 
 	mailbox, domain, _ := splitMailAccount(user)
 	return []alert.Finding{{
-		Severity: alert.Critical,
-		Check:    "email_cloud_relay_abuse",
-		Message:  message,
-		Details:  truncateDaemon(details, 800),
-		SourceIP: ips[0],
+		Severity:  alert.Critical,
+		Check:     "email_cloud_relay_abuse",
+		Message:   message,
+		Details:   truncateDaemon(details, 800),
+		SourceIP:  ips[0],
+		Timestamp: now,
 		// Exim's H=... [ip] of the authenticated session.
 		Attribution: admission.AttributionPeer,
 		Mailbox:     mailbox,
@@ -345,7 +349,15 @@ func retroCloudRelayResponse(cfg *config.Config, f alert.Finding) {
 // forgetCloudRelayEvidence drops a released mailbox's cloud-relay window so
 // sends from before the release cannot trigger again.
 func forgetCloudRelayEvidence(user string) {
-	cloudRelayWindows.Delete(user)
+	cloudRelayWindows.Range(func(key, val any) bool {
+		if strings.EqualFold(key.(string), user) {
+			w := val.(*cloudRelayWindow)
+			w.mu.Lock()
+			cloudRelayWindows.CompareAndDelete(key, val)
+			w.mu.Unlock()
+		}
+		return true
+	})
 }
 
 func truncateIPList(ips []string, n int) []string {

@@ -44,6 +44,24 @@ func stubUAPI(t *testing.T, respond func(args []string) ([]byte, error)) *[][]st
 	return calls
 }
 
+// stubMailboxActions gives suspension tests an unrestricted mailbox inventory
+// and records only mutations; status tests use stubUAPI to inspect listing calls.
+func stubMailboxActions(t *testing.T, respond func([]string) ([]byte, error)) *[][]string {
+	t.Helper()
+	var mu sync.Mutex
+	calls := &[][]string{}
+	stubUAPI(t, func(args []string) ([]byte, error) {
+		if uapiFn(args) == "list_pops_with_disk" {
+			return listPopsReply()
+		}
+		mu.Lock()
+		*calls = append(*calls, append([]string(nil), args...))
+		mu.Unlock()
+		return respond(args)
+	})
+	return calls
+}
+
 // stubAccountHold replaces the account-wide hold and returns its targets.
 func stubAccountHold(t *testing.T, result bool) *[]string {
 	t.Helper()
@@ -74,7 +92,7 @@ func uapiArgs(fn string) []string {
 
 func TestMaybeSuspendMailbox_GatedByConfig(t *testing.T) {
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 
 	dryRunOn := true
@@ -116,7 +134,7 @@ func TestMaybeSuspendMailbox_GatedByConfig(t *testing.T) {
 
 func TestMaybeSuspendMailbox_SuspendsLoginAndOutgoing(t *testing.T) {
 	withUserdomains(t, "other.example: someone\nvictim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	sink := captureActionRecords(t)
 
@@ -157,7 +175,7 @@ func TestMaybeSuspendMailbox_SuspendsLoginAndOutgoing(t *testing.T) {
 
 func TestMaybeSuspendMailbox_LoginFailureStillCountsOutgoing(t *testing.T) {
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func(args []string) ([]byte, error) {
+	calls := stubMailboxActions(t, func(args []string) ([]byte, error) {
 		if args[3] == "suspend_login" {
 			return uapiFailure("The system failed to lock the mailbox")
 		}
@@ -195,7 +213,7 @@ func TestMaybeSuspendMailbox_ResultStatusControlsFallback(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			withUserdomains(t, "example.com: cpuser\n")
-			calls := stubUAPI(t, func(args []string) ([]byte, error) {
+			calls := stubMailboxActions(t, func(args []string) ([]byte, error) {
 				if args[3] == "suspend_login" {
 					return []byte(tc.login), tc.execErr
 				}
@@ -235,19 +253,22 @@ func TestMailboxSuspensionSetsTimeout(t *testing.T) {
 			t.Fatalf("uapi context deadline = %v, set=%v", deadline, ok)
 		}
 		calls++
+		if uapiFn(args) == "list_pops_with_disk" {
+			return listPopsReply()
+		}
 		return uapiOK()
 	}
 	withUserdomains(t, "example.com: cpuser\n")
 	stubAccountHold(t, true)
 	captureActionRecords(t)
-	if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "email_compromised_account", "test", time.Now()) || calls != 2 {
-		t.Fatalf("expected two bounded calls, got %d", calls)
+	if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "email_compromised_account", "test", time.Now()) || calls != 3 {
+		t.Fatalf("expected three bounded calls, got %d", calls)
 	}
 }
 
 func TestMaybeSuspendMailbox_FallsBackToAccountHold(t *testing.T) {
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) {
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) {
 		return nil, errors.New("exec: \"uapi\": executable file not found in $PATH")
 	})
 	holds := stubAccountHold(t, true)
@@ -278,7 +299,7 @@ func TestMaybeSuspendMailbox_FallsBackToAccountHold(t *testing.T) {
 
 func TestMaybeSuspendMailbox_UnresolvedMailboxHoldsAccount(t *testing.T) {
 	withUserdomains(t, "other.example: someone\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 
 	for _, target := range []string{"real@victim.example", "victim.example"} {
@@ -373,7 +394,7 @@ func TestRunUAPI_EscapesSandboxWhenSystemdRunExists(t *testing.T) {
 
 func TestMailboxSuspensionUndoPreservesIdentity(t *testing.T) {
 	withUserdomains(t, "example.com: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	sink := captureActionRecords(t)
 	for _, mailbox := range []string{
@@ -468,7 +489,7 @@ func TestUAPICommandBoundsInheritedPipes(t *testing.T) {
 func TestCloudRelayCredentialAbuseAction_SuspendsMailboxBeforeAccountHold(t *testing.T) {
 	resetEmailRateState()
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 

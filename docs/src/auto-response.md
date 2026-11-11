@@ -20,7 +20,15 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 
 Mailbox suspension runs `/usr/local/cpanel/bin/uapi` as a transient systemd service outside the daemon's filesystem sandbox; hosts without a usable systemd-run run it directly. Each call is bounded in time, the JSON result decides success, and mailbox names stay literal arguments on both paths.
 
-After resolving the credential abuse, release the mailbox or account on the Email page, Suspended tab. The tab lists every suspension and hold CSM made with its live state in cPanel; one lifted directly in cPanel shows as released outside CSM. Release undoes exactly what was applied and never changes a password, and sends from before the release do not suspend the mailbox again. Releasing an account hold delivers the mail cPanel held, so delete spam from the Queue tab first; the confirm says so. The action log also keeps the release commands, quoted for the shell, for example `/usr/local/cpanel/bin/uapi '--user=account' Email unsuspend_login 'email=alice%40example.com'` and the matching `unsuspend_outgoing` command. The address is URI-encoded because uapi decodes its values. Dry-run writes one planned-action record without running a command; disabled auto-response writes none.
+Partial suspensions name the restriction that succeeded; they do not claim both logins and sending stopped. Login responses use the authenticated mailbox or bare cPanel username, never its owner account as a substitute. Mailbox restrictions and account holds already applied outside CSM are not offered for release. If current mailbox state is unreadable, CSM can repeat restrictions it already owns; sending evidence can still fall back to an account hold.
+
+After resolving the credential abuse, release the mailbox or account on the Email page, Suspended tab. The tab lists every suspension and hold CSM made with its live state in cPanel; one lifted directly in cPanel shows as released outside CSM. Incomplete or unreadable status stays unknown, and a delayed status response cannot release a newer suspension.
+
+Release undoes the recorded restrictions and never changes a password. Sending evidence is cleared across mailbox case variants, and a release waits for any in-flight response before updating the record. Evidence captured before the release cannot suspend the mailbox again. Cleanup failures are reported so the release can be retried.
+
+Releasing an account hold delivers the mail cPanel held, so delete spam from the Queue tab first; the confirm says so. The action log also keeps the release commands, quoted for the shell, for example `/usr/local/cpanel/bin/uapi '--user=account' Email unsuspend_login 'email=alice%40example.com'` and the matching `unsuspend_outgoing` command. The address is URI-encoded because uapi decodes its values.
+
+WHM holds and releases check the JSON API result before reporting success. Dry-run writes one planned-action record without running a command; disabled auto-response writes none.
 
 Subnet history is pruned hourly and saved only when it changes. If the file cannot be read it is left untouched and escalation counts only the addresses blocked right now until it is repaired or removed; status and doctor report the failure. Clear, whitelist and flush actions report history cleanup failures so operators can retry them.
 

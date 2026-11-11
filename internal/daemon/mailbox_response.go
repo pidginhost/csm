@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,11 +36,11 @@ var uapiExec = func(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 func uapiCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	// #nosec G204 -- name is the resolved systemd-run path or uapi; args are
+	// #nosec G204 -- name is systemd-run or a cPanel API binary; args are
 	// fixed API words plus a cPanel-managed account and an authenticated Exim
 	// identity. No shell interprets them; systemdrun escapes variable expansion.
 	cmd := exec.CommandContext(ctx, name, args...)
-	// Killing systemd-run or uapi need not close pipes inherited by children.
+	// Killing the command need not close pipes inherited by children.
 	// Bound the drain too, so those children cannot stall the log watcher.
 	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
@@ -124,8 +125,8 @@ func (cpanelMailBackend) suspend(c mailboxCompromise) (store.MailboxSuspension, 
 	}
 }
 
-// release undoes exactly what was applied, last first. The first failure
-// stops it, so a retry repeats only what is still in place.
+// release undoes exactly what was applied, last first. A retry may repeat
+// successful unsuspends, which cPanel accepts even when already lifted.
 func (cpanelMailBackend) release(rec store.MailboxSuspension, actor string) error {
 	for i := len(rec.Applied) - 1; i >= 0; i-- {
 		var err error
@@ -149,29 +150,40 @@ func (cpanelMailBackend) release(rec store.MailboxSuspension, actor string) erro
 // status could not be read is left out of the map.
 func (cpanelMailBackend) active(recs []store.MailboxSuspension) (map[string]bool, error) {
 	live := make(map[string]bool, len(recs))
+	unknown := make(map[string]bool)
 	byAccount := map[string][]store.MailboxSuspension{}
 	var errs []error
 	for _, r := range recs {
-		if r.Kind == store.SuspensionKindAccount {
+		live[r.ID] = false
+		if slices.Contains(r.Applied, store.AppliedHoldOutgoing) {
 			held, err := outgoingMailHoldState(r.Account)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("outgoing hold list: %w", err))
-				continue
+				unknown[r.ID] = true
 			}
 			live[r.ID] = held
-			continue
 		}
-		byAccount[r.Account] = append(byAccount[r.Account], r)
+		if slices.Contains(r.Applied, store.AppliedSuspendLogin) || slices.Contains(r.Applied, store.AppliedSuspendOutgoing) {
+			byAccount[r.Account] = append(byAccount[r.Account], r)
+		}
 	}
 	for account, rows := range byAccount {
 		flags, err := cpanelMailboxFlags(account)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("mailbox status for cPanel account %s: %w", account, err))
+			for _, r := range rows {
+				unknown[r.ID] = true
+			}
 			continue
 		}
 		for _, r := range rows {
 			f, listed := flags[strings.ToLower(r.Subject)]
-			live[r.ID] = listed && f.stillApplied(r.Applied)
+			live[r.ID] = live[r.ID] || listed && f.stillApplied(r.Applied)
+		}
+	}
+	for id := range unknown {
+		if !live[id] {
+			delete(live, id)
 		}
 	}
 	return live, errors.Join(errs...)
@@ -196,7 +208,7 @@ func (f *cpanelFlag) UnmarshalJSON(b []byte) error {
 	switch strings.Trim(string(b), `"`) {
 	case "1", "true":
 		*f = true
-	case "0", "false", "", "null":
+	case "0", "false":
 		*f = false
 	default:
 		return fmt.Errorf("unexpected cPanel flag %s", b)
@@ -219,18 +231,24 @@ func cpanelMailboxFlags(account string) (map[string]mailboxFlags, error) {
 	var reply struct {
 		Result struct {
 			Data []struct {
-				Email             string     `json:"email"`
-				SuspendedLogin    cpanelFlag `json:"suspended_login"`
-				SuspendedOutgoing cpanelFlag `json:"suspended_outgoing"`
+				Email             string      `json:"email"`
+				SuspendedLogin    *cpanelFlag `json:"suspended_login"`
+				SuspendedOutgoing *cpanelFlag `json:"suspended_outgoing"`
 			} `json:"data"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(out, &reply); err != nil {
 		return nil, fmt.Errorf("unreadable mailbox listing: %w", err)
 	}
+	if reply.Result.Data == nil {
+		return nil, errors.New("mailbox listing has no data")
+	}
 	flags := make(map[string]mailboxFlags, len(reply.Result.Data))
 	for _, m := range reply.Result.Data {
-		flags[strings.ToLower(m.Email)] = mailboxFlags{login: bool(m.SuspendedLogin), outgoing: bool(m.SuspendedOutgoing)}
+		if m.Email == "" || m.SuspendedLogin == nil || m.SuspendedOutgoing == nil {
+			return nil, errors.New("mailbox listing has incomplete restrictions")
+		}
+		flags[strings.ToLower(m.Email)] = mailboxFlags{login: bool(*m.SuspendedLogin), outgoing: bool(*m.SuspendedOutgoing)}
 	}
 	return flags, nil
 }
@@ -261,7 +279,12 @@ func releaseCPanelAccountHold(user, subject, actor string) error {
 	if user == "" {
 		return fmt.Errorf("no cPanel account recorded for %s", subject)
 	}
+	unlock := lockMailResponse("cpanel-account:" + user)
+	defer unlock()
 	out, err := whmapi1ReleaseExec(user)
+	if err == nil {
+		err = whmapi1ResultError(out)
+	}
 	rec := actionlog.Record{
 		Op:          "operate.release_mailbox",
 		Action:      "release_outgoing_email",
@@ -269,7 +292,7 @@ func releaseCPanelAccountHold(user, subject, actor string) error {
 		ActorDetail: actor,
 		Target:      subject,
 		Account:     user,
-		Command:     []string{"whmapi1", "release_outgoing_email", "user=" + user},
+		Command:     []string{"whmapi1", "release_outgoing_email", "user=" + user, "--output=json"},
 		Result:      actionlog.Applied,
 	}
 	if err != nil {
@@ -278,6 +301,23 @@ func releaseCPanelAccountHold(user, subject, actor string) error {
 	}
 	actionlog.Write(rec)
 	return err
+}
+
+// A successful process exit is not evidence that WHM accepted the operation.
+func whmapi1ResultError(out []byte) error {
+	var reply struct {
+		Metadata struct {
+			Result int    `json:"result"`
+			Reason string `json:"reason"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(out, &reply); err != nil {
+		return fmt.Errorf("unreadable whmapi1 reply: %w", err)
+	}
+	if reply.Metadata.Result == 1 {
+		return nil
+	}
+	return fmt.Errorf("whmapi1 refused operation: %s", reply.Metadata.Reason)
 }
 
 // suspendCPanelMailbox suspends one mailbox's logins and outgoing mail. An
@@ -297,7 +337,22 @@ func suspendCPanelMailbox(c mailboxCompromise) (store.MailboxSuspension, error) 
 	}
 	var applied []string
 	var errs []error
+	flags, statusErr := cpanelMailboxFlags(user)
+	before := flags[strings.ToLower(c.Subject)]
 	for _, fn := range []string{store.AppliedSuspendLogin, store.AppliedSuspendOutgoing} {
+		owned := c.Previous.Account == user && slices.Contains(c.Previous.Applied, fn)
+		if statusErr != nil && !owned {
+			// Without prior ownership or readable state, a successful
+			// idempotent suspend could claim somebody else's restriction.
+			errs = append(errs, fmt.Errorf("%s ownership: %w", fn, statusErr))
+			continue
+		}
+		if statusErr == nil && before.stillApplied([]string{fn}) {
+			if owned {
+				applied = append(applied, fn)
+			}
+			continue
+		}
 		if err := runMailboxSuspension(user, c.Subject, fn, c.Reason); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: uapi Email %s failed for %s: %v\n", stamp, fn, c.Subject, err)
 			errs = append(errs, fmt.Errorf("%s: %w", fn, err))
@@ -308,6 +363,9 @@ func suspendCPanelMailbox(c mailboxCompromise) (store.MailboxSuspension, error) 
 	if len(applied) > 0 {
 		fmt.Fprintf(os.Stderr, "[%s] AUTO-SUSPEND: mailbox %s suspended (cPanel user %s)\n", stamp, c.Subject, user)
 		return store.MailboxSuspension{Kind: store.SuspensionKindMailbox, Account: user, Applied: applied}, nil
+	}
+	if before.login || before.outgoing {
+		return store.MailboxSuspension{}, errMailAlreadyRestricted
 	}
 	if c.Evidence == evidenceLogin {
 		return store.MailboxSuspension{}, errors.Join(errs...)
@@ -323,6 +381,11 @@ func holdOwnerAccount(subject string) (store.MailboxSuspension, error) {
 		domain = domain[at+1:]
 	}
 	user := lookupCPanelUser(domain)
+	unlock := lockMailResponse("cpanel-account:" + user)
+	defer unlock()
+	if err := checkCPanelHoldOwnership(user); err != nil {
+		return store.MailboxSuspension{}, err
+	}
 	if !autoSuspendOutgoingMail(subject) {
 		return store.MailboxSuspension{}, fmt.Errorf("outgoing mail hold for %s failed", subject)
 	}
@@ -337,6 +400,19 @@ var cpanelUsersDir = "/var/cpanel/users"
 // a path or a whmapi1 argument.
 var cpanelUserRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
+var errMailAlreadyRestricted = errors.New("mail is already restricted outside this suspension")
+
+func checkCPanelHoldOwnership(user string) error {
+	held, err := outgoingMailHoldState(user)
+	if err != nil {
+		return fmt.Errorf("cannot read outgoing mail hold for %s: %w", user, err)
+	}
+	if held {
+		return errMailAlreadyRestricted
+	}
+	return nil
+}
+
 // holdBareCPanelAccount holds the account's outgoing mail when a login named
 // the cPanel account itself: that password unlocks every mailbox.
 func holdBareCPanelAccount(user string) (store.MailboxSuspension, error) {
@@ -345,6 +421,11 @@ func holdBareCPanelAccount(user string) (store.MailboxSuspension, error) {
 	}
 	if _, err := os.Stat(filepath.Join(cpanelUsersDir, user)); err != nil {
 		return store.MailboxSuspension{}, fmt.Errorf("no cPanel account %s", user)
+	}
+	unlock := lockMailResponse("cpanel-account:" + user)
+	defer unlock()
+	if err := checkCPanelHoldOwnership(user); err != nil {
+		return store.MailboxSuspension{}, err
 	}
 	if !holdCPanelAccount(user) {
 		return store.MailboxSuspension{}, fmt.Errorf("outgoing mail hold for cPanel account %s failed", user)

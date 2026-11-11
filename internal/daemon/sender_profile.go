@@ -177,6 +177,8 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 
 	// Registered before the unlock defer so owner I/O runs after it.
 	defer func() { stampMailAccountOwner(findings, user) }()
+	unlock := lockMailResponse(store.MailboxSuspensionID(activeMailBackend.name(), user))
+	defer unlock()
 	w := lockSenderWindow(user, now)
 	defer w.mu.Unlock()
 
@@ -335,15 +337,42 @@ func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason stri
 // forgetSenderEvidence drops a released mailbox's sending evidence: its
 // rolling hour and today's counts. Sends from before a release must not
 // suspend the mailbox again.
-func forgetSenderEvidence(user string, now time.Time) {
+func forgetSenderEvidence(user string, now time.Time) error {
+	if !strings.Contains(user, "@") {
+		return nil
+	}
 	db := store.Global()
+	keys := map[string]bool{}
+	if db != nil {
+		stored, err := db.SenderProfileKeys(user)
+		if err != nil {
+			return err
+		}
+		for _, key := range stored {
+			keys[key] = true
+		}
+	}
+	senderWindows.Range(func(key, _ any) bool {
+		if strings.EqualFold(key.(string), user) {
+			keys[key.(string)] = true
+		}
+		return true
+	})
+	for key := range keys {
+		if err := forgetSenderWindow(key, now, db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func forgetSenderWindow(user string, now time.Time, db *store.DB) error {
 	w := lockSenderWindow(user, now)
 	defer w.mu.Unlock()
 	if (!w.loaded || w.db != db) && db != nil {
 		profile, err := db.GetSenderProfile(user)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Warning: failed to load sender profile for %s: %v\n",
-				now.Format("2006-01-02 15:04:05"), user, err)
+			return fmt.Errorf("load sender profile for %s: %w", user, err)
 		} else {
 			w.profile = profile
 			w.db, w.loaded, w.dayKey = db, true, ""
@@ -354,8 +383,11 @@ func forgetSenderEvidence(user string, now time.Time) {
 	if w.loaded {
 		delete(w.profile.Days, senderDayKey(now))
 		w.dirty = true
-		w.flush(user)
+		if !w.flush(user) {
+			return fmt.Errorf("save cleared sender profile for %s", user)
+		}
 	}
+	return nil
 }
 
 // senderEvictWindow is how long a per-user window may stay idle before it is

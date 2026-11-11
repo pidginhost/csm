@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
@@ -779,7 +778,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// identity is the credential actually being abused and the one we
 	// must lock out.
 	for _, f := range parseCloudRelayFinding(line, cfg) {
-		handleCloudRelayCredentialAbuse(cfg, extractAuthUser(line), time.Now())
+		handleCloudRelayCredentialAbuse(cfg, extractAuthUser(line), f.Timestamp)
 		findings = append(findings, f)
 	}
 
@@ -787,7 +786,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// churn and recipient fan-out judged against the mailbox's own history.
 	for _, f := range parseSenderProfileFinding(line, cfg, time.Now()) {
 		if f.Severity == alert.Critical {
-			respondToMailboxCompromise(cfg, extractAuthUser(line), "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", time.Now())
+			respondToMailboxCompromise(cfg, extractAuthUser(line), "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
 		}
 		findings = append(findings, f)
 	}
@@ -941,9 +940,7 @@ var outgoingMailHoldUsersPath = "/etc/outgoing_mail_hold_users"
 var whmapi1HoldExec = func(user string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// #nosec G204 -- whmapi1 is the cPanel API binary; user is a cPanel
-	// account name resolved from /etc/userdomains (cpanel-managed).
-	return exec.CommandContext(ctx, "whmapi1", "hold_outgoing_email", "user="+user).CombinedOutput()
+	return uapiCommand(ctx, "whmapi1", "hold_outgoing_email", "user="+user, "--output=json")
 }
 
 // whmapi1ReleaseExec invokes `whmapi1 release_outgoing_email user=<user>`.
@@ -951,9 +948,7 @@ var whmapi1HoldExec = func(user string) ([]byte, error) {
 var whmapi1ReleaseExec = func(user string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// #nosec G204 -- whmapi1 is the cPanel API binary; user is the cPanel
-	// account a stored suspension names, validated when it was held.
-	return exec.CommandContext(ctx, "whmapi1", "release_outgoing_email", "user="+user).CombinedOutput()
+	return uapiCommand(ctx, "whmapi1", "release_outgoing_email", "user="+user, "--output=json")
 }
 
 // userOnOutgoingMailHold reports whether the cPanel user already appears
@@ -1046,12 +1041,15 @@ func holdCPanelAccountReal(user string) bool {
 		return true
 	}
 	out, err := whmapi1HoldExec(user)
+	if err == nil {
+		err = whmapi1ResultError(out)
+	}
 	rec := actionlog.Record{
 		Op:      "respond.hold_outgoing_mail",
 		Action:  "hold_outgoing_email",
 		Target:  user,
 		Account: user,
-		Command: []string{"whmapi1", "hold_outgoing_email", "user=" + user},
+		Command: []string{"whmapi1", "hold_outgoing_email", "user=" + user, "--output=json"},
 		Undo:    "whmapi1 release_outgoing_email " + mailboxShellArg("user="+user),
 		Result:  actionlog.Applied,
 	}

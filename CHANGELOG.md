@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
+- Under auto-response, cracked mailbox passwords trigger login and sending restrictions; cracked cPanel account passwords trigger outgoing holds, with alerts identifying partial protection.
 - A dismissed malware finding now alerts again when the file's content changes.
 - Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
@@ -22,7 +22,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
-- The Email page has a Suspended tab listing the mailboxes and accounts CSM suspended, with their live status and a Release button.
+- The Email page lists suspensions CSM applied, shows unknown status when cPanel cannot report it, and lets operators release them.
 
 ### Changed
 

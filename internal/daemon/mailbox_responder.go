@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
@@ -33,6 +35,7 @@ type mailboxCompromise struct {
 	Reason   string
 	Evidence compromiseEvidence
 	At       time.Time
+	Previous store.MailboxSuspension
 }
 
 // mailBackend is the mail server's side of a suspension. suspend fills Kind,
@@ -45,6 +48,40 @@ type mailBackend interface {
 }
 
 var activeMailBackend mailBackend = cpanelMailBackend{}
+
+// Keep the server mutation, record update and evidence reset in one critical
+// section. References include waiters so a lock cannot be replaced underneath
+// them; idle subjects do not accumulate in this map.
+var mailResponseLocks = struct {
+	sync.Mutex
+	entries map[string]*mailResponseLock
+}{entries: make(map[string]*mailResponseLock)}
+
+type mailResponseLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func lockMailResponse(key string) func() {
+	mailResponseLocks.Lock()
+	l := mailResponseLocks.entries[key]
+	if l == nil {
+		l = &mailResponseLock{}
+		mailResponseLocks.entries[key] = l
+	}
+	l.refs++
+	mailResponseLocks.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		mailResponseLocks.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(mailResponseLocks.entries, key)
+		}
+		mailResponseLocks.Unlock()
+	}
+}
 
 // respondToCompromise is the one entry point for stopping an abused mail
 // credential. It honours the auto-response switch and dry-run, never repeats
@@ -65,7 +102,11 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 
 	backend := activeMailBackend
 	id := store.MailboxSuspensionID(backend.name(), c.Subject)
+	unlock := lockMailResponse(id)
+	defer unlock()
+	now = time.Now()
 	db := store.Global()
+	var uncertain store.MailboxSuspension
 	if db != nil {
 		prev, ok, err := db.GetMailboxSuspension(id)
 		switch {
@@ -83,6 +124,9 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 			if statusErr != nil {
 				fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %v; suspending %s again\n", stamp, statusErr, c.Subject)
 			}
+			if !known {
+				uncertain = prev
+			}
 		case ok && !c.At.After(*prev.ReleasedAt):
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s was released at %s, after this evidence; not suspending again\n",
 				stamp, c.Subject, prev.ReleasedAt.Format(time.RFC3339))
@@ -90,13 +134,29 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 		}
 	}
 
+	c.Previous = uncertain
 	applied, err := backend.suspend(c)
+	if errors.Is(err, errMailAlreadyRestricted) {
+		return true, nil
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not stop %s: %v\n", stamp, c.Subject, err)
 		if c.Evidence == evidenceLogin {
 			return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{}, err)}
 		}
 		return false, nil
+	}
+	if uncertain.Account == applied.Account {
+		parts := slices.Clone(uncertain.Applied)
+		for _, part := range applied.Applied {
+			if !slices.Contains(parts, part) {
+				parts = append(parts, part)
+			}
+		}
+		applied.Applied = parts
+	}
+	if slices.Contains(applied.Applied, store.AppliedHoldOutgoing) {
+		applied.Kind = store.SuspensionKindAccount
 	}
 	rec := store.MailboxSuspension{
 		ID:          id,
@@ -125,6 +185,11 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 // already says the mailbox is suspended.
 func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err error) alert.Finding {
 	mailbox, domain, tenant := splitMailAccount(c.Subject)
+	if rec.Account != "" {
+		tenant = rec.Account
+	} else if tenant == "" && domain != "" {
+		tenant = lookupCPanelUser(domain)
+	}
 	f := alert.Finding{
 		Severity:  alert.Critical,
 		Check:     "email_mailbox_response",
@@ -136,13 +201,21 @@ func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err 
 	switch {
 	case err != nil:
 		f.Message = fmt.Sprintf("Could not suspend %s after its password was cracked: %v", c.Subject, err)
-		f.Details = "The account can still log in and send. Change its password now."
-	case rec.Kind == store.SuspensionKindAccount:
+		f.Details = "Protection could not be confirmed. Change its password now."
+	case rec.Kind == store.SuspensionKindAccount && mailbox == "":
 		f.Message = fmt.Sprintf("Outgoing mail held for cPanel account %s after its own password was cracked", rec.Account)
 		f.Details = "That password unlocks every mailbox and the cPanel login. Change the cPanel password, then release the hold on the Email page, Suspended tab."
 	default:
 		f.Message = fmt.Sprintf("Mailbox %s suspended after its password was cracked", c.Subject)
-		f.Details = "Logins and outgoing mail are stopped. Have the customer change the mailbox password, then release it on the Email page, Suspended tab."
+		switch {
+		case !slices.Contains(rec.Applied, store.AppliedSuspendLogin):
+			f.Details = "Only outgoing mail is stopped; logins may still work."
+		case !slices.Contains(rec.Applied, store.AppliedSuspendOutgoing):
+			f.Details = "Only logins are stopped; outgoing mail was not suspended."
+		default:
+			f.Details = "Logins and outgoing mail are stopped."
+		}
+		f.Details += " Have the customer change the mailbox password, then release it on the Email page, Suspended tab."
 	}
 	return f
 }
@@ -161,9 +234,6 @@ func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.
 			continue
 		}
 		subject := loginMailbox(f.Mailbox)
-		if subject == "" {
-			subject = f.TenantID
-		}
 		if subject == "" || !hostHasMailBackend() {
 			continue
 		}
@@ -233,19 +303,33 @@ func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 			fmt.Fprintf(os.Stderr, "[%s] mailbox suspensions: %v\n", time.Now().Format("2006-01-02 15:04:05"), statusErr)
 		}
 	}
-	now := time.Now()
 	out := make([]mailboxSuspensionStatus, 0, len(rows))
 	for _, r := range rows {
-		st := mailboxSuspensionStatus{MailboxSuspension: r}
-		if r.ReleasedAt == nil {
+		unlock := lockMailResponse(r.ID)
+		current, found, readErr := db.GetMailboxSuspension(r.ID)
+		if readErr != nil {
+			unlock()
+			return nil, readErr
+		}
+		if !found {
+			unlock()
+			continue
+		}
+		st := mailboxSuspensionStatus{MailboxSuspension: current}
+		if current.ReleasedAt == nil {
 			active, known := live[r.ID]
 			switch {
+			case !current.SuspendedAt.Equal(r.SuspendedAt):
+				// The batched status predates a new suspension. Never apply
+				// it to that generation, even if it reported no restrictions.
+				st.StatusUnknown = true
 			case !known:
 				st.StatusUnknown = true
 			case active:
 				st.Active = true
 			default:
-				if err := db.MarkMailboxSuspensionReleased(r.ID, now, releasedOutsideCSM); err != nil {
+				now := time.Now()
+				if err := finishMailboxRelease(db, current, now, releasedOutsideCSM); err != nil {
 					st.StatusUnknown = true
 					break
 				}
@@ -253,6 +337,7 @@ func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 				st.ReleasedAt, st.ReleasedBy = &at, releasedOutsideCSM
 			}
 		}
+		unlock()
 		out = append(out, st)
 	}
 	return out, nil
@@ -262,6 +347,8 @@ func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 // request, and forgets the sending evidence behind it so sends from before
 // the release cannot suspend the mailbox again.
 func releaseMailboxSuspension(id, actor string) error {
+	unlock := lockMailResponse(id)
+	defer unlock()
 	db := store.Global()
 	if db == nil {
 		return errors.New("state store not open")
@@ -283,12 +370,18 @@ func releaseMailboxSuspension(id, actor string) error {
 	if err := backend.release(rec, actor); err != nil {
 		return err
 	}
-	now := time.Now()
-	if err := db.MarkMailboxSuspensionReleased(id, now, actor); err != nil {
+	return finishMailboxRelease(db, rec, time.Now(), actor)
+}
+
+// The caller holds the subject lock through both evidence and record updates.
+func finishMailboxRelease(db *store.DB, rec store.MailboxSuspension, now time.Time, actor string) error {
+	if err := forgetSenderEvidence(rec.Subject, now); err != nil {
 		return err
 	}
-	forgetSenderEvidence(rec.Subject, now)
 	forgetCloudRelayEvidence(rec.Subject)
+	if err := db.MarkMailboxSuspensionReleased(rec.ID, now, actor); err != nil {
+		return err
+	}
 	if !strings.Contains(rec.Subject, "@") && strings.Contains(rec.Subject, ".") {
 		// The spam-outbreak governor held this domain; restart its dedup
 		// window so the same blast does not hold it again at once.

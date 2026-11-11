@@ -50,7 +50,7 @@ func onlySuspension(t *testing.T, db *store.DB) store.MailboxSuspension {
 func TestRespondToCompromise_RecordsMailboxSuspension(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	stubAccountHold(t, true)
 	captureActionRecords(t)
 
@@ -73,8 +73,13 @@ func TestRespondToCompromise_RecordsMailboxSuspension(t *testing.T) {
 func TestRespondToCompromise_SkipsActiveRecord(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
+	statusReads := 0
 	calls := stubUAPI(t, func(args []string) ([]byte, error) {
 		if uapiFn(args) == "list_pops_with_disk" {
+			statusReads++
+			if statusReads == 1 {
+				return listPopsReply()
+			}
 			return listPopsReply(`{"email":"real@victim.example","suspended_login":1,"suspended_outgoing":1}`)
 		}
 		return uapiOK()
@@ -89,7 +94,7 @@ func TestRespondToCompromise_SkipsActiveRecord(t *testing.T) {
 	if !stopped || len(findings) != 0 {
 		t.Fatalf("stopped = %v, findings = %+v; an already suspended mailbox is stopped without a new finding", stopped, findings)
 	}
-	if got := uapiFns(*calls); !reflect.DeepEqual(got, []string{"suspend_login", "suspend_outgoing", "list_pops_with_disk"}) {
+	if got := uapiFns(*calls); !reflect.DeepEqual(got, []string{"list_pops_with_disk", "suspend_login", "suspend_outgoing", "list_pops_with_disk"}) {
 		t.Fatalf("uapi calls = %v; a mailbox cPanel still reports suspended must not be suspended again", got)
 	}
 	onlySuspension(t, db)
@@ -110,8 +115,13 @@ func TestRespondToCompromise_StaleActiveRecordResuspends(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db := withMailboxStore(t)
 			withUserdomains(t, "victim.example: cpuser\n")
+			statusReads := 0
 			calls := stubUAPI(t, func(args []string) ([]byte, error) {
 				if uapiFn(args) == "list_pops_with_disk" {
+					statusReads++
+					if statusReads == 1 {
+						return listPopsReply()
+					}
 					return tc.list()
 				}
 				return uapiOK()
@@ -124,7 +134,7 @@ func TestRespondToCompromise_StaleActiveRecordResuspends(t *testing.T) {
 			if !stopped {
 				t.Fatal("the mailbox must be suspended again")
 			}
-			want := []string{"suspend_login", "suspend_outgoing", "list_pops_with_disk", "suspend_login", "suspend_outgoing"}
+			want := []string{"list_pops_with_disk", "suspend_login", "suspend_outgoing", "list_pops_with_disk", "list_pops_with_disk", "suspend_login", "suspend_outgoing"}
 			if got := uapiFns(*calls); !reflect.DeepEqual(got, want) {
 				t.Fatalf("uapi calls = %v, want %v", got, want)
 			}
@@ -138,7 +148,7 @@ func TestRespondToCompromise_StaleActiveRecordResuspends(t *testing.T) {
 func TestRespondToCompromise_ReleasedNeedsNewerEvidence(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	stubAccountHold(t, true)
 	captureActionRecords(t)
 
@@ -169,7 +179,7 @@ func TestRespondToCompromise_ReleasedNeedsNewerEvidence(t *testing.T) {
 func TestRespondToCompromise_DryRunStoresNothing(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	sink := captureActionRecords(t)
 	dryRun := true
@@ -202,7 +212,7 @@ func TestRespondToCompromise_DryRunStoresNothing(t *testing.T) {
 func TestRespondToCompromise_SendingFallsBackToAccountHold(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
-	stubUAPI(t, func([]string) ([]byte, error) { return uapiFailure("denied") })
+	stubMailboxActions(t, func([]string) ([]byte, error) { return uapiFailure("denied") })
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 
@@ -221,7 +231,7 @@ func TestRespondToCompromise_SendingFallsBackToAccountHold(t *testing.T) {
 func TestRespondToCompromise_DomainSubjectHoldsOwner(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 
@@ -246,7 +256,10 @@ func TestHoldCPanelAccountWritesActionRecord(t *testing.T) {
 	t.Cleanup(func() { outgoingMailHoldUsersPath = prevPath })
 	prevExec := whmapi1HoldExec
 	var held []string
-	whmapi1HoldExec = func(user string) ([]byte, error) { held = append(held, user); return []byte("ok"), nil }
+	whmapi1HoldExec = func(user string) ([]byte, error) {
+		held = append(held, user)
+		return []byte(`{"metadata":{"result":1,"reason":"OK"}}`), nil
+	}
 	t.Cleanup(func() { whmapi1HoldExec = prevExec })
 	sink := captureActionRecords(t)
 
@@ -337,7 +350,7 @@ func TestStolenLoginResponses_SuspendsCriticalMailbox(t *testing.T) {
 	withMailboxStore(t)
 	withMailBackendHost(t, true)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 
@@ -357,7 +370,7 @@ func TestStolenLoginResponses_IgnoresHighAndOtherChecks(t *testing.T) {
 	withMailboxStore(t)
 	withMailBackendHost(t, true)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	users := stubCPanelHold(t, true)
 
@@ -373,7 +386,7 @@ func TestStolenLoginResponses_BareCPanelUserHoldsAccount(t *testing.T) {
 	db := withMailboxStore(t)
 	withMailBackendHost(t, true)
 	withCPanelUsers(t, "cpuser")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	users := stubCPanelHold(t, true)
 	captureActionRecords(t)
 
@@ -394,7 +407,7 @@ func TestStolenLoginResponses_NoAccountFallbackOnLogin(t *testing.T) {
 	db := withMailboxStore(t)
 	withMailBackendHost(t, true)
 	withUserdomains(t, "victim.example: cpuser\n")
-	stubUAPI(t, func([]string) ([]byte, error) { return uapiFailure("denied") })
+	stubMailboxActions(t, func([]string) ([]byte, error) { return uapiFailure("denied") })
 	holds := stubAccountHold(t, true)
 	users := stubCPanelHold(t, true)
 	captureActionRecords(t)
@@ -432,7 +445,7 @@ func TestStolenLoginResponses_DisabledOrDryRunReturnsNothing(t *testing.T) {
 	withMailboxStore(t)
 	withMailBackendHost(t, true)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	captureActionRecords(t)
 	dryRun := true
 	dry := &config.Config{}
@@ -453,7 +466,7 @@ func TestStolenLoginResponses_NoMailBackendOnHost(t *testing.T) {
 	withMailboxStore(t)
 	withMailBackendHost(t, false)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 
 	if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}); len(got) != 0 || len(*calls) != 0 {
 		t.Fatalf("host without a mail backend acted: findings %+v, uapi %v", got, *calls)
@@ -517,7 +530,7 @@ func stubWHMRelease(t *testing.T, err error) *[]string {
 	prev := whmapi1ReleaseExec
 	whmapi1ReleaseExec = func(user string) ([]byte, error) {
 		*users = append(*users, user)
-		return nil, err
+		return []byte(`{"metadata":{"result":1,"reason":"OK"}}`), err
 	}
 	t.Cleanup(func() { whmapi1ReleaseExec = prev })
 	return users
@@ -710,7 +723,7 @@ func TestStolenLoginResponses_LoginNamesNeverHoldADomain(t *testing.T) {
 	withMailBackendHost(t, true)
 	withUserdomains(t, "victim.example: cpuser\n")
 	withCPanelUsers(t, "cpuser")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
 	users := stubCPanelHold(t, true)
 	captureActionRecords(t)
@@ -743,7 +756,7 @@ func TestStolenLoginResponses_LoginNamesNeverHoldADomain(t *testing.T) {
 func TestRetroCloudRelayResponse_UsesLoggedTime(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
 	stubAccountHold(t, true)
 	captureActionRecords(t)
 	resetEmailRateState()

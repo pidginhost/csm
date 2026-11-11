@@ -532,7 +532,7 @@ func TestAutoSuspendOutgoingMail_SkipsWhenUserAlreadyHeld(t *testing.T) {
 	prevExec := whmapi1HoldExec
 	whmapi1HoldExec = func(_ string) ([]byte, error) {
 		execCalls++
-		return nil, nil
+		return []byte(`{"metadata":{"result":1,"reason":"OK"}}`), nil
 	}
 	t.Cleanup(func() { whmapi1HoldExec = prevExec })
 
