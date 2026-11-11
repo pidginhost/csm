@@ -228,49 +228,6 @@ func TestParseFTPLogLineMissingPeerIgnoresLaterIP(t *testing.T) {
 	}
 }
 
-// --- extractRequestURI -------------------------------------------------
-
-func TestExtractRequestURINoQuotes(t *testing.T) {
-	if got := extractRequestURI("no quotes here"); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractRequestURIUnbalancedQuote(t *testing.T) {
-	if got := extractRequestURI(`prefix "request only`); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractRequestURIStandard(t *testing.T) {
-	line := `127.0.0.1 - - [11/Apr/2026:10:00:00] "GET /dashboard HTTP/1.1" 200 1234`
-	if got := extractRequestURI(line); got != "GET /dashboard HTTP/1.1" {
-		t.Errorf("got %q", got)
-	}
-}
-
-// --- extractIPFromLogDaemon -------------------------------------------
-
-func TestExtractIPFromLogDaemonStandard(t *testing.T) {
-	line := "Apr 11 10:00:00 host sshd[1234]: Failed password from 203.0.113.5 port 22"
-	if got := extractIPFromLogDaemon(line); got != "203.0.113.5" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractIPFromLogDaemonStripsPunctuation(t *testing.T) {
-	line := "access from 198.51.100.1, blocked"
-	if got := extractIPFromLogDaemon(line); got != "198.51.100.1" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractIPFromLogDaemonNoIP(t *testing.T) {
-	if got := extractIPFromLogDaemon("plain log line, no ip"); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
 // --- purgeTracker (purge_correlation.go) ------------------------------
 
 func TestPurgeStateNoSession(t *testing.T) {

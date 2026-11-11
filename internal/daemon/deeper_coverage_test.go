@@ -940,58 +940,6 @@ func TestParsePurgeDaemon_NoPurge(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractIPFromLogDaemon — edge cases
-// ---------------------------------------------------------------------------
-
-func TestExtractIPFromLogDaemon_TrailingPunctuation(t *testing.T) {
-	line := `some log 203.0.113.5: more stuff`
-	got := extractIPFromLogDaemon(line)
-	if got != "203.0.113.5" {
-		t.Errorf("got %q, want 203.0.113.5", got)
-	}
-}
-
-func TestExtractIPFromLogDaemon_NoBareIP(t *testing.T) {
-	line := "no ip addresses in this line"
-	got := extractIPFromLogDaemon(line)
-	if got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractIPFromLogDaemon_ShortField(t *testing.T) {
-	line := "1.2.3 too short"
-	got := extractIPFromLogDaemon(line)
-	if got != "" {
-		t.Errorf("short field should not match, got %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// extractRequestURI — edge cases
-// ---------------------------------------------------------------------------
-
-func TestExtractRequestURI_NoQuotes(t *testing.T) {
-	if got := extractRequestURI("no quotes here"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractRequestURI_SingleQuote(t *testing.T) {
-	if got := extractRequestURI(`only "one quote`); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractRequestURI_FullLine(t *testing.T) {
-	line := `198.51.100.5 - - [12/Apr/2026:10:00:00 +0000] "GET /index.html HTTP/1.1" 200 1234`
-	got := extractRequestURI(line)
-	if got != "GET /index.html HTTP/1.1" {
-		t.Errorf("got %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // extractPureFTPDClientIP — edge cases
 // ---------------------------------------------------------------------------
 

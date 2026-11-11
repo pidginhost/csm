@@ -15,30 +15,31 @@ import (
 func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
-	ip, _, _, ok := accessLogIPMethodPath(line)
+	rec, ok := checks.ParseCpanelAccessRecord(line)
 	if !ok {
 		return nil
 	}
+	ip := rec.IP
 
 	if isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 		return nil
 	}
 
-	lineLower := strings.ToLower(line)
+	target := strings.ToLower(rec.Target)
+	rejected := rec.Status == "401" || rec.Status == "403"
 
 	// File Manager write operations (port 2083)
 	// Only match actual write actions - not read-only calls like get_homedir.
 	// Skip 401/403 responses - the server rejected the request, no write occurred.
-	// Match against the request URI only (between first pair of quotes), not the
-	// full line which includes the referer URL that can contain "upload" in paths.
-	if strings.Contains(line, "2083") && !strings.Contains(line, "\" 401 ") && !strings.Contains(line, "\" 403 ") {
-		requestURI := extractRequestURI(lineLower)
+	// Match against the request target only, not the referer, which can
+	// contain "upload" in paths.
+	if rec.Port == "2083" && !rejected {
 		filemanWriteActions := []string{
 			"fileman/save_file", "fileman/upload_files",
 			"fileman/paste", "fileman/rename", "fileman/delete",
 		}
 		for _, action := range filemanWriteActions {
-			if strings.Contains(requestURI, action) {
+			if strings.Contains(target, action) {
 				findings = append(findings, alert.Finding{
 					// Warning, not Critical: this fires on every File Manager
 					// write by any customer, and 401/403 are already skipped
@@ -63,9 +64,8 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// an attack. Real API abuse won't correlate with a recent purge for the same account.
 	// A failure counts as brute force against its source and can block it;
 	// a trusted proxy's address stands for every visitor behind it.
-	if (strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ")) &&
-		!checks.IsTrustedProxy(ip, cfg) {
-		if strings.Contains(lineLower, "json-api") || strings.Contains(lineLower, "/execute/") {
+	if rejected && !checks.IsTrustedProxy(ip, cfg) {
+		if strings.Contains(target, "json-api") || strings.Contains(target, "/execute/") {
 			if !purgeTracker.isPostPurge401(ip) {
 				findings = append(findings, alert.Finding{
 					Severity: alert.High,
@@ -80,19 +80,15 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 		}
 	}
 
-	// Webmail login attempts (port 2095/2096)
-	if !cfg.Suppressions.SuppressWebmail {
-		if strings.Contains(line, "2095") || strings.Contains(line, "2096") {
-			if strings.Contains(lineLower, "post") {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Warning,
-					Check:    "webmail_login_realtime",
-					Message:  fmt.Sprintf("Webmail login attempt from non-infra IP: %s", ip),
-					Details:  truncateDaemon(line, 200),
-					SourceIP: ip,
-				})
-			}
-		}
+	// Webmail login attempts (port 2095/2096), as the scheduled scan counts them.
+	if !cfg.Suppressions.SuppressWebmail && rec.WebmailLogin() {
+		findings = append(findings, alert.Finding{
+			Severity: alert.Warning,
+			Check:    "webmail_login_realtime",
+			Message:  fmt.Sprintf("Webmail login attempt from non-infra IP: %s", ip),
+			Details:  truncateDaemon(line, 200),
+			SourceIP: ip,
+		})
 	}
 
 	// WHM login attempts (port 2086/2087). CVE-2026-41940 step 1 creates the
@@ -101,9 +97,9 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// non-infra POST gives ops a brute-force/recon signal even on patched
 	// hosts. Suppressed under the cPanel-login suppression flag because WHM
 	// is the admin face of cPanel and shares the same noise profile.
-	isWHMPort := isWHMLogVhost(line)
+	isWHMPort := rec.Port == "2087" || rec.Port == "2086"
 	if isWHMPort && !cfg.Suppressions.SuppressCpanelLogin {
-		if strings.Contains(lineLower, "post /login/?login_only=1") {
+		if strings.EqualFold(rec.Method, "POST") && strings.HasPrefix(target, "/login/?login_only=1") {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "whm_login_realtime",
@@ -123,7 +119,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// because the do_token_denied() trigger is path-agnostic - the watchTowr
 	// PoC happens to use listaccts but any token-required endpoint works.
 	// Fires regardless of suppression - this is an attack IOC, not a login.
-	if isWHMPort && isUnauthWHMScriptsRequest(extractRequestURI(line)) {
+	if isWHMPort && isUnauthWHMScriptsTarget(rec.Target) {
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "whm_unauth_scripts_realtime",
@@ -136,46 +132,11 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	return findings
 }
 
-// isWHMLogVhost reports whether the access-log line was served by WHM (port
-// 2086 plain or 2087 SSL). cpsrvd ends its own lines with the served port as
-// a bare field; other writers end with a quoted "host:port". Either way we
-// anchor on the line's end to avoid matching a port-like substring inside a
-// referer URL or user-agent.
-func isWHMLogVhost(line string) bool {
-	line = strings.TrimRight(line, " \t\r\n")
-	if !strings.HasSuffix(line, "\"") {
-		port := line[strings.LastIndexAny(line, " \t")+1:]
-		return port == "2087" || port == "2086"
-	}
-	vhost := lastQuotedField(line)
-	return strings.HasSuffix(vhost, ":2087") || strings.HasSuffix(vhost, ":2086")
-}
-
-// lastQuotedField returns the content of the final double-quoted field on the
-// line, or "" if there isn't a closed pair. cPanel's log writer always emits
-// the served vhost as that final field.
-func lastQuotedField(line string) string {
-	end := strings.LastIndex(line, "\"")
-	if end <= 0 {
-		return ""
-	}
-	start := strings.LastIndex(line[:end], "\"")
-	if start < 0 {
-		return ""
-	}
-	return line[start+1 : end]
-}
-
-// isUnauthWHMScriptsRequest returns true when the request URI targets a path
+// isUnauthWHMScriptsTarget returns true when the request target is a path
 // under /scripts/ or /scripts2/ without a /cpsessXXXXXX/ security-token
 // prefix - the literal step-4 fingerprint of CVE-2026-41940. Query strings
 // are stripped before comparison.
-func isUnauthWHMScriptsRequest(requestURI string) bool {
-	parts := strings.SplitN(requestURI, " ", 3)
-	if len(parts) < 2 {
-		return false
-	}
-	path := parts[1]
+func isUnauthWHMScriptsTarget(path string) bool {
 	if q := strings.Index(path, "?"); q >= 0 {
 		path = path[:q]
 	}
@@ -218,29 +179,4 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	return findings
-}
-
-// extractRequestURI extracts the request URI from an access log line.
-// Format: ... "METHOD /path HTTP/1.1" ... → returns "/path"
-// Returns the content between the first pair of quotes (the request line).
-func extractRequestURI(line string) string {
-	start := strings.Index(line, "\"")
-	if start < 0 {
-		return ""
-	}
-	end := strings.Index(line[start+1:], "\"")
-	if end < 0 {
-		return ""
-	}
-	return line[start+1 : start+1+end]
-}
-
-func extractIPFromLogDaemon(line string) string {
-	fields := strings.Fields(line)
-	for _, f := range fields {
-		if len(f) >= 7 && f[0] >= '0' && f[0] <= '9' && strings.Count(f, ".") == 3 {
-			return strings.TrimRight(f, ",:;)([]")
-		}
-	}
-	return ""
 }

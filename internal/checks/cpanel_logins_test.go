@@ -40,18 +40,3 @@ func TestMultiIPWindowMinConfigured(t *testing.T) {
 		t.Errorf("got %d, want 120", got)
 	}
 }
-
-// --- extractRequestURIChecks ------------------------------------------
-
-func TestExtractRequestURIChecksStandard(t *testing.T) {
-	line := `203.0.113.5 - - [12/Apr/2026] "POST /login HTTP/1.1" 200 1234`
-	if got := extractRequestURIChecks(line); got != "POST /login HTTP/1.1" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractRequestURIChecksNoQuotes(t *testing.T) {
-	if got := extractRequestURIChecks("no quotes here"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}

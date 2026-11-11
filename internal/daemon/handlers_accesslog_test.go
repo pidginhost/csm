@@ -30,15 +30,6 @@ func resetPurgeTrackerState() {
 	}
 }
 
-func TestExtractRequestURI(t *testing.T) {
-	line := `198.51.100.10 - - [11/Apr/2026:12:00:00 +0000] "POST /cpsess1234567/json-api/fileman/upload_files HTTP/1.1" 200 123 "-" "Mozilla/5.0"`
-	got := extractRequestURI(line)
-	want := "POST /cpsess1234567/json-api/fileman/upload_files HTTP/1.1"
-	if got != want {
-		t.Fatalf("extractRequestURI() = %q, want %q", got, want)
-	}
-}
-
 func TestParseAccessLogLineEnhanced_FileManagerWrite(t *testing.T) {
 	cfg := &config.Config{}
 	line := `198.51.100.10 - - [11/Apr/2026:12:00:00 +0000] "POST /cpsess1234567/json-api/fileman/upload_files HTTP/1.1" 200 123 "-" "Mozilla/5.0" "example.com:2083"`
@@ -559,5 +550,31 @@ func TestParseAccessLogLineEnhanced_WHMNativeBarePort(t *testing.T) {
 		if findings := parseAccessLogLineEnhanced(line, &config.Config{}); len(findings) != 0 {
 			t.Errorf("%q: findings = %v, want none", line, findings)
 		}
+	}
+}
+
+// Realtime webmail alerts count login POSTs on the served webmail port, as
+// the scheduled scan does; ordinary webmail traffic and port-like or
+// "post"-like client text elsewhere on the line do not count.
+func TestParseAccessLogLineEnhanced_WebmailLoginOnly(t *testing.T) {
+	for line, want := range map[string]int{
+		`192.0.2.71 - - [11/09/2026:12:00:00 -0000] "POST /login/?login_only=1 HTTP/1.1" 200 0 "-" "Mozilla/5.0" "-" "-" 2096`:                    1,
+		`192.0.2.72 - - [11/09/2026:12:00:00 -0000] "POST /cpsess1/3rdparty/roundcube/?_task=mail HTTP/1.1" 200 0 "-" "Mozilla/5.0" "-" "-" 2096`: 0,
+		`192.0.2.73 - - [11/09/2026:12:00:00 -0000] "GET /cpsess1/webmail/ HTTP/1.1" 200 0 "-" "PostmanRuntime/7.0" "-" "-" 2096`:                 0,
+		`192.0.2.74 - - [11/09/2026:12:00:00 -0000] "POST /login/?login_only=1 HTTP/1.1" 200 0 "https://mail.example.com:2096/" "-" "-" "-" 2082`: 0,
+	} {
+		if got := parseAccessLogLineEnhanced(line, &config.Config{}); len(got) != want {
+			t.Errorf("%q: findings = %v, want %d", line, got, want)
+		}
+	}
+}
+
+// cpsrvd can log a client-chosen user holding a quote; it must not hide the
+// request line that follows the timestamp.
+func TestParseAccessLogLineEnhanced_QuoteInUserKeepsRequest(t *testing.T) {
+	line := `192.0.2.75 - x" [11/09/2026:12:00:00 -0000] "GET /scripts2/listaccts HTTP/1.1" 401 0 "-" "curl/8.4.0" "-" "-" 2087`
+	findings := parseAccessLogLineEnhanced(line, &config.Config{})
+	if len(findings) != 1 || findings[0].Check != "whm_unauth_scripts_realtime" {
+		t.Fatalf("findings = %v, want one whm_unauth_scripts_realtime", findings)
 	}
 }

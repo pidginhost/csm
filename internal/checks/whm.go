@@ -29,16 +29,11 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 200)
 
 	for _, line := range lines {
-		if !isWHMAccessLogLine(line) {
+		rec, ok := ParseCpanelAccessRecord(line)
+		if !ok || rec.Port != "2087" {
 			continue
 		}
-
-		// Extract IP (first field)
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
-			continue
-		}
-		ip := fields[0]
+		ip := rec.IP
 
 		// Skip infra IPs
 		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
@@ -50,9 +45,10 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			"passwd", "change_root_password", "chpasswd",
 			"force_password_change", "resetpass",
 		}
-		lineLower := strings.ToLower(line)
+		// The request names the action; referer and user agent are client text.
+		target := strings.ToLower(rec.Target)
 		for _, action := range passwordActions {
-			if strings.Contains(lineLower, action) {
+			if strings.Contains(target, action) {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "whm_password_change",
@@ -68,7 +64,7 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			"createacct", "killacct", "suspendacct", "unsuspendacct",
 		}
 		for _, action := range accountActions {
-			if strings.Contains(lineLower, action) {
+			if strings.Contains(target, action) {
 				findings = append(findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "whm_account_action",
@@ -81,42 +77,6 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	}
 
 	return findings
-}
-
-func isWHMAccessLogLine(line string) bool {
-	served := lastAccessLogField(line)
-	switch {
-	case served == "2087":
-		return accessLogQuotedFieldCount(line) >= 5
-	case strings.HasSuffix(served, ":2087"):
-		return accessLogQuotedFieldCount(line) >= 4
-	default:
-		return false
-	}
-}
-
-func lastAccessLogField(line string) string {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return ""
-	}
-	if strings.HasSuffix(line, "\"") {
-		end := len(line) - 1
-		start := strings.LastIndex(line[:end], "\"")
-		if start < 0 {
-			return ""
-		}
-		return line[start+1 : end]
-	}
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return ""
-	}
-	return fields[len(fields)-1]
-}
-
-func accessLogQuotedFieldCount(line string) int {
-	return strings.Count(line, "\"") / 2
 }
 
 var authLogPath = func() string { return platform.Detect().AuthLogPath() }

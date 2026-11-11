@@ -601,7 +601,7 @@ func TestCheckWebmailLoginsBruteForce(t *testing.T) {
 	var lines []string
 	for i := 0; i < 15; i++ {
 		lines = append(lines, fmt.Sprintf(
-			`203.0.113.5 - - [12/Apr/2026:10:%02d:00 +0000] "POST /login/?session=2096 HTTP/1.1" 200 1234`, i))
+			`203.0.113.5 - - [12/Apr/2026:10:%02d:00 +0000] "POST /login/?session=2096 HTTP/1.1" 200 1234 "-" "-" "-" "-" 2096`, i))
 	}
 	logContent := strings.Join(lines, "\n") + "\n"
 
@@ -1515,39 +1515,39 @@ func TestCheckWPBruteForceFallbackAccessLog(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractIPFromLog — additional edge cases
+// PureFTPDClientIP — additional edge cases
 // ---------------------------------------------------------------------------
 
-func TestExtractIPFromLogParenPeerMatches(t *testing.T) {
+func TestPureFTPDClientIPParenPeerMatches(t *testing.T) {
 	// pure-ftpd's "(user@ip)" peer token must yield the IP. The previous
 	// inverted expectation here (asserting "") encoded the very bug that
 	// silently disabled FTP brute force detection and its autoblock.
 	line := `pure-ftpd: (user@198.51.100.10) [WARNING] Authentication failed`
-	got := extractIPFromLog(line)
+	got := PureFTPDClientIP(line)
 	if got != "198.51.100.10" {
 		t.Errorf("expected 198.51.100.10 from pure-ftpd peer token, got %q", got)
 	}
 }
 
-func TestExtractIPFromLogStandaloneField(t *testing.T) {
+func TestPureFTPDClientIPStandaloneField(t *testing.T) {
 	// IP as a standalone space-delimited field is matched
 	line := `pure-ftpd: 192.168.1.10 [WARNING] Authentication failed`
-	got := extractIPFromLog(line)
+	got := PureFTPDClientIP(line)
 	if got != "192.168.1.10" {
 		t.Errorf("got %q, want 192.168.1.10", got)
 	}
 }
 
-func TestExtractIPFromLogShortField(t *testing.T) {
+func TestPureFTPDClientIPShortField(t *testing.T) {
 	// Fields shorter than 7 chars should be skipped
-	if got := extractIPFromLog("a b c d 1.2"); got != "" {
+	if got := PureFTPDClientIP("a b c d 1.2"); got != "" {
 		t.Errorf("short field should not match, got %q", got)
 	}
 }
 
-func TestExtractIPFromLogFieldStartsNonDigit(t *testing.T) {
+func TestPureFTPDClientIPFieldStartsNonDigit(t *testing.T) {
 	// Fields starting with non-digit should be skipped
-	if got := extractIPFromLog("host abc.def.ghi.jkl something"); got != "" {
+	if got := PureFTPDClientIP("host abc.def.ghi.jkl something"); got != "" {
 		t.Errorf("non-digit start should not match, got %q", got)
 	}
 }
@@ -1817,7 +1817,7 @@ func TestCheckWebmailLoginsAuthKeyword(t *testing.T) {
 	forceCPanelPlatform(t)
 	var lines []string
 	for i := 0; i < 12; i++ {
-		lines = append(lines, `203.0.113.77 - - [12/Apr/2026:10:00:00 +0000] "POST /auth/check?port=2095 HTTP/1.1" 200 1234`)
+		lines = append(lines, `203.0.113.77 - - [12/Apr/2026:10:00:00 +0000] "POST /auth/check?port=2095 HTTP/1.1" 200 1234 "-" "-" "-" "-" 2095`)
 	}
 	logContent := strings.Join(lines, "\n") + "\n"
 

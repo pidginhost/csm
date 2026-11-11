@@ -15,6 +15,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
 - Realtime WHM login alerts and the tokenless WHM request alert for CVE-2026-41940 now fire on the lines cPanel writes to its own access log.
+- A user name containing a quote can no longer hide a cPanel or WHM request from realtime alerts.
 - `.htaccess` checks now report suspicious handler extensions listed after a `#` on the same line, which Apache still applies.
 - A file CSM quarantined or cleaned now alerts again when it comes back, instead of being held back as a repeat.
 - CSM now raises a Critical alert when a process writes back a file CSM quarantined or cleaned, and repeats that response.
@@ -27,6 +28,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
+- cPanel, WHM and webmail access alerts no longer fire on text in referers or user agents, and webmail alerts count only login attempts.
 - The web server hardening audit reads Apache continuations, section comments and include names correctly, and warns when its configuration cannot be read completely.
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
