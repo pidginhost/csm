@@ -23,7 +23,7 @@ type findingIDBlocker struct {
 }
 
 // The session notice of a database response names the database finding
-// that caused it; its addresses are never blocked (ruling R9).
+// that caused it; its addresses are never blocked.
 func TestDatabaseSessionNoticeNamesTheDatabaseFinding(t *testing.T) {
 	for _, check := range []string{"db_options_injection", "db_siteurl_hijack"} {
 		t.Run(check, func(t *testing.T) {

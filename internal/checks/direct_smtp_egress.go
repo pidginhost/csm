@@ -30,7 +30,7 @@ type DirectSMTPEgressInput struct {
 	Process *processctx.ProcessContext
 	// Domain is an optional rDNS-resolved name for DstIP. When set, it
 	// is included in the finding details. Populating it is the caller's
-	// responsibility (off-path enrichment lands in Task 6).
+	// responsibility.
 	Domain string
 }
 

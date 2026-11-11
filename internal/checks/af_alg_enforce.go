@@ -185,7 +185,7 @@ func WriteAFAlgMarker() error {
 
 // EnforceAFAlgBlocked is the exported alias of enforceAFAlgBlocked for use
 // by cmd/csm. The unexported form stays internal to the package so the
-// periodic Check (Task 6) can call it without going through the export.
+// periodic Check can call it without going through the export.
 func EnforceAFAlgBlocked() (EnforceResult, error) { return enforceAFAlgBlocked() }
 
 // enforceAFAlgBlockedFn is indirected so the observe-mode gate can be tested

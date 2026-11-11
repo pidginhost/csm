@@ -76,7 +76,7 @@ var errInvalidAccountName = errors.New("invalid account name (want [a-zA-Z][a-zA
 // what it would do (kind, schema, name, captured CREATE SQL) without
 // touching the database.
 //
-// Per spec: detection is always-on; drop is operator-driven.
+// Detection is always-on; drop is operator-driven.
 func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResult {
 	result := DBCleanResult{
 		Account: account,
@@ -225,7 +225,7 @@ func containsString(haystack []string, needle string) bool {
 // key; the caller (typically the web UI's cleanup-history page)
 // supplies the key it got from the listing endpoint.
 //
-// Per spec the operation is operator-driven: there is no auto-
+// The operation is operator-driven: there is no auto-
 // restore. The webui handler enforces the same.
 func RestoreDBObjectBackup(backupKey string) DBCleanResult {
 	result := DBCleanResult{Action: "restore-object"}

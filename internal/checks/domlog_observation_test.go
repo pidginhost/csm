@@ -221,7 +221,7 @@ func mintScanFinding(t *testing.T, f alert.Finding) (admission.Evidence, admissi
 }
 
 // wantChainRefused fails unless f reads as a client behind a trusted proxy,
-// which admission refuses: no response here can contain it (spec 5.8).
+// which admission refuses: no response here can contain it.
 func wantChainRefused(t *testing.T, f alert.Finding) {
 	t.Helper()
 	if f.Attribution != admission.AttributionTrustedHTTPChain {

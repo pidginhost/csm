@@ -52,7 +52,7 @@ var jConfigCredsPattern = regexp.MustCompile(`^\s*public\s+\$(\w+)\s*=\s*['"]([^
 
 // joomlaSuperUserGroupID is the canonical group id for "Super Users"
 // in vanilla Joomla 3+. Operators on hardened installs may have
-// renumbered; the spec narrows to 8 for v1.
+// renumbered; only group 8 is checked.
 const joomlaSuperUserGroupID = 8
 
 // jConfigCreds carries the credentials extracted from a Joomla

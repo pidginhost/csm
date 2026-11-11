@@ -1148,7 +1148,7 @@ func TestRunParallelTimeoutMessageReflectsCheckBudget(t *testing.T) {
 	}
 }
 
-// --- CHK-R04: purge-map coverage for scheduled-check finding names -------
+// --- Purge-map coverage for scheduled-check finding names ----------------
 
 // TestRunnerFindingNamesIncludesHTTPASNCrawl pins the specific regression:
 // CheckWPBruteForce (runner "wp_bruteforce") also emits http_asn_crawl via
@@ -1175,7 +1175,7 @@ func TestRunnerFindingNamesIncludesOutboundEvaluatorChecks(t *testing.T) {
 }
 
 // TestRunnerPurgeMapCoversEmittedCheckNames is the drift guard that closes the
-// whole class behind CHK-R04. It scans every production source file in
+// whole class of purge-map drift. It scans every production source file in
 // internal/checks for finding-emission literals and fails if any emitted Check
 // name is not purgeable -- i.e. absent from every runner's finding list in
 // runnerFindingNames AND from the volatile/derived purge lists AND from the

@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// TestRollingCandidatesAfter covers all 10 spec cases from task-D3-brief.md.
+// TestRollingCandidatesAfter covers the rolling candidate cases.
 func TestRollingCandidatesAfter(t *testing.T) {
 	abcd := []string{"a", "b", "c", "d"}
 

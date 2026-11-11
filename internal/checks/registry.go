@@ -69,7 +69,7 @@ var checkCategoryOrder = []string{
 // may emit. Adding a new alert.Finding Check name anywhere in internal/checks,
 // internal/daemon, or internal/webui without also adding it here will fail
 // TestCheckRegistryCoversProductionCode.
-// The attribution kinds an evidence row accepts (spec 5.8).
+// The attribution kinds an evidence row accepts.
 var (
 	attributedByPeer        = admission.Attributions(admission.AttributionPeer)
 	attributedByHTTP        = admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)

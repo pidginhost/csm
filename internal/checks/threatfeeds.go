@@ -606,8 +606,8 @@ func (db *ThreatDB) IsWhitelisted(ip string) bool {
 	return entry == nil || entry.ExpiresAt.IsZero() || time.Now().Before(entry.ExpiresAt)
 }
 
-// ThreatMapSources is what the CSM IP map takes from the threat DB (feeds
-// spec 6.1): CSM's permanent block history, each feed's addresses and
+// ThreatMapSources is what the CSM IP map takes from the threat DB:
+// CSM's permanent block history, each feed's addresses and
 // networks by feed name, and every currently whitelisted address. All sorted copies.
 type ThreatMapSources struct {
 	Permanent []string

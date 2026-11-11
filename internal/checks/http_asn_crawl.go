@@ -1,6 +1,5 @@
 // Package checks: http_asn_crawl detector — single-ASN distributed crawl of
-// uncacheable URLs saturating one account's PHP pool. See
-// docs/superpowers/specs/2026-06-24-http-asn-crawl-detector-design.md.
+// uncacheable URLs saturating one account's PHP pool.
 package checks
 
 import (
@@ -98,7 +97,7 @@ func (s *domlogStats) observeASNCrawl(ip string, rec accessLogRecord, cfg *confi
 	if rec.Domain == "" {
 		// Central access logs (and malformed paths) carry no domain/account,
 		// so they cannot be PHP-pool correlated and must not feed this
-		// detector (spec section 4). Per-domain domlogs always set Domain;
+		// detector. Per-domain domlogs always set Domain;
 		// without this guard they key a degenerate catch-all "domain:" scope
 		// and double-count the share denominator.
 		return
@@ -120,7 +119,7 @@ func (s *domlogStats) observeASNCrawl(ip string, rec accessLogRecord, cfg *confi
 	if uintInSlice(asn, cfg.Thresholds.HTTPASNCrawlReverseProxyASNs) {
 		return // reverse-proxy: dropped from numerator AND denominator
 	}
-	// v1 limitation (spec section 4.3): real-client attribution behind a
+	// v1 limitation: real-client attribution behind a
 	// reverse proxy/CDN depends on the domlog resolver restoring the client
 	// from XFF, which only happens for a peer listed in
 	// web_server.trusted_proxies or challenge.trusted_proxies. Operators
@@ -438,7 +437,7 @@ func collapseASNCrawlCIDRs(a *asnCrawlASN, cfg *config.Config) []string {
 }
 
 // dropFirewallAllowedCIDRs removes any candidate CIDR that contains an observed
-// source IP already firewall-allowed (whitelisted), per spec section 6.2. This
+// source IP already firewall-allowed (whitelisted). This
 // only ever REMOVES subnets, so it is strictly more conservative and can never
 // cause over-blocking. When no blocker is wired, or it does not implement
 // allowChecker, all CIDRs are kept. Each allowed observed IP is tested against

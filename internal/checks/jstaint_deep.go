@@ -30,7 +30,7 @@ const jsTaintDeepPerFileTimeout = 20 * time.Second
 const maxJSTaintGapPaths = 50_000
 
 // Display bounds: the sanitized path in the finding message, the rendered
-// evidence in its details, and diagnostic example paths (spec: 512, 2048,
+// evidence in its details, and diagnostic example paths (512, 2048
 // and 256 bytes, markers included).
 const (
 	jsTaintMessageMaxBytes = 512
