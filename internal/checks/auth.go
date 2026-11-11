@@ -775,29 +775,6 @@ func isInfraShadowChange(cfg *config.Config, since time.Time) bool {
 	return (sessFound || tokFound) && sessAllInfra && tokAllInfra
 }
 
-// parseCPanelLogTime reads the leading "[<timestamp>]" of a cPanel session_log
-// or api_tokens_log line. Both the timezone-qualified form
-// ("2006-01-02 15:04:05 -0700") and the older bare form ("2006-01-02 15:04:05",
-// interpreted in the host's local zone) are accepted. Returns ok=false when no
-// bracketed timestamp is present or it does not parse.
-func parseCPanelLogTime(line string) (time.Time, bool) {
-	open := strings.IndexByte(line, '[')
-	if open < 0 {
-		return time.Time{}, false
-	}
-	end := strings.IndexByte(line[open:], ']')
-	if end < 0 {
-		return time.Time{}, false
-	}
-	stamp := strings.TrimSpace(line[open+1 : open+end])
-	for _, layout := range []string{"2006-01-02 15:04:05 -0700", "2006-01-02 15:04:05"} {
-		if t, err := time.ParseInLocation(layout, stamp, time.Local); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
-}
-
 func cpanelShadowLogAfterSince(ts, since time.Time) bool {
 	if since.IsZero() {
 		return true
@@ -814,37 +791,41 @@ func cpanelShadowLogAfterSince(ts, since time.Time) bool {
 // non-"internal" source IP belonged to the infra allowlist.
 func scanSessionLogShadow(cfg *config.Config, since time.Time) (foundAny, allInfra bool) {
 	allInfra = true
-	lines := tailFile("/usr/local/cpanel/logs/session_log", 100)
+	lines := tailFile(sessionLogPath, 100)
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
-		if !strings.Contains(line, "PURGE") || !strings.Contains(line, "password_change") {
+		r, ok := ParseSessionRecord(line)
+		if !ok {
+			if strings.Contains(line, "PURGE") && strings.Contains(line, "password_change") {
+				// An unreadable line naming a password change cannot prove
+				// it came from infra. Fail toward alerting.
+				foundAny = true
+				allInfra = false
+				return
+			}
 			continue
 		}
-		ts, ok := parseCPanelLogTime(line)
-		if !ok {
+		if r.Event != "PURGE" || r.Reason() != "password_change" {
+			continue
+		}
+		if r.At.IsZero() {
 			// A shadow-mutating line without a usable timestamp cannot prove
 			// it is stale. Fail toward alerting instead of suppressing.
 			foundAny = true
 			allInfra = false
 			return
 		}
-		if !cpanelShadowLogAfterSince(ts, since) {
+		if !cpanelShadowLogAfterSince(r.At, since) {
 			// Stale line cannot explain this modification.
 			continue
 		}
 		foundAny = true
 
-		// Format: [ts] info [xml-api|whostmgr|security] IP PURGE account:token password_change
+		// Only the admin services record who asked for the change.
 		var ip string
-		for _, tag := range []string{"[xml-api]", "[whostmgr]", "[security]"} {
-			if idx := strings.Index(line, tag); idx >= 0 {
-				rest := strings.TrimSpace(line[idx+len(tag):])
-				fields := strings.Fields(rest)
-				if len(fields) > 0 {
-					ip = fields[0]
-				}
-				break
-			}
+		switch r.Service {
+		case "xml-api", "whostmgr", "security":
+			ip = r.Origin
 		}
 		if ip == "internal" {
 			continue
@@ -871,7 +852,7 @@ func scanAPITokensLogShadow(cfg *config.Config, since time.Time) (foundAny, allI
 		if !apiTokensHTTPStatusOK(line) {
 			continue
 		}
-		ts, ok := parseCPanelLogTime(line)
+		ts, ok := CPanelLogTime(line)
 		if !ok {
 			// A shadow-mutating line without a usable timestamp cannot prove
 			// it is stale. Fail toward alerting instead of suppressing.

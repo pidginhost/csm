@@ -47,7 +47,7 @@ func TestParseSessionLogLine_DirectLogin(t *testing.T) {
 	resetPurgeTrackerState()
 
 	cfg := &config.Config{}
-	line := `2026-04-11T12:00:00Z [cpaneld] 198.51.100.20 NEW alice:session method=handle_form_login`
+	line := `[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.20 NEW alice:session address=198.51.100.20,app=cpaneld,method=handle_form_login`
 
 	findings := parseSessionLogLine(line, cfg)
 	if len(findings) != 1 {
@@ -68,7 +68,7 @@ func TestParseSessionLogLine_PortalSessionSuppressed(t *testing.T) {
 	resetPurgeTrackerState()
 
 	cfg := &config.Config{}
-	line := `2026-04-11T12:00:00Z [cpaneld] 198.51.100.21 NEW alice:session method=create_user_session`
+	line := `[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.21 NEW alice:session address=198.51.100.21,app=cpaneld,method=create_user_session`
 
 	findings := parseSessionLogLine(line, cfg)
 	if len(findings) != 0 {
@@ -81,7 +81,7 @@ func TestParseSessionLogLine_SuppressedByConfig(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Suppressions.SuppressCpanelLogin = true
-	line := `2026-04-11T12:00:00Z [cpaneld] 198.51.100.22 NEW alice:session method=handle_form_login`
+	line := `[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.22 NEW alice:session address=198.51.100.22,app=cpaneld,method=handle_form_login`
 
 	findings := parseSessionLogLine(line, cfg)
 	if len(findings) != 0 {
@@ -93,7 +93,7 @@ func TestParseSessionLogLine_PasswordPurge(t *testing.T) {
 	resetPurgeTrackerState()
 
 	cfg := &config.Config{}
-	line := `2026-04-11T12:00:00Z [cpaneld] PURGE alice:password_change`
+	line := `[2026-04-11 12:00:00 +0000] info [security] internal PURGE alice:session password_change`
 
 	findings := parseSessionLogLine(line, cfg)
 	if len(findings) != 1 {
@@ -101,6 +101,25 @@ func TestParseSessionLogLine_PasswordPurge(t *testing.T) {
 	}
 	if findings[0].Check != "cpanel_password_purge_realtime" {
 		t.Fatalf("check = %q, want cpanel_password_purge_realtime", findings[0].Check)
+	}
+}
+
+// The scan never reports a login from the host itself or from an origin
+// that is not an address; realtime must agree with it.
+func TestParseSessionLogLine_SkipsLocalAndNonAddressOrigins(t *testing.T) {
+	for _, origin := range []string{"127.0.0.1", "::1", "internal", "not-an-address"} {
+		t.Run(origin, func(t *testing.T) {
+			resetPurgeTrackerState()
+			line := "[2026-04-11 12:00:00 +0000] info [cpaneld] " + origin + " NEW alice:session address=" + origin + ",app=cpaneld,method=handle_form_login"
+			for _, f := range parseSessionLogLine(line, &config.Config{}) {
+				t.Errorf("unexpected %s finding: %s", f.Check, f.Message)
+			}
+		})
+	}
+	resetPurgeTrackerState()
+	line := "[2026-04-11 12:00:00 +0000] info [cpaneld] 203.0.113.42 NEW alice:session address=203.0.113.42,app=cpaneld,method=handle_form_login"
+	if findings := parseSessionLogLine(line, &config.Config{}); len(findings) != 1 || findings[0].SourceIP != "203.0.113.42" {
+		t.Fatalf("remote login findings = %+v, want one from 203.0.113.42", findings)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/eximlog"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -547,19 +548,15 @@ func (k *knownCustomers) requeue(upserts map[string]store.KnownCustomer, deletes
 // Timestamp-free journal messages use the receipt time.
 func customerLoginTime(line string, now time.Time) time.Time {
 	if strings.HasPrefix(line, "[") {
-		if end := strings.IndexByte(line, ']'); end > 0 {
-			if at, err := time.Parse("2006-01-02 15:04:05 -0700", line[1:end]); err == nil {
-				return at
-			}
+		if at, ok := checks.CPanelLogTime(line); ok {
+			return at
 		}
 	}
 	if at := smtpAuthLogTime(line, now); !at.IsZero() {
 		return at
 	}
-	if len(line) >= len("2006-01-02 15:04:05") {
-		if at, err := time.ParseInLocation("2006-01-02 15:04:05", line[:len("2006-01-02 15:04:05")], now.Location()); err == nil {
-			return at
-		}
+	if at, ok := eximlog.LineTime(line, now.Location()); ok {
+		return at
 	}
 	return now
 }

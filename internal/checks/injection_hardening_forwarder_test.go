@@ -900,39 +900,6 @@ func TestShouldQuarantineUploadDir(t *testing.T) {
 // cpanel_logins.go tests
 // ==========================================================================
 
-func TestParseCpanelLoginWithAddressField(t *testing.T) {
-	ip, account := parseCpanelLogin("[2026-04-12 10:00:00 +0000] info [cpaneld] 198.51.100.5 NEW admin:tok123 address=198.51.100.5")
-	if ip != "198.51.100.5" || account != "admin" {
-		t.Errorf("got ip=%q account=%q", ip, account)
-	}
-}
-
-func TestParseCpanelLoginShortRest(t *testing.T) {
-	ip, account := parseCpanelLogin("[2026-04-12 10:00:00 +0000] info [cpaneld] 1.2.3.4 X")
-	if ip != "" || account != "" {
-		t.Errorf("short rest should return empty, got ip=%q account=%q", ip, account)
-	}
-}
-
-func TestParsePurgeAccountWithTokenField(t *testing.T) {
-	account := parsePurgeAccount("[2026-04-12 10:38:18 +0200] info [security] internal PURGE alice:tok123 password_change")
-	if account != "alice" {
-		t.Errorf("got %q, want alice", account)
-	}
-}
-
-func TestParsePurgeAccountEmptyAfterPurge(t *testing.T) {
-	if got := parsePurgeAccount("[timestamp] internal PURGE"); got != "" {
-		t.Errorf("expected empty, got %q", got)
-	}
-}
-
-func TestParseSessionTimestampCloseBracketFirst(t *testing.T) {
-	if ts := parseSessionTimestamp("]malformed["); !ts.IsZero() {
-		t.Error("malformed bracket order should return zero time")
-	}
-}
-
 func TestCheckCpanelFileManagerSaveFile(t *testing.T) {
 	logData := "203.0.113.10 - alice [12/Apr/2026:10:00:00 +0000] \"POST /execute/fileman/save_file_content HTTP/1.1\" 200 512 \"-\" \"-\" 2083\n"
 	withMockOS(t, &mockOS{

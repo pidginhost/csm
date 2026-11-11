@@ -26,6 +26,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
+- cPanel login checks now read session logs written without a time zone, so logins and multi-address logins on those servers are reported.
+- Realtime cPanel login alerts no longer report logins from the server itself or entries without a client address, matching the scheduled scan.
 - The web server hardening audit reads Apache continuations, section comments and include names correctly, and warns when its configuration cannot be read completely.
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.

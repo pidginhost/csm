@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -457,63 +456,62 @@ func (w *LogWatcher) refreshOffsetMarker() {
 // --- Log line handlers ---
 
 func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
+	r, ok := checks.ParseSessionRecord(line)
+	if !ok {
+		return nil
+	}
 	var findings []alert.Finding
 
 	// cPanel login from non-infra IP - only alert on direct form login,
 	// not API-created sessions (from portal create_user_session)
-	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
+	if r.Service == "cpaneld" && r.Event == "NEW" {
+		addr, isAddr := r.ClientAddr()
 		// Track IP→account for purge correlation (before any filtering)
-		if loginIP, loginAccount := parseCpanelSessionLogin(line); loginIP != "" && loginAccount != "" {
-			purgeTracker.recordLogin(loginIP, loginAccount)
+		if isAddr {
+			purgeTracker.recordLogin(addr.String(), r.Account)
 		}
 
 		switch {
 		case cfg.Suppressions.SuppressCpanelLogin:
 			// Skip all cPanel login alerts
-		case strings.Contains(line, "method=create_user_session") ||
-			strings.Contains(line, "method=create_session") ||
-			strings.Contains(line, "create_user_session"):
+		case r.CreatedByAPI():
 			// Portal-created session - no alert
+		case !isAddr || addr.IsLoopback():
+			// No client to report, as in the scheduled scan
 		default:
-			ip, account := parseCpanelSessionLogin(line)
-			if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) &&
-				!isTrustedCountry(ip, cfg.Suppressions.TrustedCountries) {
+			ip := addr.String()
+			if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isTrustedCountry(ip, cfg.Suppressions.TrustedCountries) {
 				// WARNING severity - logins are useful for audit trail but
 				// not paging-level. Multi-IP correlation and brute-force
 				// stay at CRITICAL/HIGH via their own checks.
-				method := "unknown"
-				if strings.Contains(line, "method=handle_form_login") {
+				method := r.Attr("method")
+				switch method {
+				case "handle_form_login":
 					method = "direct form login"
-				} else if idx := strings.Index(line, "method="); idx >= 0 {
-					rest := line[idx+7:]
-					if comma := strings.IndexAny(rest, ",\n "); comma > 0 {
-						method = rest[:comma]
-					}
+				case "":
+					method = "unknown"
 				}
 				findings = append(findings, alert.Finding{
 					Severity: alert.Warning,
 					Check:    "cpanel_login_realtime",
-					Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s, method: %s)", ip, account, method),
+					Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s, method: %s)", ip, r.Account, method),
 					Details:  truncateDaemon(line, 300),
 					SourceIP: ip,
-					TenantID: account,
+					TenantID: r.Account,
 				})
 			}
 		}
 	}
 
 	// Password purge
-	if strings.Contains(line, "PURGE") && strings.Contains(line, "password_change") {
-		account := parsePurgeDaemon(line)
-		if account != "" {
-			purgeTracker.recordPurge(account)
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "cpanel_password_purge_realtime",
-				Message:  fmt.Sprintf("cPanel password purge for: %s", account),
-				TenantID: account,
-			})
-		}
+	if r.Event == "PURGE" && r.Reason() == "password_change" {
+		purgeTracker.recordPurge(r.Account)
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "cpanel_password_purge_realtime",
+			Message:  fmt.Sprintf("cPanel password purge for: %s", r.Account),
+			TenantID: r.Account,
+		})
 	}
 
 	return findings
@@ -840,78 +838,18 @@ func extractEximSubject(line string) string {
 	return rest[:end]
 }
 
-// --- Helpers (avoid import cycle with checks package) ---
-
-func parseCpanelSessionLogin(line string) (ip, account string) {
-	idx := strings.Index(line, "[cpaneld]")
-	if idx < 0 {
-		return "", ""
-	}
-	rest := strings.TrimSpace(line[idx+len("[cpaneld]"):])
-	fields := strings.Fields(rest)
-	if len(fields) < 3 {
-		return "", ""
-	}
-	ip = fields[0]
-	for i, f := range fields {
-		if f == "NEW" && i+1 < len(fields) {
-			parts := strings.SplitN(fields[i+1], ":", 2)
-			if len(parts) >= 1 {
-				account = parts[0]
-			}
-			break
-		}
-	}
-	return ip, account
-}
-
-// parseSessionNew reads a new cPanel or webmail session from session_log:
-// "[<time>] <level> [cpaneld|webmaild] <ip> NEW <account>:<session> ...".
-// cpsrvd writes it only for an authenticated session. Every field is matched by
-// position, so text a client controls later in the line (a login name, the
-// address= field) cannot supply the tag, the address or the verb.
+// parseSessionNew reads a new cPanel or webmail session from session_log.
+// cpsrvd writes it only for an authenticated session.
 func parseSessionNew(line string) (app, ip, account string, ok bool) {
-	if !strings.HasPrefix(line, "[") {
+	r, ok := checks.ParseSessionRecord(line)
+	if !ok || r.Event != "NEW" || (r.Service != "cpaneld" && r.Service != "webmaild") {
 		return "", "", "", false
 	}
-	end := strings.IndexByte(line, ']')
-	if end < 0 {
+	addr, ok := r.ClientAddr()
+	if !ok {
 		return "", "", "", false
 	}
-	fields := strings.Fields(line[end+1:])
-	if len(fields) < 5 || fields[3] != "NEW" {
-		return "", "", "", false
-	}
-	switch fields[1] {
-	case "[cpaneld]", "[webmaild]":
-	default:
-		return "", "", "", false
-	}
-	if _, err := netip.ParseAddr(fields[2]); err != nil {
-		return "", "", "", false
-	}
-	account, session, found := strings.Cut(fields[4], ":")
-	if !found || account == "" || session == "" {
-		return "", "", "", false
-	}
-	return strings.Trim(fields[1], "[]"), fields[2], account, true
-}
-
-func parsePurgeDaemon(line string) string {
-	idx := strings.Index(line, "PURGE")
-	if idx < 0 {
-		return ""
-	}
-	rest := strings.TrimSpace(line[idx+len("PURGE"):])
-	fields := strings.Fields(rest)
-	if len(fields) < 1 {
-		return ""
-	}
-	parts := strings.SplitN(fields[0], ":", 2)
-	if len(parts) >= 1 {
-		return parts[0]
-	}
-	return ""
+	return r.Service, addr.String(), r.Account, true
 }
 
 // isInfraIPDaemon is the realtime path's infra test. It delegates to the

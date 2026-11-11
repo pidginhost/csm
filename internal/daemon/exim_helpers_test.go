@@ -27,21 +27,6 @@ func TestExtractEximSenderBounce(t *testing.T) {
 	}
 }
 
-// --- parsePurgeDaemon -------------------------------------------------
-
-func TestParsePurgeDaemonStandard(t *testing.T) {
-	line := `[2026-04-12 10:00:00 +0000] info [security] internal PURGE alice:token password_change`
-	if got := parsePurgeDaemon(line); got != "alice" {
-		t.Errorf("got %q, want alice", got)
-	}
-}
-
-func TestParsePurgeDaemonNoPurge(t *testing.T) {
-	if got := parsePurgeDaemon("no purge here"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
 // --- isDedupExpired ---------------------------------------------------
 
 func TestIsDedupExpiredOldTimestamp(t *testing.T) {

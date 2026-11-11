@@ -1,13 +1,15 @@
 package checks
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// Tests for parseSessionTimestamp, parseCpanelLogin, parsePurgeAccount,
-// decodeHexString, and parseTimeMin are in coverage_test.go.
+// Session record parsing is tested in session_log_test.go; decodeHexString
+// and parseTimeMin are in coverage_test.go.
 
 // --- multiIPThreshold / multiIPWindowMin ------------------------------
 
@@ -53,5 +55,31 @@ func TestExtractRequestURIChecksStandard(t *testing.T) {
 func TestExtractRequestURIChecksNoQuotes(t *testing.T) {
 	if got := extractRequestURIChecks("no quotes here"); got != "" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// --- CheckCpanelLogins session_log records ----------------------------
+
+// A host without a zone in session_log writes "[2006-01-02 15:04:05]". The
+// realtime and shadow-change readers accept it, so the scan must too.
+func TestCheckCpanelLoginsReadsBareTimestamp(t *testing.T) {
+	stamp := time.Now().Add(-time.Minute).Format("2006-01-02 15:04:05")
+	log := "[" + stamp + "] info [cpaneld] 203.0.113.42 NEW alice:token address=203.0.113.42,app=cpaneld,method=handle_form_login\n"
+	withMockOS(t, &mockOS{open: openTempLog(t, log)})
+	assertSourceIP(t, CheckCpanelLogins(context.Background(), &config.Config{}, newTestStore(t)), "cpanel_login", "203.0.113.42")
+}
+
+// A login from the host itself or from an origin that is not an address
+// names no client to report or count.
+func TestCheckCpanelLoginsSkipsLocalAndNonAddressOrigins(t *testing.T) {
+	stamp := time.Now().Add(-time.Minute).Format("2006-01-02 15:04:05 -0700")
+	for _, origin := range []string{"127.0.0.1", "::1", "internal", "not-an-address"} {
+		t.Run(origin, func(t *testing.T) {
+			log := "[" + stamp + "] info [cpaneld] " + origin + " NEW alice:token address=" + origin + ",app=cpaneld,method=handle_form_login\n"
+			withMockOS(t, &mockOS{open: openTempLog(t, log)})
+			for _, f := range CheckCpanelLogins(context.Background(), &config.Config{}, newTestStore(t)) {
+				t.Errorf("unexpected %s finding: %s", f.Check, f.Message)
+			}
+		})
 	}
 }

@@ -43,9 +43,9 @@ type SessionTokenDenial struct {
 // token for a browser session. Admin API lines ([xml-api], [security]) carry
 // the caller's address, not the browser's.
 var tokenDenialServices = map[string]bool{
-	"[cpaneld]":   true,
-	"[webmaild]":  true,
-	"[whostmgrd]": true,
+	"cpaneld":   true,
+	"webmaild":  true,
+	"whostmgrd": true,
 }
 
 // ParseSessionTokenDenial reads a session_log line of the form
@@ -54,31 +54,16 @@ var tokenDenialServices = map[string]bool{
 // tokendenied inside another purge line is not accepted.
 // cpsrvd records whole seconds; realtime correlation indexes that precision.
 func ParseSessionTokenDenial(line string) (SessionTokenDenial, bool) {
-	if !strings.HasPrefix(line, "[") {
+	r, ok := ParseSessionRecord(line)
+	if !ok || r.At.IsZero() || r.At.Nanosecond() != 0 || r.Level != "info" ||
+		!tokenDenialServices[r.Service] || r.Event != "PURGE" || r.Reason() != "tokendenied" {
 		return SessionTokenDenial{}, false
 	}
-	end := strings.IndexByte(line, ']')
-	if end < 0 {
+	ip, ok := r.ClientAddr()
+	if !ok {
 		return SessionTokenDenial{}, false
 	}
-	at, ok := parseCPanelLogTime(line[:end+1])
-	if !ok || at.Nanosecond() != 0 {
-		return SessionTokenDenial{}, false
-	}
-	fields := strings.Fields(line[end+1:])
-	if len(fields) < 6 || fields[0] != "info" || !tokenDenialServices[fields[1]] ||
-		fields[3] != "PURGE" || fields[5] != "tokendenied" {
-		return SessionTokenDenial{}, false
-	}
-	ip := net.ParseIP(fields[2])
-	if ip == nil {
-		return SessionTokenDenial{}, false
-	}
-	account, session, ok := strings.Cut(fields[4], ":")
-	if !ok || account == "" || session == "" {
-		return SessionTokenDenial{}, false
-	}
-	return SessionTokenDenial{IP: ip.String(), Account: account, At: at}, true
+	return SessionTokenDenial{IP: ip.String(), Account: r.Account, At: r.At}, true
 }
 
 // StaleSessionRequest is a 401 on a cPanel session URL

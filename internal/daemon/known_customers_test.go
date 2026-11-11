@@ -22,6 +22,23 @@ func sessionNewLine(tag, ip, account string) string {
 		tag, ip, account, ip, tag, account)
 }
 
+// session_log may carry no zone, and Exim writes one under log_timezone.
+// Either way the record's own time dates the login, not the receipt time.
+func TestCustomerLoginTimeReadsBareSessionAndZonedExim(t *testing.T) {
+	now := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		line string
+		want time.Time
+	}{
+		{"[2026-11-05 09:00:00] info [cpaneld] 203.0.113.42 NEW alice:tok address=203.0.113.42", time.Date(2026, 11, 5, 9, 0, 0, 0, time.Local)},
+		{"2026-11-05 11:00:00 +0200 1abc23-000456-AB <= alice@example.com H=(client) [203.0.113.42]:5123 P=esmtpsa A=dovecot_login:alice@example.com", time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC)},
+	} {
+		if got := customerLoginTime(tt.line, now); !got.Equal(tt.want) {
+			t.Errorf("customerLoginTime(%q) = %v, want %v", tt.line, got, tt.want)
+		}
+	}
+}
+
 func TestParseSessionNew(t *testing.T) {
 	for _, tc := range []struct {
 		line, app, ip, account string

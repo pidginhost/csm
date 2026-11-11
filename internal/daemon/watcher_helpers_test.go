@@ -42,26 +42,6 @@ func TestExtractEximSubjectMissing(t *testing.T) {
 	}
 }
 
-// --- parseCpanelSessionLogin ------------------------------------------
-
-func TestParseCpanelSessionLoginStandard(t *testing.T) {
-	line := `[2026-04-12 10:00:00 +0000] info [cpaneld] 203.0.113.5 NEW alice:token address=203.0.113.5`
-	ip, account := parseCpanelSessionLogin(line)
-	if ip != "203.0.113.5" {
-		t.Errorf("ip = %q", ip)
-	}
-	if account != "alice" {
-		t.Errorf("account = %q", account)
-	}
-}
-
-func TestParseCpanelSessionLoginNoCpaneld(t *testing.T) {
-	ip, account := parseCpanelSessionLogin("no cpaneld")
-	if ip != "" || account != "" {
-		t.Errorf("got (%q, %q)", ip, account)
-	}
-}
-
 // --- pruneSlice -------------------------------------------------------
 
 func TestPruneSliceRemovesOld(t *testing.T) {

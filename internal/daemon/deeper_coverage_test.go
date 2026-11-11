@@ -647,27 +647,6 @@ func TestPruneSlice_MixedKeepsRecent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// parseWHMPurge — edge cases
-// ---------------------------------------------------------------------------
-
-func TestParseWHMPurge_ShortFields(t *testing.T) {
-	line := `[whostmgr] 198.51.100.50`
-	ip, account := parseWHMPurge(line)
-	if ip != "" || account != "" {
-		t.Errorf("short fields: (%q, %q)", ip, account)
-	}
-}
-
-func TestParseWHMPurge_NoPURGE(t *testing.T) {
-	line := `[whostmgr] 198.51.100.50 some other action`
-	ip, account := parseWHMPurge(line)
-	if account != "" {
-		t.Errorf("no PURGE keyword: account = %q", account)
-	}
-	_ = ip
-}
-
-// ---------------------------------------------------------------------------
 // parseDovecotLoginFields — rip at end of line (no trailing delimiter)
 // ---------------------------------------------------------------------------
 
@@ -890,52 +869,6 @@ func TestParsePHPShieldLine_MalformedNoSpace(t *testing.T) {
 	got := parsePHPShieldLine(line)
 	if got != nil {
 		t.Errorf("malformed line should return nil, got %+v", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// parseCpanelSessionLogin — realistic format
-// ---------------------------------------------------------------------------
-
-func TestParseCpanelSessionLogin_RealisticFormat(t *testing.T) {
-	line := `2026-04-11T12:00:00Z [cpaneld] 198.51.100.20 some_data NEW alice:session_token method=handle_form_login`
-	ip, account := parseCpanelSessionLogin(line)
-	if ip != "198.51.100.20" {
-		t.Errorf("ip = %q", ip)
-	}
-	if account != "alice" {
-		t.Errorf("account = %q", account)
-	}
-}
-
-func TestParseCpanelSessionLogin_AccountWithoutToken(t *testing.T) {
-	line := `[cpaneld] 198.51.100.20 xxx NEW bob method=handle_form_login`
-	ip, account := parseCpanelSessionLogin(line)
-	if ip != "198.51.100.20" {
-		t.Errorf("ip = %q", ip)
-	}
-	if account != "bob" {
-		t.Errorf("account = %q", account)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// parsePurgeDaemon — realistic format
-// ---------------------------------------------------------------------------
-
-func TestParsePurgeDaemon_WithToken(t *testing.T) {
-	line := `[cpaneld] PURGE alice:session_token password_change`
-	got := parsePurgeDaemon(line)
-	if got != "alice" {
-		t.Errorf("got %q, want alice", got)
-	}
-}
-
-func TestParsePurgeDaemon_NoPurge(t *testing.T) {
-	line := "some random line"
-	got := parsePurgeDaemon(line)
-	if got != "" {
-		t.Errorf("got %q, want empty", got)
 	}
 }
 
@@ -1431,7 +1364,7 @@ func TestParseSessionLogLine_MethodExtraction(t *testing.T) {
 	cfg := &config.Config{}
 
 	// Method with trailing data (comma/space delimiter triggers extraction)
-	line := `2026-04-11T12:00:00Z [cpaneld] 198.51.100.20 NEW alice:session method=some_other_method,extra=data`
+	line := `[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.20 NEW alice:session address=198.51.100.20,method=some_other_method,extra=data`
 	findings := parseSessionLogLine(line, cfg)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
@@ -1445,15 +1378,20 @@ func TestParseSessionLogLine_MethodAtEndOfLine(t *testing.T) {
 	resetPurgeTrackerState()
 	cfg := &config.Config{}
 
-	// Method at end of line (no delimiter) => falls through to "unknown"
-	line := `2026-04-11T12:00:00Z [cpaneld] 198.51.100.20 NEW alice:session method=some_method`
+	// The method is the last attribute of the record.
+	line := `[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.20 NEW alice:session address=198.51.100.20,method=some_method`
 	findings := parseSessionLogLine(line, cfg)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
-	// The code sets method to "unknown" when IndexAny returns -1 (no delimiter)
-	if !strings.Contains(findings[0].Message, "method: unknown") {
-		t.Errorf("method at end of line should yield 'unknown': %q", findings[0].Message)
+	if !strings.Contains(findings[0].Message, "method: some_method)") {
+		t.Errorf("method at end of line should be read: %q", findings[0].Message)
+	}
+	// A login record without a method names none.
+	resetPurgeTrackerState()
+	findings = parseSessionLogLine(`[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.20 NEW alice:session address=198.51.100.20`, cfg)
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "method: unknown") {
+		t.Errorf("record without a method should yield 'unknown': %+v", findings)
 	}
 }
 
@@ -1461,7 +1399,7 @@ func TestParseSessionLogLine_InfraIPSkipped(t *testing.T) {
 	resetPurgeTrackerState()
 	cfg := &config.Config{InfraIPs: []string{"198.51.100.0/24"}}
 
-	line := `2026-04-11T12:00:00Z [cpaneld] 198.51.100.20 NEW alice:session method=handle_form_login`
+	line := `[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.20 NEW alice:session address=198.51.100.20,app=cpaneld,method=handle_form_login`
 	findings := parseSessionLogLine(line, cfg)
 	if len(findings) != 0 {
 		t.Errorf("infra IP should be skipped, got %v", findings)
@@ -1482,7 +1420,7 @@ func TestParseSessionLineForHijack_CPanelLogin(t *testing.T) {
 	<-ch // consume password-change alert
 
 	// Now a cPanel login for the same account
-	line := `[cpaneld] 198.51.100.2 data NEW bob:session method=handle_form_login`
+	line := `[2026-04-11 12:00:00 +0000] info [cpaneld] 198.51.100.2 NEW bob:session address=198.51.100.2,app=cpaneld,method=handle_form_login`
 	ParseSessionLineForHijack(line, d)
 
 	select {
