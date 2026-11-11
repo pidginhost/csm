@@ -137,11 +137,16 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 }
 
 // isWHMLogVhost reports whether the access-log line was served by WHM (port
-// 2086 plain or 2087 SSL). cPanel's combined log format ends every line with
-// the served vhost as the final double-quoted field (e.g. "host:2087"); we
-// anchor on the suffix of that field to avoid matching a port-like substring
-// inside a referer URL or user-agent.
+// 2086 plain or 2087 SSL). cpsrvd ends its own lines with the served port as
+// a bare field; other writers end with a quoted "host:port". Either way we
+// anchor on the line's end to avoid matching a port-like substring inside a
+// referer URL or user-agent.
 func isWHMLogVhost(line string) bool {
+	line = strings.TrimRight(line, " \t\r\n")
+	if !strings.HasSuffix(line, "\"") {
+		port := line[strings.LastIndexAny(line, " \t")+1:]
+		return port == "2087" || port == "2086"
+	}
 	vhost := lastQuotedField(line)
 	return strings.HasSuffix(vhost, ":2087") || strings.HasSuffix(vhost, ":2086")
 }

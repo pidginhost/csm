@@ -531,3 +531,33 @@ func countAccessLogTrackersForTest() int {
 	})
 	return count
 }
+
+// cpsrvd's own access_log ends each line with the served port as a bare
+// field after its quoted fields, not a quoted host:port. Both WHM detections
+// must read that native form.
+func TestParseAccessLogLineEnhanced_WHMNativeBarePort(t *testing.T) {
+	cases := []struct {
+		name, line, check string
+	}{
+		{"login ssl", `192.0.2.66 - - [11/09/2026:12:00:00 -0000] "POST /login/?login_only=1 HTTP/1.1" 200 0 "-" "Mozilla/5.0" "-" "-" 2087`, "whm_login_realtime"},
+		{"login plain", `192.0.2.67 - - [11/09/2026:12:00:00 -0000] "POST /login/?login_only=1 HTTP/1.1" 200 0 "-" "Mozilla/5.0" "-" "-" 2086`, "whm_login_realtime"},
+		{"tokenless scripts", `192.0.2.68 - - [11/09/2026:12:00:00 -0000] "GET /scripts2/listaccts HTTP/1.1" 401 0 "-" "curl/8.4.0" "-" "-" 2087`, "whm_unauth_scripts_realtime"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := parseAccessLogLineEnhanced(tc.line, &config.Config{})
+			if len(findings) != 1 || findings[0].Check != tc.check {
+				t.Fatalf("findings = %v, want one %s", findings, tc.check)
+			}
+		})
+	}
+	// The port must be the served one, not a number in client text.
+	for _, line := range []string{
+		`192.0.2.69 - - [11/09/2026:12:00:00 -0000] "POST /login/?login_only=1 HTTP/1.1" 200 0 "https://host.example.com:2087/" "Mozilla/5.0" "-" "-" 2083`,
+		`192.0.2.70 - - [11/09/2026:12:00:00 -0000] "GET /scripts2/listaccts HTTP/1.1" 200 0 "-" "agent 2087" "-" "-" 2083`,
+	} {
+		if findings := parseAccessLogLineEnhanced(line, &config.Config{}); len(findings) != 0 {
+			t.Errorf("%q: findings = %v, want none", line, findings)
+		}
+	}
+}
