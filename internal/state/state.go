@@ -97,6 +97,8 @@ type Entry struct {
 	// listed without a new report, as for a check that skipped its run.
 	// LastSeen stays the last report, which the findings page shows.
 	KeptAt time.Time `json:"kept_at,omitzero"`
+	// ContentSHA256 is the file content a dismissal or baseline covers.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // aliveAt is the last time the condition was reported or kept listed. An
@@ -418,6 +420,37 @@ func (s *Store) ForgetCleared(findings []alert.Finding) {
 	}
 }
 
+// ReconcileDismissedContent ends a dismissal or baseline once its finding
+// reports different file content, and records the content of one that has
+// none yet (a dismissal from before content was recorded, or made while the
+// hash was unknown). It must run before FilterNew and delivery see the batch.
+// The entry is deleted rather than un-dismissed so no AlertSent or Emailed
+// receipt survives: the changed file alerts as a new detection. A finding
+// without a content hash proves nothing and changes nothing.
+func (s *Store) ReconcileDismissedContent(findings []alert.Finding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range findings {
+		if f.ContentSHA256 == "" {
+			continue
+		}
+		key := findingKey(f)
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
+		entry, ok := s.entries[key]
+		if !ok || !entry.IsBaseline || entry.ContentSHA256 == f.ContentSHA256 {
+			continue
+		}
+		if entry.ContentSHA256 == "" {
+			entry.ContentSHA256 = f.ContentSHA256
+		} else {
+			delete(s.entries, key)
+		}
+		s.dirty = true
+	}
+}
+
 func (s *Store) Update(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -509,10 +542,11 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 		key := findingKey(f)
 		hash := findingHash(f)
 		s.entries[key] = &Entry{
-			Hash:       hash,
-			FirstSeen:  now,
-			LastSeen:   now,
-			IsBaseline: true,
+			Hash:          hash,
+			FirstSeen:     now,
+			LastSeen:      now,
+			IsBaseline:    true,
+			ContentSHA256: f.ContentSHA256,
 		}
 	}
 	if baselineAt != nil {
