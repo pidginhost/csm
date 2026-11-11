@@ -228,3 +228,34 @@ func TestSafeUIDsFromPasswdIncludesSMTPAllowUsers(t *testing.T) {
 		}
 	}
 }
+
+// A config without an allow list gets the packaged one. BPF enforcement
+// exempts those users where they exist and ignores them where they do not.
+func TestSafeUIDsFromPasswdUsesDefaultAllowList(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("hostname: host.example\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name   string
+		passwd string
+		want   map[uint32]bool
+	}{
+		{"cPanel host", "root:x:0:0::/root:/bin/sh\ncpanel:x:1005:1005::/home/cpanel:/bin/sh\nmailman:x:1006:1006::/home/mailman:/bin/sh\nalice:x:1008:1008::/home/alice:/bin/sh\n", map[uint32]bool{0: true, 1005: true, 1006: true}},
+		{"host without cPanel users", "root:x:0:0::/root:/bin/sh\nalice:x:1008:1008::/home/alice:/bin/sh\n", map[uint32]bool{0: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "passwd")
+			if err := os.WriteFile(path, []byte(tt.passwd), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := safeUIDsFromPasswd(path, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !maps.Equal(got, tt.want) {
+				t.Errorf("safe UIDs = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

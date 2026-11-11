@@ -63,9 +63,9 @@ var packagedDefaultDifferences = map[string]packagedDifference{
 	"thresholds.multi_ip_login_threshold":                       {"0", "3", "the cPanel login check falls back to 3", nil},
 	"thresholds.multi_ip_login_window_min":                      {"0", "60", "the cPanel login check falls back to 60", nil},
 
-	// Omitted, these keys change behaviour.
-	"backdoor_ports":                 {"[]", "[4444,5555,55553,55555,31337]", "omitted, no listening port is flagged as a backdoor", nil},
-	"firewall.smtp_allow_users":      {"[]", `["cpanel","mailman"]`, "omitted, smtp_block lets only root and mailnull send", nil},
+	// The window lowers a Critical /etc/shadow change alert to Warning every
+	// night, so it applies only when the operator writes it; it also means
+	// nothing on a host without cPanel's nightly update.
 	"suppressions.upcp_window_start": {`""`, `"00:30"`, "omitted, password changes during the cPanel update stay Critical", nil},
 	"suppressions.upcp_window_end":   {`""`, `"02:00"`, "omitted, password changes during the cPanel update stay Critical", nil},
 }

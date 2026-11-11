@@ -27,6 +27,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Changed
 
 - Automatic response forecasts refuse web findings when Apache, nginx or LiteSpeed rewrites logged client addresses or CSM cannot read that setting, and `csm doctor` reports it.
+- A configuration without the backdoor port list or the SMTP sender allow list now gets the packaged lists instead of none.
 
 ### Fixed
 

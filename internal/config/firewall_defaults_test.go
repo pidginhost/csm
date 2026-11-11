@@ -48,6 +48,7 @@ func TestPartialFirewallBlockKeepsExplicitValues(t *testing.T) {
   drop_nolog: []
   deny_ip_limit: 0
   deny_temp_ip_limit: 0
+  smtp_allow_users: []
   smtp_ports: []
   log_dropped: false
   log_rate: 0
@@ -58,15 +59,16 @@ func TestPartialFirewallBlockKeepsExplicitValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := &firewall.FirewallConfig{
-		Enabled:       true,
-		TCPIn:         []int{},
-		TCPOut:        []int{},
-		UDPIn:         []int{},
-		UDPOut:        []int{},
-		RestrictedTCP: []int{},
-		PortFlood:     []firewall.PortFloodRule{},
-		DropNoLog:     []int{},
-		SMTPPorts:     []int{},
+		Enabled:        true,
+		TCPIn:          []int{},
+		TCPOut:         []int{},
+		UDPIn:          []int{},
+		UDPOut:         []int{},
+		RestrictedTCP:  []int{},
+		PortFlood:      []firewall.PortFloodRule{},
+		DropNoLog:      []int{},
+		SMTPAllowUsers: []string{},
+		SMTPPorts:      []int{},
 	}
 	if !reflect.DeepEqual(cfg.Firewall, want) {
 		t.Errorf("firewall = %#v, want %#v", cfg.Firewall, want)
@@ -187,7 +189,7 @@ func TestFirewallPresenceIncludesEveryDropInKey(t *testing.T) {
 	if err := os.WriteFile(main, []byte("hostname: host.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fragment := `firewall: {enabled: true, tcp_in: [], tcp_out: [], udp_in: [], udp_out: [], restricted_tcp: [], passive_ftp_start: 0, passive_ftp_end: 0, conn_rate_limit: 0, syn_flood_protection: false, conn_limit: 0, port_flood: [], udp_flood: false, udp_flood_rate: 0, udp_flood_burst: 0, drop_nolog: [], deny_ip_limit: 0, deny_temp_ip_limit: 0, smtp_ports: [], log_dropped: false, log_rate: 0, drop_ipv4_options: false}
+	fragment := `firewall: {enabled: true, tcp_in: [], tcp_out: [], udp_in: [], udp_out: [], restricted_tcp: [], passive_ftp_start: 0, passive_ftp_end: 0, conn_rate_limit: 0, syn_flood_protection: false, conn_limit: 0, port_flood: [], udp_flood: false, udp_flood_rate: 0, udp_flood_burst: 0, drop_nolog: [], deny_ip_limit: 0, deny_temp_ip_limit: 0, smtp_allow_users: [], smtp_ports: [], log_dropped: false, log_rate: 0, drop_ipv4_options: false}
 `
 	if err := os.WriteFile(filepath.Join(confd, "10-firewall.yaml"), []byte(fragment), 0o600); err != nil {
 		t.Fatal(err)
@@ -198,15 +200,16 @@ func TestFirewallPresenceIncludesEveryDropInKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := &firewall.FirewallConfig{
-		Enabled:       true,
-		TCPIn:         []int{},
-		TCPOut:        []int{},
-		UDPIn:         []int{},
-		UDPOut:        []int{},
-		RestrictedTCP: []int{},
-		PortFlood:     []firewall.PortFloodRule{},
-		DropNoLog:     []int{},
-		SMTPPorts:     []int{},
+		Enabled:        true,
+		TCPIn:          []int{},
+		TCPOut:         []int{},
+		UDPIn:          []int{},
+		UDPOut:         []int{},
+		RestrictedTCP:  []int{},
+		PortFlood:      []firewall.PortFloodRule{},
+		DropNoLog:      []int{},
+		SMTPAllowUsers: []string{},
+		SMTPPorts:      []int{},
 	}
 	if !reflect.DeepEqual(cfg.Firewall, want) {
 		t.Errorf("firewall = %#v, want %#v", cfg.Firewall, want)
