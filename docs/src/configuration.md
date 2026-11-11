@@ -2,6 +2,22 @@
 
 CSM is configured via `/etc/csm/csm.yaml`, with `--config <path>` to override. Legacy installs that only have `/opt/csm/csm.yaml` keep working; packaged upgrades migrate that file into `/etc/csm/csm.yaml` and leave the old path as a compatibility link. Optional drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged on top of the main file at startup; see [conf.d drop-ins](#confd-drop-ins) below.
 
+For `backdoor_ports` and `firewall.smtp_allow_users`, an omitted key or a null
+value (`key:`) uses the packaged list. An explicit `[]` selects no entries;
+a non-empty list selects those entries. The sender list adds exemptions to
+the firewall's built-in root and mailnull exemptions and also applies to
+direct SMTP egress detection and BPF enforcement. Users absent from the host
+are skipped.
+
+These defaults apply after [conf.d merging](#confd-drop-ins), on both startup
+and reload. A fragment that omits a key keeps the main value, and fragment
+lists append to existing lists. To select no entries, the merged list must
+be empty; `[]` in a fragment does not clear entries from earlier files.
+Settings saves preserve lists that were not submitted, and firewall rollback
+restores their previous state.
+Clearing the SMTP sender list in Settings writes an explicit empty list,
+including when the previous value was null.
+
 Environment-backed tokens and signing secrets use the environment inherited
 at daemon startup. After changing an environment file, restart the daemon;
 configuration reload alone does not import those changes. See

@@ -23,20 +23,42 @@ func TestOmittedListsGetPackagedValues(t *testing.T) {
 	}{
 		{"absent", "hostname: host.example\n", packagedBackdoorPorts, packagedSMTPAllowUsers},
 		{"absent in a partial firewall block", "firewall:\n  smtp_block: true\n", packagedBackdoorPorts, packagedSMTPAllowUsers},
+		{"null firewall", "firewall:\n", packagedBackdoorPorts, packagedSMTPAllowUsers},
 		{"null", "backdoor_ports:\nfirewall:\n  smtp_allow_users:\n", packagedBackdoorPorts, packagedSMTPAllowUsers},
+		{"aliased null", "backdoor_ports: &unset null\nfirewall:\n  smtp_allow_users: *unset\n", packagedBackdoorPorts, packagedSMTPAllowUsers},
 		{"explicit empty", "backdoor_ports: []\nfirewall:\n  smtp_allow_users: []\n", []int{}, []string{}},
+		{"aliased empty", "backdoor_ports: &none []\nfirewall:\n  smtp_allow_users: *none\n", []int{}, []string{}},
 		{"explicit list", "backdoor_ports: [1234]\nfirewall:\n  smtp_allow_users: [alice]\n", []int{1234}, []string{"alice"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := LoadBytes([]byte(tt.yaml))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(cfg.BackdoorPorts, tt.backdoor) {
-				t.Errorf("backdoor_ports = %#v, want %#v", cfg.BackdoorPorts, tt.backdoor)
-			}
-			if !reflect.DeepEqual(cfg.Firewall.SMTPAllowUsers, tt.smtpUsers) {
-				t.Errorf("smtp_allow_users = %#v, want %#v", cfg.Firewall.SMTPAllowUsers, tt.smtpUsers)
+			for _, source := range []string{"main", "fragment"} {
+				t.Run(source, func(t *testing.T) {
+					data := []byte(tt.yaml)
+					if source == "fragment" {
+						dir := t.TempDir()
+						if err := os.WriteFile(filepath.Join(dir, "10-lists.yaml"), data, 0o600); err != nil {
+							t.Fatal(err)
+						}
+						var err error
+						data, err = MergeBytesWithDir([]byte("hostname: host.example\n"), dir)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					cfg, err := LoadBytes(data)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(cfg.BackdoorPorts, tt.backdoor) {
+						t.Errorf("backdoor_ports = %#v, want %#v", cfg.BackdoorPorts, tt.backdoor)
+					}
+					if !reflect.DeepEqual(cfg.Firewall.SMTPAllowUsers, tt.smtpUsers) {
+						t.Errorf("smtp_allow_users = %#v, want %#v", cfg.Firewall.SMTPAllowUsers, tt.smtpUsers)
+					}
+					if got := EffectiveFirewallConfig(cfg).SMTPAllowUsers; !reflect.DeepEqual(got, tt.smtpUsers) {
+						t.Errorf("effective smtp_allow_users = %#v, want %#v", got, tt.smtpUsers)
+					}
+				})
 			}
 		})
 	}
@@ -75,8 +97,20 @@ func TestOmittedListsSurviveReload(t *testing.T) {
 
 	write(filepath.Join(confd, "10-lists.yaml"), "backdoor_ports: []\nfirewall:\n  smtp_allow_users: []\n")
 	second := load()
-	if len(second.BackdoorPorts) != 0 || len(second.Firewall.SMTPAllowUsers) != 0 {
+	if !reflect.DeepEqual(second.BackdoorPorts, []int{}) || !reflect.DeepEqual(second.Firewall.SMTPAllowUsers, []string{}) {
 		t.Fatalf("explicit empty after reload: backdoor_ports = %#v, smtp_allow_users = %#v", second.BackdoorPorts, second.Firewall.SMTPAllowUsers)
+	}
+
+	write(filepath.Join(confd, "10-lists.yaml"), "backdoor_ports: [1234]\nfirewall:\n  smtp_allow_users: [alice]\n")
+	custom := load()
+	if !reflect.DeepEqual(custom.BackdoorPorts, []int{1234}) || !reflect.DeepEqual(custom.Firewall.SMTPAllowUsers, []string{"alice"}) {
+		t.Fatalf("explicit list after reload: backdoor_ports = %#v, smtp_allow_users = %#v", custom.BackdoorPorts, custom.Firewall.SMTPAllowUsers)
+	}
+
+	write(filepath.Join(confd, "10-lists.yaml"), "backdoor_ports:\nfirewall:\n  smtp_allow_users:\n")
+	null := load()
+	if !reflect.DeepEqual(null.BackdoorPorts, packagedBackdoorPorts) || !reflect.DeepEqual(null.Firewall.SMTPAllowUsers, packagedSMTPAllowUsers) {
+		t.Fatalf("null after reload: backdoor_ports = %#v, smtp_allow_users = %#v", null.BackdoorPorts, null.Firewall.SMTPAllowUsers)
 	}
 
 	if err := os.Remove(filepath.Join(confd, "10-lists.yaml")); err != nil {
