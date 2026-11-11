@@ -9,8 +9,8 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// httpd ends a section tag at the line's last '>' and ignores the rest, so
-// a comment after a tag leaves the section intact.
+// Core opening sections ignore text after the last argument delimiter;
+// ordinary closing sections ignore text after their directive token.
 func TestApacheContainerTagIgnoresTextAfterTag(t *testing.T) {
 	for _, tc := range []struct {
 		line, name, label string
@@ -19,6 +19,9 @@ func TestApacheContainerTagIgnoresTextAfterTag(t *testing.T) {
 		{"<VirtualHost *:80> # main site", "VirtualHost", "VirtualHost *:80", false},
 		{"</VirtualHost> # end", "VirtualHost", "VirtualHost", true},
 		{"<IfModule mod_security2.c> # waf", "IfModule", "IfModule mod_security2.c", false},
+		{"<Else > # fallback", "Else", "Else", false},
+		{"<IfVersion >= 2.0>", "IfVersion", "IfVersion >= 2.0", false},
+		{"</If> # end > here", "If", "If", true},
 		{`<If "%{REQUEST_URI} > 5"> # check`, "If", `If "%{REQUEST_URI} > 5"`, false},
 	} {
 		tag, isContainer, valid := parseApacheContainerTag(tc.line)
@@ -32,16 +35,103 @@ func TestApacheContainerTagIgnoresTextAfterTag(t *testing.T) {
 }
 
 func TestRewriteOffShieldSeesCommentedTag(t *testing.T) {
-	body := "RewriteEngine Off\n<FilesMatch \"^()$\"> # assets\nAllow from all\n</FilesMatch>\n"
-	if got := len(detectRewriteOffShield([]byte(body), ".htaccess")); got != 2 {
-		t.Fatalf("rewrite-off shield findings = %d, want 2", got)
+	for _, close := range []string{"</FilesMatch>", "</FilesMatch> # end > here"} {
+		grant := "<FilesMatch \"^()$\"> # assets\nAllow from all\n" + close
+		body := "RewriteEngine Off\n" + grant + "\n"
+		matches := detectRewriteOffShield([]byte(body), ".htaccess")
+		if len(matches) != 2 {
+			t.Fatalf("rewrite-off shield findings = %d, want 2", len(matches))
+		}
+		for i, want := range []string{"RewriteEngine Off", grant} {
+			span := matches[i].Range
+			if got := body[span.Start:span.End]; got != want {
+				t.Errorf("shield range %d = %q, want %q", i, got, want)
+			}
+		}
 	}
 }
 
 func TestEngineModeSeesCommentedIfModule(t *testing.T) {
-	mode, known, err := parseEngineDirectives(strings.NewReader("<IfModule mod_security2.c> # waf\nSecRuleEngine DetectionOnly\n</IfModule> # end\n"))
+	mode, known, err := parseEngineDirectives(strings.NewReader("<IfModule mod_security2.c> # waf\nSecRuleEngine DetectionOnly\n</IfModule>\n"))
 	if err != nil || !known || mode != "detectiononly" {
 		t.Fatalf("mode = %q known %v err %v, want detectiononly", mode, known, err)
+	}
+}
+
+// Apache's active read-time sections require the closing line itself to
+// match. A trailing comment is allowed on their opening line only.
+func TestEngineModeRejectsCommentedActiveIfModuleClose(t *testing.T) {
+	mode, known, err := parseEngineDirectives(strings.NewReader("<IfModule mod_security2.c> # waf\nSecRuleEngine DetectionOnly\n</IfModule> # end\n"))
+	if err != nil || known || mode != "" {
+		t.Fatalf("mode = %q known %v err %v, want unknown", mode, known, err)
+	}
+}
+
+func TestApacheContainerTagSuffixSyntax(t *testing.T) {
+	for _, line := range []string{
+		"</VirtualHost> # end > here",
+		"</VirtualHost> # \"unterminated quote",
+	} {
+		tag, isContainer, valid := parseApacheContainerTag(line)
+		if !isContainer || !valid || !tag.closing || tag.name != "VirtualHost" || tag.label != "VirtualHost" {
+			t.Errorf("parseApacheContainerTag(%q) = %+v, %v, %v; want VirtualHost close", line, tag, isContainer, valid)
+		}
+	}
+	for _, line := range []string{
+		"</VirtualHost>junk",
+		"</VirtualHost>#comment",
+		"</VirtualHost > # end",
+		"<Else> # missing argument delimiter",
+		"<Else>#comment",
+		"<IfVersion >= 2.0> # version",
+		"</IfModule> # end",
+		"</IfDefine> # end",
+		"</IfFile> # end",
+		"</IfDirective> # end",
+		"</IfSection> # end",
+		"</IfVersion> # end",
+	} {
+		if _, isContainer, valid := parseApacheContainerTag(line); !isContainer || valid {
+			t.Errorf("parseApacheContainerTag(%q) = container %v valid %v, want invalid container", line, isContainer, valid)
+		}
+	}
+}
+
+func TestApacheCommentedTagsIgnoreSuffixQuotes(t *testing.T) {
+	for _, suffix := range []string{` # "site`, ` # 'site`, ` "site`} {
+		t.Run(suffix, func(t *testing.T) {
+			dir := t.TempDir()
+			main := writeRewriteFile(t, dir, "httpd.conf", "ServerTokens Prod\n<VirtualHost *:80>"+suffix+"\nInclude site.conf\n</VirtualHost>"+suffix+"\n")
+			included := writeRewriteFile(t, dir, "site.conf", "ServerName www.example.com\n")
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}), RewriteNone, "", "")
+			if got, ok := auditByName(auditApacheDirectives(main), "web_server_tokens"); !ok || got.Status != "pass" {
+				t.Errorf("web_server_tokens = %+v, want pass", got)
+			}
+			writeApacheConf(t, included, "Include missing.conf\n")
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}), RewriteUnknown, "", "")
+			writeApacheConf(t, included, "Include missing.conf\nRemoteIPHeader X-Real-IP\n")
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}), RewriteActive, "RemoteIPHeader X-Real-IP", included)
+		})
+	}
+}
+
+func TestHTTPRewriteApacheInvalidTagSuffixIsUnknown(t *testing.T) {
+	for _, body := range []string{
+		"<VirtualHost *:80>\n</VirtualHost>junk\n",
+		"<IfModule core_module>\n</IfModule> # end\n",
+		"<IfVersion >= 2.0> # version\n</IfVersion>\n",
+		"<If \"true\">\n</If>\n<Else> # end\n</Else>\n",
+		"<${SECTION} *:80>\n</${SECTION}>\n",
+	} {
+		t.Run(body, func(t *testing.T) {
+			main := writeRewriteFile(t, t.TempDir(), "httpd.conf", "ServerTokens Prod\n"+body)
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}), RewriteUnknown, "", "")
+			if got, ok := auditByName(auditApacheDirectives(main), "web_server_tokens"); !ok || got.Status != "warn" {
+				t.Errorf("web_server_tokens = %+v, want warn", got)
+			}
+			writeApacheConf(t, main, body+"RemoteIPHeader X-Real-IP\n")
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}), RewriteActive, "RemoteIPHeader X-Real-IP", main)
+		})
 	}
 }
 

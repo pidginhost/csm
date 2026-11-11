@@ -124,6 +124,26 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 		}
 		continued = ""
 
+		// Section handlers discard their suffix before reading arguments;
+		// quotes in that ignored text must not invalidate the whole tree.
+		if tag, isContainer, tagValid := parseApacheContainerTag(line); isContainer {
+			switch {
+			case !tagValid || apacheArgumentHasVariable(tag.name):
+				a.complete = false
+			case tag.closing:
+				last := len(a.containers) - 1
+				if last < 0 || !strings.EqualFold(a.containers[last], tag.name) {
+					a.complete = false
+				} else {
+					a.containers = a.containers[:last]
+				}
+			default:
+				a.containers = append(a.containers, tag.name)
+			}
+			dst = append(dst, apacheConfigLine{File: path, Text: line})
+			continue
+		}
+
 		fields, valid := parseApacheDirectiveFields(stripApacheComment(line))
 		if !valid {
 			a.complete = false
@@ -138,23 +158,6 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 		// reads the directive name. An unresolved name could be an Include.
 		if apacheArgumentHasVariable(fields[0]) {
 			a.complete = false
-		}
-		if tag, isContainer, tagValid := parseApacheContainerTag(line); isContainer {
-			switch {
-			case !tagValid:
-				a.complete = false
-			case tag.closing:
-				last := len(a.containers) - 1
-				if last < 0 || !strings.EqualFold(a.containers[last], tag.name) {
-					a.complete = false
-				} else {
-					a.containers = a.containers[:last]
-				}
-			default:
-				a.containers = append(a.containers, tag.name)
-			}
-			dst = append(dst, apacheConfigLine{File: path, Text: line})
-			continue
 		}
 
 		switch {
@@ -285,25 +288,47 @@ func parseApacheContainerTag(line string) (apacheParsedContainerTag, bool, bool)
 	if !strings.HasPrefix(text, "<") {
 		return apacheParsedContainerTag{}, false, true
 	}
-	// httpd ends a section tag at the line's last '>' and ignores the rest,
-	// a trailing comment included.
+	wordEnd := strings.IndexAny(text, " \t\r\n\v\f")
+	if strings.HasPrefix(text, "</") {
+		word := text
+		if wordEnd >= 0 {
+			word = text[:wordEnd]
+		}
+		// Closing tags are directive names, not section arguments. httpd
+		// checks the whole first word, including its terminating bracket.
+		if !strings.HasSuffix(word, ">") {
+			return apacheParsedContainerTag{}, true, false
+		}
+		name := word[2 : len(word)-1]
+		if name == "" || strings.ContainsAny(name, "<>") {
+			return apacheParsedContainerTag{}, true, false
+		}
+		if wordEnd >= 0 {
+			switch strings.ToLower(name) {
+			case "ifmodule", "ifdefine", "ifversion", "iffile", "ifsection", "ifdirective":
+				// Active read-time sections require an exact closing line.
+				// Their runtime condition is unavailable to this parser.
+				return apacheParsedContainerTag{}, true, false
+			}
+		}
+		return apacheParsedContainerTag{name: name, label: name, closing: true}, true, true
+	}
+	// Core section handlers end their arguments at the last '>'. A bracket
+	// inside the directive name cannot terminate a nonempty argument list.
 	end := strings.LastIndexByte(text, '>')
-	if end < 0 {
+	if end < 0 || (wordEnd >= 0 && end < wordEnd) || (wordEnd < 0 && end != len(text)-1) {
 		return apacheParsedContainerTag{}, true, false
 	}
-	text = text[:end+1]
-
-	closing := strings.HasPrefix(text, "</")
-	prefix := "<"
-	if closing {
-		prefix = "</"
-	}
-	label := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, prefix), ">"))
+	label := strings.TrimSpace(text[1:end])
 	fields, valid := parseApacheDirectiveFields(label)
-	if !valid || len(fields) == 0 || (closing && len(fields) != 1) {
+	if !valid || len(fields) == 0 {
 		return apacheParsedContainerTag{}, true, false
 	}
-	return apacheParsedContainerTag{name: fields[0], label: label, closing: closing}, true, true
+	// mod_version parses a fixed argument list instead of raw section text.
+	if strings.EqualFold(fields[0], "IfVersion") && end != len(text)-1 {
+		return apacheParsedContainerTag{}, true, false
+	}
+	return apacheParsedContainerTag{name: fields[0], label: label}, true, true
 }
 
 type apacheLineContext struct {
