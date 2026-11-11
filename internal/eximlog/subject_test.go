@@ -75,3 +75,59 @@ func TestSubject(t *testing.T) {
 		})
 	}
 }
+
+func TestSubjectPrintingEscapes(t *testing.T) {
+	for _, tc := range []struct{ name, logged, want string }{
+		{"named controls", `line\nnext\r\t\b\v\fend`, "line\nnext\r\t\b\v\fend"},
+		{"octal bytes", `caf\303\251\001\177\377`, "caf\xc3\xa9\x01\x7f\xff"},
+		{"literal escapes", `\\n \\t \\303`, `\n \t \303`},
+		{"mixed escapes", `\\\n\"quoted\"\\\t`, "\\\n\"quoted\"\\\t"},
+		{"unknown escape", `\q\x41\u0041`, `\q\x41\u0041`},
+		{"short octal", `\1\12`, `\1\12`},
+		{"invalid octal", `\400\777\378`, `\400\777\378`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com U=sender P=local S=900 T="` + tc.logged + `" for recipient@example.net`
+			if got, ok := Subject(line); !ok || got != tc.want {
+				t.Fatalf("Subject() = %q, %v; want %q, true", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestSubjectRejectsAmbiguousClientFields(t *testing.T) {
+	for _, fields := range []string{
+		`U=remote T="smtp password" P=esmtp S=900`,
+		`U=remote P=esmtp S=100 T="smtp password" P=esmtp S=900`,
+		`P=esmtpsa A=dovecot_login:sender@example.com:other@example.net T="smtp password" S=900`,
+		`P=esmtpsa A=dovecot_login:sender@example.com:other@example.net S=100 T="smtp password" S=900`,
+	} {
+		for _, tail := range []string{"", ` T="Hello" for recipient@example.net`} {
+			line := `2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=(client) [203.0.113.9]:4000 ` + fields + tail
+			if got, ok := Subject(line); ok || got != "" {
+				t.Errorf("ambiguous record supplied subject %q, %v: %s", got, ok, line)
+			}
+		}
+	}
+}
+
+func TestSubjectIgnoresOtherClientText(t *testing.T) {
+	for _, fields := range []string{
+		`"note T=\"smtp password\""@example.com U=sender P=local S=900`,
+		`part." T=\"smtp password\" "@example.com U=sender P=local S=900`,
+		`sender@example.com U=sender P=local S=900 id=part." T=\"smtp password\" "@example.com`,
+		`sender@example.com U=sender P=local S=900 id*=part." T=\"smtp password\" "@example.com`,
+		`sender@example.com H=(client T="smtp password") [203.0.113.9]:4000 P=esmtp S=900`,
+	} {
+		for _, want := range []string{"", "Hello"} {
+			line := `2026-01-01 10:00:00 1abc23-000456-AB <= ` + fields
+			if want != "" {
+				line += ` T="` + want + `"`
+			}
+			line += ` for recipient@example.net`
+			if got, ok := Subject(line); got != want || ok != (want != "") {
+				t.Errorf("Subject(%q) = %q, %v; want %q, %v", line, got, ok, want, want != "")
+			}
+		}
+	}
+}
