@@ -11,23 +11,31 @@ import (
 // filepath.Glob hides filesystem errors. Expand roots with an explicit
 // completeness result so inaccessible roots cannot look like removed ones.
 func checkedWebRootGlob(pattern string) ([]string, bool) {
-	return checkedWebRootGlobAtDepth(pattern, 0)
+	return checkedPathGlob(pattern, 0, pathGlobSyntax{filepath.Match, filepath.Join, pathGlobHasMeta})
 }
 
-func checkedWebRootGlobAtDepth(pattern string, depth int) ([]string, bool) {
+type pathGlobSyntax struct {
+	match   func(string, string) (bool, error)
+	join    func(...string) string
+	hasMeta func(string) bool
+}
+
+func pathGlobHasMeta(pattern string) bool { return strings.ContainsAny(pattern, `*?[\`) }
+
+func checkedPathGlob(pattern string, depth int, syntax pathGlobSyntax) ([]string, bool) {
 	// Keep filepath.Glob's bound against stack exhaustion from configuration.
 	const pathSeparatorsLimit = 10000
 	if depth == pathSeparatorsLimit {
 		return nil, false
 	}
-	if _, err := filepath.Match(pattern, ""); err != nil {
-		return nil, false
-	}
-	if !strings.ContainsAny(pattern, `*?[\`) {
+	if !syntax.hasMeta(pattern) {
 		if _, err := osFS.Lstat(pattern); err != nil {
 			return nil, webRootAbsent(err)
 		}
 		return []string{pattern}, true
+	}
+	if _, err := syntax.match(pattern, ""); err != nil {
+		return nil, false
 	}
 
 	dir, leaf := filepath.Split(pattern)
@@ -36,7 +44,7 @@ func checkedWebRootGlobAtDepth(pattern string, depth int) ([]string, bool) {
 	} else if dir != string(filepath.Separator) {
 		dir = strings.TrimSuffix(dir, string(filepath.Separator))
 	}
-	parents, complete := checkedWebRootGlobAtDepth(dir, depth+1)
+	parents, complete := checkedPathGlob(dir, depth+1, syntax)
 	var matches []string
 	for _, parent := range parents {
 		info, err := osFS.Stat(parent)
@@ -52,12 +60,12 @@ func checkedWebRootGlobAtDepth(pattern string, depth int) ([]string, bool) {
 			complete = complete && webRootAbsent(err)
 		}
 		for _, entry := range entries {
-			matched, err := filepath.Match(leaf, entry.Name())
+			matched, err := syntax.match(leaf, entry.Name())
 			if err != nil {
 				return nil, false
 			}
 			if matched {
-				matches = append(matches, filepath.Join(parent, entry.Name()))
+				matches = append(matches, syntax.join(parent, entry.Name()))
 			}
 		}
 	}

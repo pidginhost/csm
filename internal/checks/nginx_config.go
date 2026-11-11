@@ -19,7 +19,11 @@ type nginxDirective struct {
 // read and parsed. Relative includes resolve against the main file's
 // directory, nginx's configuration prefix.
 func nginxDirectives(path string) ([]nginxDirective, bool) {
-	r := nginxReader{prefix: filepath.Dir(path), active: make(map[string]bool), complete: true}
+	prefix, _ := filepath.Split(path)
+	if prefix == "" {
+		prefix = "."
+	}
+	r := nginxReader{prefix: strings.TrimSuffix(prefix, string(filepath.Separator)), active: make(map[string]bool), complete: true}
 	out := r.read(nil, path, 0)
 	return out, r.complete
 }
@@ -31,16 +35,12 @@ type nginxReader struct {
 }
 
 func (r *nginxReader) read(dst []nginxDirective, path string, depth int) []nginxDirective {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = filepath.Clean(path)
-	}
-	if depth > apacheIncludeMaxDepth || r.active[abs] {
+	if depth > apacheIncludeMaxDepth || r.active[path] {
 		r.complete = false
 		return dst
 	}
-	r.active[abs] = true
-	defer delete(r.active, abs)
+	r.active[path] = true
+	defer delete(r.active, path)
 
 	data, err := osFS.ReadFile(path)
 	if err != nil {
@@ -62,14 +62,14 @@ func (r *nginxReader) read(dst []nginxDirective, path string, depth int) []nginx
 		}
 		target := d.Args[0]
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(r.prefix, target)
+			target = joinWebConfigPath(r.prefix, target)
 		}
 		if !strings.ContainsAny(target, "*?[") {
 			dst = r.read(dst, target, depth+1)
 			continue
 		}
 		// An unreadable directory is not an empty one.
-		matches, listed := checkedWebRootGlob(target)
+		matches, listed := checkedWebConfigGlob(target)
 		if !listed {
 			r.complete = false
 		}
@@ -127,7 +127,9 @@ func parseNginxDirectives(text, file string) ([]nginxDirective, bool) {
 				statement(c == '{')
 				lastSpace = true
 			case c == ')':
-				lastSpace = true
+				// ngx_conf_read_token starts a new token with the closing
+				// parenthesis after a quoted condition operand.
+				start, lastSpace = i, false
 			default:
 				return out, false
 			}

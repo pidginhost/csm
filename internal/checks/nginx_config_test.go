@@ -79,6 +79,7 @@ func TestNginxDirectivesTokenBoundaries(t *testing.T) {
 		{"a ${host}x;", []string{"${host}x"}},
 		{`a tab\tc back\\s other\q;`, []string{"tab\tc", `back\s`, `other\q`}},
 		{"a b};", []string{"b}"}},
+		{`a "b")suffix;`, []string{"b", ")suffix"}},
 	} {
 		got, ok := parseNginxDirectives(tc.text, "nginx.conf")
 		if !ok || len(got) != 1 || got[0].Name != "a" || !reflect.DeepEqual(got[0].Args, tc.args) {

@@ -50,10 +50,201 @@ func TestDetectHTTPRewriteReadsApacheRemoteIP(t *testing.T) {
 
 	commented := writeRewriteFile(t, dir, "commented.conf", "RemoteIPHeader X-Real-IP # the CDN header\n")
 	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: commented}),
-		RewriteActive, "RemoteIPHeader X-Real-IP", commented)
+		RewriteUnknown, "", "")
 
 	off := writeRewriteFile(t, dir, "off.conf", "RemoteIPProxyProtocol Off\n# RemoteIPHeader X-Forwarded-For\nLogFormat \"%h %l %u %t\" common\n")
 	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: off}), RewriteNone, "", "")
+}
+
+// Apache only recognizes comments at the start of a line and quotes at the
+// start of an argument. Include names must retain their literal bytes.
+func TestHTTPRewriteApacheLiteralIncludeNames(t *testing.T) {
+	for _, name := range []string{"conf#edge/remoteip.conf", "conf'edge'/remoteip.conf", `conf\edge/remoteip.conf`} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			included := writeRewriteFile(t, dir, name, "RemoteIPHeader X-Real-IP\n")
+			main := writeRewriteFile(t, dir, "httpd.conf", "IncludeOptional "+name+"\n")
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}),
+				RewriteActive, "RemoteIPHeader X-Real-IP", included)
+		})
+	}
+}
+
+// APR keeps backslashes in path components with no unescaped wildcard,
+// even when a later component uses a glob.
+func TestHTTPRewriteApacheGlobLiteralDirectory(t *testing.T) {
+	for _, name := range []string{`conf\edge`, `conf\*edge`} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			included := writeRewriteFile(t, dir, name+"/remoteip.conf", "RemoteIPHeader X-Real-IP\n")
+			main := writeRewriteFile(t, dir, "httpd.conf", "IncludeOptional "+name+"/remote*.conf\n")
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}),
+				RewriteActive, "RemoteIPHeader X-Real-IP", included)
+		})
+	}
+}
+
+func TestHTTPRewriteApacheLogicalLines(t *testing.T) {
+	for name, tc := range map[string]struct{ body, directive string }{
+		"final continuation": {"RemoteIPHeader X-Real-IP\\\n", "RemoteIPHeader X-Real-IP"},
+		"final backslash":    {"RemoteIPHeader X-Real-IP\\", "RemoteIPHeader X-Real-IP\\"},
+		"hash in header":     {"RemoteIPHeader X#Client\n", "RemoteIPHeader X#Client"},
+		"form feed":          {"RemoteIPHeader\fX-Real-IP\n", "RemoteIPHeader X-Real-IP"},
+		"vertical tab":       {"RemoteIPHeader\vX-Real-IP\n", "RemoteIPHeader X-Real-IP"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			main := writeRewriteFile(t, t.TempDir(), "httpd.conf", tc.body)
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}),
+				RewriteActive, tc.directive, main)
+		})
+	}
+}
+
+// The daemon cannot resolve Apache's process environment or Define values
+// in directive names. It must not mistake an unexpanded name for no rewrite.
+func TestHTTPRewriteApacheUnresolvedDirectiveName(t *testing.T) {
+	dir := t.TempDir()
+	main := writeRewriteFile(t, dir, "httpd.conf", "Define rewrite RemoteIPHeader\n${rewrite} X-Real-IP\n")
+	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}), RewriteUnknown, "", "")
+	main = writeRewriteFile(t, dir, "httpd.conf", "${rewrite} X-Real-IP\nRemoteIPProxyProtocol On\n")
+	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: main}), RewriteActive, "RemoteIPProxyProtocol On", main)
+}
+
+// Configuration globs use shell bracket negation, not Go's interpretation
+// of a leading exclamation mark as a literal member of the class.
+func TestHTTPRewriteIncludeGlobNegation(t *testing.T) {
+	for _, server := range []platform.WebServer{platform.WSApache, platform.WSNginx} {
+		t.Run(string(server), func(t *testing.T) {
+			dir := t.TempDir()
+			body, directive := "IncludeOptional conf.d/[!a]*.conf\n", "RemoteIPHeader X-Real-IP"
+			if server == platform.WSNginx {
+				body, directive = "include conf.d/[!a]*.conf;\n", "set_real_ip_from 192.0.2.0/24;"
+			}
+			included := writeRewriteFile(t, dir, "conf.d/remoteip.conf", directive+"\n")
+			writeRewriteFile(t, dir, "conf.d/a.conf", "# no rewrite\n")
+			main := writeRewriteFile(t, dir, "main.conf", body)
+			src := rewriteSources{server: server, apacheConfig: main}
+			if server == platform.WSNginx {
+				src.apacheConfig, src.nginxConfig = "", main
+			}
+			requireRewrite(t, detectHTTPRewrite(src), RewriteActive, strings.TrimSuffix(directive, ";"), included)
+		})
+	}
+}
+
+func TestHTTPRewriteIncludeGlobBoundaries(t *testing.T) {
+	for _, server := range []platform.WebServer{platform.WSApache, platform.WSNginx} {
+		for _, tc := range []struct {
+			pattern, name string
+			state         RewriteState
+		}{
+			{"*.conf", ".remoteip.conf", RewriteNone},
+			{".*.conf", ".remoteip.conf", RewriteActive},
+			{"[]a]*.conf", "]remoteip.conf", RewriteActive},
+			{"[-a]*.conf", "-remoteip.conf", RewriteActive},
+			{"[a-]*.conf", "-remoteip.conf", RewriteActive},
+			// Named classes depend on the server's glob implementation and locale.
+			{"[[:alpha:]]*.conf", "remoteip.conf", RewriteUnknown},
+		} {
+			t.Run(string(server)+"/"+tc.pattern, func(t *testing.T) {
+				dir := t.TempDir()
+				body, directive := "IncludeOptional conf.d/"+tc.pattern+"\n", "RemoteIPHeader X-Real-IP"
+				if server == platform.WSNginx {
+					body, directive = "include conf.d/"+tc.pattern+";\n", "set_real_ip_from 192.0.2.0/24;"
+				}
+				included := writeRewriteFile(t, dir, "conf.d/"+tc.name, directive+"\n")
+				main := writeRewriteFile(t, dir, "main.conf", body)
+				src := rewriteSources{server: server, apacheConfig: main}
+				if server == platform.WSNginx {
+					src.apacheConfig, src.nginxConfig = "", main
+				}
+				if tc.state != RewriteActive {
+					directive, included = "", ""
+				}
+				requireRewrite(t, detectHTTPRewrite(src), tc.state, strings.TrimSuffix(directive, ";"), included)
+			})
+		}
+	}
+}
+
+// nginx leaves parent components to the filesystem; Apache's APR path merge
+// cleans them first. Each reader must select the same tree as its server.
+func TestHTTPRewriteIncludePreservesSymlinkParent(t *testing.T) {
+	for _, server := range []platform.WebServer{platform.WSApache, platform.WSNginx} {
+		for _, kind := range []string{"literal", "glob", "absolute"} {
+			t.Run(string(server)+"/"+kind, func(t *testing.T) {
+				dir := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(dir, "other/child"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("other/child", filepath.Join(dir, "link")); err != nil {
+					t.Fatal(err)
+				}
+				target := "link/../remoteip.conf"
+				switch kind {
+				case "glob":
+					target = "link/../remote*.conf"
+				case "absolute":
+					target = dir + "/" + target
+				}
+				body, directive := "IncludeOptional "+target+"\n", "RemoteIPHeader X-Real-IP"
+				if server == platform.WSNginx {
+					body, directive = "include "+target+";\n", "set_real_ip_from 192.0.2.0/24;"
+				}
+				writeRewriteFile(t, dir, "other/remoteip.conf", directive+"\n")
+				writeRewriteFile(t, dir, "remoteip.conf", "# another configuration\n")
+				main := writeRewriteFile(t, dir, "main.conf", body)
+				src := rewriteSources{server: server, apacheConfig: main}
+				if server == platform.WSNginx {
+					src.apacheConfig, src.nginxConfig = "", main
+				}
+				if server == platform.WSApache {
+					requireRewrite(t, detectHTTPRewrite(src), RewriteNone, "", "")
+				} else {
+					requireRewrite(t, detectHTTPRewrite(src), RewriteActive, strings.TrimSuffix(directive, ";"), dir+"/link/../remoteip.conf")
+				}
+			})
+		}
+	}
+}
+
+func TestHTTPRewriteNginxDistinctPathsAreNotACycle(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "other/child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("other/child", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	writeRewriteFile(t, dir, "other/main.conf", "set_real_ip_from 192.0.2.0/24;\n")
+	main := writeRewriteFile(t, dir, "main.conf", "include link/../main.conf;\n")
+	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: main}),
+		RewriteActive, "set_real_ip_from 192.0.2.0/24", dir+"/link/../main.conf")
+}
+
+func TestHTTPRewriteNginxRootPreservesSymlinkParent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "other/child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("other/child", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	writeRewriteFile(t, dir, "other/nginx.conf", "include realip.conf;\n")
+	writeRewriteFile(t, dir, "other/realip.conf", "set_real_ip_from 192.0.2.0/24;\n")
+	writeRewriteFile(t, dir, "nginx.conf", "# another configuration\n")
+	requireRewrite(t, DetectHTTPRewrite(platform.Info{WebServer: platform.WSNginx, NginxConfigDir: dir + "/link/.."}),
+		RewriteActive, "set_real_ip_from 192.0.2.0/24", dir+"/link/../realip.conf")
+}
+
+// A fully read active setting remains evidence when later XML is broken.
+func TestHTTPRewriteLiteSpeedPreservesActiveBeforeError(t *testing.T) {
+	for _, suffix := range []string{"<broken", "", "</httpServerConfig>junk", "<useIpInProxyHeader>0</useIpInProxyHeader></httpServerConfig>"} {
+		t.Run(suffix, func(t *testing.T) {
+			conf := writeRewriteFile(t, t.TempDir(), "httpd_config.xml", "<httpServerConfig><useIpInProxyHeader>2</useIpInProxyHeader>"+suffix)
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSLiteSpeed, lswsConfig: conf}), RewriteActive, "useIpInProxyHeader 2", conf)
+		})
+	}
 }
 
 // Apache joins continued bytes without adding a separator. A split name

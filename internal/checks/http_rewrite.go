@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 
@@ -90,7 +89,7 @@ func DetectHTTPRewrite(info platform.Info) HTTPRewrite {
 			src.apacheConfig, src.apacheRequired = findWebServerConfigPath(info), true
 		}
 	case platform.WSNginx:
-		src.nginxConfig = filepath.Join(info.NginxConfigRoot(), "nginx.conf")
+		src.nginxConfig = joinWebConfigPath(info.NginxConfigRoot(), "nginx.conf")
 	}
 	return detectHTTPRewrite(src)
 }
@@ -110,11 +109,11 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	if src.lswsConfig != "" {
 		value, err := lswsClientIPFromHeader(src.lswsConfig)
 		switch {
-		case err != nil:
-			unknown = err.Error()
 		case value != "":
 			r.State, r.Directive, r.File = RewriteActive, "useIpInProxyHeader "+value, src.lswsConfig
 			return r
+		case err != nil:
+			unknown = err.Error()
 		}
 	}
 	if src.apacheConfig != "" {
@@ -192,14 +191,16 @@ func nginxRealIPRewrite(path string) (directive, file string, complete bool) {
 // lswsClientIPFromHeader returns LiteSpeed's useIpInProxyHeader value when
 // it is on, "" when it is off or unset. Anything but one well-formed
 // httpServerConfig document with at most one plain setting is an error.
+// A completed active setting is returned even if later XML is unreadable.
 func lswsClientIPFromHeader(path string) (string, error) {
 	f, err := osFS.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("the LiteSpeed configuration %s could not be read: %w", path, err)
 	}
 	defer f.Close()
+	active := ""
 	invalid := func(why string) (string, error) {
-		return "", fmt.Errorf("the LiteSpeed configuration %s %s", path, why)
+		return active, fmt.Errorf("the LiteSpeed configuration %s %s", path, why)
 	}
 	dec := xml.NewDecoder(f)
 	var value strings.Builder
@@ -210,7 +211,7 @@ func lswsClientIPFromHeader(path string) (string, error) {
 			break
 		}
 		if err != nil {
-			return "", fmt.Errorf("the LiteSpeed configuration %s could not be parsed: %w", path, err)
+			return active, fmt.Errorf("the LiteSpeed configuration %s could not be parsed: %w", path, err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -238,6 +239,11 @@ func lswsClientIPFromHeader(path string) (string, error) {
 			}
 		case xml.EndElement:
 			depth--
+			if inSetting {
+				if v := strings.TrimSpace(value.String()); v != "" && v != "0" {
+					active = v
+				}
+			}
 			inSetting = false
 		}
 	}

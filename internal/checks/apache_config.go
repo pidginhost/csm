@@ -91,13 +91,13 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 
 	if info, statErr := osFS.Stat(path); statErr == nil && info.IsDir() {
 		// An unreadable directory is not an empty one.
-		entries, listed := checkedWebRootGlob(filepath.Join(path, "*"))
-		if !listed {
+		entries, readErr := osFS.ReadDir(path)
+		if readErr != nil {
 			a.complete = false
 		}
-		sort.Strings(entries)
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		for _, entry := range entries {
-			dst = a.appendPath(dst, entry, false, depth+1)
+			dst = a.appendPath(dst, filepath.Join(path, entry.Name()), false, depth+1)
 		}
 		return dst
 	}
@@ -110,16 +110,16 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 		return dst
 	}
 
-	lines := strings.Split(string(data), "\n")
+	lines := strings.SplitAfter(string(data), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
 
 	continued := ""
-	for _, physical := range lines {
-		line := continued + physical
-		if prefix, continues := apacheContinuationPrefix(line); continues {
-			continued = prefix
+	for i, physical := range lines {
+		line, continues := apacheContinuationPrefix(continued + physical)
+		if continues && i < len(lines)-1 {
+			continued = line
 			continue
 		}
 		continued = ""
@@ -133,6 +133,11 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 		if len(fields) == 0 {
 			dst = append(dst, apacheConfigLine{File: path, Text: line})
 			continue
+		}
+		// Apache expands Define and process environment variables before it
+		// reads the directive name. An unresolved name could be an Include.
+		if apacheArgumentHasVariable(fields[0]) {
+			a.complete = false
 		}
 		if tag, isContainer, tagValid := parseApacheContainerTag(line); isContainer {
 			switch {
@@ -179,9 +184,6 @@ func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, 
 			dst = append(dst, apacheConfigLine{File: path, Text: line})
 		}
 	}
-	if continued != "" {
-		a.complete = false
-	}
 	return dst
 }
 
@@ -196,10 +198,12 @@ func expandApacheInclude(target, serverRoot string) (paths []string, globbed, co
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(serverRoot, target)
 	}
-	if !strings.ContainsAny(target, "*?[") {
+	// APR normalizes absolute as well as relative Include arguments.
+	target = filepath.Clean(target)
+	if !apacheIncludeHasGlob(target) {
 		return []string{target}, false, true
 	}
-	matches, complete := checkedWebRootGlob(target)
+	matches, complete := checkedApacheConfigGlob(target)
 	sort.Strings(matches)
 	return matches, true, complete
 }
@@ -207,6 +211,10 @@ func expandApacheInclude(target, serverRoot string) (paths []string, globbed, co
 func apacheContinuationPrefix(line string) (string, bool) {
 	// Only a backslash immediately before LF or CRLF continues a line.
 	// Spaces after a comment's backslash must not swallow the next setting.
+	if !strings.HasSuffix(line, "\n") {
+		return line, false
+	}
+	line = strings.TrimSuffix(line, "\n")
 	line = strings.TrimSuffix(line, "\r")
 	if !strings.HasSuffix(line, "\\") {
 		return line, false
@@ -215,31 +223,10 @@ func apacheContinuationPrefix(line string) (string, bool) {
 }
 
 func stripApacheComment(line string) string {
-	var quote byte
-	escaped := false
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if c == '\\' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if c == quote {
-				quote = 0
-			}
-			continue
-		}
-		if c == '\'' || c == '"' {
-			quote = c
-			continue
-		}
-		if c == '#' {
-			return line[:i]
-		}
+	// httpd only treats a leading hash as a comment. A hash in an Include
+	// path is literal; truncating it can silently select a different tree.
+	if strings.HasPrefix(strings.TrimLeft(line, " \t\r\n\v\f"), "#") {
+		return ""
 	}
 	return line
 }
@@ -247,61 +234,44 @@ func stripApacheComment(line string) string {
 // parseApacheDirectiveFields handles the quoting and escapes accepted in
 // include paths and container arguments.
 func parseApacheDirectiveFields(line string) ([]string, bool) {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return nil, true
-	}
-
 	var fields []string
-	var field strings.Builder
-	var quote byte
-	escaped := false
-	inField := false
-	flush := func() {
-		if !inField {
-			return
+	for {
+		line = strings.TrimLeft(line, " \t\r\n\v\f")
+		if line == "" {
+			return fields, true
 		}
-		fields = append(fields, field.String())
-		field.Reset()
-		inField = false
-	}
-
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		if escaped {
+		var field strings.Builder
+		var quote byte
+		if line[0] == '\'' || line[0] == '"' {
+			quote, line = line[0], line[1:]
+		}
+		i := 0
+		for i < len(line) {
+			c := line[i]
+			if quote != 0 && c == quote || quote == 0 && strings.ContainsRune(" \t\r\n\v\f", rune(c)) {
+				break
+			}
+			if c == '\r' || c == '\n' {
+				return fields, false
+			}
+			// ap_getword_conf only decodes a doubled backslash or the
+			// matching quote inside a quoted argument.
+			if c == '\\' && i+1 < len(line) && (line[i+1] == '\\' || quote != 0 && line[i+1] == quote) {
+				i++
+				c = line[i]
+			}
 			field.WriteByte(c)
-			inField = true
-			escaped = false
-			continue
-		}
-		if c == '\\' {
-			escaped = true
-			inField = true
-			continue
+			i++
 		}
 		if quote != 0 {
-			if c == quote {
-				quote = 0
-			} else {
-				field.WriteByte(c)
+			if i == len(line) {
+				return fields, false
 			}
-			inField = true
-			continue
+			i++
 		}
-		if c == '\'' || c == '"' {
-			quote = c
-			inField = true
-			continue
-		}
-		if c == ' ' || c == '\t' || c == '\r' {
-			flush()
-			continue
-		}
-		field.WriteByte(c)
-		inField = true
+		fields = append(fields, field.String())
+		line = line[i:]
 	}
-	flush()
-	return fields, quote == 0 && !escaped
 }
 
 type apacheParsedContainerTag struct {

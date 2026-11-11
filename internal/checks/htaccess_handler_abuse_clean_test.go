@@ -14,7 +14,6 @@ func TestHtaccessHandlerAbuseRequiresExtensionArgument(t *testing.T) {
 	root := setupHtaccessCleanRoots(t)
 	for _, body := range []string{
 		"AddHandler x-custom.haxor .html\n",
-		"AddHandler x-custom .html # .haxor\n",
 		"AddHandler x-custom .haxor-backup\n",
 		"AddHandler x-custom.haxor\n",
 		"AddHandler \"x-custom .haxor\" .html\n",
@@ -46,6 +45,8 @@ func TestHtaccessHandlerAbuseRequiresExtensionArgument(t *testing.T) {
 func TestHtaccessHandlerAbuseReportsOneFindingPerDirective(t *testing.T) {
 	root := setupHtaccessCleanRoots(t)
 	for _, directive := range []string{
+		// Apache does not start a comment halfway through a directive.
+		"AddHandler x-custom .html # .haxor\n",
 		"AddHandler x-custom .haxor .cgix .suspected .haxor\n",
 		"AddHandler x-custom HAXOR cgix\n",
 		"AddHandler x-custom \".haxor\" \\\n.cgix\n",
