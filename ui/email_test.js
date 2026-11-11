@@ -80,7 +80,7 @@ function emailPage(opts = {}) {
     return page;
 }
 
-const TABS = ['overview', 'queue', 'held', 'rejects', 'sending', 'forwarders', 'delays', 'findings'];
+const TABS = ['overview', 'queue', 'held', 'suspended', 'rejects', 'sending', 'forwarders', 'delays', 'findings'];
 
 // selectedTab returns the one job tab that is selected, after checking
 // that its pane, and only its pane, shows.
@@ -880,7 +880,7 @@ function changeValue(page, el, value) {
     el.dispatchEvent(new page.window.Event('change'));
 }
 
-test('eight job tabs sit right under the headline cards', async () => {
+test('nine job tabs sit right under the headline cards', async () => {
     const page = emailPage();
     await settle();
     const doc = page.document;
@@ -890,7 +890,7 @@ test('eight job tabs sit right under the headline cards', async () => {
     const tabs = Array.from(strip.querySelectorAll('[role="tab"]'));
     assert.deepEqual(tabs.map(b => b.id), TABS.map(name => 'email-tab-' + name));
     assert.deepEqual(tabs.map(b => b.textContent.replace(/\s+/g, ' ').trim()),
-        ['Overview', 'Queue', 'Held mail', 'Rejects', 'Sending accounts', 'Forwarders', 'Provider delays', 'Findings']);
+        ['Overview', 'Queue', 'Held mail', 'Suspended', 'Rejects', 'Sending accounts', 'Forwarders', 'Provider delays', 'Findings']);
     for (const name of TABS) {
         const tab = doc.getElementById('email-tab-' + name);
         const pane = doc.getElementById('email-pane-' + name);
@@ -4284,4 +4284,75 @@ test('queue composition ignores old replies and keeps unchanged recipient rows',
     page.respond('/api/v1/email/queue-composition', 200, Object.assign({}, data, { oldest_age_seconds: 120 }));
     await settle();
     assert.equal(page.document.querySelector('#queue-composition tbody tr'), row, 'unshown age rebuilt an unchanged table');
+});
+
+// ---------- Suspended tab ----------
+
+function suspension(id, extra) {
+    return Object.assign({
+        id, backend: 'cpanel', subject: 'real@victim.example', kind: 'mailbox', account: 'cpuser',
+        applied: ['suspend_login', 'suspend_outgoing'], check: 'mail_account_compromised',
+        reason: 'Mail account compromise: successful login for real@victim.example', suspended_at: hoursAgo(1), active: true
+    }, extra || {});
+}
+
+async function suspendedPage(rows) {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=suspended' });
+    await settle();
+    page.respond('/api/v1/email/suspensions', 200, items(rows));
+    await settle();
+    page.toasts = [];
+    page.window.CSM.toast = (message, type) => page.toasts.push([message, type]);
+    return page;
+}
+
+function suspendedRow(page, id) {
+    return page.document.querySelector('#email-suspended-tbody tr[data-suspension-id="' + id + '"]');
+}
+
+const SID = ['0123456789abcdef', 'fedcba9876543210'];
+
+test('Suspended lists each suspension with its owner account and keeps server text as text', async () => {
+    const payload = '<img src=x onerror=alert(1)>';
+    const page = await suspendedPage([
+        suspension(SID[0], { subject: payload + '@victim.example', reason: payload }),
+        suspension(SID[1], { subject: 'victim.example', kind: 'account', account: 'shopowner', applied: ['hold_outgoing'], check: 'email_spam_outbreak' })
+    ]);
+    const tbody = page.document.getElementById('email-suspended-tbody');
+    assert.equal(tbody.querySelectorAll('img').length, 0, 'server text became markup');
+    const mailbox = suspendedRow(page, SID[0]);
+    assert.ok(mailbox.textContent.includes(payload + '@victim.example'), 'lost the mailbox');
+    assert.ok(mailbox.textContent.includes('cPanel account cpuser'), 'no owner account on a mailbox row');
+    const hold = suspendedRow(page, SID[1]);
+    assert.ok(hold.textContent.includes('cPanel account shopowner'), 'no owner account on an account hold');
+    assert.ok(hold.textContent.includes('account hold'), 'the hold does not say what was applied');
+    const link = hold.querySelector('a');
+    assert.equal(link.getAttribute('href'), '/findings?check=email_spam_outbreak');
+});
+
+test('releasing a suspended mailbox asks, posts with the CSRF header and reads the list again', async () => {
+    const page = await suspendedPage([suspension(SID[0])]);
+    const asked = stubConfirm(page);
+    const btn = suspendedRow(page, SID[0]).querySelector('[data-suspension-action="release"]');
+    btn.click();
+    await settle();
+    assert.equal(asked[0].message, 'Release real@victim.example? Logins and sending resume at once.');
+    const sent = page.requests.filter(r => r.method !== 'GET');
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].url, '/api/v1/email/suspensions/' + SID[0] + '/release');
+    assert.ok(Object.prototype.hasOwnProperty.call(sent[0].headers, 'X-CSRF-Token'), 'sent without the CSRF header');
+    page.respond('/api/v1/email/suspensions/' + SID[0] + '/release', 200, { id: SID[0] });
+    await settle();
+    assert.deepEqual(page.toasts, [['Released', 'success']]);
+    assert.equal(page.pending('/api/v1/email/suspensions').filter(r => r.method === 'GET').length, 1, 'the list was not read again');
+});
+
+test('releasing an account hold warns that the held mail is delivered', async () => {
+    const page = await suspendedPage([suspension(SID[1], { subject: 'victim.example', kind: 'account', account: 'shopowner', applied: ['hold_outgoing'] })]);
+    const asked = stubConfirm(page, false);
+    suspendedRow(page, SID[1]).querySelector('[data-suspension-action="release"]').click();
+    await settle();
+    assert.equal(asked[0].message, 'Release the outgoing mail hold on cPanel account shopowner? Mail held in the queue is delivered at once, so delete any spam on the Queue tab first.');
+    assert.equal(asked[0].opts.danger, true, 'releasing held mail is not marked dangerous');
+    assert.equal(page.requests.filter(r => r.method !== 'GET').length, 0, 'a cancelled confirm still released');
 });

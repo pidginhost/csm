@@ -2131,7 +2131,10 @@
         tbody.replaceChildren();
         rows.forEach(function(r) {
             var tr = node('tr');
-            tr.appendChild(rejectCell('Mailbox or account', r.subject));
+            tr.setAttribute('data-suspension-id', r.id);
+            var who = rejectCell('Mailbox or account', r.subject);
+            if (r.account) who.appendChild(node('div', 'text-muted small', 'cPanel account ' + r.account));
+            tr.appendChild(who);
             var when = rejectCell('Suspended', r.suspended_at ? CSM.timeAgo(r.suspended_at) : '');
             when.title = String(r.suspended_at || '');
             tr.appendChild(when);
@@ -2151,6 +2154,7 @@
             if (!r.released_at) {
                 var btn = node('button', 'btn btn-sm btn-outline-warning', 'Release');
                 btn.type = 'button';
+                btn.setAttribute('data-suspension-action', 'release');
                 btn.disabled = !!_suspendedBusy[r.id];
                 btn.addEventListener('click', function() { releaseSuspended(r, btn); });
                 actions.appendChild(btn);
@@ -2166,7 +2170,13 @@
         if (_suspendedBusy[r.id]) return;
         _suspendedBusy[r.id] = true;
         btn.disabled = true;
-        CSM.confirm('Release ' + r.subject + '? Logins and sending resume at once.', { okLabel: 'Release' })
+        // Releasing an account hold delivers the mail cPanel held, spam
+        // included, so it asks differently.
+        var asked = r.kind === 'account'
+            ? CSM.confirm('Release the outgoing mail hold on cPanel account ' + (r.account || r.subject) +
+                '? Mail held in the queue is delivered at once, so delete any spam on the Queue tab first.', { okLabel: 'Release', danger: true })
+            : CSM.confirm('Release ' + r.subject + '? Logins and sending resume at once.', { okLabel: 'Release' });
+        asked
             .then(function() {
                 return CSM.post('/api/v1/email/suspensions/' + encodeURIComponent(r.id) + '/release', {})
                     .then(function() { CSM.toast('Released', 'success'); })
