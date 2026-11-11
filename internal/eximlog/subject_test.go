@@ -78,10 +78,10 @@ func TestSubject(t *testing.T) {
 
 func TestSubjectPrintingEscapes(t *testing.T) {
 	for _, tc := range []struct{ name, logged, want string }{
-		{"named controls", `line\nnext\r\t\b\v\fend`, "line\nnext\r\t\b\v\fend"},
-		{"octal bytes", `caf\303\251\001\177\377`, "caf\xc3\xa9\x01\x7f\xff"},
+		{"named controls stay escaped", `line\nnext\r\t\b\v\fend`, `line\nnext\r\t\b\v\fend`},
+		{"octal bytes stay escaped", `\033[2Jcaf\303\251\001\177\377`, `\033[2Jcaf\303\251\001\177\377`},
 		{"literal escapes", `\\n \\t \\303`, `\n \t \303`},
-		{"mixed escapes", `\\\n\"quoted\"\\\t`, "\\\n\"quoted\"\\\t"},
+		{"mixed escapes", `\\\n\"quoted\"\\\t`, `\\n"quoted"\\t`},
 		{"unknown escape", `\q\x41\u0041`, `\q\x41\u0041`},
 		{"short octal", `\1\12`, `\1\12`},
 		{"invalid octal", `\400\777\378`, `\400\777\378`},

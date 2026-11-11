@@ -21,9 +21,16 @@ func FuzzSubjectRoundTrip(f *testing.F) {
 			subject = subject[:100]
 		}
 		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(subject)
-		line := `2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com U=sender P=local S=900 T="` + eximPrintingForTest(quoted, topbit) + `" for recipient@example.net`
-		if got, ok := Subject(line); !ok || got != subject {
-			t.Fatalf("Subject(%q) = %q, %v; want %q, true", line, got, ok, subject)
+		logged := eximPrintingForTest(quoted, topbit)
+		line := `2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com U=sender P=local S=900 T="` + logged + `" for recipient@example.net`
+		// Only the quote and backslash escapes are undone; the printing
+		// escapes stay as text, so no control byte leaves the parser.
+		want := strings.NewReplacer(`\\`, `\`, `\"`, `"`).Replace(logged)
+		if got, ok := Subject(line); !ok || got != want {
+			t.Fatalf("Subject(%q) = %q, %v; want %q, true", line, got, ok, want)
+		}
+		if strings.ContainsFunc(want, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			t.Fatalf("control byte in subject %q", want)
 		}
 	})
 }

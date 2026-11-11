@@ -5,8 +5,8 @@ import "strings"
 // Subject returns the T= subject of an Exim arrival record. It reads only
 // the arrival's own fields, so a T=" inside the sender, HELO or message ID
 // is skipped. Records with unquoted remote ident or MAIL AUTH text are
-// ambiguous and return no subject. Exim escapes subject quotes, backslashes
-// and non-printing bytes; literal escape text is decoded only once.
+// ambiguous and return no subject. Quote and backslash escapes are decoded;
+// escapes for non-printing bytes stay as written.
 // A subject cut off by a truncated line is returned as far as it goes.
 func Subject(line string) (string, bool) {
 	accept := strings.Index(line, " <= ")
@@ -49,31 +49,20 @@ func Subject(line string) (string, bool) {
 	}
 }
 
+// unescapeSubject undoes only the \" and \\ quoting receive.c adds. The
+// \n, \t and \ooo escapes string_printing writes stay as text, so a sender
+// cannot put control bytes, such as terminal escapes or line breaks, into a
+// finding.
 func unescapeSubject(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '"' {
+		switch {
+		case s[i] == '"':
 			return b.String()
+		case s[i] == '\\' && i+1 < len(s) && (s[i+1] == '"' || s[i+1] == '\\'):
+			i++
 		}
-		if c == '\\' && i+1 < len(s) {
-			switch s[i+1] {
-			case '"', '\\':
-				i++
-				c = s[i]
-			case 'n', 'r', 'b', 'v', 'f', 't':
-				i++
-				c = "\n\r\b\v\f\t"[strings.IndexByte("nrbvft", s[i])]
-			case '0', '1', '2', '3':
-				// string_printing writes exactly three octal digits per byte.
-				// Keep incomplete or unknown escapes in truncated logs intact.
-				if i+3 < len(s) && s[i+2] >= '0' && s[i+2] <= '7' && s[i+3] >= '0' && s[i+3] <= '7' {
-					c = (s[i+1]-'0')<<6 | (s[i+2]-'0')<<3 | (s[i+3] - '0')
-					i += 3
-				}
-			}
-		}
-		b.WriteByte(c)
+		b.WriteByte(s[i])
 	}
 	return b.String()
 }
