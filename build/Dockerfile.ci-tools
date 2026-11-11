@@ -4,16 +4,16 @@
 # instead of fetching a newer one), the Go analysers, node for the Web UI
 # JavaScript tests, and the apt packages the test and integration jobs use.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r4
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.4-r1
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.3-r4 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.4-r1 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
 # tool needs to be added. The .gitlab-ci.yml CSM_CI_TOOLS_TAG variable
 # points at the tag that pipelines should pull.
 
-FROM golang:1.27.3-bookworm
+FROM golang:1.27.4-bookworm
 
 # Versions kept in sync with the install commands that previously
 # lived inline in .gitlab-ci.yml. When bumping any of these, bump
