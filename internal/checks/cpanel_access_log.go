@@ -28,8 +28,8 @@ type CpanelAccessRecord struct {
 // quotes and a whole forged record, so the request is the one after the only
 // cpsrvd timestamp whose suffix parses through the end of the line: a forged
 // suffix always runs into the real timestamp. A line whose time is not in
-// cpsrvd's form is still read, undated, from its first bracketed field: a
-// client that spoils the time must not hide its request.
+// cpsrvd's form is still read, undated, from the bracketed field whose suffix
+// parses through the end: client text must not hide its request.
 func ParseCpanelAccessRecord(line string) (CpanelAccessRecord, bool) {
 	peer, rest, ok := strings.Cut(line, " ")
 	if !ok || net.ParseIP(peer) == nil {
@@ -77,10 +77,15 @@ func ParseCpanelAccessRecord(line string) (CpanelAccessRecord, bool) {
 	return CpanelAccessRecord{}, false
 }
 
-// parseUndated reads the request after the first bracketed field that is
-// followed by blanks and a quote, as other combined-log writers frame it.
+// parseUndated applies the same complete-suffix check to other time forms.
+// Keep the opening bracket while moving forward: searching the whole prefix
+// again at each closing bracket would make crafted user fields quadratic.
 func (r *CpanelAccessRecord) parseUndated(rest string) bool {
+	open, matches := -1, 0
 	for i := 0; i < len(rest); i++ {
+		if rest[i] == '[' {
+			open = i
+		}
 		if rest[i] != ']' {
 			continue
 		}
@@ -88,10 +93,16 @@ func (r *CpanelAccessRecord) parseUndated(rest string) bool {
 		if len(after) == len(rest)-i-1 || after == "" || after[0] != '"' {
 			continue
 		}
-		open := strings.LastIndexByte(rest[:i], '[')
-		return open >= 0 && r.parseFrom(rest, open, after)
+		candidate := CpanelAccessRecord{IP: r.IP}
+		if candidate.parseFrom(rest, open, after) {
+			matches++
+			if matches > 1 {
+				return false
+			}
+			*r = candidate
+		}
 	}
-	return false
+	return matches == 1
 }
 
 // parseFrom reads the user ending before rest[open] and the suffix after.

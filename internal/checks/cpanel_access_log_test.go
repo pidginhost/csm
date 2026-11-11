@@ -1,9 +1,114 @@
 package checks
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
+
+func TestCpanelScansCountUndatedForgedUserRecords(t *testing.T) {
+	for _, tc := range []struct {
+		check     string
+		request   string
+		port      string
+		threshold int
+		run       func() []alert.Finding
+	}{
+		{"api_auth_failure", "GET /execute/Themes/list", "2083", apiFailThreshold, func() []alert.Finding {
+			return CheckAPIAuthFailures(context.Background(), &config.Config{}, nil)
+		}},
+		{"webmail_bruteforce", "POST /login/", "2096", webmailThreshold, func() []alert.Finding {
+			return CheckWebmailLogins(context.Background(), &config.Config{}, nil)
+		}},
+	} {
+		t.Run(tc.check, func(t *testing.T) {
+			user := `x [bad] "GET /index.html HTTP/1.1" 200 0 "-" "-" "-" "-" 2087`
+			line := `192.0.2.66 - ` + user + ` [bad -0000] "` + tc.request + ` HTTP/1.1" 401 0 "-" "-" "-" "-" ` + tc.port
+			var lines []string
+			for range tc.threshold {
+				lines = append(lines, line)
+			}
+			cpanelScanLog(t, lines)
+			got := tc.run()
+			if len(got) != 1 || got[0].Check != tc.check || got[0].SourceIP != "192.0.2.66" || got[0].Observation != (alert.Observation{}) {
+				t.Fatalf("undated records: got %+v, want one %s without observation", got, tc.check)
+			}
+		})
+	}
+}
+
+// Client-chosen bracketed fields must not hide the server's request, even
+// when the server time cannot date an observation.
+func TestParseCpanelAccessRecordUndatedUserFields(t *testing.T) {
+	for _, stamp := range []string{"bad -0000", "09/Nov/2026:12:00:00 +0000", "11/09/2026:12:00:00 -0000"} {
+		for _, user := range []string{
+			`x [bad] "y`,
+			`x ] "y`,
+			`x [bad] "GET /index.html HTTP/1.1" 200 0 "-" "-" "-" "-" 2083`,
+			`x [11/10/2026:09:00:00 -0000] "GET /index.html HTTP/1.1" 200 0 "-" "-" "-" "-" 2083`,
+		} {
+			line := `192.0.2.66 - ` + user + ` [` + stamp + `] "GET /scripts2/listaccts HTTP/1.1" 401 0 "-" "-" "-" "-" 2087`
+			got, ok := ParseCpanelAccessRecord(line)
+			want := CpanelAccessRecord{IP: "192.0.2.66", User: user, Method: "GET", Target: "/scripts2/listaccts", Status: "401", Port: "2087"}
+			if stamp == "11/09/2026:12:00:00 -0000" && !strings.Contains(user, "[11/10/2026:") {
+				want.At = time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+			}
+			at := got.At
+			got.At = want.At
+			if !ok || got != want || !at.Equal(want.At) {
+				t.Errorf("user %q, stamp %q: got %+v at %v (%v), want %+v", user, stamp, got, at, ok, want)
+			}
+		}
+	}
+}
+
+// A repeated close bracket must not rescan the growing user prefix to find
+// its opening bracket. All suffix candidates still lead to the real request.
+func TestParseCpanelAccessRecordUndatedIsLinear(t *testing.T) {
+	cost := func(n int) time.Duration {
+		user := `x [` + strings.Repeat(`] "x `, n)
+		line := `192.0.2.66 - ` + user + ` [bad -0000] "GET /scripts2/listaccts HTTP/1.1" 401 0 "-" "-" "-" "-" 2087`
+		best := time.Duration(1<<63 - 1)
+		for range 5 {
+			start := time.Now()
+			got, ok := ParseCpanelAccessRecord(line)
+			elapsed := time.Since(start)
+			if !ok || got.User != user || got.Target != "/scripts2/listaccts" || got.Port != "2087" || !got.At.IsZero() {
+				t.Fatalf("%d candidates lost the undated request", n)
+			}
+			best = min(best, elapsed)
+		}
+		return best
+	}
+	small, large := cost(20000), cost(160000)
+	if large > 32*small+time.Millisecond {
+		t.Fatalf("8x the candidates cost %v against %v: the scan is not linear", large, small)
+	}
+}
+
+// Escaped header quotes are data, even when they enclose another request
+// and timestamp. Neither suffix fields nor the user can choose the port.
+func TestParseCpanelAccessRecordEscapedHeaderFields(t *testing.T) {
+	for _, client := range []string{
+		`agent \"quoted\"`,
+		`[11/10/2026:09:00:00 -0000] \"POST /index.html HTTP/1.1\" 200 0 \"example.com:2083\"`,
+		`agent\\`,
+	} {
+		for _, headers := range []string{`"` + client + `" "agent"`, `"-" "` + client + `"`} {
+			for _, stamp := range []string{"11/09/2026:12:00:00 -0000", "bad -0000"} {
+				line := `192.0.2.66 - - [` + stamp + `] "GET /scripts2/listaccts HTTP/1.1" 401 0 ` + headers + ` "-" "-" 2087`
+				got, ok := ParseCpanelAccessRecord(line)
+				if !ok || got.Method != "GET" || got.Target != "/scripts2/listaccts" || got.Status != "401" || got.Port != "2087" {
+					t.Errorf("escaped header %q: got %+v (%v)", client, got, ok)
+				}
+			}
+		}
+	}
+}
 
 func TestParseCpanelAccessRecordFields(t *testing.T) {
 	at := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
