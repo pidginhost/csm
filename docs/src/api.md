@@ -1656,7 +1656,7 @@ POST /api/v1/verified-bots/apply  Validate, apply, and reload an edited verified
 ```
 POST /api/v1/fix                      Apply fix for a finding
 POST /api/v1/fix-bulk                 Bulk fix multiple findings
-POST /api/v1/dismiss                  Dismiss one finding {key} or up to 500 {keys}, optional {contents}; returns undo_token
+POST /api/v1/dismiss                  Dismiss one finding {key} or up to 500 {keys}, optional {contents}; returns undo_token if any were dismissed
 POST /api/v1/scan-account             On-demand account scan
 POST /api/v1/verify-finding           Re-check a single finding on demand (admin scope, CSRF)
 POST /api/v1/quarantine-restore       Restore quarantined file
@@ -1797,8 +1797,8 @@ values, including `null`, answer 400 before any findings are dismissed. A key
 whose listed finding now carries different content is not dismissed: a single
 key answers 409, and a bulk request dismisses the rest,
 returns the refused keys in `refused`, and counts only the applied dismissals in
-`count`. A key missing from `contents` is dismissed as before and covers the
-listed content.
+`count`. A request with every key refused returns no `undo_token`. A key
+missing from `contents` is dismissed as before and covers the listed content.
 Undo skips findings changed by a later dismissal, successful re-check or baseline
 reset, and `count` reports only the dismissals it actually reversed. Newer scan
 copies remain in the current findings list.
