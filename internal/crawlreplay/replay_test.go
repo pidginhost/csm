@@ -362,7 +362,7 @@ func TestReplayIsDeterministic(t *testing.T) {
 
 // A young key that is not yet anomalous trains its slot, so an attack that
 // needs several minutes to reach A2 raises its own expectation: the
-// poisoning limit spec 6.4 asks phase 1 to measure, pinned here.
+// poisoning limit, measured and pinned here.
 func TestTrustedYoungSlotLearnsAttackBeforeA2(t *testing.T) {
 	p := fixtureParams()
 	p.Baseline.MinAge = 0

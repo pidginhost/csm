@@ -95,7 +95,7 @@ func (b *Baseline) Observe(m, total int64) bool {
 	return true
 }
 
-// Profile is a baseline pinned when an episode begins (spec 6.4): its slots
+// Profile is a baseline pinned when an episode begins: its slots
 // and trust as they were then, so neither later learning nor the key coming
 // of age during the episode moves the expectation it is judged against.
 type Profile struct {

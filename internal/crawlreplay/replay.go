@@ -10,7 +10,7 @@ import (
 // ErrSite reports a replay input that is not one site's covered records.
 var ErrSite = errors.New("crawlreplay: invalid site input")
 
-// Params are the detector settings a sweep varies (spec 6.3-6.5).
+// Params are the detector settings a sweep varies.
 type Params struct {
 	W        int            `json:"w"` // window, complete minutes
 	R        float64        `json:"r"` // residual rate multiple of the baseline
@@ -21,7 +21,7 @@ type Params struct {
 	Baseline BaselineParams `json:"baseline"`
 }
 
-// Validate checks the domain constraints of spec 10; it approves no value.
+// Validate checks each parameter's domain constraints; it approves no value.
 func (p Params) Validate() error {
 	switch {
 	case p.W < 1, p.K < 1, p.D <= p.K,
@@ -110,7 +110,7 @@ func (p Params) anomalous(residual, distinct int64, expected float64) bool {
 	return a1 >= 1 && a2 >= 1
 }
 
-// Count bases of a scope selection (spec 6.3).
+// Count bases of a scope selection.
 const (
 	// BasisExpensive counts only requests with a query.
 	BasisExpensive = "expensive"
@@ -130,7 +130,7 @@ const (
 )
 
 // Scope is the narrowest level whose disjoint anomalous keys cover C
-// percent of the anomalous traffic (spec 6.3).
+// percent of the anomalous traffic.
 type Scope struct {
 	Level       uint8   `json:"level"` // 0 when nothing qualifies
 	Keys        []KeyID `json:"keys,omitempty"`

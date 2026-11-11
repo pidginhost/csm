@@ -263,7 +263,7 @@ func (s *ShapeTracker) Report() SiteShape {
 // Footprint estimates the retained bytes of one key's detector state: the
 // hour-of-week profile plus W minutes of summaries with m counters and h
 // hashes. It is a sizing aid for K1, K2 and S, not a measurement of
-// production code, which plan 1.3 must measure against this estimate.
+// production code, which must be measured against this estimate.
 func Footprint(p Params, s SketchParams) int64 {
 	const bindingBytes = 1 + 8 // family byte and the IPv6 /64, the larger form
 	profile := int64(168 * (8 + 8))
