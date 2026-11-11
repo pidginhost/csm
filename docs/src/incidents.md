@@ -301,7 +301,13 @@ URL-encoding abuse, CSM custom, or an OWASP CRS rule from an
 `APPLICATION-ATTACK` rule file, which is how LiteSpeed logs, since it
 omits the rule message and tags), low-confidence (policy/anomaly scoring
 rules such as COMODO content-type `210710` or anomaly-points `214930`,
-and OWASP CRS anomaly-score rules), or unknown. A burst escalates to a
+and OWASP CRS anomaly-score rules), or unknown. Message and tag evidence comes
+from the rule configuration read by the existing registry, with macro references
+removed. Expanded messages and tags from error logs remain display data and
+cannot change confidence. When registry metadata is unavailable, classification
+uses known rule IDs and the validated rule file; other rules remain unknown.
+The registry's existing refresh cycle picks up configuration changes.
+A burst escalates to a
 firewall ban at the normal hit count only when it contains a
 high-confidence deny or an unknown deny; a low-confidence-only burst
 emits one non-actioned `modsec_low_confidence_burst` finding for

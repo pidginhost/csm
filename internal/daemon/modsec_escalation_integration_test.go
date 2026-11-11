@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -55,6 +56,7 @@ func TestParseModSec_LowConfBurst_NoBan(t *testing.T) {
 // attack rule escalates at the normal bar.
 func TestParseModSec_MixedHighEscalates(t *testing.T) {
 	resetModSecState()
+	installModSecRegistryForTest(t, map[int]string{210381: "deny,msg:'URL Encoding Abuse Attack Attempt'"})
 	cfg := &config.Config{}
 	ip := "203.0.113.41"
 	lines := []string{
@@ -83,16 +85,19 @@ func TestParseModSec_CRSAnomalyIsLowNotHigh(t *testing.T) {
 	}
 }
 
-// Criterion 8: the attack class is read from the rule tags. A CRS SQLi rule with
-// an attack-sqli tag classifies high and escalates.
+// The attack class comes from configured tags, even when the log omits them.
 func TestParseModSec_AttackTagEscalates(t *testing.T) {
 	resetModSecState()
+	installModSecRegistryForTest(t, map[int]string{942100: "deny,tag:'application-multi',tag:'attack-sqli',tag:'OWASP_CRS'"})
 	cfg := &config.Config{}
 	ip := "203.0.113.44"
-	line := modsecApacheLine(ip, "942100",
-		"SQL Injection Attack Detected via libinjection",
-		"application-multi attack-sqli OWASP_CRS")
-	if !modsecFindingChecks(cfg, []string{line, line, line})["modsec_block_escalation"] {
+	line := modsecApacheLine(ip, "942100", "Custom hit", "")
+	base := parseModSecLogLine(line, cfg)
+	if len(base) != 1 || base[0].Severity != alert.High {
+		t.Fatalf("configured attack tag findings = %+v, want one High finding", base)
+	}
+	seen := modsecFindingChecks(cfg, []string{line, line, line})
+	if !seen["modsec_block_escalation"] || seen["modsec_classifier_gap"] {
 		t.Fatal("a rule tagged attack-sqli must classify high and escalate")
 	}
 }

@@ -2,7 +2,8 @@ package modsec
 
 import "strings"
 
-// LogRule is the rule a ModSecurity error-log line names.
+// LogRule is the rule a ModSecurity error-log line names. Msg and Tags may
+// contain client-controlled macro expansions and are not confidence evidence.
 type LogRule struct {
 	ID, File, Msg, Hostname, URI string
 	Tags                         []string

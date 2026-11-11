@@ -55,6 +55,7 @@ func TestParseModSecLogLine_CSMCustomRule(t *testing.T) {
 }
 
 func TestParseModSecLogLine_HighConfidenceCRSRule(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{942100: "deny,msg:'SQL Injection Attack Detected via libinjection',tag:'attack-sqli'"})
 	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.165] ModSecurity: Access denied with code 403, [id "942100"] [msg "SQL Injection Attack Detected via libinjection"] [severity "CRITICAL"] [tag "attack-sqli"] [hostname "www.example.com"] [uri "/search"]`
 	cfg := &config.Config{}
 

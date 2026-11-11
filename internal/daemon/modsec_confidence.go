@@ -1,6 +1,10 @@
 package daemon
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/pidginhost/csm/internal/modsec"
+)
 
 // modsecConfidence classifies how strongly a single ModSecurity deny indicates
 // a real attack, independent of the rule's blocking action. It drives whether a
@@ -102,7 +106,16 @@ var modsecPolicyAnomalyKeywords = []string{
 	"protocol version", "score exceeded",
 }
 
-// classifyModSecConfidence classifies a single deny. Ordering is deliberate:
+// classifyModSecRuleConfidence uses the existing rule registry for message
+// and tag evidence. Logged values may contain client-controlled macros even
+// when field parsing succeeds. Missing metadata falls back to the known IDs
+// and the validated rule file; everything else stays unknown and eligible.
+func classifyModSecRuleConfidence(ruleNum int, ruleFile string) modsecConfidence {
+	m, _ := modsec.Global().Metadata(ruleNum)
+	return classifyModSecConfidence(ruleNum, m.Message, m.Tags, modsecRuleFileBase(ruleFile))
+}
+
+// classifyModSecConfidence classifies trusted rule metadata. Ordering is deliberate:
 // a high-confidence attack signal always wins; CSM custom rules are high;
 // otherwise an exact known-low ID or policy/anomaly wording (with no attack
 // signal) is low; anything else is unknown (fail-secure, escalation-eligible).
@@ -110,7 +123,7 @@ var modsecPolicyAnomalyKeywords = []string{
 // The modsec [severity] field is intentionally not an input: anomaly-scoring
 // WAFs (COMODO CWAF) emit CRITICAL severity on benign policy/anomaly rules, so
 // it is too noisy to separate attacks from policy hits. Rule ID, message, and
-// tags carry the reliable signal.
+// tags from configuration carry the reliable signal.
 func classifyModSecConfidence(ruleNum int, msg, tags, ruleFile string) modsecConfidence {
 	lc := strings.ToLower(msg + " " + tags)
 	// OWASP CRS names each rule file after the tag taxonomy of the rules in it

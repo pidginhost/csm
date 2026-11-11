@@ -181,7 +181,7 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	if n, err := strconv.Atoi(ruleID); err == nil {
 		ruleNum = n
 	}
-	conf := classifyModSecConfidence(ruleNum, msg, strings.Join(rule.Tags, " "), modsecRuleFileBase(rule.File))
+	conf := classifyModSecRuleConfidence(ruleNum, rule.File)
 
 	// Determine severity from confidence. Individual low-confidence and unknown
 	// blocks stay Warning so the confidence-gated escalation path remains the
@@ -331,11 +331,11 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 		}
 	}
 
-	// Classify the rule's attack confidence from its ID, message, tags, and
-	// severity. This decides whether a deny may auto-escalate to a firewall ban
+	// Classify attack confidence from the rule ID, file, and registry metadata.
+	// This decides whether a deny may auto-escalate to a firewall ban
 	// (high/unknown) or only feeds the low-confidence visibility/backstop path
 	// (low). See docs/superpowers/specs/2026-06-27-modsec-escalation-fp-options.md.
-	conf := classifyModSecConfidence(ruleNum, rule.Msg, strings.Join(rule.Tags, " "), modsecRuleFileBase(rule.File))
+	conf := classifyModSecRuleConfidence(ruleNum, rule.File)
 
 	// Feed the per-IP window with every blocking deny, plus high/unknown
 	// warnings, which supply attack evidence to a later anomaly-threshold deny
