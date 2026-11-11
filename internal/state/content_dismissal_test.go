@@ -1,6 +1,10 @@
 package state
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -351,17 +355,62 @@ func TestDismissRecordsListedRowContent(t *testing.T) {
 }
 
 func TestDismissAsShownRefusesChangedRow(t *testing.T) {
-	s := openTestStore(t)
-	b := listedContentFinding(t, s, shaB)
+	for _, baseline := range []bool{false, true} {
+		name := "active"
+		if baseline {
+			name = "baseline"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := openTestStore(t)
+			a := listedContentFinding(t, s, shaA)
+			if baseline {
+				s.DismissFindingWithUndo(a.Key())
+			}
+			b := contentFinding(a.Check, shaB)
+			other := dismissTestFinding()
+			// Persisted lists are loaded without deduplication. A later
+			// conflicting row must refuse the entire dismissal.
+			s.latestFindings = []alert.Finding{other, a, b}
+			s.persistLatestLocked()
+			if err := s.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := s.EntryForKey(a.Key())
+			latest := s.LatestFindings()
+			files := make(map[string][]byte)
+			for _, name := range []string{"state.json", "latest_findings.json"} {
+				path := filepath.Join(s.path, name)
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				files[path] = data
+			}
+			oldState, oldLatest := stateFileWriter, latestFindingsWriter
+			forbidWrite := func(string, os.FileMode, []byte) error {
+				t.Error("refusal attempted a persisted write")
+				return nil
+			}
+			stateFileWriter, latestFindingsWriter = forbidWrite, forbidWrite
+			t.Cleanup(func() { stateFileWriter, latestFindingsWriter = oldState, oldLatest })
 
-	if _, ok := s.DismissFindingAsShown(b.Key(), shaA); ok {
-		t.Fatal("a row whose content changed since it was shown must not be dismissed")
-	}
-	if e, _ := s.EntryForKey(b.Key()); e.IsBaseline || e.DismissalID != "" {
-		t.Fatalf("refusal changed the entry: %+v", e)
-	}
-	if latest := s.LatestFindings(); len(latest) != 1 || latest[0].ContentSHA256 != shaB {
-		t.Fatalf("refusal changed the list: %+v", latest)
+			undo, ok := s.DismissFindingAsShown(a.Key(), shaA)
+			if ok || !reflect.DeepEqual(undo, DismissUndo{Key: a.Key()}) {
+				t.Fatalf("changed content must refuse with no undo: %+v, accepted %v", undo, ok)
+			}
+			if after, ok := s.EntryForKey(a.Key()); !ok || after != before || s.dirty {
+				t.Fatalf("refusal changed the entry: %+v, present %v, dirty %v", after, ok, s.dirty)
+			}
+			if !reflect.DeepEqual(s.LatestFindings(), latest) {
+				t.Fatal("refusal changed the list")
+			}
+			for path, before := range files {
+				after, err := os.ReadFile(path)
+				if err != nil || string(after) != string(before) {
+					t.Fatalf("refusal changed %s: %v", filepath.Base(path), err)
+				}
+			}
+		})
 	}
 }
 
@@ -473,5 +522,101 @@ func TestUndoAfterRevocationFails(t *testing.T) {
 	}
 	if _, ok := s.EntryForKey(a.Key()); ok {
 		t.Fatal("the revoked entry must stay gone")
+	}
+}
+
+func TestUndoKeepsContentAdoptedByEarlierBaseline(t *testing.T) {
+	for _, listed := range []bool{false, true} {
+		name := "unlisted"
+		if listed {
+			name = "listed"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := openTestStore(t)
+			unknown := contentFinding("yara_match_scheduled", "")
+			s.SetBaseline([]alert.Finding{unknown})
+			if listed {
+				s.SetLatestFindings([]alert.Finding{unknown})
+			}
+			undo := s.DismissFindingWithUndo(unknown.Key())
+			a := contentFinding(unknown.Check, shaA)
+			s.ReconcileDismissedContent([]alert.Finding{a})
+
+			if !s.UndoDismiss(undo) {
+				t.Fatal("undo refused")
+			}
+			entry, ok := s.EntryForKey(a.Key())
+			if !ok || !entry.IsBaseline || entry.ContentSHA256 != shaA {
+				t.Fatalf("undo erased evidence adopted by the earlier baseline: %+v, present %v", entry, ok)
+			}
+			b := contentFinding(unknown.Check, shaB)
+			s.ReconcileDismissedContent([]alert.Finding{b})
+			if _, ok := s.EntryForKey(b.Key()); ok {
+				t.Fatal("changed content must revoke the earlier baseline")
+			}
+			if len(s.FilterNew([]alert.Finding{b})) != 1 {
+				t.Fatal("changed content must alert after undo")
+			}
+		})
+	}
+}
+
+func TestContentUndoSurvivesReopen(t *testing.T) {
+	for _, tc := range []struct {
+		name                             string
+		baseline                         bool
+		previous, dismissed, adopt, want string
+	}{
+		{name: "active known content", dismissed: shaA},
+		{name: "active later adoption", adopt: shaA},
+		{name: "earlier unknown baseline", baseline: true, dismissed: shaA},
+		{name: "earlier known baseline", baseline: true, previous: shaA, dismissed: shaB, want: shaA},
+		{name: "earlier baseline later adoption", baseline: true, adopt: shaA, want: shaA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestStore(t)
+			f := contentFinding("yara_match_scheduled", tc.previous)
+			if tc.baseline {
+				s.SetBaseline([]alert.Finding{f})
+			} else {
+				s.Update([]alert.Finding{f})
+			}
+			f.ContentSHA256 = tc.dismissed
+			s.SetLatestFindings([]alert.Finding{f})
+			undo, ok := s.DismissFindingAsShown(f.Key(), tc.dismissed)
+			if !ok {
+				t.Fatal("dismiss refused")
+			}
+			encoded, err := json.Marshal(undo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.adopt != "" {
+				s.ReconcileDismissedContent([]alert.Finding{contentFinding(f.Check, tc.adopt)})
+			}
+			if err = s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := Open(s.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			var restored DismissUndo
+			if err := json.Unmarshal(encoded, &restored); err != nil {
+				t.Fatal(err)
+			}
+			if !reopened.UndoDismiss(restored) {
+				t.Fatal("undo refused after reopen")
+			}
+			entry, ok := reopened.EntryForKey(f.Key())
+			if !ok || entry.IsBaseline != tc.baseline || entry.ContentSHA256 != tc.want {
+				t.Fatalf("entry = %+v, present %v; want baseline %v with content %q", entry, ok, tc.baseline, tc.want)
+			}
+			latest := reopened.LatestFindings()
+			if len(latest) != 1 || latest[0].Key() != f.Key() || latest[0].ContentSHA256 != f.ContentSHA256 {
+				t.Fatalf("undo did not restore the dismissed row: %+v", latest)
+			}
+		})
 	}
 }

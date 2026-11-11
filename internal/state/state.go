@@ -1630,8 +1630,9 @@ type DismissUndo struct {
 	ClearBaseline bool            `json:"clear_baseline,omitempty"`
 	CreatedEntry  bool            `json:"created_entry,omitempty"`
 	Removed       []alert.Finding `json:"removed,omitempty"`
-	// PrevContent is the content the entry covered before the dismissal.
-	PrevContent string `json:"prev_content,omitempty"`
+	// PrevContent is nil when an earlier baseline's content was left alone.
+	// Undo must preserve evidence that baseline adopts after the dismissal.
+	PrevContent *string `json:"prev_content,omitempty"`
 }
 
 // DismissFindingWithUndo marks a finding as baseline and removes it from the
@@ -1690,7 +1691,10 @@ func (s *Store) dismissLocked(key string, shown *string) (DismissUndo, bool) {
 	}
 	if entry != nil {
 		u.ClearBaseline = !entry.IsBaseline
-		u.PrevContent = entry.ContentSHA256
+		if u.ClearBaseline || (content != "" && content != entry.ContentSHA256) {
+			previous := entry.ContentSHA256
+			u.PrevContent = &previous
+		}
 		entry.IsBaseline = true
 		if content != "" {
 			entry.ContentSHA256 = content
@@ -1717,7 +1721,9 @@ func (s *Store) UndoDismiss(u DismissUndo) bool {
 		return false
 	}
 	entry.DismissalID = ""
-	entry.ContentSHA256 = u.PrevContent
+	if u.PrevContent != nil {
+		entry.ContentSHA256 = *u.PrevContent
+	}
 	if u.CreatedEntry {
 		delete(s.entries, u.Key)
 	} else if u.ClearBaseline {

@@ -294,6 +294,10 @@ Revocation deletes the entry, invalidating pending delivery and resolution
 callbacks tied to it. Finding keys and fingerprints stay unchanged. The daemon
 calls it before `FilterNew` in `dispatchBatch` and `respondToInitialScan`.
 
+Undo restores the previous content hash only when the dismissal created the
+baseline or changed its content. Content adopted after a dismissal that left
+it alone survives the undo.
+
 ### Response admission primitives
 
 `internal/admission` is a standard-library-only package that live responses
