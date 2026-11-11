@@ -458,12 +458,19 @@ func extractModSecIP(f alert.Finding) string {
 }
 
 func extractModSecRule(f alert.Finding) string {
-	// Try structured format first
-	if v := extractDetailField(f.Details, "Rule: "); v != "" {
+	return modsecDetailField(f, "Rule: ", func(r modsec.LogRule) string { return r.ID })
+}
+
+// modsecDetailField reads a field the realtime handler stored. Structured
+// details keep the raw line too, whose request text can imitate any field, so
+// only raw-line details (escalations and older findings) are parsed, and only
+// through the reader that refuses imitated fields.
+func modsecDetailField(f alert.Finding, prefix string, field func(modsec.LogRule) string) string {
+	if v := extractDetailField(f.Details, prefix); v != "" || strings.HasPrefix(f.Details, "Rule: ") {
 		return v
 	}
-	// Fallback: parse [id "NNNN"] from raw log line in Details
-	return extractBetween(f.Details, `[id "`, `"]`)
+	rule, _ := modsec.ErrorLogRule(f.Details)
+	return field(rule)
 }
 
 // csmRuleDescriptions provides fallback descriptions for known ModSecurity
@@ -527,10 +534,7 @@ var csmRuleDescriptions = map[string]string{
 }
 
 func extractModSecDescription(f alert.Finding) string {
-	if v := extractDetailField(f.Details, "Message: "); v != "" {
-		return v
-	}
-	if v := extractBetween(f.Details, `[msg "`, `"]`); v != "" {
+	if v := modsecDetailField(f, "Message: ", func(r modsec.LogRule) string { return r.Msg }); v != "" {
 		return v
 	}
 	// Fallback: use static description for CSM custom rules when the log
@@ -543,17 +547,11 @@ func extractModSecDescription(f alert.Finding) string {
 }
 
 func extractModSecHostname(f alert.Finding) string {
-	if v := extractDetailField(f.Details, "Hostname: "); v != "" {
-		return v
-	}
-	return extractBetween(f.Details, `[hostname "`, `"]`)
+	return modsecDetailField(f, "Hostname: ", func(r modsec.LogRule) string { return r.Hostname })
 }
 
 func extractModSecURI(f alert.Finding) string {
-	if v := extractDetailField(f.Details, "URI: "); v != "" {
-		return v
-	}
-	return extractBetween(f.Details, `[uri "`, `"]`)
+	return modsecDetailField(f, "URI: ", func(r modsec.LogRule) string { return r.URI })
 }
 
 func extractDetailField(details, prefix string) string {
@@ -576,19 +574,4 @@ func looksLikeIP(s string) bool {
 		}
 	}
 	return strings.Count(s, ".") == 3
-}
-
-// extractBetween extracts the value between start and end delimiters.
-// Used as fallback for old findings where Details is the raw log line.
-func extractBetween(s, start, end string) string {
-	idx := strings.Index(s, start)
-	if idx < 0 {
-		return ""
-	}
-	rest := s[idx+len(start):]
-	endIdx := strings.Index(rest, end)
-	if endIdx < 0 {
-		return ""
-	}
-	return rest[:endIdx]
 }

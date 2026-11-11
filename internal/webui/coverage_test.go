@@ -1360,25 +1360,6 @@ func TestAPIFirewallStatusReportsEffectiveChallengePort(t *testing.T) {
 
 // --- modsec field extractors (modsec_api.go) ---------------------------
 
-func TestExtractBetween(t *testing.T) {
-	s := `[id "942100"] hello`
-	if got := extractBetween(s, `[id "`, `"]`); got != "942100" {
-		t.Errorf("got %q, want 942100", got)
-	}
-}
-
-func TestExtractBetweenStartMissing(t *testing.T) {
-	if got := extractBetween("no markers", `[id "`, `"]`); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractBetweenEndMissing(t *testing.T) {
-	if got := extractBetween(`[id "942100 oops`, `[id "`, `"]`); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
 func TestExtractDetailField(t *testing.T) {
 	details := "Rule: 942100\nMessage: SQL injection\nHostname: example.com"
 	if got := extractDetailField(details, "Rule: "); got != "942100" {
@@ -1453,7 +1434,7 @@ func TestExtractModSecRuleStructured(t *testing.T) {
 }
 
 func TestExtractModSecRuleRawLogFallback(t *testing.T) {
-	f := alert.Finding{Details: `... [id "942100"] [msg "SQLi"] ...`}
+	f := alert.Finding{Details: `[Wed Nov 11 10:00:00.000001 2026] [security2:error] [pid 100:tid 101] [client 203.0.113.60:50000] ModSecurity: Access denied with code 403 (phase 2). [id "942100"] [msg "SQLi"]`}
 	if got := extractModSecRule(f); got != "942100" {
 		t.Errorf("got %q, want 942100", got)
 	}
@@ -1514,7 +1495,7 @@ func TestExtractModSecHostnameStructured(t *testing.T) {
 }
 
 func TestExtractModSecHostnameRawLogFallback(t *testing.T) {
-	f := alert.Finding{Details: `[hostname "example.com"] ...`}
+	f := alert.Finding{Details: `[Wed Nov 11 10:00:00.000001 2026] [security2:error] [pid 100:tid 101] [client 203.0.113.60:50000] ModSecurity: Access denied with code 403 (phase 2). [id "942100"] [hostname "example.com"] [uri "/login"]`}
 	if got := extractModSecHostname(f); got != "example.com" {
 		t.Errorf("got %q", got)
 	}
@@ -1528,7 +1509,7 @@ func TestExtractModSecURIStructured(t *testing.T) {
 }
 
 func TestExtractModSecURIRawLogFallback(t *testing.T) {
-	f := alert.Finding{Details: `[uri "/admin/login"] ...`}
+	f := alert.Finding{Details: `[Wed Nov 11 10:00:00.000001 2026] [security2:error] [pid 100:tid 101] [client 203.0.113.60:50000] ModSecurity: Access denied with code 403 (phase 2). [id "942100"] [hostname "example.com"] [uri "/admin/login"]`}
 	if got := extractModSecURI(f); got != "/admin/login" {
 		t.Errorf("got %q", got)
 	}

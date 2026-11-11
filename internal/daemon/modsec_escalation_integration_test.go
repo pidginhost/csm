@@ -17,11 +17,11 @@ import (
 // with the given rule ID, message, and space-separated tags.
 func modsecApacheLine(ip, ruleID, msg, tags string) string {
 	line := `[Wed Apr 01 15:15:05 2026] [error] [client ` + ip +
-		`] ModSecurity: Access denied with code 403, [id "` + ruleID + `"] [msg "` + msg + `"]`
+		`] ModSecurity: Access denied with code 403, [id "` + ruleID + `"] [msg "` + msg + `"] [severity "CRITICAL"]`
 	for _, tg := range strings.Fields(tags) {
 		line += ` [tag "` + tg + `"]`
 	}
-	line += ` [severity "CRITICAL"] [hostname "shop.example.ro"] [uri "/checkout"]`
+	line += ` [hostname "shop.example.ro"] [uri "/checkout"]`
 	return line
 }
 
@@ -311,7 +311,13 @@ func TestParseModSec_FileManagerRequiresRepeatedDenies(t *testing.T) {
 				if server == "litespeed" {
 					line = strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"900107"`, 1)
 				}
-				line += ` [data "` + tc.method + ` ` + tc.uri + `"]`
+				// Engines write [data] after [msg], before [severity].
+				data := ` [data "` + tc.method + ` ` + tc.uri + `"]`
+				if server == "litespeed" {
+					line += data
+				} else {
+					line = strings.Replace(line, ` [severity "`, data+` [severity "`, 1)
+				}
 				for hit := 1; hit <= cfg.Thresholds.ModSecEscalationHits; hit++ {
 					findings := parseModSecLogLineDeduped(line, cfg)
 					switch hit {

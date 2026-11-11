@@ -6,6 +6,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/modsec"
 )
 
 // Enabling the OWASP CRS vendor set exposes rule IDs the confidence table did
@@ -128,8 +129,9 @@ func TestExtractModSecRuleFile(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := extractModSecRuleFile(tc.line); got != tc.want {
-				t.Errorf("extractModSecRuleFile() = %q, want %q", got, tc.want)
+			rule, _ := modsec.ErrorLogRule(tc.line)
+			if got := modsecRuleFileBase(rule.File); got != tc.want {
+				t.Errorf("rule file = %q, want %q", got, tc.want)
 			}
 		})
 	}

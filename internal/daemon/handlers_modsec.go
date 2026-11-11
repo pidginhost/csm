@@ -145,10 +145,8 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	ip := modsec.ErrorLogClientIP(line)
-	ruleID := extractModSecField(line, `[id "`, `"]`)
-	msg := extractModSecField(line, `[msg "`, `"]`)
-	hostname := extractModSecField(line, `[hostname "`, `"]`)
-	uri := extractModSecField(line, `[uri "`, `"]`)
+	rule, ruleKnown := modsec.ErrorLogRule(line)
+	ruleID, msg, hostname, uri := rule.ID, rule.Msg, rule.Hostname, rule.URI
 
 	// Skip infra and loopback IPs - consistent with other realtime handlers
 	// (handlers.go:22, autoblock.go:149). Prevents noisy findings and
@@ -183,7 +181,7 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	if n, err := strconv.Atoi(ruleID); err == nil {
 		ruleNum = n
 	}
-	conf := classifyModSecConfidence(ruleNum, msg, extractAllModSecFields(line, `[tag "`, `"]`), extractModSecRuleFile(line))
+	conf := classifyModSecConfidence(ruleNum, msg, strings.Join(rule.Tags, " "), modsecRuleFileBase(rule.File))
 
 	// Determine severity from confidence. Individual low-confidence and unknown
 	// blocks stay Warning so the confidence-gated escalation path remains the
@@ -197,9 +195,13 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	// Build message.
-	message := fmt.Sprintf("ModSecurity rule %s", ruleID)
+	label := ruleID
+	if !ruleKnown {
+		label = "unknown (request text imitates rule fields)"
+	}
+	message := fmt.Sprintf("ModSecurity rule %s", label)
 	if check == "modsec_block_realtime" {
-		message = fmt.Sprintf("ModSecurity blocked request: rule %s", ruleID)
+		message = fmt.Sprintf("ModSecurity blocked request: rule %s", label)
 	}
 	if ip != "" {
 		message += fmt.Sprintf(" from %s", ip)
@@ -286,56 +288,12 @@ func classifyLiteSpeedTrigger(ruleID string) string {
 	return "modsec_warning_realtime"
 }
 
-// extractModSecField extracts the value between start and end delimiters.
-// Returns empty string if delimiters are not found.
-func extractModSecField(line, start, end string) string {
-	idx := strings.Index(line, start)
-	if idx < 0 {
-		return ""
-	}
-	rest := line[idx+len(start):]
-	endIdx := strings.Index(rest, end)
-	if endIdx < 0 {
-		return ""
-	}
-	return rest[:endIdx]
-}
-
-// extractModSecRuleFile returns the base name of the rule file that matched.
-// Apache writes it as [file "..."]; LiteSpeed as "at [path:line]".
-func extractModSecRuleFile(line string) string {
-	path := extractModSecField(line, `[file "`, `"]`)
-	if path == "" {
-		path = extractModSecField(line, "] at [", "]")
-		if idx := strings.LastIndex(path, ":"); idx > 0 {
-			path = path[:idx]
-		}
-	}
+// modsecRuleFileBase returns the base name of the rule file a line names.
+func modsecRuleFileBase(path string) string {
 	if path == "" {
 		return ""
 	}
 	return filepath.Base(path)
-}
-
-// extractAllModSecFields returns every value delimited by start/end, joined by
-// a space. ModSecurity lines carry repeated [tag "..."] fields; the confidence
-// classifier needs all of them, not just the first.
-func extractAllModSecFields(line, start, end string) string {
-	var vals []string
-	for {
-		idx := strings.Index(line, start)
-		if idx < 0 {
-			break
-		}
-		rest := line[idx+len(start):]
-		endIdx := strings.Index(rest, end)
-		if endIdx < 0 {
-			break
-		}
-		vals = append(vals, rest[:endIdx])
-		line = rest[endIdx+len(end):]
-	}
-	return strings.Join(vals, " ")
 }
 
 // parseModSecLogLineDeduped wraps parseModSecLogLine with dedup and block
@@ -360,7 +318,8 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// Extract IP and rule ID directly from the raw log line - NOT from the
 	// finding message, which could be manipulated via log injection.
 	ip := modsec.ErrorLogClientIP(line)
-	ruleID := extractModSecField(line, `[id "`, `"]`)
+	rule, ruleKnown := modsec.ErrorLogRule(line)
+	ruleID := rule.ID
 	ruleNum, _ := strconv.Atoi(ruleID)
 	isBlock := f.Check == "modsec_block_realtime"
 	isCSM := isBlock && ruleNum >= 900000 && ruleNum <= 900999
@@ -376,9 +335,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// severity. This decides whether a deny may auto-escalate to a firewall ban
 	// (high/unknown) or only feeds the low-confidence visibility/backstop path
 	// (low). See docs/superpowers/specs/2026-06-27-modsec-escalation-fp-options.md.
-	msg := extractModSecField(line, `[msg "`, `"]`)
-	tags := extractAllModSecFields(line, `[tag "`, `"]`)
-	conf := classifyModSecConfidence(ruleNum, msg, tags, extractModSecRuleFile(line))
+	conf := classifyModSecConfidence(ruleNum, rule.Msg, strings.Join(rule.Tags, " "), modsecRuleFileBase(rule.File))
 
 	// Feed the per-IP window with every blocking deny, plus high/unknown
 	// warnings, which supply attack evidence to a later anomaly-threshold deny
@@ -387,7 +344,9 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// anomaly rule denies. Operator-excluded rules are not recorded at all.
 	// A trusted proxy's address stands for every visitor behind it: its
 	// denies stay visible below but never escalate to a block of it.
-	if ip != "" && ruleID != "" && (isBlock || conf == modsecConfHigh || conf == modsecConfUnknown) &&
+	// A line whose request text imitates rule fields names no rule: it still
+	// counts, as an unknown rule, so the imitation cannot dodge escalation.
+	if ip != "" && (ruleID != "" || !ruleKnown) && (isBlock || conf == modsecConfHigh || conf == modsecConfUnknown) &&
 		!checks.IsTrustedProxy(ip, cfg) {
 		hits, win := modsecEscalationParams(cfg)
 		lowConfHits := modsecLowConfEscalationHits(cfg)
@@ -423,7 +382,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Domain:   f.Domain,
 			})
 		}
-		if outcome.classifierGap {
+		if outcome.classifierGap && ruleID != "" {
 			results = append(results, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "modsec_classifier_gap",
