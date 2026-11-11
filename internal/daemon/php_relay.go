@@ -1353,8 +1353,8 @@ func readCpanelHourlyLimit(path string) (int, cpanelLimitStatus) {
 	return 0, cpanelLimitMissing
 }
 
-// deriveEffectiveAccountLimit implements spec section 6.1's three-step
-// derivation. Returns (effective, enabled, cappedFromOperator).
+// deriveEffectiveAccountLimit derives the per-account hourly limit from
+// cPanel's limit and the operator setting. Returns (effective, enabled, cappedFromOperator).
 //   - cpanelLimit/status come from readCpanelHourlyLimit.
 //   - missing/unparsable callers should also emit a Warning startup finding.
 //   - returned enabled=false means Path 2b should not run this session.

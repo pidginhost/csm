@@ -736,7 +736,7 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 }
 
 // reputationSightingWindow is how old a local record may be and still
-// corroborate intel: the independence window (spec 5.3).
+// corroborate intel.
 const reputationSightingWindow = 24 * time.Hour
 
 // collectRecentSightings keeps the legacy surface choice and, separately,

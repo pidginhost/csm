@@ -140,7 +140,7 @@ func TestPath6_ObservedFindingCannotEscalateIncident(t *testing.T) {
 }
 
 // The relay names its client from an X-PHP-Script header any local account
-// can write, so no parser vouches for the address (spec 5.8): the response
+// can write, so no parser vouches for the address: the response
 // reaches admission and is refused for attribution, while the legacy path
 // still acts. A later challenge timeout carries no root.
 func TestPath6_AdmissionRefusesTheHeaderAddress(t *testing.T) {

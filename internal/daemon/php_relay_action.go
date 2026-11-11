@@ -34,7 +34,7 @@ var msgIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{16,32}$`)
 var eximBinary string
 
 // actionRateLimiter is a sliding-window counter of exim -M* invocations.
-// Per spec: at most maxPerMinute actions in any rolling 60s window.
+// At most maxPerMinute actions in any rolling 60s window.
 type actionRateLimiter struct {
 	mu         sync.Mutex
 	maxPerMin  int
@@ -119,7 +119,7 @@ func freezeErrIsAlreadyGone(stderr string) bool {
 //     where the operator has disabled split_spool_directory): -H files
 //     live directly in spoolRoot.
 //
-// The spec section 5.8 explicitly requires both layouts. We probe each
+// Both layouts occur in the field. We probe each
 // entry: if it's a regular -H file at the root, scan it; if it's a
 // directory, descend. No probing of /etc/exim or spool config -- the
 // filesystem layout is the source of truth.

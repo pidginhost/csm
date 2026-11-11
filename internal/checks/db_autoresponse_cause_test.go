@@ -9,7 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// Ruling R9: the addresses of WordPress sessions active on a compromised
+// The addresses of WordPress sessions active on a compromised
 // site are not attributable (the site owner's are among them), so they are
 // reported, not blocked: the notice names them and the database finding
 // that caused it, and carries no address another responder could act on.
