@@ -454,7 +454,7 @@ func TestCloudRelayCredentialAbuseAction_DryRunRecordsDomainWithoutHold(t *testi
 	}
 	t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
-	handleCloudRelayCredentialAbuse(cloudRelayTestConfig(), "real@victim.example")
+	handleCloudRelayCredentialAbuse(cloudRelayTestConfig(), "real@victim.example", time.Now())
 
 	if len(suspendCalls) != 0 {
 		t.Fatalf("auto-response disabled/dry-run must not hold mail; got calls %v", suspendCalls)
@@ -486,7 +486,7 @@ func TestCloudRelayCredentialAbuseAction_LiveFallsBackToAccountHold(t *testing.T
 	}
 	t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
-	handleCloudRelayCredentialAbuse(eximAutoHoldConfig(), "real@victim.example")
+	handleCloudRelayCredentialAbuse(eximAutoHoldConfig(), "real@victim.example", time.Now())
 
 	if len(suspendCalls) != 1 || suspendCalls[0] != "real@victim.example" {
 		t.Fatalf("live auto-response should hold AUTH user once, got %v", suspendCalls)

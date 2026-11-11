@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -778,7 +779,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// identity is the credential actually being abused and the one we
 	// must lock out.
 	for _, f := range parseCloudRelayFinding(line, cfg) {
-		handleCloudRelayCredentialAbuse(cfg, extractAuthUser(line))
+		handleCloudRelayCredentialAbuse(cfg, extractAuthUser(line), time.Now())
 		findings = append(findings, f)
 	}
 
@@ -786,7 +787,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// churn and recipient fan-out judged against the mailbox's own history.
 	for _, f := range parseSenderProfileFinding(line, cfg, time.Now()) {
 		if f.Severity == alert.Critical {
-			respondToMailboxCompromise(cfg, extractAuthUser(line), "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history")
+			respondToMailboxCompromise(cfg, extractAuthUser(line), "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", time.Now())
 		}
 		findings = append(findings, f)
 	}
@@ -960,21 +961,32 @@ var whmapi1ReleaseExec = func(user string) ([]byte, error) {
 // whmapi1 calls when exim re-emits "exceeded max defers/failures" every
 // retry hour while the hold is already active.
 func userOnOutgoingMailHold(user string) bool {
+	held, _ := outgoingMailHoldState(user)
+	return held
+}
+
+// outgoingMailHoldState reads whether cPanel holds the user's outgoing mail.
+// A missing list means no account is held; any other read failure is an
+// error, so a caller can tell "not held" from "cannot tell".
+func outgoingMailHoldState(user string) (bool, error) {
 	if user == "" {
-		return false
+		return false, nil
 	}
 	f, err := os.Open(outgoingMailHoldUsersPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		if strings.TrimSpace(scanner.Text()) == user {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, scanner.Err()
 }
 
 // maybeHoldOutgoingMail holds outgoing mail for the account that owns a

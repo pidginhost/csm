@@ -329,8 +329,17 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 	}}
 }
 
-func handleCloudRelayCredentialAbuse(cfg *config.Config, authUser string) {
-	respondToMailboxCompromise(cfg, authUser, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses")
+func handleCloudRelayCredentialAbuse(cfg *config.Config, authUser string, at time.Time) {
+	respondToMailboxCompromise(cfg, authUser, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses", at)
+}
+
+// retroCloudRelayResponse responds to a startup-scan finding as of the logged
+// time of its newest send, so a send from before a release cannot suspend the
+// released mailbox again.
+func retroCloudRelayResponse(cfg *config.Config, f alert.Finding) {
+	if sender := extractSenderFromCloudRelayMessage(f.Message); sender != "" {
+		handleCloudRelayCredentialAbuse(cfg, sender, f.Observation.ObservedAt)
+	}
 }
 
 // forgetCloudRelayEvidence drops a released mailbox's cloud-relay window so

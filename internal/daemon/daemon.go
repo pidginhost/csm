@@ -1065,11 +1065,7 @@ func (d *Daemon) Run() error {
 					alert.RecordQueueLoss(d.alertCh, uint64(len(retro[i+1:])))
 					return
 				}
-				sender := extractSenderFromCloudRelayMessage(f.Message)
-				if sender == "" {
-					continue
-				}
-				handleCloudRelayCredentialAbuse(cfg, sender)
+				retroCloudRelayResponse(cfg, f)
 			}
 		})
 	}

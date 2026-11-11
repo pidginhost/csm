@@ -737,3 +737,73 @@ func TestStolenLoginResponses_LoginNamesNeverHoldADomain(t *testing.T) {
 		t.Fatalf("dotted login name reached a hold: holds %v %v, uapi %v", *holds, *users, *calls)
 	}
 }
+
+// The startup scan replays a day of exim_mainlog. A send logged before a
+// release must not suspend the released mailbox again.
+func TestRetroCloudRelayResponse_UsesLoggedTime(t *testing.T) {
+	db := withMailboxStore(t)
+	withUserdomains(t, "victim.example: cpuser\n")
+	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	stubAccountHold(t, true)
+	captureActionRecords(t)
+	resetEmailRateState()
+
+	row := cpanelRow("real@victim.example", store.AppliedSuspendLogin, store.AppliedSuspendOutgoing)
+	releasedAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	row.ReleasedAt, row.ReleasedBy = &releasedAt, "admin"
+	putRows(t, db, row)
+
+	retro := alert.Finding{
+		Check:       "email_cloud_relay_abuse",
+		Message:     "RETRO: account real@victim.example sent 12 authenticated messages from 4 cloud-provider IPs (peak 60-min burst) in the last 24 hours - credentials compromised - from 203.0.113.9",
+		Observation: alert.Observation{ObservedAt: releasedAt.Add(-2 * time.Hour)},
+	}
+	retroCloudRelayResponse(eximAutoHoldConfig(), retro)
+	if len(*calls) != 0 {
+		t.Fatalf("a send logged before the release suspended again: %v", *calls)
+	}
+	retro.Observation.ObservedAt = releasedAt.Add(30 * time.Minute)
+	retroCloudRelayResponse(eximAutoHoldConfig(), retro)
+	if got := uapiFns(*calls); !reflect.DeepEqual(got, []string{"suspend_login", "suspend_outgoing"}) {
+		t.Fatalf("a send logged after the release: uapi calls = %v", got)
+	}
+}
+
+// An account hold whose state cannot be read is unknown, not released.
+func TestListMailboxSuspensions_UnreadableHoldFileKeepsRow(t *testing.T) {
+	db := withMailboxStore(t)
+	prev := outgoingMailHoldUsersPath
+	outgoingMailHoldUsersPath = t.TempDir() // a directory: opens, then fails to read
+	t.Cleanup(func() { outgoingMailHoldUsersPath = prev })
+	row := cpanelRow("victim.example", store.AppliedHoldOutgoing)
+	putRows(t, db, row)
+
+	rows, err := listMailboxSuspensions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !rows[0].StatusUnknown || rows[0].Active || rows[0].ReleasedAt != nil {
+		t.Fatalf("rows = %+v, want one with unknown status", rows)
+	}
+	if got := storedRow(t, db, row.ID); got.ReleasedAt != nil {
+		t.Fatalf("an unreadable hold file released the row: %+v", got)
+	}
+}
+
+// A missing hold file means cPanel holds no account.
+func TestListMailboxSuspensions_MissingHoldFileMeansReleased(t *testing.T) {
+	db := withMailboxStore(t)
+	prev := outgoingMailHoldUsersPath
+	outgoingMailHoldUsersPath = filepath.Join(t.TempDir(), "absent")
+	t.Cleanup(func() { outgoingMailHoldUsersPath = prev })
+	row := cpanelRow("victim.example", store.AppliedHoldOutgoing)
+	putRows(t, db, row)
+
+	rows, err := listMailboxSuspensions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].StatusUnknown || rows[0].ReleasedBy != "outside CSM" {
+		t.Fatalf("rows = %+v, want released outside CSM", rows)
+	}
+}

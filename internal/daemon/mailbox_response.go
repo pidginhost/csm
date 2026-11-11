@@ -94,10 +94,11 @@ func uapiResultError(out []byte) error {
 
 // maybeSuspendMailbox stops one abused credential seen sending: it suspends
 // the mailbox's logins, which also ends its SMTP authentication, and its
-// outgoing mail. It returns true when sending from the mailbox was stopped.
-func maybeSuspendMailbox(cfg *config.Config, mailbox, check, reason string) bool {
+// outgoing mail. at is when the abuse was logged. It returns true when
+// sending from the mailbox was stopped.
+func maybeSuspendMailbox(cfg *config.Config, mailbox, check, reason string, at time.Time) bool {
 	stopped, _ := respondToCompromise(cfg, mailboxCompromise{
-		Subject: mailbox, Check: check, Reason: reason, Evidence: evidenceSending, At: time.Now(),
+		Subject: mailbox, Check: check, Reason: reason, Evidence: evidenceSending, At: at,
 	})
 	return stopped
 }
@@ -149,14 +150,19 @@ func (cpanelMailBackend) release(rec store.MailboxSuspension, actor string) erro
 func (cpanelMailBackend) active(recs []store.MailboxSuspension) (map[string]bool, error) {
 	live := make(map[string]bool, len(recs))
 	byAccount := map[string][]store.MailboxSuspension{}
+	var errs []error
 	for _, r := range recs {
 		if r.Kind == store.SuspensionKindAccount {
-			live[r.ID] = userOnOutgoingMailHold(r.Account)
+			held, err := outgoingMailHoldState(r.Account)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("outgoing hold list: %w", err))
+				continue
+			}
+			live[r.ID] = held
 			continue
 		}
 		byAccount[r.Account] = append(byAccount[r.Account], r)
 	}
-	var errs []error
 	for account, rows := range byAccount {
 		flags, err := cpanelMailboxFlags(account)
 		if err != nil {

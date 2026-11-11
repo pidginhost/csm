@@ -325,9 +325,9 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 // domain so rate alerts stay quiet while the response settles. The domain
 // marker is correlation state, not an auto-response action, so it is kept
 // even when the suspension is disabled or dry-run gated.
-func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason string) {
+func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason string, at time.Time) {
 	if domain := extractDomainFromEmail(authUser); domain != "" {
-		maybeSuspendMailbox(cfg, authUser, check, reason)
+		maybeSuspendMailbox(cfg, authUser, check, reason, at)
 		RecordCompromisedDomain(domain)
 	}
 }
