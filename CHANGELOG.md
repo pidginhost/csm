@@ -16,6 +16,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
 - `.htaccess` checks now report suspicious handler extensions listed after a `#` on the same line, which Apache still applies.
 - A file CSM quarantined or cleaned now alerts again when it comes back, instead of being held back as a repeat.
+- CSM now raises a Critical alert when a process writes back a file CSM quarantined or cleaned, and repeats that response.
 
 ### Changed
 

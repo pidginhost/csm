@@ -24,8 +24,8 @@ var (
 	expectedAutoQuarantineChecks = []string{
 		"backdoor_binary", "new_executable_in_config",
 		"new_php_in_languages", "new_php_in_upgrade", "new_webshell_file", "obfuscated_php",
-		"phishing_directory", "phishing_page", "signature_match_realtime",
-		"suspicious_php_content", "webshell",
+		"phishing_directory", "phishing_page", "removed_file_restored_realtime",
+		"signature_match_realtime", "suspicious_php_content", "webshell",
 	}
 	expectedAttackMappings = map[string]attackdb.AttackType{
 		"admin_panel_bruteforce":      attackdb.AttackBruteForce,

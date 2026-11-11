@@ -1602,6 +1602,13 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		}
 	}
 
+	// Checked after the checksum skip: official release bytes coming back
+	// are never a response being undone.
+	if fm.checkRemovedFileRestored(event, procInfo) {
+		markDropperContentSuspicious()
+		return
+	}
+
 	// User crontab written under /var/spool/cron/<user>. Scan content
 	// from the event fd via the shared deep matcher and emit Critical on
 	// any hit. The polled CheckCrontabs run still tracks root crontab

@@ -233,6 +233,7 @@
       "response_capacity_exhausted",
       "rpm_integrity",
       "self_deleting_dropper_overflow",
+      "removed_file_restored_realtime",
       "self_deleting_dropper_realtime",
       "signature_match_realtime",
       "signature_update_rescan_queued",

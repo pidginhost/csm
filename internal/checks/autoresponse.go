@@ -28,6 +28,10 @@ func InQuarantine(path string) bool {
 	return path == quarantineDir || strings.HasPrefix(path, quarantineDir+string(filepath.Separator))
 }
 
+// RemovedFileRestoredCheck reports a process writing back, byte for byte,
+// content CSM quarantined or cleaned at the same path.
+const RemovedFileRestoredCheck = "removed_file_restored_realtime"
+
 // autoQuarantineChecks are the findings the scheduled auto-responder may
 // quarantine on its own: the manual move set plus the kill-and-quarantine
 // family, and the realtime signature match, which must
@@ -45,6 +49,7 @@ var autoQuarantineChecks = map[string]bool{
 	"phishing_page":            true,
 	"phishing_directory":       true,
 	"signature_match_realtime": true,
+	RemovedFileRestoredCheck:   true,
 }
 
 var signalProcess = processhandle.Signal
@@ -186,10 +191,18 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		// Multiple checks can report one file. Do not re-clean a repaired
 		// target or charge repeated failures for the same batch of evidence.
 		seen[key] = true
+		clean := !realtime && ShouldCleanInsteadOfQuarantine(path)
+		if f.Check == RemovedFileRestoredCheck {
+			// Repeat what CSM did to these bytes before: the path alone does
+			// not say whether the whole file was malicious.
+			if removed, ok := RemovedFileAt(path); ok {
+				clean = removed.Action == "clean"
+			}
+		}
 		paused := runAutoFileResponse(cfg, path, info, func() error {
 			// Cleaning is one response attempt. A failed cleaner leaves the file
 			// and any backup for review; it must not escalate to removing the file.
-			if !realtime && ShouldCleanInsteadOfQuarantine(path) {
+			if clean {
 				result := cleanInfectedFileIdentified(path, info)
 				if result.Error != "" {
 					outcome := "failed"
