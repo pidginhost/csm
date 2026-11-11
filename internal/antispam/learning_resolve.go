@@ -415,7 +415,7 @@ func withSocket(host ControllerHostFacts, p string, s SocketFacts) ControllerHos
 
 // checkLearningRedis requires a socket-only Redis no tenant can reach, with
 // a finite maxmemory and noeviction. On Postfix it must be a
-// Redis dedicated to learning (decision 7): rspamd's own serves tenants'
+// Redis dedicated to learning: rspamd's own serves tenants'
 // modules too.
 func checkLearningRedis(c *learningCheck, s Settings, f HostFacts) {
 	switch {

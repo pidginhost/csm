@@ -180,11 +180,11 @@ func CheckRemoval(stack MailStack, targets []TargetFacts) []Problem {
 // rebuild a configuration the host does not have.
 var stackUnknown = Problem{Code: CodePlatform, Severity: Temporary, Detail: "CSM cannot tell which mail server this host runs, for example while Postfix restarts"}
 
-// checkTargets checks that every file CSM writes is a
-// regular root-owned file without symlinks, in root-owned directories nobody
-// else can write, and a shared file has room for CSM's block. A whole file
-// that is not CSM's is backed up and replaced by the worker.
-// For removal only the rules that protect an edit apply.
+// checkTargets checks required targets for protected root-owned directories
+// and regular, protected files when present. Shared files must accept CSM's
+// block. Optional targets are checked separately on apply; removal checks
+// their parents when they contain CSM content. The worker backs up foreign
+// whole files before replacing them. Removal checks only what protects an edit.
 func checkTargets(stack MailStack, targets []TargetFacts, removal bool) []Problem {
 	var out []Problem
 	add := func(code string, sev Severity, format string, args ...any) {

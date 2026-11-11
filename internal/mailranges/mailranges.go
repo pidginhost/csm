@@ -16,10 +16,10 @@ import (
 	"time"
 )
 
-// embeddedSnapshot is the seed snapshot compiled into the binary. It contains
-// a handful of real Google and Microsoft outbound-mail CIDRs as placeholders.
-// Resolver-generated content is meant to replace it, so the shipped binary
-// always carries a current snapshot.
+// embeddedSnapshot is the seed snapshot compiled into the binary, used when
+// the on-disk cache cannot be read or parsed. TestGenerateSnapshot refreshes
+// the source from live SPF records when explicitly enabled; a build alone
+// does not refresh it.
 //
 //go:embed snapshot.json
 var embeddedSnapshot []byte

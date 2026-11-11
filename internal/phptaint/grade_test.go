@@ -23,7 +23,7 @@ func TestBasisValid(t *testing.T) {
 	}
 }
 
-// The order: confidence first, then basis priority, then the
+// Grades compare confidence first, then basis priority, then the
 // lowest resolution offset. Each row pins one rule so ablating any one of
 // them fails a named case.
 func TestGradeStronger(t *testing.T) {

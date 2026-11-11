@@ -1,5 +1,5 @@
-// Package txn runs CSM's antispam apply and remove transactions on a cPanel
-// host. It runs as root in the antispam worker,
+// Package txn runs CSM's antispam apply and remove transactions on cPanel
+// and Postfix hosts. It runs as root in the antispam worker,
 // under the shared Exim mutation lock and outside the daemon's sandbox.
 package txn
 

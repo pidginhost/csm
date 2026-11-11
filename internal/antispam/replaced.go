@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// ReplacedDir holds a root-only copy of each operator file CSM replaced,
-// until the operator deletes it. The copies are the durable
-// record: the daemon reports one warning per file found here.
+// ReplacedDir holds root-only backups of operator files CSM replaces.
+// Retained copies are durable records: the daemon reports one warning per
+// file found here.
 const ReplacedDir = "/var/lib/csm/antispam/replaced"
 
 // backupStamp is the UTC time that starts a backup name.

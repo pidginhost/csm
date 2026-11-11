@@ -259,8 +259,9 @@ func (s *domlogStats) trustedFor(cfg *config.Config) clientaddr.Trusted {
 }
 
 // scan updates counters for one parsed record. cfg may be nil
-// (parity tests pass nil); otherwise thresholds come from it. bot is consulted before any count so a verified Googlebot does
-// not contribute to either legacy or new metrics.
+// (parity tests pass nil); otherwise thresholds come from it. bot is
+// consulted before any count so a verified Googlebot does not contribute
+// to either legacy or new metrics.
 func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClassifier) {
 	// A per-vhost domlog never names a proxied request by path.
 	if rec.Central && rec.proxyPath {

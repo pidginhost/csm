@@ -22,7 +22,8 @@ import (
 // workloads on an 8-core development host with SSD storage; listing
 // latency depends on the host and filesystem.
 const (
-	// PassEvery and MaxAttempts are the pass schedule and per-report budget.
+	// PassEvery sets the pass interval; MaxAttempts caps submission attempts
+	// per account per pass, shared across its folders.
 	PassEvery   = 5 * time.Minute
 	MaxAttempts = 20
 	// MaxEntryErrors bounds the failed submissions of one entry, so a

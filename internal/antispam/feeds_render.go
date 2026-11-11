@@ -25,8 +25,7 @@ func MapRedirectNames() []string {
 	return []string{RedirectForgedRecipients, RedirectMID, RedirectMimeTypes, RedirectWhitelist, RedirectMultimap}
 }
 
-// Optional rspamd files: CSM writes each only while a feed or map redirect
-// needs it.
+// Rspamd paths for feed rules and symbol weights.
 const (
 	RspamdOverrideDir = "/etc/rspamd/override.d"
 	FeedRBLPath       = RspamdOverrideDir + "/rbl.conf"

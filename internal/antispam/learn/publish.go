@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// Publication limits. Provisional until Plan C's benchmark
-// records a measurement.
+// Publication limits, provisional pending benchmark measurements.
 const (
 	PublishTurnAttempts = 3
 	VerifyPollEvery     = 100 * time.Millisecond
@@ -34,7 +33,8 @@ type nativeClient interface {
 }
 
 // Publisher drives one target at a time toward its value through native
-// calls, persisting the phase before every send. Only the engine goroutine uses it.
+// calls, persisting the phase before every send. Only the engine goroutine
+// uses it.
 type Publisher struct {
 	client   nativeClient
 	ledger   *Ledger

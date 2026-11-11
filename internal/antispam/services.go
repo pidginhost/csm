@@ -35,8 +35,8 @@ func ParseUnitShow(out string) map[string]string {
 	return props
 }
 
-// checkServices checks that CSM mutates only through systemd-run and that
-// the services it reloads reload in place. Postfix, which CSM only reads,
+// checkServices requires systemd-run to be available and the services CSM
+// reloads to support reloading in place. Postfix, which CSM only reads,
 // must be running.
 func checkServices(f HostFacts) []Problem {
 	var out []Problem
@@ -80,8 +80,8 @@ func checkServices(f HostFacts) []Problem {
 	return out
 }
 
-// checkEximLog checks that CSM reads scan markers only from the Exim main
-// log it already monitors.
+// checkEximLog checks that Exim's main log destination matches the log CSM
+// already monitors for scan markers.
 func checkEximLog(settings map[string]string, monitored string) []Problem {
 	var out []Problem
 	add := func(sev Severity, format string, args ...any) {

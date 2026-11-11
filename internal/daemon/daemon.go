@@ -2227,9 +2227,9 @@ func (d *Daemon) heartbeat() {
 	}
 }
 
-// startPHPRelay applies the platform gate: it emits a Warning if the host
-// is not cPanel; otherwise it locates the exim binary for AutoFreeze and
-// wires the spool watcher, pipeline, and Flow E ticker.
+// startPHPRelay warns on non-cPanel hosts. On cPanel it starts the relay
+// only when enabled, locating Exim for automatic actions and wiring the
+// spool watcher, pipeline and maintenance tickers on Linux.
 func (d *Daemon) startPHPRelay() {
 	info := platform.Detect()
 	if !info.IsCPanel() {

@@ -34,9 +34,9 @@ type Assessment struct {
 	Problems []Problem
 }
 
-// Assess decides what reconcile does. For a
-// disabled integration f needs only Targets, GeneratedConf and Record, as
-// hostfacts.CollectInstalled reads them; enabled, f is a full collection.
+// Assess decides what reconcile does. For a disabled integration f needs
+// only Stack, Targets, GeneratedConf and Record, as hostfacts.CollectInstalled
+// reads them; enabled, f is a full collection.
 func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 	a := Assessment{Installed: leftovers(f)}
 	if !enabled {

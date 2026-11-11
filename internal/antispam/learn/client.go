@@ -15,8 +15,8 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 )
 
-// Limits of the native calls. RequestTimeout is provisional
-// until Plan C's benchmark records a measurement.
+// Limits of the native calls. RequestTimeout is provisional pending
+// benchmark measurements.
 const (
 	RequestTimeout = 5 * time.Second
 	// SyncTimeout bounds rspamadm control fuzzy_sync.

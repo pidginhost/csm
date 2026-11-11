@@ -152,10 +152,9 @@ type verifyJob struct {
 	ticket queuehealth.Ticket
 }
 
-// BotDomains maps each claimed-bot identity to the DNS suffix list
-// used for PTR + forward-A verification. Covers all bots that appear
-// frequently in production traffic and have no published static IP
-// range (static-range bots are handled via embedded JSON).
+// BotDomains maps built-in claimed-bot identities to DNS suffixes for
+// reverse and forward DNS verification. The HTTP classifier checks static
+// ranges first and uses this verifier for addresses outside those ranges.
 var BotDomains = map[string][]string{
 	"googlebot":     {"googlebot.com", "google.com"},
 	"bingbot":       {"search.msn.com"},

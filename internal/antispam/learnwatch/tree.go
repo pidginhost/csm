@@ -16,7 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/safepath"
 )
 
-// Folders are the observed folders of every mailbox: .spam is
+// Folders are the observed folders of each cPanel mailbox: .spam is
 // Dovecot's Junk special-use folder, .Junk the folder cPanel creates.
 var Folders = []string{".spam", ".Junk"}
 

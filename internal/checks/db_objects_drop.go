@@ -76,7 +76,7 @@ var errInvalidAccountName = errors.New("invalid account name (want [a-zA-Z][a-zA
 // what it would do (kind, schema, name, captured CREATE SQL) without
 // touching the database.
 //
-// Detection is always-on; drop is operator-driven.
+// Detection is enabled by default; dropping objects is operator-driven.
 func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResult {
 	result := DBCleanResult{
 		Account: account,
