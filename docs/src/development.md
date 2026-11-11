@@ -281,6 +281,19 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 - **API responses:** answer through `writeJSONError`, `writeOK`, `writeItems` / `writeAll` / `writeCapped` and `writeJSON`, so every route follows the contract in [API Reference](api.md): JSON errors, `ok` on actions, lists under `items`, UTC instants, durations in seconds and severity labels.
 - **Logging:** New code should use `internal/log` (wraps `log/slog`). Legacy `fmt.Fprintf(os.Stderr, "[%s] ...", ts())` call sites remain valid until migrated.
 
+### Content-bound dismissal state
+
+`state.Store.SetBaseline` retains a known content hash when a result for the
+same finding has no hash, including duplicate results and baseline resets.
+An explicit new hash replaces the earlier one. Findings absent from the new
+baseline are still removed.
+
+`ReconcileDismissedContent` accepts fresh content evidence only. Empty hashes
+and `ScanCarryForward` snapshots neither adopt content nor revoke a dismissal.
+Revocation deletes the entry, invalidating pending delivery and resolution
+callbacks tied to it. Finding keys and fingerprints stay unchanged. These
+state primitives do not by themselves enable daemon or API integration.
+
 ### Response admission primitives
 
 `internal/admission` is a standard-library-only package that live responses

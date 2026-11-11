@@ -426,12 +426,13 @@ func (s *Store) ForgetCleared(findings []alert.Finding) {
 // hash was unknown). It must run before FilterNew and delivery see the batch.
 // The entry is deleted rather than un-dismissed so no AlertSent or Emailed
 // receipt survives: the changed file alerts as a new detection. A finding
-// without a content hash proves nothing and changes nothing.
+// without a content hash, or carried from an unexamined path, proves nothing
+// and changes nothing.
 func (s *Store) ReconcileDismissedContent(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, f := range findings {
-		if f.ContentSHA256 == "" {
+		if f.ContentSHA256 == "" || f.ScanCarryForward {
 			continue
 		}
 		key := findingKey(f)
@@ -535,18 +536,31 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 		entryCopy := *entry
 		baselineAt = &entryCopy
 	}
+	previous := s.entries
 	s.entries = make(map[string]*Entry)
 	now := time.Now()
 
 	for _, f := range findings {
 		key := findingKey(f)
 		hash := findingHash(f)
+		content := f.ContentSHA256
+		if content == "" {
+			// Missing evidence must not erase known content, including when
+			// another result in this baseline already supplied it.
+			entry := s.entries[key]
+			if entry == nil {
+				entry = previous[key]
+			}
+			if entry != nil {
+				content = entry.ContentSHA256
+			}
+		}
 		s.entries[key] = &Entry{
 			Hash:          hash,
 			FirstSeen:     now,
 			LastSeen:      now,
 			IsBaseline:    true,
-			ContentSHA256: f.ContentSHA256,
+			ContentSHA256: content,
 		}
 	}
 	if baselineAt != nil {

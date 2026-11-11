@@ -19,6 +19,76 @@ func contentFinding(check, sha string) alert.Finding {
 		FilePath: "/home/a/public_html/x.php", ContentSHA256: sha}
 }
 
+func TestContentDoesNotChangeFindingIdentity(t *testing.T) {
+	a := contentFinding("yara_match_scheduled", shaA)
+	for _, content := range []string{"", shaB} {
+		other := contentFinding(a.Check, content)
+		if other.Key() != a.Key() || other.Fingerprint() != a.Fingerprint() {
+			t.Fatal("content changed the finding key or fingerprint")
+		}
+	}
+}
+
+func TestBaselinePreservesKnownContent(t *testing.T) {
+	a := contentFinding("yara_match_scheduled", shaA)
+	b := contentFinding("yara_match_scheduled", shaB)
+	unknown := contentFinding("yara_match_scheduled", "")
+	for _, tc := range []struct {
+		name     string
+		previous []alert.Finding
+		findings []alert.Finding
+		want     string
+	}{
+		{name: "duplicate unknown last", findings: []alert.Finding{a, unknown}, want: shaA},
+		{name: "duplicate known last", findings: []alert.Finding{unknown, a}, want: shaA},
+		{name: "reset with unknown", previous: []alert.Finding{a}, findings: []alert.Finding{unknown}, want: shaA},
+		{name: "reset with new content", previous: []alert.Finding{a}, findings: []alert.Finding{b}, want: shaB},
+		{name: "new content before unknown", previous: []alert.Finding{a}, findings: []alert.Finding{b, unknown}, want: shaB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestStore(t)
+			s.SetBaseline(tc.previous)
+			s.SetBaseline(tc.findings)
+			e, ok := s.EntryForKey(a.Key())
+			if !ok || !e.IsBaseline || e.ContentSHA256 != tc.want {
+				t.Fatalf("baseline = %+v, present %v; want content %q", e, ok, tc.want)
+			}
+			changed := a
+			if tc.want == shaA {
+				changed = b
+			}
+			s.ReconcileDismissedContent([]alert.Finding{changed})
+			if len(s.FilterNew([]alert.Finding{changed})) != 1 {
+				t.Fatal("changed content was silently adopted instead of alerting")
+			}
+		})
+	}
+}
+
+func TestReconcileIgnoresCarriedContent(t *testing.T) {
+	for _, tc := range []struct{ name, recorded string }{
+		{name: "legacy"},
+		{name: "known", recorded: shaB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestStore(t)
+			s.SetBaseline([]alert.Finding{contentFinding("yara_match_scheduled", tc.recorded)})
+			carried := contentFinding("yara_match_scheduled", shaA)
+			carried.ScanCarryForward = true
+
+			s.ReconcileDismissedContent([]alert.Finding{carried})
+
+			e, ok := s.EntryForKey(carried.Key())
+			if !ok || !e.IsBaseline || e.ContentSHA256 != tc.recorded {
+				t.Fatalf("baseline = %+v, present %v; an unexamined snapshot must not adopt or revoke content", e, ok)
+			}
+			if s.dirty {
+				t.Fatal("ignored snapshot dirtied the saved baseline")
+			}
+		})
+	}
+}
+
 func TestReconcileRevokesBaselineOnChangedContent(t *testing.T) {
 	// suspicious_php_content keeps Details identical: a rewrite that keeps
 	// size and mtime yields the same Key and Fingerprint, only new bytes.
@@ -57,15 +127,25 @@ func TestReconcileKeepsBaselineOnSameContent(t *testing.T) {
 }
 
 func TestReconcileIgnoresEmptyContent(t *testing.T) {
-	s := openTestStore(t)
-	a := contentFinding("yara_match_scheduled", shaA)
-	s.SetBaseline([]alert.Finding{a})
+	for _, tc := range []struct{ name, content string }{
+		{name: "legacy"},
+		{name: "known", content: shaA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTestStore(t)
+			a := contentFinding("yara_match_scheduled", tc.content)
+			s.SetBaseline([]alert.Finding{a})
 
-	s.ReconcileDismissedContent([]alert.Finding{contentFinding("yara_match_scheduled", "")})
+			s.ReconcileDismissedContent([]alert.Finding{contentFinding("yara_match_scheduled", "")})
 
-	e, ok := s.EntryForKey(a.Key())
-	if !ok || !e.IsBaseline || e.ContentSHA256 != shaA {
-		t.Fatalf("entry = %+v, ok %v; an unknown hash must not revoke or overwrite", e, ok)
+			e, ok := s.EntryForKey(a.Key())
+			if !ok || !e.IsBaseline || e.ContentSHA256 != tc.content {
+				t.Fatalf("entry = %+v, ok %v; an unknown hash must not revoke or overwrite", e, ok)
+			}
+			if s.dirty {
+				t.Fatal("unknown content dirtied the saved baseline")
+			}
+		})
 	}
 }
 
@@ -117,8 +197,53 @@ func TestRevokedDismissalIsOfferedForDelivery(t *testing.T) {
 
 	s.ReconcileDismissedContent([]alert.Finding{b})
 
-	if eligible, _ := s.BeginDelivery([]alert.Finding{b}); len(eligible) != 1 {
+	if _, ok := s.EntryForKey(b.Key()); ok {
+		t.Fatal("revocation retained the old alert and delivery receipts")
+	}
+	eligible, finish = s.BeginDelivery([]alert.Finding{b})
+	defer finish(nil)
+	if len(eligible) != 1 {
 		t.Fatalf("changed content must be offered to email, got %d", len(eligible))
+	}
+}
+
+func TestRevocationInvalidatesPendingDelivery(t *testing.T) {
+	s := openTestStore(t)
+	a, b := contentFinding("yara_match_scheduled", shaA), contentFinding("yara_match_scheduled", shaB)
+	s.Update([]alert.Finding{a})
+	pending, finishOld := s.BeginDelivery([]alert.Finding{a})
+	defer finishOld(nil)
+	if len(pending) != 1 {
+		t.Fatal("first delivery not selected")
+	}
+	s.SetLatestFindings([]alert.Finding{a})
+	undo := s.DismissFindingWithUndo(a.Key())
+	s.ReconcileDismissedContent([]alert.Finding{a})
+	s.ReconcileDismissedContent([]alert.Finding{b})
+	if s.UndoDismiss(undo) {
+		t.Fatal("old undo restored a revoked dismissal")
+	}
+
+	returned, finishNew := s.BeginDelivery([]alert.Finding{b})
+	defer finishNew(nil)
+	if len(returned) != 1 {
+		t.Fatal("old delivery blocked changed content")
+	}
+	finishOld(pending)
+	if e, _ := s.EntryForKey(b.Key()); e.Emailed != "" {
+		t.Fatal("old completion marked changed content delivered")
+	}
+	overlap, finishOverlap := s.BeginDelivery([]alert.Finding{b})
+	finishOverlap(nil)
+	if len(overlap) != 0 {
+		t.Fatal("old completion released the new delivery reservation")
+	}
+	finishNew(returned)
+	if len(offered(s, b)) != 0 {
+		t.Fatal("new delivery receipt was lost")
+	}
+	if len(s.emailPending) != 0 {
+		t.Fatal("completed deliveries left pending reservations")
 	}
 }
 
@@ -135,44 +260,74 @@ func TestReconcileRevokesWhenBatchCarriesTwoContents(t *testing.T) {
 }
 
 func TestResolutionStartedBeforeRevocationKeepsNewDetection(t *testing.T) {
-	s := openTestStore(t)
-	a, b := contentFinding("yara_match_scheduled", shaA), contentFinding("yara_match_scheduled", shaB)
-	s.SetBaseline([]alert.Finding{a})
-	s.SetLatestFindings([]alert.Finding{a})
-	resolve := s.PrepareFindingResolution(a)
+	for _, recreate := range []bool{false, true} {
+		name := "deleted"
+		if recreate {
+			name = "recreated"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := openTestStore(t)
+			a, b := contentFinding("yara_match_scheduled", shaA), contentFinding("yara_match_scheduled", shaB)
+			s.SetBaseline([]alert.Finding{a})
+			s.SetLatestFindings([]alert.Finding{a})
+			resolve := s.PrepareFindingResolution(a)
 
-	s.ReconcileDismissedContent([]alert.Finding{b})
-	s.Update([]alert.Finding{b})
-	s.SetLatestFindings([]alert.Finding{b})
-
-	if resolve() {
-		t.Fatal("a resolution started before the revocation must not clear the new detection")
-	}
-	e, ok := s.EntryForKey(b.Key())
-	if !ok || e.IsBaseline {
-		t.Fatalf("entry = %+v, ok %v; want an active entry", e, ok)
+			s.ReconcileDismissedContent([]alert.Finding{b})
+			if recreate {
+				eligible, finish := s.BeginDelivery([]alert.Finding{b})
+				defer finish(nil)
+				if len(eligible) != 1 {
+					t.Fatal("changed content was not offered for delivery")
+				}
+			}
+			// Keep the listing and observation unchanged so rejection cannot
+			// rely on Update or the latest merge having recorded B.
+			if resolve() {
+				t.Fatal("a resolution started before revocation must be rejected")
+			}
+			e, ok := s.EntryForKey(b.Key())
+			if ok != recreate || e.IsBaseline {
+				t.Fatalf("entry = %+v, ok %v; want present %v without a baseline", e, ok, recreate)
+			}
+			if len(s.LatestFindings()) != 1 {
+				t.Fatal("old resolution removed the listing")
+			}
+		})
 	}
 }
 
 func TestDismissedContentSurvivesReopen(t *testing.T) {
-	dir := t.TempDir()
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	a := contentFinding("yara_match_scheduled", shaA)
-	s.SetBaseline([]alert.Finding{a})
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	for _, operation := range []string{"baseline", "adoption", "revocation"} {
+		t.Run(operation, func(t *testing.T) {
+			s := openTestStore(t)
+			a := contentFinding("yara_match_scheduled", shaA)
+			if operation == "adoption" {
+				s.SetBaseline([]alert.Finding{contentFinding(a.Check, "")})
+				s.ReconcileDismissedContent([]alert.Finding{a})
+			} else {
+				s.SetBaseline([]alert.Finding{a})
+			}
+			if operation == "revocation" {
+				s.ReconcileDismissedContent([]alert.Finding{contentFinding(a.Check, shaB)})
+			}
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
 
-	s, err = Open(dir)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	if e, _ := s.EntryForKey(a.Key()); e.ContentSHA256 != shaA {
-		t.Fatalf("recorded content after reopen = %q, want A", e.ContentSHA256)
+			reopened, err := Open(s.path)
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			t.Cleanup(func() { _ = reopened.Close() })
+			e, ok := reopened.EntryForKey(a.Key())
+			if operation == "revocation" {
+				if ok || len(reopened.FilterNew([]alert.Finding{a})) != 1 {
+					t.Fatal("revoked dismissal returned after reopen")
+				}
+			} else if !ok || !e.IsBaseline || e.ContentSHA256 != shaA {
+				t.Fatalf("entry after reopen = %+v, present %v; want baseline with content A", e, ok)
+			}
+		})
 	}
 }
 
