@@ -208,9 +208,12 @@ func TestCheckOutboundEmailContentWithSpool(t *testing.T) {
 	if findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil); len(findings) != 0 {
 		t.Fatalf("findings = %+v, want none for a delivered message", findings)
 	}
-	var want []string
-	for _, dir := range eximSpoolMessageDirs(msgID) {
-		want = append(want, filepath.Join(dir, msgID+"-H"))
+	// Keep the expected layouts independent of the helper being exercised.
+	want := []string{
+		"/var/spool/exim/input/B/" + msgID + "-H",
+		"/var/spool/exim/input/" + msgID + "-H",
+		"/var/spool/exim4/input/B/" + msgID + "-H",
+		"/var/spool/exim4/input/" + msgID + "-H",
 	}
 	if !slices.Equal(lookups, want) {
 		t.Errorf("spool lookups = %v, want every layout %v", lookups, want)

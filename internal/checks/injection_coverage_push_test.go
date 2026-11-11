@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
@@ -216,39 +218,72 @@ func TestCheckCpanelFileManagerWithLog(t *testing.T) {
 
 // --- CheckOutboundEmailContent with spool files ----------------------
 
-// A mailbox user sends ordinary mail. The check reads that message's spool
-// header and reports nothing, because the mail carries no indicator.
+// A mailbox user's ordinary mail stays quiet, but phishing in its body must
+// be reported even when the headers carry no indicator.
 func TestCheckOutboundEmailContentWithFiles(t *testing.T) {
 	const msgID = "1vOutA-000001-AB"
+	const spoolMessage = "/var/spool/exim/input/A/" + msgID
 	logPath := filepath.Join(t.TempDir(), "exim_mainlog")
 	line := "2026-11-09 10:00:00 " + msgID + " <= alice@example.com H=(client) [203.0.113.9]:4000 P=esmtpsa A=dovecot_login:alice@example.com S=900 T=\"Normal email\" for bob@example.net\n"
 	if err := os.WriteFile(logPath, []byte(line), 0600); err != nil {
 		t.Fatal(err)
 	}
-	headerReads := 0
-	withMockOS(t, &mockOS{
-		open: func(name string) (*os.File, error) {
-			if name == platform.EximMainLog {
-				return os.Open(logPath)
-			}
-			return nil, os.ErrNotExist
-		},
-		readFile: func(name string) ([]byte, error) {
-			if strings.HasSuffix(name, msgID+"-H") {
-				headerReads++
-				return []byte("From: alice@example.com\nSubject: Normal email\n"), nil
-			}
-			return nil, os.ErrNotExist
-		},
-		stat: func(name string) (os.FileInfo, error) {
-			return fakeFileInfo{name: filepath.Base(name), size: 500}, nil
-		},
-	})
+	for _, tc := range []struct {
+		name, body string
+		want       int
+	}{
+		{"ordinary", "Hello Bob, here are the meeting notes.", 0},
+		{"phishing body", "Verify your account. Confirm your identity at https://example.org/redirect?url=https://example.net/", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reads []string
+			withMockOS(t, &mockOS{
+				open: func(name string) (*os.File, error) {
+					if name == platform.EximMainLog {
+						return os.Open(logPath)
+					}
+					return nil, os.ErrNotExist
+				},
+				readFile: func(name string) ([]byte, error) {
+					reads = append(reads, name)
+					switch name {
+					case spoolMessage + "-H":
+						return []byte("From: alice@example.com\nSubject: Normal email\n"), nil
+					case spoolMessage + "-D":
+						return []byte(msgID + "-D\n" + tc.body), nil
+					}
+					return nil, os.ErrNotExist
+				},
+				stat: func(name string) (os.FileInfo, error) {
+					if name == spoolMessage+"-H" {
+						return fakeFileInfo{name: filepath.Base(name), size: 500}, nil
+					}
+					return nil, os.ErrNotExist
+				},
+			})
 
-	if findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil); len(findings) != 0 {
-		t.Fatalf("findings = %+v, want none for ordinary mail", findings)
-	}
-	if headerReads != 1 {
-		t.Errorf("header reads = %d, want 1: the outbound message must be scanned", headerReads)
+			findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil)
+			if want := []string{spoolMessage + "-H", spoolMessage + "-D"}; !slices.Equal(reads, want) {
+				t.Errorf("spool reads = %v, want %v", reads, want)
+			}
+			if len(findings) != tc.want {
+				t.Fatalf("findings = %+v, want %d", findings, tc.want)
+			}
+			if tc.want == 0 {
+				return
+			}
+			f := findings[0]
+			if f.Check != "email_phishing_content" || f.Severity != alert.High {
+				t.Errorf("finding = %+v, want a high-severity outbound phishing finding", f)
+			}
+			if f.Mailbox != "alice@example.com" || f.Domain != "example.com" || !strings.Contains(f.Message, msgID) {
+				t.Errorf("finding lost the outbound message identity: %+v", f)
+			}
+			for _, indicator := range []string{"phishing URL pattern: /redirect?url=", "credential harvesting language"} {
+				if !strings.Contains(f.Details, indicator) {
+					t.Errorf("details = %q, want body indicator %q", f.Details, indicator)
+				}
+			}
+		})
 	}
 }
