@@ -9,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -77,19 +78,89 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 		}
 	}
 
-	rec, err := backend.suspend(c)
+	applied, err := backend.suspend(c)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not stop %s: %v\n", stamp, c.Subject, err)
+		if c.Evidence == evidenceLogin {
+			return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{}, err)}
+		}
 		return false, nil
 	}
-	rec.ID, rec.Backend, rec.Subject = id, backend.name(), c.Subject
-	rec.Check, rec.Reason, rec.SuspendedAt = c.Check, c.Reason, now
+	rec := store.MailboxSuspension{
+		ID:          id,
+		Backend:     backend.name(),
+		Subject:     c.Subject,
+		Kind:        applied.Kind,
+		Account:     applied.Account,
+		Applied:     applied.Applied,
+		Check:       c.Check,
+		Reason:      c.Reason,
+		SuspendedAt: now,
+	}
 	if db != nil {
 		if err := db.PutMailboxSuspension(rec); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: recording suspension of %s: %v\n", stamp, c.Subject, err)
 		}
 	}
+	if c.Evidence == evidenceLogin {
+		return true, []alert.Finding{loginResponseFinding(c, rec, nil)}
+	}
 	return true, nil
+}
+
+// loginResponseFinding tells staff what CSM did about a cracked password and
+// what they still have to do. Sending triggers need none: their own finding
+// already says the mailbox is suspended.
+func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err error) alert.Finding {
+	mailbox, domain, tenant := splitMailAccount(c.Subject)
+	f := alert.Finding{
+		Severity:  alert.Critical,
+		Check:     "email_mailbox_response",
+		Mailbox:   mailbox,
+		Domain:    domain,
+		TenantID:  tenant,
+		Timestamp: time.Now(),
+	}
+	switch {
+	case err != nil:
+		f.Message = fmt.Sprintf("Could not suspend %s after its password was cracked: %v", c.Subject, err)
+		f.Details = "The account can still log in and send. Change its password now."
+	case rec.Kind == store.SuspensionKindAccount:
+		f.Message = fmt.Sprintf("Outgoing mail held for cPanel account %s after its own password was cracked", rec.Account)
+		f.Details = "That password unlocks every mailbox and the cPanel login. Change the cPanel password, then release the hold on the Email page, Suspended tab."
+	default:
+		f.Message = fmt.Sprintf("Mailbox %s suspended after its password was cracked", c.Subject)
+		f.Details = "Logins and outgoing mail are stopped. Have the customer change the mailbox password, then release it on the Email page, Suspended tab."
+	}
+	return f
+}
+
+// hostHasMailBackend reports whether this host has a mail server CSM can
+// suspend accounts on. var so tests can stand in for a cPanel host.
+var hostHasMailBackend = func() bool { return platform.Detect().IsCPanel() }
+
+// stolenLoginResponses suspends the mailbox behind each Critical login after
+// brute force. High findings (an established multi-mailbox source, spray
+// advisories) stay alert-only.
+func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+	var out []alert.Finding
+	for _, f := range findings {
+		if f.Check != "mail_account_compromised" || f.Severity != alert.Critical {
+			continue
+		}
+		subject := f.Mailbox
+		if subject == "" {
+			subject = f.TenantID
+		}
+		if subject == "" || !hostHasMailBackend() {
+			continue
+		}
+		_, response := respondToCompromise(cfg, mailboxCompromise{
+			Subject: subject, Check: f.Check, Reason: f.Message, Evidence: evidenceLogin, At: f.Timestamp,
+		})
+		out = append(out, response...)
+	}
+	return out
 }
 
 // dryRunMailOp names the operation a dry run would have performed.
