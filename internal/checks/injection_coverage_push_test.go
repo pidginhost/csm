@@ -3,10 +3,12 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -214,24 +216,39 @@ func TestCheckCpanelFileManagerWithLog(t *testing.T) {
 
 // --- CheckOutboundEmailContent with spool files ----------------------
 
+// A mailbox user sends ordinary mail. The check reads that message's spool
+// header and reports nothing, because the mail carries no indicator.
 func TestCheckOutboundEmailContentWithFiles(t *testing.T) {
+	const msgID = "1vOutA-000001-AB"
+	logPath := filepath.Join(t.TempDir(), "exim_mainlog")
+	line := "2026-11-09 10:00:00 " + msgID + " <= alice@example.com H=(client) [203.0.113.9]:4000 P=esmtpsa A=dovecot_login:alice@example.com S=900 T=\"Normal email\" for bob@example.net\n"
+	if err := os.WriteFile(logPath, []byte(line), 0600); err != nil {
+		t.Fatal(err)
+	}
+	headerReads := 0
 	withMockOS(t, &mockOS{
-		readDir: func(name string) ([]os.DirEntry, error) {
-			if strings.Contains(name, "input") {
-				return []os.DirEntry{testDirEntry{name: "ABC123-H", isDir: false}}, nil
+		open: func(name string) (*os.File, error) {
+			if name == platform.EximMainLog {
+				return os.Open(logPath)
 			}
 			return nil, os.ErrNotExist
 		},
 		readFile: func(name string) ([]byte, error) {
-			if strings.HasSuffix(name, "-H") {
+			if strings.HasSuffix(name, msgID+"-H") {
+				headerReads++
 				return []byte("From: alice@example.com\nSubject: Normal email\n"), nil
 			}
 			return nil, os.ErrNotExist
 		},
 		stat: func(name string) (os.FileInfo, error) {
-			return fakeFileInfo{name: "ABC123-H", size: 500}, nil
+			return fakeFileInfo{name: filepath.Base(name), size: 500}, nil
 		},
 	})
 
-	_ = CheckOutboundEmailContent(context.Background(), &config.Config{}, nil)
+	if findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("findings = %+v, want none for ordinary mail", findings)
+	}
+	if headerReads != 1 {
+		t.Errorf("header reads = %d, want 1: the outbound message must be scanned", headerReads)
+	}
 }
