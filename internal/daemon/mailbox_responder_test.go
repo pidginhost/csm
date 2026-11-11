@@ -73,21 +73,66 @@ func TestRespondToCompromise_RecordsMailboxSuspension(t *testing.T) {
 func TestRespondToCompromise_SkipsActiveRecord(t *testing.T) {
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	calls := stubUAPI(t, func(args []string) ([]byte, error) {
+		if uapiFn(args) == "list_pops_with_disk" {
+			return listPopsReply(`{"email":"real@victim.example","suspended_login":1,"suspended_outgoing":1}`)
+		}
+		return uapiOK()
+	})
 	stubAccountHold(t, true)
 	captureActionRecords(t)
 
 	respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
-	stopped, _ := respondToCompromise(eximAutoHoldConfig(), mailboxCompromise{
+	stopped, findings := respondToCompromise(eximAutoHoldConfig(), mailboxCompromise{
 		Subject: "Real@Victim.example", Check: "mail_account_compromised", Reason: "again", Evidence: evidenceLogin, At: time.Now(),
 	})
-	if !stopped {
-		t.Fatal("an already suspended mailbox is stopped")
+	if !stopped || len(findings) != 0 {
+		t.Fatalf("stopped = %v, findings = %+v; an already suspended mailbox is stopped without a new finding", stopped, findings)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("second trigger must not call uapi again, calls = %v", *calls)
+	if got := uapiFns(*calls); !reflect.DeepEqual(got, []string{"suspend_login", "suspend_outgoing", "list_pops_with_disk"}) {
+		t.Fatalf("uapi calls = %v; a mailbox cPanel still reports suspended must not be suspended again", got)
 	}
 	onlySuspension(t, db)
+}
+
+// A row CSM believes active, but cPanel no longer suspends (released outside
+// CSM) or cannot report on, must not stop a new response.
+func TestRespondToCompromise_StaleActiveRecordResuspends(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		list func() ([]byte, error)
+	}{
+		{"released in cPanel", func() ([]byte, error) {
+			return listPopsReply(`{"email":"real@victim.example","suspended_login":0,"suspended_outgoing":"0"}`)
+		}},
+		{"status unreadable", func() ([]byte, error) { return uapiFailure("timeout") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := withMailboxStore(t)
+			withUserdomains(t, "victim.example: cpuser\n")
+			calls := stubUAPI(t, func(args []string) ([]byte, error) {
+				if uapiFn(args) == "list_pops_with_disk" {
+					return tc.list()
+				}
+				return uapiOK()
+			})
+			stubAccountHold(t, true)
+			captureActionRecords(t)
+
+			respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now().Add(-time.Hour)))
+			stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
+			if !stopped {
+				t.Fatal("the mailbox must be suspended again")
+			}
+			want := []string{"suspend_login", "suspend_outgoing", "list_pops_with_disk", "suspend_login", "suspend_outgoing"}
+			if got := uapiFns(*calls); !reflect.DeepEqual(got, want) {
+				t.Fatalf("uapi calls = %v, want %v", got, want)
+			}
+			if row := onlySuspension(t, db); row.ReleasedAt != nil {
+				t.Fatalf("re-suspended row is released: %+v", row)
+			}
+		})
+	}
 }
 
 func TestRespondToCompromise_ReleasedNeedsNewerEvidence(t *testing.T) {
@@ -412,5 +457,283 @@ func TestStolenLoginResponses_NoMailBackendOnHost(t *testing.T) {
 
 	if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}); len(got) != 0 || len(*calls) != 0 {
 		t.Fatalf("host without a mail backend acted: findings %+v, uapi %v", got, *calls)
+	}
+}
+
+func uapiFn(args []string) string {
+	if len(args) > 3 {
+		return args[3]
+	}
+	return ""
+}
+
+func uapiFns(calls [][]string) []string {
+	var out []string
+	for _, c := range calls {
+		out = append(out, uapiFn(c))
+	}
+	return out
+}
+
+func listPopsReply(entries ...string) ([]byte, error) {
+	return []byte(`{"apiversion":3,"func":"list_pops_with_disk","module":"Email","result":{"data":[` +
+		strings.Join(entries, ",") + `],"errors":null,"messages":null,"metadata":{},"status":1,"warnings":null}}`), nil
+}
+
+func cpanelRow(subject string, applied ...string) store.MailboxSuspension {
+	kind := store.SuspensionKindMailbox
+	if len(applied) == 1 && applied[0] == store.AppliedHoldOutgoing {
+		kind = store.SuspensionKindAccount
+	}
+	return store.MailboxSuspension{
+		ID: store.MailboxSuspensionID("cpanel", subject), Backend: "cpanel", Subject: subject, Kind: kind,
+		Account: "cpuser", Applied: applied, Check: "mail_account_compromised", Reason: "test",
+		SuspendedAt: time.Now().Add(-time.Hour).UTC().Truncate(time.Second),
+	}
+}
+
+func putRows(t *testing.T, db *store.DB, rows ...store.MailboxSuspension) {
+	t.Helper()
+	for _, r := range rows {
+		if err := db.PutMailboxSuspension(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func storedRow(t *testing.T, db *store.DB, id string) store.MailboxSuspension {
+	t.Helper()
+	row, ok, err := db.GetMailboxSuspension(id)
+	if err != nil || !ok {
+		t.Fatalf("row %s: ok %v, err %v", id, ok, err)
+	}
+	return row
+}
+
+// stubWHMRelease replaces the whmapi1 account release and returns its users.
+func stubWHMRelease(t *testing.T, err error) *[]string {
+	t.Helper()
+	users := &[]string{}
+	prev := whmapi1ReleaseExec
+	whmapi1ReleaseExec = func(user string) ([]byte, error) {
+		*users = append(*users, user)
+		return nil, err
+	}
+	t.Cleanup(func() { whmapi1ReleaseExec = prev })
+	return users
+}
+
+func withHoldUsers(t *testing.T, users ...string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "outgoing_mail_hold_users")
+	if err := os.WriteFile(path, []byte(strings.Join(users, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := outgoingMailHoldUsersPath
+	outgoingMailHoldUsersPath = path
+	t.Cleanup(func() { outgoingMailHoldUsersPath = prev })
+}
+
+func TestReleaseMailboxSuspension_UndoesAppliedInReverse(t *testing.T) {
+	db := withMailboxStore(t)
+	subject := "a+b%c d@victim.example"
+	row := cpanelRow(subject, store.AppliedSuspendLogin, store.AppliedSuspendOutgoing)
+	putRows(t, db, row)
+	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	sink := captureActionRecords(t)
+
+	if err := releaseMailboxSuspension(row.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := uapiFns(*calls); !reflect.DeepEqual(got, []string{"unsuspend_outgoing", "unsuspend_login"}) {
+		t.Fatalf("uapi calls = %v, want the applied parts undone in reverse", got)
+	}
+	for _, c := range *calls {
+		if c[1] != "--user=cpuser" || c[4] != "email="+uapiValue(subject) || uapiDecoded(t, c[4]) != "email="+subject {
+			t.Fatalf("uapi args = %v", c)
+		}
+	}
+	got := storedRow(t, db, row.ID)
+	if got.ReleasedAt == nil || got.ReleasedBy != "admin" {
+		t.Fatalf("row not released by admin: %+v", got)
+	}
+	if len(sink.records) != 2 {
+		t.Fatalf("records = %+v, want one per undone part", sink.records)
+	}
+	for i, want := range []string{"unsuspend_outgoing", "unsuspend_login"} {
+		rec := sink.records[i]
+		if rec.Op != "operate.release_mailbox" || rec.Action != want || rec.Actor != actionlog.WebUI ||
+			rec.ActorDetail != "admin" || rec.Target != subject || rec.Account != "cpuser" || rec.Result != actionlog.Applied {
+			t.Errorf("record %d = %+v", i, rec)
+		}
+	}
+}
+
+func TestReleaseMailboxSuspension_AccountHold(t *testing.T) {
+	db := withMailboxStore(t)
+	row := cpanelRow("victim.example", store.AppliedHoldOutgoing)
+	putRows(t, db, row)
+	users := stubWHMRelease(t, nil)
+	sink := captureActionRecords(t)
+
+	if err := releaseMailboxSuspension(row.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(*users, []string{"cpuser"}) {
+		t.Fatalf("whmapi1 releases = %v", *users)
+	}
+	if !recentOutgoingMailHold("victim.example") {
+		t.Fatal("the spam-outbreak governor must not re-hold the domain right after a release")
+	}
+	if len(sink.records) != 1 || sink.records[0].Op != "operate.release_mailbox" || sink.records[0].Action != "release_outgoing_email" {
+		t.Fatalf("records = %+v", sink.records)
+	}
+}
+
+func TestReleaseMailboxSuspension_PartialFailureKeepsRow(t *testing.T) {
+	db := withMailboxStore(t)
+	row := cpanelRow("real@victim.example", store.AppliedSuspendLogin, store.AppliedSuspendOutgoing)
+	putRows(t, db, row)
+	stubUAPI(t, func(args []string) ([]byte, error) {
+		if uapiFn(args) == "unsuspend_login" {
+			return uapiFailure("busy")
+		}
+		return uapiOK()
+	})
+	captureActionRecords(t)
+
+	if err := releaseMailboxSuspension(row.ID, "admin"); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("err = %v, want the failed unsuspend", err)
+	}
+	if got := storedRow(t, db, row.ID); got.ReleasedAt != nil {
+		t.Fatalf("a half-released row was marked released: %+v", got)
+	}
+	stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	if err := releaseMailboxSuspension(row.ID, "admin"); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got := storedRow(t, db, row.ID); got.ReleasedAt == nil {
+		t.Fatalf("retry did not release: %+v", got)
+	}
+}
+
+func TestReleaseMailboxSuspension_UnknownAndReleased(t *testing.T) {
+	db := withMailboxStore(t)
+	row := cpanelRow("real@victim.example", store.AppliedSuspendLogin)
+	putRows(t, db, row)
+	stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	captureActionRecords(t)
+
+	if err := releaseMailboxSuspension(store.MailboxSuspensionID("cpanel", "nobody@victim.example"), "admin"); !errors.Is(err, store.ErrMailboxSuspensionNotFound) {
+		t.Fatalf("unknown: err = %v", err)
+	}
+	if err := releaseMailboxSuspension(row.ID, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := releaseMailboxSuspension(row.ID, "admin"); !errors.Is(err, errSuspensionAlreadyReleased) {
+		t.Fatalf("second release: err = %v", err)
+	}
+}
+
+func TestListMailboxSuspensions_LiveStatus(t *testing.T) {
+	db := withMailboxStore(t)
+	withHoldUsers(t, "cpuser")
+	active := cpanelRow("Real@Victim.example", store.AppliedSuspendLogin, store.AppliedSuspendOutgoing)
+	cleared := cpanelRow("other@victim.example", store.AppliedSuspendLogin, store.AppliedSuspendOutgoing)
+	hold := cpanelRow("victim.example", store.AppliedHoldOutgoing)
+	released := cpanelRow("old@victim.example", store.AppliedSuspendLogin)
+	at := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	released.ReleasedAt, released.ReleasedBy = &at, "admin"
+	putRows(t, db, active, cleared, hold, released)
+	calls := stubUAPI(t, func([]string) ([]byte, error) {
+		return listPopsReply(
+			`{"email":"real@victim.example","suspended_login":1,"suspended_outgoing":"0"}`,
+			`{"email":"other@victim.example","suspended_login":"0","suspended_outgoing":0}`)
+	})
+
+	rows, err := listMailboxSuspensions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := uapiFns(*calls); !reflect.DeepEqual(got, []string{"list_pops_with_disk"}) {
+		t.Fatalf("uapi calls = %v, want one status read for the account", got)
+	}
+	if args := (*calls)[0]; args[1] != "--user=cpuser" || args[len(args)-1] != "get_restrictions=1" {
+		t.Fatalf("status read args = %v", args)
+	}
+	byID := map[string]mailboxSuspensionStatus{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	if len(byID) != 4 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if r := byID[active.ID]; !r.Active || r.StatusUnknown || r.ReleasedAt != nil {
+		t.Errorf("active row = %+v", r)
+	}
+	if r := byID[hold.ID]; !r.Active {
+		t.Errorf("hold row = %+v", r)
+	}
+	if r := byID[cleared.ID]; r.Active || r.ReleasedAt == nil || r.ReleasedBy != "outside CSM" {
+		t.Errorf("cleared row = %+v, want released outside CSM", r)
+	}
+	if got := storedRow(t, db, cleared.ID); got.ReleasedBy != "outside CSM" {
+		t.Errorf("stored cleared row = %+v", got)
+	}
+	if r := byID[released.ID]; r.Active || r.ReleasedBy != "admin" {
+		t.Errorf("released row = %+v", r)
+	}
+}
+
+func TestListMailboxSuspensions_StatusErrorKeepsRows(t *testing.T) {
+	db := withMailboxStore(t)
+	row := cpanelRow("real@victim.example", store.AppliedSuspendLogin)
+	putRows(t, db, row)
+	stubUAPI(t, func([]string) ([]byte, error) { return uapiFailure("timeout") })
+
+	rows, err := listMailboxSuspensions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !rows[0].StatusUnknown || rows[0].Active {
+		t.Fatalf("rows = %+v, want one with unknown status", rows)
+	}
+	if got := storedRow(t, db, row.ID); got.ReleasedAt != nil {
+		t.Fatalf("an unreadable status released the row: %+v", got)
+	}
+}
+
+// Login evidence never reaches the domain-wide hold: cPanel's alternative
+// login separators name a mailbox, and any other dotted name is refused.
+func TestStolenLoginResponses_LoginNamesNeverHoldADomain(t *testing.T) {
+	db := withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withUserdomains(t, "victim.example: cpuser\n")
+	withCPanelUsers(t, "cpuser")
+	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	holds := stubAccountHold(t, true)
+	users := stubCPanelHold(t, true)
+	captureActionRecords(t)
+
+	for _, name := range []string{"real+victim.example", "real%victim.example"} {
+		*calls = nil
+		f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin(name, alert.Critical)}))
+		if !reflect.DeepEqual(*calls, [][]string{uapiArgs("suspend_login"), uapiArgs("suspend_outgoing")}) {
+			t.Fatalf("%s: uapi calls = %v, want the mailbox real@victim.example suspended", name, *calls)
+		}
+		if f.Message != "Mailbox real@victim.example suspended after its password was cracked" {
+			t.Fatalf("%s: finding = %+v", name, f)
+		}
+		if err := db.MarkMailboxSuspensionReleased(store.MailboxSuspensionID("cpanel", "real@victim.example"), time.Now(), "admin"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	*calls = nil
+	f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("victim.example", alert.Critical)}))
+	if !strings.HasPrefix(f.Message, "Could not suspend victim.example") {
+		t.Fatalf("dotted login name: finding = %+v", f)
+	}
+	if len(*holds) != 0 || len(*users) != 0 || len(*calls) != 0 {
+		t.Fatalf("dotted login name reached a hold: holds %v %v, uapi %v", *holds, *users, *calls)
 	}
 }

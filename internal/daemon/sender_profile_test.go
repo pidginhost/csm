@@ -587,3 +587,29 @@ func TestSenderProfile_RepeatedRecipientIsStillIndividual(t *testing.T) {
 		}
 	})
 }
+
+func TestForgetSenderEvidence_StopsRetrigger(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(db *store.DB) {
+		cfg := cloudRelayTestConfig()
+		user := "user@example.com"
+		for i := 0; i < 5; i++ {
+			if got := sendAt(t, cfg, senderTestNow.Add(time.Duration(i)*90*time.Minute), user, fmt.Sprintf("203.0.113.%d", i+1), "a@example.net"); len(got) != 0 {
+				t.Fatalf("send %d: unexpected %+v", i+1, got)
+			}
+		}
+		forgetSenderEvidence(user, senderTestNow.Add(6*time.Hour+time.Minute))
+		profile, err := db.GetSenderProfile(user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if profile.Days[senderDayKey(senderTestNow)] != nil {
+			t.Fatalf("today's counts survived the release: %+v", profile.Days)
+		}
+		// Without the reset, this sixth address of the day raises a finding.
+		if got := sendAt(t, cfg, senderTestNow.Add(7*time.Hour+30*time.Minute), user, "203.0.113.6", "a@example.net"); len(got) != 0 {
+			t.Fatalf("sends from before the release triggered again: %+v", got)
+		}
+	})
+}

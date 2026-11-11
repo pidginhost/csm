@@ -945,6 +945,16 @@ var whmapi1HoldExec = func(user string) ([]byte, error) {
 	return exec.CommandContext(ctx, "whmapi1", "hold_outgoing_email", "user="+user).CombinedOutput()
 }
 
+// whmapi1ReleaseExec invokes `whmapi1 release_outgoing_email user=<user>`.
+// var so tests can replace it without spawning whmapi1.
+var whmapi1ReleaseExec = func(user string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// #nosec G204 -- whmapi1 is the cPanel API binary; user is the cPanel
+	// account a stored suspension names, validated when it was held.
+	return exec.CommandContext(ctx, "whmapi1", "release_outgoing_email", "user="+user).CombinedOutput()
+}
+
 // userOnOutgoingMailHold reports whether the cPanel user already appears
 // in /etc/outgoing_mail_hold_users. Used to short-circuit redundant
 // whmapi1 calls when exim re-emits "exceeded max defers/failures" every

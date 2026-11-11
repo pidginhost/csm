@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -70,7 +71,17 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 		case err != nil:
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: reading suspension record for %s: %v\n", stamp, c.Subject, err)
 		case ok && prev.ReleasedAt == nil:
-			return true, nil
+			// Trust the row only while the mail server agrees: a suspension
+			// lifted outside CSM, or one whose state cannot be read, must
+			// not stop a new response. Suspending again is idempotent.
+			live, statusErr := backend.active([]store.MailboxSuspension{prev})
+			still, known := live[prev.ID]
+			if known && still {
+				return true, nil
+			}
+			if statusErr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %v; suspending %s again\n", stamp, statusErr, c.Subject)
+			}
 		case ok && !c.At.After(*prev.ReleasedAt):
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s was released at %s, after this evidence; not suspending again\n",
 				stamp, c.Subject, prev.ReleasedAt.Format(time.RFC3339))
@@ -148,7 +159,7 @@ func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.
 		if f.Check != "mail_account_compromised" || f.Severity != alert.Critical {
 			continue
 		}
-		subject := f.Mailbox
+		subject := loginMailbox(f.Mailbox)
 		if subject == "" {
 			subject = f.TenantID
 		}
@@ -169,4 +180,118 @@ func dryRunMailOp(subject string) string {
 		return "respond.suspend_mailbox"
 	}
 	return "respond.hold_outgoing_mail"
+}
+
+// loginMailbox turns cPanel's alternative login forms, user+domain and
+// user%domain, into the mailbox address they name.
+func loginMailbox(name string) string {
+	if strings.Contains(name, "@") {
+		return name
+	}
+	if i := strings.LastIndexAny(name, "+%"); i > 0 && strings.Contains(name[i+1:], ".") {
+		return name[:i] + "@" + name[i+1:]
+	}
+	return name
+}
+
+// releasedOutsideCSM marks a suspension the mail server no longer applies,
+// lifted by someone outside CSM.
+const releasedOutsideCSM = "outside CSM"
+
+var errSuspensionAlreadyReleased = errors.New("mailbox suspension already released")
+
+// mailboxSuspensionStatus is a stored suspension with its live state.
+type mailboxSuspensionStatus struct {
+	store.MailboxSuspension
+	Active        bool
+	StatusUnknown bool
+}
+
+// listMailboxSuspensions returns every stored suspension with the mail
+// server's live state. One the server no longer applies is marked released
+// outside CSM; one whose state cannot be read stays as it was.
+func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
+	db := store.Global()
+	if db == nil {
+		return nil, errors.New("state store not open")
+	}
+	rows, err := db.ListMailboxSuspensions()
+	if err != nil {
+		return nil, err
+	}
+	var open []store.MailboxSuspension
+	for _, r := range rows {
+		if r.ReleasedAt == nil {
+			open = append(open, r)
+		}
+	}
+	live := map[string]bool{}
+	if len(open) > 0 {
+		var statusErr error
+		if live, statusErr = activeMailBackend.active(open); statusErr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] mailbox suspensions: %v\n", time.Now().Format("2006-01-02 15:04:05"), statusErr)
+		}
+	}
+	now := time.Now()
+	out := make([]mailboxSuspensionStatus, 0, len(rows))
+	for _, r := range rows {
+		st := mailboxSuspensionStatus{MailboxSuspension: r}
+		if r.ReleasedAt == nil {
+			active, known := live[r.ID]
+			switch {
+			case !known:
+				st.StatusUnknown = true
+			case active:
+				st.Active = true
+			default:
+				if err := db.MarkMailboxSuspensionReleased(r.ID, now, releasedOutsideCSM); err != nil {
+					st.StatusUnknown = true
+					break
+				}
+				at := now
+				st.ReleasedAt, st.ReleasedBy = &at, releasedOutsideCSM
+			}
+		}
+		out = append(out, st)
+	}
+	return out, nil
+}
+
+// releaseMailboxSuspension lifts a suspension CSM made, at an operator's
+// request, and forgets the sending evidence behind it so sends from before
+// the release cannot suspend the mailbox again.
+func releaseMailboxSuspension(id, actor string) error {
+	db := store.Global()
+	if db == nil {
+		return errors.New("state store not open")
+	}
+	rec, ok, err := db.GetMailboxSuspension(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", store.ErrMailboxSuspensionNotFound, id)
+	}
+	if rec.ReleasedAt != nil {
+		return errSuspensionAlreadyReleased
+	}
+	backend := activeMailBackend
+	if rec.Backend != backend.name() {
+		return fmt.Errorf("suspension was made through %s; this host uses %s", rec.Backend, backend.name())
+	}
+	if err := backend.release(rec, actor); err != nil {
+		return err
+	}
+	now := time.Now()
+	if err := db.MarkMailboxSuspensionReleased(id, now, actor); err != nil {
+		return err
+	}
+	forgetSenderEvidence(rec.Subject, now)
+	forgetCloudRelayEvidence(rec.Subject)
+	if !strings.Contains(rec.Subject, "@") && strings.Contains(rec.Subject, ".") {
+		// The spam-outbreak governor held this domain; restart its dedup
+		// window so the same blast does not hold it again at once.
+		recordRecentOutgoingMailHold(rec.Subject)
+	}
+	return nil
 }

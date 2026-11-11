@@ -332,6 +332,32 @@ func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason stri
 	}
 }
 
+// forgetSenderEvidence drops a released mailbox's sending evidence: its
+// rolling hour and today's counts. Sends from before a release must not
+// suspend the mailbox again.
+func forgetSenderEvidence(user string, now time.Time) {
+	db := store.Global()
+	w := lockSenderWindow(user, now)
+	defer w.mu.Unlock()
+	if (!w.loaded || w.db != db) && db != nil {
+		profile, err := db.GetSenderProfile(user)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: failed to load sender profile for %s: %v\n",
+				now.Format("2006-01-02 15:04:05"), user, err)
+		} else {
+			w.profile = profile
+			w.db, w.loaded, w.dayKey = db, true, ""
+		}
+	}
+	w.events, w.countries = nil, nil
+	w.firedAt, w.firedSeverity = time.Time{}, 0
+	if w.loaded {
+		delete(w.profile.Days, senderDayKey(now))
+		w.dirty = true
+		w.flush(user)
+	}
+}
+
 // senderEvictWindow is how long a per-user window may stay idle before it is
 // evicted: twice the rolling hour, so the dedup guard outlives the window.
 const senderEvictWindow = 2 * senderHourWindow

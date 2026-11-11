@@ -333,6 +333,12 @@ func handleCloudRelayCredentialAbuse(cfg *config.Config, authUser string) {
 	respondToMailboxCompromise(cfg, authUser, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses")
 }
 
+// forgetCloudRelayEvidence drops a released mailbox's cloud-relay window so
+// sends from before the release cannot trigger again.
+func forgetCloudRelayEvidence(user string) {
+	cloudRelayWindows.Delete(user)
+}
+
 func truncateIPList(ips []string, n int) []string {
 	if len(ips) <= n {
 		return ips
