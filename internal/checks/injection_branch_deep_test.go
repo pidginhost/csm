@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -248,26 +249,54 @@ func TestCheckDatabaseContentDeep(t *testing.T) {
 
 // --- CheckOutboundEmailContent with spool ----------------------------
 
+// A message sits in the spool but the Exim main log is unreadable. The check
+// scans only messages a recent outbound arrival names and never lists the
+// spool, which also holds inbound mail, so nothing is read or reported.
 func TestCheckOutboundEmailContentDeep(t *testing.T) {
+	logOpens := 0
+	var spoolAccess []string
 	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name == platform.EximMainLog {
+				logOpens++
+				return nil, os.ErrPermission
+			}
+			spoolAccess = append(spoolAccess, "open "+name)
+			return nil, os.ErrNotExist
+		},
+		glob: func(pattern string) ([]string, error) {
+			spoolAccess = append(spoolAccess, "glob "+pattern)
+			return nil, nil
+		},
 		readDir: func(name string) ([]os.DirEntry, error) {
+			spoolAccess = append(spoolAccess, "readdir "+name)
 			if strings.Contains(name, "input") {
 				return []os.DirEntry{testDirEntry{name: "ABC123-H", isDir: false}}, nil
 			}
 			return nil, os.ErrNotExist
 		},
 		readFile: func(name string) ([]byte, error) {
+			spoolAccess = append(spoolAccess, "read "+name)
 			if strings.HasSuffix(name, "-H") {
-				return []byte("From: spammer@example.com\nSubject: Buy now\nTo: victim@target.com\n\nPhishing content.\n"), nil
+				return []byte("From: spammer@example.com\nSubject: Buy now\nTo: victim@example.net\n\nPhishing content.\n"), nil
 			}
 			return nil, os.ErrNotExist
 		},
 		stat: func(name string) (os.FileInfo, error) {
+			spoolAccess = append(spoolAccess, "stat "+name)
 			return fakeFileInfo{name: "ABC123-H", size: 500}, nil
 		},
 	})
 
-	_ = CheckOutboundEmailContent(context.Background(), &config.Config{}, nil)
+	if findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("findings = %+v, want none without a log arrival", findings)
+	}
+	if logOpens != 1 {
+		t.Errorf("log opens = %d, want 1", logOpens)
+	}
+	if len(spoolAccess) != 0 {
+		t.Errorf("spool touched without a log arrival naming a message: %v", spoolAccess)
+	}
 }
 
 // --- AutoFixPermissions with fixable finding --------------------------

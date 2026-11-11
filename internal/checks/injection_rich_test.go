@@ -3,11 +3,14 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -170,8 +173,23 @@ func TestCheckFTPLoginsWithData(t *testing.T) {
 
 // --- CheckOutboundEmailContent with spool ----------------------------
 
+// The log names a local outbound message that already left the queue, so the
+// spool is empty. The check looks for it in every spool layout and stays quiet.
 func TestCheckOutboundEmailContentWithSpool(t *testing.T) {
+	const msgID = "1vOutB-000002-CD"
+	logPath := filepath.Join(t.TempDir(), "exim_mainlog")
+	line := "2026-11-09 10:00:01 " + msgID + " <= cpuser@example.com U=cpuser P=local S=700 T=\"Notice\" for bob@example.net\n"
+	if err := os.WriteFile(logPath, []byte(line), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var lookups []string
 	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name == platform.EximMainLog {
+				return os.Open(logPath)
+			}
+			return nil, os.ErrNotExist
+		},
 		readDir: func(name string) ([]os.DirEntry, error) {
 			if strings.Contains(name, "spool") || strings.Contains(name, "input") {
 				return nil, nil
@@ -181,10 +199,25 @@ func TestCheckOutboundEmailContentWithSpool(t *testing.T) {
 		glob: func(pattern string) ([]string, error) {
 			return nil, nil
 		},
+		stat: func(name string) (os.FileInfo, error) {
+			lookups = append(lookups, name)
+			return nil, os.ErrNotExist
+		},
 	})
 
-	findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil)
-	_ = findings
+	if findings := CheckOutboundEmailContent(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("findings = %+v, want none for a delivered message", findings)
+	}
+	// Keep the expected layouts independent of the helper being exercised.
+	want := []string{
+		"/var/spool/exim/input/B/" + msgID + "-H",
+		"/var/spool/exim/input/" + msgID + "-H",
+		"/var/spool/exim4/input/B/" + msgID + "-H",
+		"/var/spool/exim4/input/" + msgID + "-H",
+	}
+	if !slices.Equal(lookups, want) {
+		t.Errorf("spool lookups = %v, want every layout %v", lookups, want)
+	}
 }
 
 // --- AutoKillProcesses with findings ---------------------------------

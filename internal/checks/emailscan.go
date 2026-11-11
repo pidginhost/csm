@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/eximlog"
 	emime "github.com/pidginhost/csm/internal/mime"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -77,8 +78,8 @@ var emailBrandNames = []string{
 func CheckOutboundEmailContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// Read recent outbound messages from exim_mainlog
-	lines := tailFile("/var/log/exim_mainlog", 200)
+	// Read recent outbound messages from the Exim main log
+	lines := tailFile(platform.EximMainLog, 200)
 	if len(lines) == 0 {
 		return nil
 	}
