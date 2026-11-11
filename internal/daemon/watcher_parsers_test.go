@@ -176,6 +176,21 @@ func TestParseEximLogLine_CredentialLeakAfterEscapedQuote(t *testing.T) {
 	t.Fatal("credentials after an escaped quote in the subject raised no critical finding")
 }
 
+func TestParseEximLogLine_CredentialLeakNamesQuotedSender(t *testing.T) {
+	cfg := &config.Config{}
+	line := `2026-04-11 12:00:00 1abc23-000456-AB <= "first last"@example.com H=(h) [192.0.2.10]:5123 P=esmtpsa A=dovecot_login:user@example.com S=900 T="smtp.example.net:587,user@example.com,Secret1" for bob@example.net`
+
+	for _, f := range parseEximLogLine(line, cfg) {
+		if f.Check == "email_credential_leak" && strings.Contains(f.Message, "SMTP credentials leaked") {
+			if f.Domain != "example.com" || f.Mailbox != `"first last"@example.com` {
+				t.Fatalf("sender = mailbox %q domain %q, want the whole quoted sender", f.Mailbox, f.Domain)
+			}
+			return
+		}
+	}
+	t.Fatal("no critical credential leak finding")
+}
+
 func TestParseEximLogLine_DovecotAuthFailure(t *testing.T) {
 	cfg := &config.Config{}
 	line := `2026-04-11 12:00:00 dovecot_login authenticator failed for H=(mail.example.com) [198.51.100.40]:54321: 535 Incorrect authentication data (set_id=user@example.com)`

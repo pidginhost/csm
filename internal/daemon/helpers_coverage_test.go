@@ -556,18 +556,6 @@ func TestIsInfraIPDaemon_IPv6ExactNoMatch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractEximSender edge cases
-// ---------------------------------------------------------------------------
-
-func TestExtractEximSender_NoFieldsAfterMarker(t *testing.T) {
-	// " <= " at end of line with no further content.
-	line := "prefix <= "
-	if got := extractEximSender(line); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // parseCpanelSessionLogin edge cases
 // ---------------------------------------------------------------------------
 

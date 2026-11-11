@@ -424,12 +424,14 @@ func TestTopMailSendersWithLogFile(t *testing.T) {
 	const logPath = "/var/log/exim_mainlog"
 	// Try to write a small log file. Skip on permission denied.
 	content := []byte(
-		"2026-04-14 10:00:00 1abc-001 <= alice@example.com U=alice P=local S=512\n" +
-			"2026-04-14 10:00:01 1abc-002 <= bob@example.org U=bob P=local S=600\n" +
-			"2026-04-14 10:00:02 1abc-003 <= alice@example.com U=alice P=local S=720\n" +
-			"2026-04-14 10:00:03 1abc-004 <= <> U=root P=local S=400\n" +
-			"2026-04-14 10:00:04 1abc-005 <= cPanel@example.org U=root P=local S=400\n" +
-			"2026-04-14 10:00:05 1abc-006 <= no-at-sign U=foo P=local S=300\n",
+		"2026-04-14 10:00:00 1abc23-000001-AB <= alice@example.com U=alice P=local S=512\n" +
+			"2026-04-14 10:00:01 1abc23-000002-AB <= bob@example.org U=bob P=local S=600\n" +
+			"2026-04-14 10:00:02 1abc23-000003-AB <= alice@example.com U=alice P=local S=720\n" +
+			"2026-04-14 10:00:03 1abc23-000004-AB <= <> U=root P=local S=400\n" +
+			"2026-04-14 10:00:04 1abc23-000005-AB <= cPanel@example.org U=root P=local S=400\n" +
+			"2026-04-14 10:00:05 1abc23-000006-AB <= no-at-sign U=foo P=local S=300\n" +
+			"2026-04-14 10:00:06 1abc23-000007-AB <= \"first last\"@example.net U=carol P=local S=300\n" +
+			"2026-04-14 10:00:07 1abc23-000002-AB ** victim@example.net R=dkim_lookuphost: SMTP error from remote mail server: 550 rejected <= x@example.org\n",
 	)
 	// Preserve any existing file.
 	var backup []byte
@@ -469,5 +471,12 @@ func TestTopMailSendersWithLogFile(t *testing.T) {
 	}
 	if !foundExampleCom {
 		t.Errorf("expected example.com in results: %+v", got)
+	}
+	counts := map[string]int{}
+	for _, e := range got {
+		counts[e.Domain] = e.Count
+	}
+	if counts["example.net"] != 1 || counts["example.org"] != 1 {
+		t.Errorf("want the quoted sender counted and the delivery reply ignored, got %+v", got)
 	}
 }

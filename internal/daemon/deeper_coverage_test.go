@@ -1116,26 +1116,6 @@ check:
 }
 
 // ---------------------------------------------------------------------------
-// extractEximSender — realistic log line
-// ---------------------------------------------------------------------------
-
-func TestExtractEximSender_FullLine(t *testing.T) {
-	line := `2026-04-12 10:00:00 1abc23 <= user@example.com H=mail.example.com [203.0.113.42] P=esmtpsa`
-	got := extractEximSender(line)
-	if got != "user@example.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractEximSender_Bounce(t *testing.T) {
-	line := `2026-04-12 10:00:00 1abc23 <= <> R=1abc22 T=remote_smtp`
-	got := extractEximSender(line)
-	if got != "<>" {
-		t.Errorf("got %q, want <>", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // extractEximDomain — realistic
 // ---------------------------------------------------------------------------
 

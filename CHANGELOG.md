@@ -29,6 +29,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - The web server hardening audit reads Apache continuations, section comments and include names correctly, and warns when its configuration cannot be read completely.
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
 - SMTP credentials leaked in a mail subject are now detected when the subject also contains double quotes.
+- High mail volume alerts and the Web UI top senders list now count senders with quoted addresses and no longer count delivery failures as sent mail.
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 - Restoring a mail message quarantined from a phishing finding now returns the whole message to the mail queue instead of failing, and a failed restore can be retried.
 
