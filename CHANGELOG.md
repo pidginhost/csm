@@ -11,9 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Client-controlled text in ModSecurity alerts no longer changes attack confidence or repeat-offender firewall escalation.
-- ModSecurity escalation alerts retain validated event details, and malformed event fields no longer bypass repeat-offender bans.
-- Requests can no longer pose as a different ModSecurity rule or site to avoid repeat-offender firewall bans or to mislabel their alerts.
+- Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
 - Crafted or malformed cPanel session log entries can no longer fake or hide logins and password changes.
 - A dismissed malware finding now alerts again when the file's content changes.
@@ -29,6 +27,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- ModSecurity repeat-offender alerts now include the rule, message and site of the request that triggered them.
 - Automatic response forecasts refuse web findings when Apache, nginx or LiteSpeed rewrites logged client addresses or CSM cannot read that setting, and `csm doctor` reports it.
 
 ### Fixed

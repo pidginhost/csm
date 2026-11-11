@@ -302,11 +302,9 @@ URL-encoding abuse, CSM custom, or an OWASP CRS rule from an
 omits the rule message and tags), low-confidence (policy/anomaly scoring
 rules such as COMODO content-type `210710` or anomaly-points `214930`,
 and OWASP CRS anomaly-score rules), or unknown. Message and tag evidence comes
-from the rule configuration read by the existing registry, with macro references
-removed. Expanded messages and tags from error logs remain display data and
-cannot change confidence. When registry metadata is unavailable, classification
-uses known rule IDs and the validated rule file; other rules remain unknown.
-The registry's existing refresh cycle picks up configuration changes.
+from the rule configuration CSM reads, with macro references removed, so text a
+request puts into a logged message cannot change confidence. Without that
+configuration, known rule IDs and the rule file decide; other rules stay unknown.
 A burst escalates to a
 firewall ban at the normal hit count only when it contains a
 high-confidence deny or an unknown deny; a low-confidence-only burst
@@ -321,14 +319,10 @@ low-confidence rules is still banned once it reaches the
 30). Unknown blocking rules are escalation-eligible (fail-secure) and
 raise a `modsec_classifier_gap` finding once per rule for the whole host
 (repeated daily while the rule stays unclassified) so a new vendor rule
-pack is noticed rather than silently given a no-ban path. A deny with ambiguous
-or unclosed rule fields counts as an unknown rule, so malformed fields cannot
-borrow another rule's confidence or escalation setting. Escalations and
-classifier-gap findings retain the fields validated from the complete log line.
-The dashboard keeps escalation status separate from the matching HTTP event.
-The dashboard leaves fields unknown for older findings containing only a
-truncated raw line. Quoted text within a message or URI remains intact.
-A few CSM rules that match one specific exploit's request shape (for example the PHP2Shell
+pack is noticed rather than silently given a no-ban path. A deny whose
+request text imitates the rule fields ModSecurity writes counts as an unknown
+rule, so a request cannot borrow another rule's confidence or escalation
+setting. A few CSM rules that match one specific exploit's request shape (for example the PHP2Shell
 upload progress field or the wp2shell tool User-Agent) escalate on their
 first deny, whatever the hit threshold; turning firewall escalation off for
 that rule on the ModSecurity rules page opts out, including its retained
