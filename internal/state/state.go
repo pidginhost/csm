@@ -430,10 +430,12 @@ func (s *Store) ForgetCleared(findings []alert.Finding) {
 // The entry is deleted rather than un-dismissed so no AlertSent or Emailed
 // receipt survives: the changed file alerts as a new detection. A finding
 // without a content hash, or carried from an unexamined path, proves nothing
-// and changes nothing.
-func (s *Store) ReconcileDismissedContent(findings []alert.Finding) {
+// and changes nothing. The returned batch keeps, for an ended dismissal, only
+// the observations of new content, so deduplication alerts on those.
+func (s *Store) ReconcileDismissedContent(findings []alert.Finding) []alert.Finding {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var ended map[string]string
 	for _, f := range findings {
 		if f.ContentSHA256 == "" || f.ScanCarryForward {
 			continue
@@ -449,10 +451,26 @@ func (s *Store) ReconcileDismissedContent(findings []alert.Finding) {
 		if entry.ContentSHA256 == "" {
 			entry.ContentSHA256 = f.ContentSHA256
 		} else {
+			if ended == nil {
+				ended = make(map[string]string)
+			}
+			ended[key] = entry.ContentSHA256
 			delete(s.entries, key)
+			fmt.Fprintf(os.Stderr, "state: content changed, dismissal ended: %q\n", key)
 		}
 		s.dirty = true
 	}
+	if ended == nil {
+		return findings
+	}
+	kept := make([]alert.Finding, 0, len(findings))
+	for _, f := range findings {
+		if old, ok := ended[findingKey(f)]; ok && (f.ContentSHA256 == "" || f.ScanCarryForward || f.ContentSHA256 == old) {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept
 }
 
 // ForgetFileAlerts deletes the alert state of every finding about path after

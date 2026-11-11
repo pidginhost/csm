@@ -1649,7 +1649,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.forgetRemovedFileAlerts(nil)
 	// Reconcile every observation before deduplication can discard new content
 	// behind an unchanged, hashless or carried finding with the same key.
-	d.store.ReconcileDismissedContent(findings)
+	findings = d.store.ReconcileDismissedContent(findings)
 	findings = alert.Deduplicate(findings)
 	d.noteFTPCustomers(findings)
 	suppressions := d.store.LoadSuppressions()
@@ -1777,12 +1777,15 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	// As in dispatchBatch: a record with no parseable time takes its receipt
 	// time, or the customer set would drop its login as expired.
 	alert.FillTimestamps(initialFindings, time.Now())
+	// History and audit retain every observation, including content displaced
+	// by a newer detection before notification and response.
+	initialAuditSources := append([]alert.Finding(nil), initialFindings...)
 	// Before FilterNew and delivery: a dismissed file with new content alerts in this scan.
-	d.store.ReconcileDismissedContent(initialFindings)
+	initialFindings = d.store.ReconcileDismissedContent(initialFindings)
 	// The realtime watcher starts at the end of the log, so FTP logins made
 	// while the daemon was down reach the set only through this scan.
 	d.noteFTPCustomers(initialFindings)
-	d.store.AppendHistory(initialFindings)
+	d.store.AppendHistory(initialAuditSources)
 	d.forgetRemovedFileAlerts(nil)
 	unfilteredNew := d.store.FilterNew(initialFindings)
 	suppressions := d.store.LoadSuppressions()
@@ -1829,7 +1832,7 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 	// The baseline scan applied its own blocks; they are in initialFindings.
 	d.observeBlocks(slices.Concat(initialFindings, blockActions))
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
-	initialAuditSources := append(append([]alert.Finding(nil), initialFindings...), responseFindings...)
+	initialAuditSources = append(initialAuditSources, responseFindings...)
 	candidates := d.deliveryCandidates(filterUnsuppressedFindings(d.store, initialFindings, suppressions), newFindings, suppressions)
 	_ = alert.DispatchWithNotificationFilter(cfg, newFindings, initialAuditSources, responseFindings, candidates, operatorAlertableFindings, d.store)
 	d.store.Update(withoutFixedFindings(initialFindings, permFixedKeys))

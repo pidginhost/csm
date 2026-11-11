@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,5 +117,56 @@ func TestEnrichedFindingsVersionOnly(t *testing.T) {
 	})
 	if v2 := getEnriched(t, s, "fields=version"); v2.Version == v1.Version {
 		t.Fatal("version unchanged after a finding appeared")
+	}
+}
+
+// A listed file whose content changes is a new detection with the same key;
+// the page must offer the new list, or a dismiss from it is refused as stale.
+func TestEnrichedFindingsVersionTracksContent(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "YARA rule match [webshell_generic]: /home/a/public_html/x.php",
+		FilePath: "/home/a/public_html/x.php", ContentSHA256: strings.Repeat("a", 64), Timestamp: time.Now()}
+	s.store.SetLatestFindings([]alert.Finding{f})
+	before := getEnriched(t, s, "fields=version").Version
+
+	f.ContentSHA256 = strings.Repeat("b", 64)
+	s.store.SetLatestFindings([]alert.Finding{f})
+	if after := getEnriched(t, s, "fields=version").Version; after == before {
+		t.Fatal("version unchanged after the listed file's content changed")
+	}
+}
+
+func TestEnrichedFindingsVersionStableAcrossReorderedObservations(t *testing.T) {
+	s := newTestServer(t, "tok")
+	now := time.Now()
+	a := alert.Finding{Check: "ip_reputation", Severity: alert.High,
+		Message: "Known malicious IP accessing server: 203.0.113.7 (abuseipdb)", Timestamp: now}
+	b := a
+	b.Message = "Known malicious IP accessing server: 203.0.113.7 (spamhaus)"
+	b.Timestamp = now.Add(-time.Minute)
+	f := alert.Finding{Check: "yara_match_scheduled", Severity: alert.Critical,
+		Message:  "YARA rule match [webshell_generic]: /home/a/public_html/x.php",
+		FilePath: "/home/a/public_html/x.php", ContentSHA256: strings.Repeat("a", 64), Timestamp: now}
+	s.store.SetLatestFindings([]alert.Finding{a, b, f})
+	before := getEnriched(t, s, "")
+	if before.Total != 2 {
+		t.Fatalf("total = %d, want a merged IP row and a file finding", before.Total)
+	}
+	if before.Findings[1].Key != a.Key() {
+		t.Fatal("initial merged IP row must use the first source's key")
+	}
+
+	a.Timestamp = now.Add(time.Minute)
+	b.Timestamp = now.Add(2 * time.Minute)
+	f.Timestamp = a.Timestamp
+	s.store.SetLatestFindings([]alert.Finding{f, b, a})
+	for _, query := range []string{"", "fields=version"} {
+		after := getEnriched(t, s, query)
+		if after.Total != before.Total || after.Version != before.Version {
+			t.Errorf("%s: total=%d version=%q, want total=%d version=%q", query, after.Total, after.Version, before.Total, before.Version)
+		}
+		if query == "" && after.Findings[1].Key != b.Key() {
+			t.Fatal("reordered merged IP row must use the other source's key")
+		}
 	}
 }
