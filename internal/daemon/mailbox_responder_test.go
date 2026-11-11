@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -818,5 +819,32 @@ func TestListMailboxSuspensions_MissingHoldFileMeansReleased(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].StatusUnknown || rows[0].ReleasedBy != "outside CSM" {
 		t.Fatalf("rows = %+v, want released outside CSM", rows)
+	}
+}
+
+// Protection comes first: when cPanel cannot report a mailbox's state, a
+// cracked login still suspends it, and CSM records what it applied.
+func TestStolenLoginResponses_UnreadableStatusStillSuspends(t *testing.T) {
+	db := withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withUserdomains(t, "victim.example: cpuser\n")
+	calls := stubUAPI(t, func(args []string) ([]byte, error) {
+		if uapiFn(args) == "list_pops_with_disk" {
+			return uapiFailure("timeout")
+		}
+		return uapiOK()
+	})
+	captureActionRecords(t)
+
+	f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
+	got := uapiFns(*calls)
+	if !slices.Contains(got, "suspend_login") || !slices.Contains(got, "suspend_outgoing") {
+		t.Fatalf("uapi calls = %v; an unreadable status left a cracked mailbox open", got)
+	}
+	if f.Message != "Mailbox real@victim.example suspended after its password was cracked" {
+		t.Fatalf("finding = %+v", f)
+	}
+	if row := onlySuspension(t, db); !reflect.DeepEqual(row.Applied, []string{store.AppliedSuspendLogin, store.AppliedSuspendOutgoing}) {
+		t.Fatalf("row = %+v", row)
 	}
 }

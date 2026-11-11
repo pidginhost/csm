@@ -339,14 +339,14 @@ func suspendCPanelMailbox(c mailboxCompromise) (store.MailboxSuspension, error) 
 	var errs []error
 	flags, statusErr := cpanelMailboxFlags(user)
 	before := flags[strings.ToLower(c.Subject)]
+	if statusErr != nil {
+		// Protection comes first: an unreadable state must not leave a
+		// cracked mailbox open. CSM then records the suspension as its own,
+		// even if someone else had already applied it.
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: mailbox state for %s unreadable (%v); suspending anyway\n", stamp, c.Subject, statusErr)
+	}
 	for _, fn := range []string{store.AppliedSuspendLogin, store.AppliedSuspendOutgoing} {
 		owned := c.Previous.Account == user && slices.Contains(c.Previous.Applied, fn)
-		if statusErr != nil && !owned {
-			// Without prior ownership or readable state, a successful
-			// idempotent suspend could claim somebody else's restriction.
-			errs = append(errs, fmt.Errorf("%s ownership: %w", fn, statusErr))
-			continue
-		}
 		if statusErr == nil && before.stillApplied([]string{fn}) {
 			if owned {
 				applied = append(applied, fn)
