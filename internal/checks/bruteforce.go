@@ -656,7 +656,7 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 			key = "proxy:" + ip
 		}
 		loginAttempts[key]++
-		keepNewest(newest, key, scanned(rec, access.evidenceTime()), now)
+		keepNewest(newest, key, scanned(rec, access.At), now)
 	}
 
 	for key, count := range loginAttempts {
@@ -711,11 +711,9 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 	for _, rec := range records {
 		access, ok := ParseCpanelAccessRecord(rec.text)
 		// Look for 401/403 responses on API endpoints
-		if !ok || access.Status != "401" && access.Status != "403" {
-			continue
-		}
-		if !strings.Contains(access.Target, "json-api") && !strings.Contains(access.Target, "/execute/") &&
-			!strings.Contains(access.Target, "cpsess") {
+		// A status or target forged into client text can only count against
+		// the client that sent it, so any plausible reading counts.
+		if !ok || !access.MayHaveStatus("401", "403") || !access.TargetContains("json-api", "/execute/", "cpsess") {
 			continue
 		}
 		ip := access.IP
@@ -731,7 +729,7 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 			key = "proxy:" + ip
 		}
 		failedAPI[key]++
-		keepNewest(newest, key, scanned(rec, access.evidenceTime()), now)
+		keepNewest(newest, key, scanned(rec, access.At), now)
 	}
 
 	for key, count := range failedAPI {

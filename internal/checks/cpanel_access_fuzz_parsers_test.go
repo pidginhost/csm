@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
-// User text is opaque, including complete fake records. It can invalidate
-// the observation time, but cannot change the real request or listener.
+// User text is opaque, including complete fake records. It can add requests
+// and invalidate the observation time, but cannot hide the real request or
+// change the listener.
 func FuzzCpanelAccessRecordUserField(f *testing.F) {
 	for _, user := range []string{
 		"-", "user name", `x"`, `x [bad] "y`, `x ] "y`,
@@ -26,11 +27,11 @@ func FuzzCpanelAccessRecordUserField(f *testing.F) {
 				for _, prefix := range []string{"", `x [11/10/2026:09:00:00 -0000] "y `} {
 					line := `192.0.2.66 ` + ident + ` ` + prefix + user + ` [` + stamp + `] "GET /scripts2/listaccts HTTP/1.1" 401 0 "-" "agent" "-" "-" 2087`
 					got, ok := ParseCpanelAccessRecord(line)
-					if !ok || got.IP != "192.0.2.66" || got.Proxy != (ident == "proxy") || got.User != prefix+user || got.Method != "GET" ||
-						got.Target != "/scripts2/listaccts" || got.Status != "401" || got.Port != "2087" {
+					if !ok || got.IP != "192.0.2.66" || got.Proxy != (ident == "proxy") || !hasCpanelRequest(got, "GET", "/scripts2/listaccts") ||
+						!got.MayHaveStatus("401") || got.Port != "2087" {
 						t.Fatalf("ident %q, user %q changed the request: %+v (%v)", ident, prefix+user, got, ok)
 					}
-					if !got.At.IsZero() && (prefix != "" || stamp == "bad -0000" || !got.At.Equal(time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC))) {
+					if !got.At.IsZero() && (ident == "proxy" || prefix != "" || stamp == "bad -0000" || !got.At.Equal(time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC))) {
 						t.Fatalf("user %q supplied time %v", prefix+user, got.At)
 					}
 				}

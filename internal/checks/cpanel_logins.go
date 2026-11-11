@@ -156,7 +156,7 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 	for _, line := range lines {
 		rec, ok := ParseCpanelAccessRecord(line)
 		// Only check cPanel (port 2083) entries. Skip rejected requests - no
-		// write occurred.
+		// write occurred - when the line names its status unambiguously.
 		if !ok || rec.Port != "2083" || rec.Status == "401" || rec.Status == "403" {
 			continue
 		}
@@ -172,23 +172,19 @@ func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.St
 
 		// Match the request target only: the referer can name upload pages
 		// like upload-ajax.html. The user is "-" when unauthenticated.
-		target := strings.ToLower(rec.Target)
 		owner := ""
-		if rec.User != "-" {
+		if rec.User != "-" && rec.User != "" {
 			owner = HostingAccountForUser(rec.User)
 		}
-		for _, action := range filemanWriteActions {
-			if strings.Contains(target, strings.ToLower(action)) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "cpanel_file_upload",
-					Message:  fmt.Sprintf("cPanel File Manager write operation from %s", source),
-					Details:  truncateString(line, 300),
-					DedupKey: dedup,
-					TenantID: owner,
-				})
-				break
-			}
+		if rec.TargetContains(filemanWriteActions...) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "cpanel_file_upload",
+				Message:  fmt.Sprintf("cPanel File Manager write operation from %s", source),
+				Details:  truncateString(line, 300),
+				DedupKey: dedup,
+				TenantID: owner,
+			})
 		}
 	}
 

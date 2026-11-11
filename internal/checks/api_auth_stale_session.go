@@ -97,10 +97,13 @@ type StaleSessionRequest struct {
 // so they never parse here.
 func ParseStaleSessionRequest(line string) (StaleSessionRequest, bool) {
 	rec, ok := ParseCpanelAccessRecord(line)
+	// Evidence that excuses a failure needs a dated line with one request
+	// and one status.
 	if !ok || rec.Proxy || rec.Status != "401" || rec.At.IsZero() {
 		return StaleSessionRequest{}, false
 	}
-	token, ok := cpsessToken(rec.Target)
+	q, _ := parseCpanelRequest(rec.first[1:])
+	token, ok := cpsessToken(q.Target)
 	if !ok {
 		return StaleSessionRequest{}, false
 	}

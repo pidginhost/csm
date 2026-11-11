@@ -49,35 +49,28 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			"force_password_change", "resetpass",
 		}
 		// The request names the action; referer and user agent are client text.
-		target := strings.ToLower(rec.Target)
-		for _, action := range passwordActions {
-			if strings.Contains(target, action) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "whm_password_change",
-					Message:  fmt.Sprintf("WHM password change from %s", source),
-					Details:  truncateString(line, 200),
-					DedupKey: dedup,
-				})
-				break
-			}
+		if rec.TargetContains(passwordActions...) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "whm_password_change",
+				Message:  fmt.Sprintf("WHM password change from %s", source),
+				Details:  truncateString(line, 200),
+				DedupKey: dedup,
+			})
 		}
 
 		// Check for account management from unknown IPs
 		accountActions := []string{
 			"createacct", "killacct", "suspendacct", "unsuspendacct",
 		}
-		for _, action := range accountActions {
-			if strings.Contains(target, action) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "whm_account_action",
-					Message:  fmt.Sprintf("WHM account action from %s", source),
-					Details:  truncateString(line, 200),
-					DedupKey: dedup,
-				})
-				break
-			}
+		if rec.TargetContains(accountActions...) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "whm_account_action",
+				Message:  fmt.Sprintf("WHM account action from %s", source),
+				Details:  truncateString(line, 200),
+				DedupKey: dedup,
+			})
 		}
 	}
 

@@ -26,7 +26,8 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 		return nil
 	}
 
-	target := strings.ToLower(rec.Target)
+	// Skips need the status the line names unambiguously; counts against
+	// the sender take any status client text could have forged.
 	rejected := rec.Status == "401" || rec.Status == "403"
 	client, source := ip, "non-infra IP: "+ip
 	sourceIP, dedup := ip, ""
@@ -44,27 +45,21 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// Match against the request target only, not the referer, which can
 	// contain "upload" in paths.
 	if rec.Port == "2083" && !rejected {
-		filemanWriteActions := []string{
-			"fileman/save_file", "fileman/upload_files",
-			"fileman/paste", "fileman/rename", "fileman/delete",
-		}
-		for _, action := range filemanWriteActions {
-			if strings.Contains(target, action) {
-				findings = append(findings, alert.Finding{
-					// Warning, not Critical: this fires on every File Manager
-					// write by any customer, and 401/403 are already skipped
-					// above, so it only reports authenticated operations. Its
-					// value is correlation with other findings on the account,
-					// not the single event.
-					Severity: alert.Warning,
-					Check:    "cpanel_file_upload_realtime",
-					Message:  fmt.Sprintf("cPanel File Manager write from %s", source),
-					Details:  truncateDaemon(line, 300),
-					SourceIP: sourceIP,
-					DedupKey: dedup,
-				})
-				break
-			}
+		if rec.TargetContains("fileman/save_file", "fileman/upload_files",
+			"fileman/paste", "fileman/rename", "fileman/delete") {
+			findings = append(findings, alert.Finding{
+				// Warning, not Critical: this fires on every File Manager
+				// write by any customer, and 401/403 are already skipped
+				// above, so it only reports authenticated operations. Its
+				// value is correlation with other findings on the account,
+				// not the single event.
+				Severity: alert.Warning,
+				Check:    "cpanel_file_upload_realtime",
+				Message:  fmt.Sprintf("cPanel File Manager write from %s", source),
+				Details:  truncateDaemon(line, 300),
+				SourceIP: sourceIP,
+				DedupKey: dedup,
+			})
 		}
 	}
 
@@ -75,8 +70,8 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// an attack. Real API abuse won't correlate with a recent purge for the same account.
 	// A failure counts as brute force against its source and can block it;
 	// a trusted proxy's address stands for every visitor behind it.
-	if rejected && (rec.Proxy || !checks.IsTrustedProxy(ip, cfg)) {
-		if strings.Contains(target, "json-api") || strings.Contains(target, "/execute/") {
+	if rec.MayHaveStatus("401", "403") && (rec.Proxy || !checks.IsTrustedProxy(ip, cfg)) {
+		if rec.TargetContains("json-api", "/execute/") {
 			if rec.Proxy || !purgeTracker.isPostPurge401(ip) {
 				attribution := admission.AttributionUnknown
 				if !rec.Proxy {
@@ -115,7 +110,9 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// is the admin face of cPanel and shares the same noise profile.
 	isWHMPort := rec.Port == "2087" || rec.Port == "2086"
 	if isWHMPort && !cfg.Suppressions.SuppressCpanelLogin {
-		if strings.EqualFold(rec.Method, "POST") && strings.HasPrefix(target, "/login/?login_only=1") {
+		if rec.Any(func(q checks.CpanelRequest) bool {
+			return strings.EqualFold(q.Method, "POST") && strings.HasPrefix(strings.ToLower(q.Target), "/login/?login_only=1")
+		}) {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "whm_login_realtime",
@@ -136,7 +133,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// because the do_token_denied() trigger is path-agnostic - the watchTowr
 	// PoC happens to use listaccts but any token-required endpoint works.
 	// Fires regardless of suppression - this is an attack IOC, not a login.
-	if isWHMPort && isUnauthWHMScriptsTarget(rec.Target) {
+	if isWHMPort && rec.Any(func(q checks.CpanelRequest) bool { return isUnauthWHMScriptsTarget(q.Target) }) {
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "whm_unauth_scripts_realtime",
