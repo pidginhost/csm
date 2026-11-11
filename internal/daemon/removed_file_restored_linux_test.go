@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
 const restoredPayload = "<?php /* any content CSM removed */ echo 'x';"
@@ -120,6 +121,154 @@ func TestAnalyzeFileIgnoresTheDaemonsOwnWrites(t *testing.T) {
 
 	if got := restoredFindings(analyzeWrite(t, path, restoredPayload, int32(os.Getpid()))); len(got) != 0 {
 		t.Fatalf("the daemon's own write reported as a restore: %+v", got)
+	}
+}
+
+func TestRemovedFileRestoreRejectsAnObsoleteDescriptor(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(map[bool]string{false: "removed", true: "replaced"}[replace], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "index.php")
+			if err := os.WriteFile(path, []byte(restoredPayload), 0600); err != nil {
+				t.Fatal(err)
+			}
+			fd := openRawFd(t, path)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if replace {
+				if err := os.WriteFile(path, []byte("replacement content"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stubRemovedFileAt(t, map[string]checks.RemovedFile{path: removalOf(path, restoredPayload, 7)})
+			ch := make(chan alert.Finding, 1)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			if fm.checkRemovedFileRestored(fileEvent{path: path, fd: fd, pid: writerPID}, "") || len(ch) != 0 {
+				t.Fatal("an old descriptor was reported as a new restore")
+			}
+		})
+	}
+}
+
+func TestRemovedFileRestoreAdmitsLedgerPaths(t *testing.T) {
+	for _, temporary := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unusual extension", true: "temporary file"}[temporary], func(t *testing.T) {
+			root := t.TempDir()
+			if !temporary {
+				old := tempRootPrefixes
+				tempRootPrefixes = nil
+				t.Cleanup(func() { tempRootPrefixes = old })
+			}
+			path := filepath.Join(root, "payload.dat")
+			if err := os.WriteFile(path, []byte(restoredPayload), 0600); err != nil {
+				t.Fatal(err)
+			}
+			stubRemovedFileAt(t, map[string]checks.RemovedFile{path: removalOf(path, restoredPayload, 7)})
+			ch := make(chan alert.Finding, 1)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			event, admit := fm.classifyEvent(path, openRawFd(t, path))
+			if !admit || event.dropperOnly {
+				t.Fatalf("ledger path discarded by event routing: admit=%v dropperOnly=%v", admit, event.dropperOnly)
+			}
+			event.pid = writerPID
+			fm.analyzeFile(event)
+			if len(ch) != 1 {
+				t.Fatalf("restore findings = %d, want one", len(ch))
+			}
+			if got := <-ch; got.Check != checks.RemovedFileRestoredCheck {
+				t.Fatalf("finding = %+v, want restore", got)
+			}
+		})
+	}
+}
+
+func TestRemovedFileRestoreStillHonorsWordPressVerification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.php")
+	if err := os.WriteFile(path, []byte(restoredPayload), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stubRemovedFileAt(t, map[string]checks.RemovedFile{path: removalOf(path, restoredPayload, 7)})
+	ch := make(chan alert.Finding, 1)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch, wpCache: &fakeWPVerifier{
+		describe: func(string) wpcheck.Verification {
+			return wpcheck.Verification{Verdict: wpcheck.VerdictVerified}
+		},
+	}}
+	fm.analyzeFile(fileEvent{path: path, fd: openRawFd(t, path), pid: writerPID})
+	if len(ch) != 0 {
+		t.Fatalf("verified WordPress content generated %d findings", len(ch))
+	}
+}
+
+func TestRemovedFileRestoreKeySurvivesSequenceReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.php")
+	first := removalOf(path, restoredPayload, 1)
+	second := first
+	second.At = second.At.Add(time.Second)
+	if removedFileRestoredFinding(path, first, "", writerPID).Key() == removedFileRestoredFinding(path, second, "", writerPID).Key() {
+		t.Fatal("removals across daemon restarts share a finding key")
+	}
+}
+
+func TestRemovedFileRestoreRechecksOperatorCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.php")
+	if err := os.WriteFile(path, []byte(restoredPayload), 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous := removedFileAt
+	removed := removalOf(path, restoredPayload, 1)
+	calls := 0
+	removedFileAt = func(string) (checks.RemovedFile, bool) {
+		calls++
+		return removed, calls == 1
+	}
+	t.Cleanup(func() { removedFileAt = previous })
+	ch := make(chan alert.Finding, 1)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	if fm.checkRemovedFileRestored(fileEvent{path: path, fd: openRawFd(t, path), pid: writerPID}, "") || len(ch) != 0 {
+		t.Fatal("operator cancellation during hashing still raised a restore")
+	}
+}
+
+func TestRemovedFileRestoreDeduplicatesWithinOneRemoval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.php")
+	if err := os.WriteFile(path, []byte(restoredPayload), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ledger := map[string]checks.RemovedFile{path: removalOf(path, restoredPayload, 1)}
+	stubRemovedFileAt(t, ledger)
+	ch := make(chan alert.Finding, 3)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	event := fileEvent{path: path, fd: openRawFd(t, path), pid: writerPID}
+	for i := 0; i < 2; i++ {
+		fm.checkRemovedFileRestored(event, "")
+	}
+	if len(ch) != 1 {
+		t.Fatalf("same removal generated %d findings, want one", len(ch))
+	}
+	removed := ledger[path]
+	removed.At = removed.At.Add(time.Second)
+	removed.Seq++
+	ledger[path] = removed
+	fm.checkRemovedFileRestored(event, "")
+	if len(ch) != 2 {
+		t.Fatalf("later removal generated %d total findings, want two", len(ch))
+	}
+}
+
+func TestRemovedFileRestoreIgnoresUnknownPathsAndSizes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.php")
+	for _, known := range []bool{false, true} {
+		ledger := make(map[string]checks.RemovedFile)
+		content := restoredPayload
+		if known {
+			ledger[path] = removalOf(path, restoredPayload, 1)
+			content += " "
+		}
+		stubRemovedFileAt(t, ledger)
+		if got := restoredFindings(analyzeWrite(t, path, content, writerPID)); len(got) != 0 {
+			t.Fatalf("known=%v: unexpected restore findings: %+v", known, got)
+		}
 	}
 }
 

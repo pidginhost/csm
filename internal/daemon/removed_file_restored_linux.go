@@ -27,8 +27,20 @@ func (fm *FileMonitor) checkRemovedFileRestored(event fileEvent, procInfo string
 	if err := unix.Fstat(event.fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Size != removed.Size {
 		return false
 	}
+	before := scannedIdentity(event.fd)
 	// A removal too large to hash and a failed read both leave no digest.
 	if digest := hashEventFD(event.fd, nil, st.Size); digest == "" || digest != removed.SHA256 {
+		return false
+	}
+	after := scannedIdentity(event.fd)
+	current, err := os.Lstat(event.path)
+	if err != nil || !checks.SameFileVersion(before, after) || !checks.SameFileVersion(after, current) {
+		return false
+	}
+	// An operator restore or another response may have invalidated the
+	// ledger entry while this descriptor was being hashed.
+	latest, ok := removedFileAt(event.path)
+	if !ok || latest != removed {
 		return false
 	}
 	f := removedFileRestoredFinding(event.path, removed, procInfo, event.pid)
@@ -54,7 +66,7 @@ func removedFileRestoredFinding(path string, removed checks.RemovedFile, procInf
 		// One report per removal: a file written back after CSM removed it
 		// again is a new event, not a repeat of the first. The removal time,
 		// unlike its sequence, stays unique across daemon restarts.
-		DedupKey: fmt.Sprintf("%s:removed-%d", path, removed.At.UnixNano()),
+		DedupKey: removed.RestoreKey(),
 	}
 }
 

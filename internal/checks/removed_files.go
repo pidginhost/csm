@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,6 +17,12 @@ type RemovedFile struct {
 	// Action is "quarantine" or "clean".
 	Action string
 	Seq    uint64
+}
+
+// RestoreKey binds a finding to the removal it observed, including across
+// restarts, when the in-memory sequence starts over.
+func (r RemovedFile) RestoreKey() string {
+	return fmt.Sprintf("%s:removed-%d", r.Path, r.At.UnixNano())
 }
 
 // removedFileMemory is how long a removal stays recognisable. A restore loop

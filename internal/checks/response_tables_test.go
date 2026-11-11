@@ -250,8 +250,9 @@ func TestAutoQuarantineDispatchPerName(t *testing.T) {
 			}
 			finding := alert.Finding{Check: name, Severity: alert.Critical, FilePath: path, Message: name + " fixture", Details: "Category: webshell\nDescription: fixture"}
 			actions = AutoQuarantineFiles(cfg, []alert.Finding{finding})
-			if name == "signature_match_realtime" {
-				// A benign small file never passes the realtime validation.
+			if name == "signature_match_realtime" || name == RemovedFileRestoredCheck {
+				// Neither a benign signature match nor a restore with no
+				// removal evidence authorizes a file response.
 				if len(actions) != 0 {
 					t.Fatalf("low-confidence realtime match acted: %+v", actions)
 				}

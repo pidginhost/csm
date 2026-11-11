@@ -213,21 +213,45 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
+		clean := !realtime && ShouldCleanInsteadOfQuarantine(path)
+		restored := f.Check == RemovedFileRestoredCheck
+		var removed RemovedFile
+		if restored {
+			// Repeat what CSM did to these bytes before: the path alone does
+			// not say whether the whole file was malicious.
+			removed, info = restoredFileResponseInfo(path, f.DedupKey, info)
+			if info == nil {
+				continue
+			}
+			clean = removed.Action == "clean"
+			if clean && filepath.Base(path) == ".htaccess" && !cfg.AutoResponse.CleanHtaccess {
+				continue
+			}
+		}
 		// Multiple checks can report one file. Do not re-clean a repaired
 		// target or charge repeated failures for the same batch of evidence.
 		seen[key] = true
-		clean := !realtime && ShouldCleanInsteadOfQuarantine(path)
-		if f.Check == RemovedFileRestoredCheck {
-			// Repeat what CSM did to these bytes before: the path alone does
-			// not say whether the whole file was malicious.
-			if removed, ok := RemovedFileAt(path); ok {
-				clean = removed.Action == "clean"
-			}
-		}
 		paused := runAutoFileResponse(cfg, path, info, func() error {
+			if restored {
+				latest, ok := RemovedFileAt(path)
+				current, statErr := osFS.Lstat(path)
+				if !ok || latest != removed || statErr != nil || !SameFileVersion(info, current) {
+					return refuseFileResponse(errors.New("restored file evidence changed before response"))
+				}
+			}
 			// Cleaning is one response attempt. A failed cleaner leaves the file
 			// and any backup for review; it must not escalate to removing the file.
 			if clean {
+				if restored && filepath.Base(path) == ".htaccess" {
+					result := cleanHtaccessFileIdentified(path, info)
+					if result.Success {
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path), Details: result.Description, Timestamp: time.Now()})
+					}
+					if result.Error != "" && !result.Refused {
+						return errors.New(result.Error)
+					}
+					return nil
+				}
 				result := cleanInfectedFileIdentified(path, info)
 				if result.Error != "" {
 					outcome := "failed"
@@ -249,7 +273,12 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			qPath := newQuarantinePath(quarantineDir, path)
 			meta := quarantineMetadata(path, info, f.Message)
 			meta.FindingID = alert.FindingID(f)
-			err := quarantineTarget(path, qPath, info, meta)
+			var err error
+			if restored {
+				err = quarantineRestoredTarget(path, qPath, info, meta, removed)
+			} else {
+				err = quarantineTarget(path, qPath, info, meta)
+			}
 			warning := ""
 			if err != nil {
 				var completed bool

@@ -14,7 +14,7 @@ import (
 // Non-Linux builds share the private-copy transaction, without Linux's
 // surviving-hardlink warning used by production hosts.
 func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata []byte) error {
-	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, false, nil)
+	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, false, -1, nil)
 }
 
 func removeQuarantinedSourcePlatform(path, qPath string, original os.FileInfo, requireVersion bool) error {
@@ -50,7 +50,9 @@ func removeQuarantinedSourcePlatform(path, qPath string, original os.FileInfo, r
 }
 
 func quarantineFileVersionedTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata, scannedHead []byte) error {
-	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true, scannedHead)
+	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true, -1, func(fd *os.File) error {
+		return requireScannedHead(fd, scannedHead)
+	})
 }
 
 func quarantineFileVersionedTOCTOUSafeFD(path, qPath string, originalInfo os.FileInfo, metadata []byte, sourceFD int, scannedHead []byte) error {
@@ -58,7 +60,7 @@ func quarantineFileVersionedTOCTOUSafeFD(path, qPath string, originalInfo os.Fil
 	return quarantineFileVersionedTOCTOUSafe(path, qPath, originalInfo, metadata, scannedHead)
 }
 
-func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool, scannedHead []byte) error {
+func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool, _ int, verifyContent func(*os.File) error) error {
 	if originalInfo == nil {
 		return fmt.Errorf("quarantine: missing original stat")
 	}
@@ -88,7 +90,7 @@ func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, 
 		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())
 	}
 	if requireVersion {
-		if err := requireScannedHead(fd, scannedHead); err != nil {
+		if err := verifyContent(fd); err != nil {
 			return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed before atomic capture: %w", path, err))
 		}
 	}

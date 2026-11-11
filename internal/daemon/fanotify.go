@@ -1035,11 +1035,12 @@ func (fm *FileMonitor) classifyEvent(path string, fd int) (ev fileEvent, admit b
 	// The dropper tracker also needs arbitrary executable names that have
 	// no path-only content signal.
 	fm.invalidateDropperPHPHandlerCache(path)
-	contentInteresting := fm.isInteresting(path)
+	_, removed := removedFileAt(path)
+	contentInteresting := removed || fm.isInteresting(path)
 	// Filtering must not reroute writes retained for dropper tracking: the
 	// dropper-only path bypasses normal suppressions and checksum verification.
 	contentNeedsAnalysis := contentInteresting
-	if contentInteresting && underTempRoot(path) {
+	if contentInteresting && !removed && underTempRoot(path) {
 		contentNeedsAnalysis = fm.tempRootEventNeedsAnalysis(path, fd)
 	}
 	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)

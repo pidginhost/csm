@@ -171,6 +171,11 @@ again. This memory does not survive a daemon restart. A restore from the web
 UI quarantine page, CSM's own writes and official WordPress release files are
 never treated as the file coming back.
 
+Before repeating the response, CSM checks that the file still holds the
+removed bytes, so a later replacement or a restore from the web UI is never
+removed. Removed files are watched whatever their extension. A restored
+`.htaccess` is cleaned only when `clean_htaccess` is on.
+
 With `kill_processes` on, CSM also stops the process that wrote the file back,
 together with its parent processes of the same account, parents first, so a
 loop cannot start another writer. It does so only when those processes trace
