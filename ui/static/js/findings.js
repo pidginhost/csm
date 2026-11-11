@@ -653,17 +653,20 @@ function bulkAction(action) {
             CSM.toast('Too many findings selected (' + items.length + '); the bulk dismiss limit is ' + CSM.DISMISS_BULK_MAX + '. Narrow the selection and repeat.', 'error');
             return;
         }
-        var keys = [], contents = {};
+        var keys = [], contents = {}, labels = {};
         items.forEach(function(i) {
             var key = i.key || (i.check + ':' + i.message);
             keys.push(key);
             contents[key] = i.content_sha256;
+            labels[key] = i.file_path || i.message || key;
         });
         CSM.confirm('Dismiss ' + items.length + ' finding(s)?\n\n' + DISMISS_EXPLAINED).then(function() {
             return CSM.post('/api/v1/dismiss', { keys: keys, contents: contents }).then(function(data) {
                 var refused = (data && data.refused) || [];
                 if (refused.length > 0) {
-                    CSM.toast(refused.length + ' finding(s) changed since the page loaded and were not dismissed. Review them again.', 'warning');
+                    var names = refused.slice(0, 5).map(function(k) { return labels[k] || k; }).join(', ');
+                    if (refused.length > 5) names += ' and ' + (refused.length - 5) + ' more';
+                    CSM.toast(refused.length + ' finding(s) changed since the page loaded and were not dismissed: ' + names + '. Review them again.', 'warning');
                 }
                 offerDismissUndo(data, 'Dismissed ' + data.count + ' finding(s)');
                 refreshFindings();

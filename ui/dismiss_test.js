@@ -37,8 +37,9 @@ function findingsPage(selected = [], opts = {}) {
         },
         getSelectedRows() {
             return selected.map(row => {
-                const { key, sha } = typeof row === 'string' ? { key: row, sha: '' } : row;
-                return { getAttribute(name) { return name === 'data-key' ? key : name === 'data-content-sha256' ? sha : ''; } };
+                const { key, sha = '', path = '' } = typeof row === 'string' ? { key: row } : row;
+                const attrs = { 'data-key': key, 'data-content-sha256': sha, 'data-filepath': path };
+                return { getAttribute(name) { return attrs[name] || ''; } };
             });
         },
         refreshFindings() { refreshed++; }
@@ -255,4 +256,18 @@ test('other bulk dismissal errors stay errors without refreshing', async () => {
     assert.deepEqual(toasts, [{ message: 'Dismiss failed: Unable to dismiss', kind: 'error' }]);
     assert.equal(offers.length, 0);
     assert.equal(refreshed(), 0);
+});
+
+test('bulk refusal names the rows that changed', async () => {
+    const rows = Array.from({ length: 8 }, (_, i) => ({ key: 'k:' + i, sha: 'a', path: '/home/a/public_html/f' + i + '.php' }));
+    const refused = rows.slice(1).map(r => r.key);
+    const { context, toasts } = findingsPage(rows, { response: { ok: true, count: 1, refused, undo_token: 'undo-1' } });
+    context.bulkAction('dismiss');
+    await tick();
+    await tick();
+    const warning = toasts.find(t => t.kind === 'warning');
+    assert.ok(warning, JSON.stringify(toasts));
+    for (let i = 1; i <= 5; i++) assert.match(warning.message, new RegExp('f' + i + '\\.php'));
+    assert.doesNotMatch(warning.message, /f0\.php|f6\.php|f7\.php/);
+    assert.match(warning.message, /and 2 more/);
 });
