@@ -7,7 +7,7 @@ import (
 )
 
 // SessionRecord is one cpsrvd session_log record:
-// "[<time>] <level> [<service>] <origin> <event> <account>:<session> <detail>...".
+// "[<time>] info [<service>] <origin> <event> <account>:<session> <detail>...".
 // Every field is matched by position, so text a client controls later in
 // the line (a login name, the address= list) cannot supply the service,
 // the origin, the event or the account.
@@ -22,23 +22,23 @@ type SessionRecord struct {
 	Detail  []string // the fields after <account>:<session>
 }
 
-// ParseSessionRecord reads one session_log line. Records without a
-// bracketed service or an <account>:<session> pair are rejected.
+// ParseSessionRecord reads one info-level session_log line. Records without
+// a bracketed service or an <account>:<session> pair are rejected.
 func ParseSessionRecord(line string) (SessionRecord, bool) {
-	if !strings.HasPrefix(line, "[") {
+	if !strings.HasPrefix(line, "[") || strings.ContainsAny(line, "\r\n") {
 		return SessionRecord{}, false
 	}
 	end := strings.IndexByte(line, ']')
-	if end < 0 {
+	if end < 0 || end+1 >= len(line) || (line[end+1] != ' ' && line[end+1] != '\t') {
 		return SessionRecord{}, false
 	}
 	fields := strings.Fields(line[end+1:])
-	if len(fields) < 5 {
+	if len(fields) < 5 || fields[0] != "info" {
 		return SessionRecord{}, false
 	}
 	service, opened := strings.CutPrefix(fields[1], "[")
 	service, closed := strings.CutSuffix(service, "]")
-	if !opened || !closed || service == "" {
+	if !opened || !closed || service == "" || strings.ContainsAny(service, "[]") {
 		return SessionRecord{}, false
 	}
 	account, session, found := strings.Cut(fields[4], ":")
@@ -78,16 +78,22 @@ func (r SessionRecord) Reason() string {
 }
 
 // Attr is the value of key in the comma-separated key=value detail of a NEW
-// record ("address=...,app=cpaneld,method=handle_form_login").
+// record ("address=...,app=cpaneld,method=handle_form_login"). Duplicate keys
+// yield no value: client-controlled detail must not override server metadata.
 func (r SessionRecord) Attr(key string) string {
+	var value string
+	found := false
 	for _, field := range r.Detail {
 		for _, pair := range strings.Split(field, ",") {
 			if k, v, ok := strings.Cut(pair, "="); ok && k == key {
-				return v
+				if found {
+					return ""
+				}
+				value, found = v, true
 			}
 		}
 	}
-	return ""
+	return value
 }
 
 // CreatedByAPI reports a session an API call opened for the account (the

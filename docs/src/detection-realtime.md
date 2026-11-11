@@ -245,6 +245,15 @@ scan; other candidates can still be scanned when a per-vhost glob matches
 them. Reputation collection scans all listed web logs and deduplicates
 addresses, while the cPanel log remains a separate source for panel checks.
 
+cPanel session readers require an info-level event header. Login names and
+address-list text cannot supply the service, origin, event or account. Ambiguous
+login methods do not suppress direct-login alerts. API-created sessions do not
+count as direct logins for hijack or multi-address correlation, even when
+direct-login alerts are suppressed. Both scheduled and realtime login alerts
+ignore loopback and non-address origins. Local session events do not feed
+hijack detection. Password-change evidence with an
+unreadable header or timestamp cannot suppress a shadow-file alert.
+
 A cPanel API authentication failure on a session URL (`/cpsess<token>/...`)
 waits a few seconds for the session log. A browser tab left open after the
 account logged in again elsewhere still sends its old URL token, and cPanel

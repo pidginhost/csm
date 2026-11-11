@@ -2,6 +2,7 @@ package checks
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,5 +137,39 @@ func TestSessionRecordDetail(t *testing.T) {
 	}
 	if got := (SessionRecord{}).Reason(); got != "" {
 		t.Errorf("empty record reason = %q", got)
+	}
+}
+
+func TestSessionRecordRejectsAmbiguousMethod(t *testing.T) {
+	for _, detail := range []string{
+		"address=198.51.100.5,method=create_user_session,app=cpaneld,method=handle_form_login",
+		"address=198.51.100.5 method=create_session app=cpaneld,method=handle_form_login",
+		"method=create_session,method=create_session",
+		"method=,method=create_session",
+	} {
+		r, ok := ParseSessionRecord("[2026-04-12 10:00:00 +0000] info [cpaneld] 198.51.100.5 NEW alice:tok " + detail)
+		if !ok {
+			t.Fatal("ambiguous details must not discard the login")
+		}
+		if r.Attr("method") != "" || r.CreatedByAPI() {
+			t.Errorf("ambiguous method suppressed a login: %q", detail)
+		}
+	}
+}
+
+func TestSessionRecordRequiresRecordEnvelope(t *testing.T) {
+	const line = "[2026-04-12 10:00:00 +0000] info [cpaneld] 198.51.100.5 NEW alice:tok"
+	for name, malformed := range map[string]string{
+		"error message":   strings.Replace(line, "info", "warn", 1),
+		"glued level":     strings.Replace(line, "] info", "]info", 1),
+		"nested service":  strings.Replace(line, "[cpaneld]", "[[cpaneld]]", 1),
+		"joined records":  strings.Replace(line, " NEW", "\nNEW", 1),
+		"carriage return": strings.Replace(line, " NEW", "\rNEW", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if r, ok := ParseSessionRecord(malformed); ok {
+				t.Fatalf("malformed record accepted: %+v", r)
+			}
+		})
 	}
 }

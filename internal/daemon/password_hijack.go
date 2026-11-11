@@ -138,14 +138,14 @@ func ParseSessionLineForHijack(line string, detector *PasswordHijackDetector) {
 		return
 	}
 	addr, isAddr := r.ClientAddr()
-	if !isAddr {
+	if !isAddr || addr.IsLoopback() {
 		return
 	}
 	switch {
 	case r.Service == "whostmgr" && r.Event == "PURGE" && r.Reason() == "password_change":
 		// WHM password change: [timestamp] info [whostmgr] IP PURGE account:token password_change
 		detector.HandlePasswordChange(r.Account, addr.String())
-	case r.Service == "cpaneld" && r.Event == "NEW" && r.Attr("method") != "create_user_session":
+	case r.Service == "cpaneld" && r.Event == "NEW" && !r.CreatedByAPI():
 		// cPanel login, not an API session: [timestamp] info [cpaneld] IP NEW account:token ...
 		detector.HandleLogin(r.Account, addr.String())
 	}

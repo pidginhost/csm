@@ -46,9 +46,7 @@ func CheckCpanelLogins(ctx context.Context, cfg *config.Config, store *state.Sto
 		// Detect cPanel logins from non-infra IPs
 		// Skip API/portal sessions (create_user_session) - only alert on direct form login
 		if r.Service == "cpaneld" && r.Event == "NEW" {
-			if cfg.Suppressions.SuppressCpanelLogin {
-				// Still track IPs for multi-IP correlation even when suppressed
-			} else if r.CreatedByAPI() {
+			if r.CreatedByAPI() {
 				continue
 			}
 

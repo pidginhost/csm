@@ -107,7 +107,7 @@ func TestParseSessionLogLine_PasswordPurge(t *testing.T) {
 // The scan never reports a login from the host itself or from an origin
 // that is not an address; realtime must agree with it.
 func TestParseSessionLogLine_SkipsLocalAndNonAddressOrigins(t *testing.T) {
-	for _, origin := range []string{"127.0.0.1", "::1", "internal", "not-an-address"} {
+	for _, origin := range []string{"127.0.0.1", "::1", "::ffff:127.0.0.1", "internal", "not-an-address"} {
 		t.Run(origin, func(t *testing.T) {
 			resetPurgeTrackerState()
 			line := "[2026-04-11 12:00:00 +0000] info [cpaneld] " + origin + " NEW alice:session address=" + origin + ",app=cpaneld,method=handle_form_login"

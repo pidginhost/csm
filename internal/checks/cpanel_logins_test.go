@@ -73,7 +73,7 @@ func TestCheckCpanelLoginsReadsBareTimestamp(t *testing.T) {
 // names no client to report or count.
 func TestCheckCpanelLoginsSkipsLocalAndNonAddressOrigins(t *testing.T) {
 	stamp := time.Now().Add(-time.Minute).Format("2006-01-02 15:04:05 -0700")
-	for _, origin := range []string{"127.0.0.1", "::1", "internal", "not-an-address"} {
+	for _, origin := range []string{"127.0.0.1", "::1", "::ffff:127.0.0.1", "internal", "not-an-address"} {
 		t.Run(origin, func(t *testing.T) {
 			log := "[" + stamp + "] info [cpaneld] " + origin + " NEW alice:token address=" + origin + ",app=cpaneld,method=handle_form_login\n"
 			withMockOS(t, &mockOS{open: openTempLog(t, log)})
