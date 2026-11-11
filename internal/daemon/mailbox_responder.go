@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/webui"
 )
 
 // compromiseEvidence says what a trigger saw. Sending evidence means abuse is
@@ -294,4 +295,27 @@ func releaseMailboxSuspension(id, actor string) error {
 		recordRecentOutgoingMailHold(rec.Subject)
 	}
 	return nil
+}
+
+// mailboxSuspensionsAPI serves the web UI's suspension list and Release.
+type mailboxSuspensionsAPI struct{}
+
+func (mailboxSuspensionsAPI) ListSuspensions() ([]webui.MailboxSuspensionRow, error) {
+	rows, err := listMailboxSuspensions()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]webui.MailboxSuspensionRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, webui.MailboxSuspensionRow{MailboxSuspension: r.MailboxSuspension, Active: r.Active, StatusUnknown: r.StatusUnknown})
+	}
+	return out, nil
+}
+
+func (mailboxSuspensionsAPI) ReleaseSuspension(id, actor string) error {
+	err := releaseMailboxSuspension(id, actor)
+	if errors.Is(err, errSuspensionAlreadyReleased) {
+		return webui.ErrSuspensionReleased
+	}
+	return err
 }

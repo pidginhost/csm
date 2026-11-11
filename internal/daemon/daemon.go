@@ -2914,6 +2914,7 @@ func (d *Daemon) startWebUI() {
 	// change without a restart.
 	srv.SetConfigAppliedHook(d.applySavedConfig)
 	srv.SetHealthInfo(d.FanotifyActive, d.LogWatcherCount)
+	srv.SetMailboxSuspensions(mailboxSuspensionsAPI{})
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}
