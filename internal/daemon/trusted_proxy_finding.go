@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -11,9 +12,8 @@ import (
 
 const checkTrustedProxyUnusable = "trusted_proxy_unusable"
 
-// trustedProxyFindings reports the trusted_proxies entries cfg skips. A
-// proxy CSM does not trust reads as the client of every request it
-// forwards, so CSM can block it and every site behind it.
+// trustedProxyFindings reports skipped entries that can leave proxies
+// counted as clients or forwarded requests without attribution.
 func trustedProxyFindings(cfg *config.Config) []alert.Finding {
 	skipped := config.UnusableTrustedProxies(cfg)
 	if len(skipped) == 0 {
@@ -23,12 +23,17 @@ func trustedProxyFindings(cfg *config.Config) []alert.Finding {
 	for i, r := range skipped {
 		reasons[i] = r.Message
 	}
+	details := strings.Join(reasons, "\n")
+	// Explicit identities let recovery re-arm dismissals. Include the errors
+	// so acknowledging one configuration does not hide a different mistake.
+	identity := sha256.Sum256([]byte(details))
 	return []alert.Finding{{
 		Severity: alert.High,
 		Check:    checkTrustedProxyUnusable,
+		DedupKey: fmt.Sprintf("%x", identity),
 		Message:  fmt.Sprintf("CSM skips %d trusted_proxies entries; a proxy they meant to list can be blocked as a client", len(skipped)),
-		Details: strings.Join(reasons, "\n") +
-			"\nFix or remove these entries and restart CSM. Until then, requests through those proxies count against the proxy's own address.",
+		Details: details +
+			"\nFix or remove these entries and restart CSM. Requests may count against a proxy or against nobody.",
 		Timestamp: time.Now(),
 	}}
 }
