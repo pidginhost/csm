@@ -938,6 +938,7 @@ Attribution gaps:
 | `symlink_attack` | security event |  |  |
 | `test_alert` | ignored | informational |  |
 | `threat_feed_stale` | ignored | self-health |  |
+| `trusted_proxy_unusable` | ignored | self-health |  |
 | `uid0_account` | ignored | host-scope |  |
 | `user_outbound_connection` | ignored | informational |  |
 | `vulnerable_plugins` | ignored | posture |  |

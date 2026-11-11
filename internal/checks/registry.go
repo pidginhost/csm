@@ -488,6 +488,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "auto_response_withheld", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "response_capacity_exhausted", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "protection_queue_recovered", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "trusted_proxy_unusable", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 
 	// --- Internal (not shown in user-facing dropdowns) -------------------
 	{Name: "test_alert", Category: CategoryInternal, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},

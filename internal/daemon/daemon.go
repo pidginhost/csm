@@ -1038,6 +1038,7 @@ func (d *Daemon) Run() error {
 	// NOW let the dispatcher dispatch - no more race with the initial scan,
 	// and nothing queued while it ran was lost.
 	d.releaseAlertDispatch()
+	d.refreshTrustedProxyFinding()
 
 	// Findings the previous shutdown drained but could not act on get their
 	// auto-response and alerts now, through the same pipeline.
