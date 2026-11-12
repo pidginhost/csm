@@ -81,46 +81,68 @@ func tick() { time.Sleep(2 * time.Millisecond) }
 
 const c2Row = "1: 010200C0:C350 097100CB:01BB 01 00000000:00000000 00:00000000 00000000 1001 0 12345\n"
 
-// A row whose local socket has a listener in the same read is the accept
-// side of a connection the listed address opened: the host did not connect
-// to it. Only established rows are read.
-func TestC2ConnectionOutboundOnly(t *testing.T) {
+// A row whose local port has a listener in the same read may be the accept
+// side of a connection the listed address opened, or a process hiding its
+// own connection behind a listener on its source port; the socket table
+// cannot tell them apart. Both still report, but only a socket without a
+// listener is stamped as an outbound destination. Only established rows
+// are read.
+func TestC2ConnectionStampsOutboundOnly(t *testing.T) {
 	cfg := &config.Config{C2Blocklist: []string{"203.0.113.9"}, BackdoorPorts: []int{4444}}
 	for _, tc := range []struct {
 		name, table string
-		c2          int
+		c2, stamped int
 	}{
-		{"outbound", c2Row, 1},
+		{"outbound", c2Row, 1, 1},
 		{"inbound on wildcard listener", "0: 00000000:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 100\n" +
-			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 0},
+			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 1, 0},
 		{"inbound on address listener", "0: 010200C0:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 100\n" +
-			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 0},
+			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 1, 0},
 		{"listener without an inode", "0: 010200C0:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 0\n" +
-			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 0},
+			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 1, 0},
 		{"listener on another address", "0: 020200C0:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 100\n" +
-			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 1},
-		{"listener after the row", c2Row + "2: 00000000:C350 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 100\n", 0},
-		{"TIME_WAIT", "1: 010200C0:C350 097100CB:01BB 06 00000000:00000000 00:00000000 00000000 0 0 0\n", 0},
-		{"SYN_SENT", "1: 010200C0:C350 097100CB:01BB 02 00000000:00000000 00:00000000 00000000 1001 0 12345\n", 0},
+			"1: 010200C0:01BB 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", 1, 1},
+		{"listener after the row", c2Row + "2: 00000000:C350 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 100\n", 1, 0},
+		{"own listener on the source port", "0: 00000000:C350 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1001 0 100\n" + c2Row, 1, 0},
+		{"TIME_WAIT", "1: 010200C0:C350 097100CB:01BB 06 00000000:00000000 00:00000000 00000000 0 0 0\n", 0, 0},
+		{"SYN_SENT", "1: 010200C0:C350 097100CB:01BB 02 00000000:00000000 00:00000000 00000000 1001 0 12345\n", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outboundOS(t, tc.table, testBootID)
-			if got := c2Findings(CheckOutboundConnections(context.Background(), cfg, nil)); len(got) != tc.c2 {
+			got := c2Findings(CheckOutboundConnections(context.Background(), cfg, nil))
+			if len(got) != tc.c2 {
 				t.Fatalf("c2_connection findings = %+v, want %d", got, tc.c2)
+			}
+			stamped := 0
+			for _, f := range got {
+				outbound := f.Observation != (alert.Observation{})
+				if outbound {
+					stamped++
+				}
+				if listening := strings.Contains(f.Details, "local port also listening"); listening == outbound {
+					t.Fatalf("details %q with observation %+v: a listening port must be named exactly when the row is not stamped", f.Details, f.Observation)
+				}
+				if !outbound && f.Attribution == admission.AttributionSocketDestination {
+					t.Fatalf("unstamped finding attributed as %v", f.Attribution)
+				}
+			}
+			if stamped != tc.stamped {
+				t.Fatalf("stamped findings = %d, want %d: %+v", stamped, tc.stamped, got)
 			}
 		})
 	}
 }
 
-// The inbound skip is the C2 check's alone: a listed peer connected to a
-// backdoor listener still reports the listener.
+// A listed peer connected to a backdoor listener reports both the listener
+// and the C2 address; only the outbound reading supplies a forecast.
 func TestC2ConnectionInboundKeepsBackdoorListener(t *testing.T) {
 	cfg := &config.Config{C2Blocklist: []string{"203.0.113.9"}, BackdoorPorts: []int{4444}}
 	outboundOS(t, "0: 00000000:115C 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 100\n"+
 		"1: 010200C0:115C 097100CB:C350 01 00000000:00000000 00:00000000 00000000 0 0 12345\n", testBootID)
 	findings := CheckOutboundConnections(context.Background(), cfg, nil)
-	if _, ok := findingForCheck(findings, "backdoor_port"); !ok || len(c2Findings(findings)) != 0 {
-		t.Fatalf("findings = %+v, want backdoor_port and no c2_connection", findings)
+	c2 := c2Findings(findings)
+	if _, ok := findingForCheck(findings, "backdoor_port"); !ok || len(c2) != 1 || c2[0].Observation != (alert.Observation{}) {
+		t.Fatalf("findings = %+v, want backdoor_port and one unstamped c2_connection", findings)
 	}
 }
 

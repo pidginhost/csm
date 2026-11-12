@@ -82,16 +82,21 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *st
 			}
 		}
 
-		// Check remote IP against C2 blocklist. A local socket with a
-		// listener is the accept side: the listed address connected here.
+		// Check remote IP against C2 blocklist. A local port with a listener
+		// may be the accept side, or a process listening on its own source
+		// port to look like one: it still reports, but is no outbound evidence.
 		for _, blocked := range cfg.C2Blocklist {
-			if remoteIP == blocked && !listeners.has(net.ParseIP(localIP), localPort) {
+			if remoteIP == blocked {
+				outbound := !listeners.has(net.ParseIP(localIP), localPort)
 				details := fmt.Sprintf("Local socket: %s:%d", localIP, localPort)
 				if inode != "" {
 					details += ", socket inode " + inode
 				}
 				if uidKnown {
 					details += fmt.Sprintf(", uid %d", uid)
+				}
+				if !outbound {
+					details += ", local port also listening"
 				}
 				f := alert.Finding{
 					Severity: alert.Critical,
@@ -100,7 +105,7 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *st
 					Details:  details,
 					SourceIP: remoteIP,
 				}
-				if stream != "" && inode != "" {
+				if outbound && stream != "" && inode != "" {
 					// A later scan of the same socket rereads the same
 					// observation: it keeps the time first seen.
 					at, known := firstSeen[inode]
