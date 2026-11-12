@@ -15,6 +15,7 @@ func FuzzPHPNamespaceScopes(f *testing.F) {
 		"<?php namespace App; system($_POST['x']);",
 		"<?php namespace Decoy {} namespace { system($_POST['x']); }",
 		"<?php namespace App { use function Vendor\\run as system; system($_POST['x']); }",
+		"<?php $b = file_get_contents('php://input'); system($b);",
 	} {
 		f.Add(source)
 	}
@@ -22,7 +23,7 @@ func FuzzPHPNamespaceScopes(f *testing.F) {
 		if len(source) > 1<<16 {
 			return
 		}
-		structure := strings.ToLower(checks.PHPExecutableStructure(source))
+		structure := strings.ToLower(checks.PHPRequestFlowStructure(source))
 		masked := maskUserDispatchedPHPCalls(structure)
 		if len(masked) != len(structure) {
 			t.Fatalf("masked length=%d, want %d", len(masked), len(structure))

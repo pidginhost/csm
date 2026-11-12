@@ -263,6 +263,12 @@ func stripPHPCommentsFromCode(code string) string {
 }
 
 func stripPHPStringsFromCode(code string) string {
+	return stripPHPStringsKeeping(code, nil)
+}
+
+// stripPHPStringsKeeping blanks string literals like stripPHPStringsFromCode,
+// except quoted literals for which keep reports true.
+func stripPHPStringsKeeping(code string, keep func(token string) bool) string {
 	var b strings.Builder
 	b.Grow(len(code))
 	for i := 0; i < len(code); i++ {
@@ -282,7 +288,14 @@ func stripPHPStringsFromCode(code string) string {
 			i = end - 1
 			continue
 		}
-		if isPHPQuote(code[i]) {
+		// Backtick bodies use shell syntax. Their quotes must not expose
+		// literals to keep or consume the PHP code after the closing backtick.
+		if isPHPQuote(code[i]) || code[i] == '`' {
+			if end := skipPHPString(code, i); keep != nil && end < len(code) && keep(code[i:end+1]) {
+				b.WriteString(code[i : end+1])
+				i = end
+				continue
+			}
 			i = replacePHPString(&b, code, i)
 			continue
 		}

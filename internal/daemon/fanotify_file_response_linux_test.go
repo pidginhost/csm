@@ -441,6 +441,36 @@ func TestConfirmedPHPExecutionRespectsFunctionNamespaces(t *testing.T) {
 	}
 }
 
+func TestConfirmedPHPExecutionSeesRequestBodyStream(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "request body through a variable",
+			body: "<?php\n$body = file_get_contents('php://input');\nsystem($body);\n",
+		},
+		{
+			name: "request body passed directly",
+			body: `<?php system(file_get_contents('php://input'));`,
+		},
+		{
+			name: "double quoted stream with decoder",
+			body: `<?php eval(base64_decode(file_get_contents("php://input")));`,
+		},
+		{
+			name: "upper case stream name",
+			body: `<?php $c = @file_get_contents('PHP://INPUT'); passthru($c);`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !confirmedPHPExecutionData([]byte(tc.body)) {
+				t.Fatal("request body reaching an execution primitive was not confirmed")
+			}
+		})
+	}
+}
+
 func TestUnconfirmedPHPPatternsStayReviewOnly(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -489,6 +519,18 @@ func TestUnconfirmedPHPPatternsStayReviewOnly(t *testing.T) {
 		{
 			name: "incomplete packed literal",
 			body: `<?php eval(base64_decode('ZXZhbCgnJyc7`,
+		},
+		{
+			name: "request body example in a string",
+			body: `<?php $example = "system(file_get_contents('php://input'))";`,
+		},
+		{
+			name: "request body example in a comment",
+			body: "<?php\n// system(file_get_contents('php://input'));\n$x = 1;\n",
+		},
+		{
+			name: "request body stream named inside a longer literal",
+			body: `<?php system(file_get_contents('php://input_example'));`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

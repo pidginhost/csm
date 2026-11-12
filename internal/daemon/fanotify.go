@@ -2267,7 +2267,7 @@ func confirmedPHPExecution(executable, structure string) bool {
 
 func confirmedPHPExecutionData(data []byte) bool {
 	executable := strings.ToLower(checks.PHPExecutableCode(string(data)))
-	structure := strings.ToLower(checks.PHPExecutableStructure(string(data)))
+	structure := strings.ToLower(checks.PHPRequestFlowStructure(string(data)))
 	return confirmedPHPExecution(executable, structure)
 }
 
@@ -2281,7 +2281,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	}
 	content := strings.ToLower(string(data))
 	executable := strings.ToLower(checks.PHPExecutableCode(string(data)))
-	structure := strings.ToLower(checks.PHPExecutableStructure(string(data)))
+	structure := strings.ToLower(checks.PHPRequestFlowStructure(string(data)))
 	confirmedExecution := confirmedPHPExecution(executable, structure)
 
 	if looksLikePHPWebshell(data) {
