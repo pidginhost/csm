@@ -30,7 +30,7 @@ import (
 
 const (
 	reputationCacheFile      = "reputation_cache.json"
-	reputationEximMainlog    = "/var/log/exim_mainlog"
+	reputationEximMainlog    = platform.EximMainLog
 	reputationWHMAccessLog   = "/usr/local/cpanel/logs/access_log"
 	cacheExpiry              = 6 * time.Hour
 	errorCacheExpiry         = 1 * time.Hour // cache transient API errors to avoid retrying same IP
