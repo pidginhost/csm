@@ -165,6 +165,12 @@ func apacheClientAddressRewrite(path string, liteSpeed bool) (directive, file st
 		if directive != "" {
 			return
 		}
+		fields, resolved := apacheMacroFields(fields, ctx)
+		if !resolved {
+			// A macro parameter can name any directive.
+			malformed = true
+			return
+		}
 		logs.add(line, fields, ctx)
 		is := func(names ...string) bool {
 			for _, n := range names {

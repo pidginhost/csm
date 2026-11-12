@@ -73,9 +73,19 @@ func TestHTTPRewriteApacheFormatFallbacks(t *testing.T) {
 			RewriteUnknown,
 		},
 		{
-			"unparsed logging expression",
-			"CustomLog logs/access \"%h %t\" \"expr=(\"\n",
+			"empty logging expression",
+			"CustomLog logs/access \"%h %t\" expr=\n",
 			RewriteUnknown,
+		},
+		{
+			"logging expression",
+			"LogFormat \"%h %l %u %t \\\"%r\\\" %>s %b\" common\nCustomLog logs/access common \"expr=%{REQUEST_URI} !~ m#^/health#\"\n",
+			RewriteNone,
+		},
+		{
+			"logging expression keeps the format",
+			"CustomLog logs/access \"%{X-Client}i %t\" \"expr=%{REQUEST_URI} !~ m#^/health#\"\n",
+			RewriteActive,
 		},
 	}
 	for _, tt := range cases {
@@ -153,5 +163,66 @@ CustomLog ${APACHE_LOG_DIR}/access.log combined
 				t.Errorf("server %s: stock logging = %+v, want direct", server, got)
 			}
 		}
+	}
+}
+
+// mod_macro substitutes its parameters before Apache parses a line, so a
+// parameter can supply any format, nickname, symbol or directive name.
+func TestHTTPRewriteApacheMacroParameters(t *testing.T) {
+	combined := "LogFormat \"%h %l %u %t \\\"%r\\\" %>s %b \\\"%{Referer}i\\\" \\\"%{User-Agent}i\\\"\" combined\n"
+	cases := []struct {
+		name, body string
+		state      RewriteState
+	}{
+		{"format parameter", "<Macro Logged $fmt>\nCustomLog logs/access_log \"$fmt\"\n</Macro>\nUse Logged \"%{X-Forwarded-For}i %t\"\n", RewriteUnknown},
+		{"nickname parameter", "LogFormat \"%{X-Client}i %t\" proxied\n<Macro V $name>\nCustomLog logs/x $name\n</Macro>\nUse V proxied\n", RewriteUnknown},
+		{"module parameter", "<Macro M $sym>\nLoadModule $sym modules/mod_x.so\n</Macro>\nUse M cloudflare_module\n", RewriteUnknown},
+		{"directive parameter", "<Macro D $directive>\n$directive X-Forwarded-For\n</Macro>\nUse D RemoteIPHeader\n", RewriteUnknown},
+		{"pipe parameter", "<Macro P $pipe>\nCustomLog \"|$pipe\" \"%v %{X-Client}i %t\"\n</Macro>\nUse P /usr/bin/logger\n", RewriteUnknown},
+		{"percent parameter", "<macro P %fmt>\nCustomLog logs/x \"%fmt\"\n</macro>\n", RewriteUnknown},
+		{"log file parameter", combined + "<Macro VHost $name $domain>\n<VirtualHost *:80>\nServerName $domain\nCustomLog \"/var/log/httpd/$name.access_log\" combined\n</VirtualHost>\n</Macro>\nUse VHost example example.com\n", RewriteNone},
+		{"literal macro body", "<Macro Plain $x>\nCustomLog logs/x \"%{X-Client}i %t\"\n</Macro>\n", RewriteActive},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			conf := writeRewriteFile(t, t.TempDir(), "httpd.conf", tt.body)
+			for _, server := range []platform.WebServer{platform.WSApache, platform.WSLiteSpeed} {
+				got := detectHTTPRewrite(rewriteSources{server: server, apacheConfig: conf})
+				if got.State != tt.state {
+					t.Errorf("server %s: rewrite = %+v, want %v", server, got, tt.state)
+				}
+			}
+		})
+	}
+}
+
+// With HostnameLookups On, %h logs the name the client's own reverse DNS
+// returns, unverified, and that name can spell another address. Double
+// logs the address when the forward check fails.
+func TestHTTPRewriteApacheHostnameLookups(t *testing.T) {
+	common := "LogFormat \"%h %l %u %t \\\"%r\\\" %>s %b\" common\nCustomLog logs/access_log common\n"
+	cases := []struct {
+		name, body string
+		state      RewriteState
+	}{
+		{"lookups on", "HostnameLookups On\n" + common, RewriteActive},
+		{"lookups on in a virtual host", "<VirtualHost *:80>\nhostnamelookups on\n</VirtualHost>\nCustomLog logs/access_log \"%{c}h %t\"\n", RewriteActive},
+		{"lookups on behind splitlogs", "HostnameLookups On\nCustomLog \"|/usr/local/cpanel/bin/splitlogs --main=x\" \"%v %h %t\"\n", RewriteActive},
+		{"lookups on after the read field", "HostnameLookups On\nCustomLog logs/access_log \"%a %h %t\"\n", RewriteNone},
+		{"lookups double", "HostnameLookups Double\n" + common, RewriteNone},
+		{"lookups off", "HostnameLookups off\n" + common, RewriteNone},
+		{"invalid lookups", "HostnameLookups Maybe\n" + common, RewriteUnknown},
+		{"bare lookups", "HostnameLookups\n" + common, RewriteUnknown},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			conf := writeRewriteFile(t, t.TempDir(), "httpd.conf", tt.body)
+			for _, server := range []platform.WebServer{platform.WSApache, platform.WSLiteSpeed} {
+				got := detectHTTPRewrite(rewriteSources{server: server, apacheConfig: conf})
+				if got.State != tt.state {
+					t.Errorf("server %s: rewrite = %+v, want %v", server, got, tt.state)
+				}
+			}
+		})
 	}
 }

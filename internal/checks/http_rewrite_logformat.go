@@ -1,6 +1,9 @@
 package checks
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // CSM access readers use the first space-delimited field or skip leading
 // ASCII whitespace and read the first token. splitlogs strips one field
@@ -143,10 +146,13 @@ func apacheAccessArgumentKnown(item apacheLogItem) bool {
 
 // apacheAccessLogSafe reports whether an access-log placeholder writes the
 // connection's peer or a value the server sets.
-func apacheAccessLogSafe(item apacheLogItem) bool {
+func apacheAccessLogSafe(item apacheLogItem, hostnames bool) bool {
 	switch item.handler {
-	case "a", "h":
+	case "a":
 		return item.arg == "" || item.arg == "c"
+	case "h":
+		// HostnameLookups On logs the client's reverse DNS name unverified.
+		return !hostnames && (item.arg == "" || item.arg == "c")
 	case "A", "b", "B", "D", "I", "k", "L", "O", "p", "P", "s", "S", "t", "T", "v", "X":
 		return true
 	}
@@ -173,6 +179,12 @@ func logWhitespace(c byte) bool {
 // Leading whitespace cannot finish the first token; a newline resets the
 // read position. Unsupported output boundaries leave ok false.
 func apacheFormatLogsClientValue(format string, splitlogs bool) (value, ok bool) {
+	return apacheFormatClientValue(format, splitlogs, false)
+}
+
+// apacheFormatClientValue is apacheFormatLogsClientValue on a server whose
+// %h may log a name the client's reverse DNS chose.
+func apacheFormatClientValue(format string, splitlogs, hostnames bool) (value, ok bool) {
 	read := 0
 	if splitlogs {
 		read = 1
@@ -203,7 +215,7 @@ func apacheFormatLogsClientValue(format string, splitlogs bool) (value, ok bool)
 				return false, false
 			}
 			start = false
-			if !apacheAccessLogSafe(item) && (field < read || field == read && !guarded) {
+			if !apacheAccessLogSafe(item, hostnames) && (field < read || field == read && !guarded) {
 				value = true
 			}
 			i = next
@@ -426,6 +438,36 @@ func apacheLogTargetUnresolved(target string) bool {
 	return end < 0 || !strings.HasPrefix(target[end+1:], "/")
 }
 
+// apacheMacroFields reads a line inside mod_macro's <Macro> as it may look
+// after Use substitutes the macro's parameters: each one becomes an
+// unresolved ${...} value, so the rules for Define values apply. ok is false
+// when a parameter can supply the directive name. ServerName keeps its text,
+// since a parameter there names a host.
+func apacheMacroFields(fields []string, ctx apacheLineContext) (out []string, ok bool) {
+	var params []string
+	for _, label := range ctx.Scope {
+		if words := strings.Fields(label); len(words) > 2 && strings.EqualFold(words[0], "Macro") {
+			params = append(params, words[2:]...)
+		}
+	}
+	if len(params) == 0 || strings.EqualFold(fields[0], "ServerName") {
+		return fields, true
+	}
+	// The replacer tries names in order: longer first, so a name never
+	// leaves part of another.
+	sort.SliceStable(params, func(i, j int) bool { return len(params[i]) > len(params[j]) })
+	oldnew := make([]string, 0, 2*len(params))
+	for _, param := range params {
+		oldnew = append(oldnew, param, "${macro}")
+	}
+	replace := strings.NewReplacer(oldnew...)
+	out = make([]string, len(fields))
+	for i, field := range fields {
+		out[i] = replace.Replace(field)
+	}
+	return out, out[0] == fields[0]
+}
+
 // apacheLogFormat is a format a directive defines or uses inline.
 type apacheLogFormat struct {
 	format    string
@@ -468,13 +510,17 @@ type apacheLogFormats struct {
 	rewrite   *apacheLogFormat
 	malformed bool
 	liteSpeed bool
+	// hostnames is set by HostnameLookups On in any scope.
+	hostnames bool
 }
 
 func (l *apacheLogFormats) parse(format string, splitlogs bool) (bool, bool) {
 	if l.liteSpeed {
-		return liteSpeedFormatLogsClientValue(format, splitlogs)
+		if _, ok := liteSpeedFormatLogsClientValue(format, splitlogs); !ok {
+			return false, false
+		}
 	}
-	return apacheFormatLogsClientValue(format, splitlogs)
+	return apacheFormatClientValue(format, splitlogs, l.hostnames)
 }
 
 // add reads one directive. Apache refuses a format it cannot parse even
@@ -536,9 +582,12 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apach
 		}
 		if len(fields) == 4 {
 			condition := fields[3]
-			// Expressions need Apache's expression parser. An unparsed
-			// or invalid condition cannot prove which configuration runs.
-			if len(condition) < 5 || !strings.EqualFold(condition[:4], "env=") || condition[4:] == "!" {
+			// A condition only suppresses records, so the format is read
+			// either way. Apache refuses an empty variable or expression.
+			switch {
+			case len(condition) > 4 && strings.EqualFold(condition[:4], "env=") && condition[4:] != "!":
+			case len(condition) > 5 && strings.EqualFold(condition[:5], "expr="):
+			default:
 				l.malformed = true
 			}
 		}
@@ -549,6 +598,15 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apach
 			return
 		}
 		l.uses = append(l.uses, apacheLogUse{transfer: true, splitlogs: apacheSplitlogsPipe(fields[1]), inline: def})
+	case strings.EqualFold(fields[0], "HostnameLookups"):
+		switch {
+		case len(fields) != 2:
+			l.malformed = true
+		case strings.EqualFold(fields[1], "On"):
+			l.hostnames = true
+		case !strings.EqualFold(fields[1], "Off") && !strings.EqualFold(fields[1], "Double"):
+			l.malformed = true
+		}
 	case strings.EqualFold(fields[0], "ServerName"):
 		if len(fields) != 2 {
 			l.malformed = true
