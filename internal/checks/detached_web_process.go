@@ -120,14 +120,19 @@ func CheckDetachedWebProcesses(ctx context.Context, _ *config.Config, _ *state.S
 			TenantID:  HostingAccountForUser(uidStringToUser(h.uid)),
 			Timestamp: now,
 		}
-		if isShellExe(h.exe) {
+		if isShellCommand(h.exe, cmdline) {
 			f.Severity = alert.Critical
 			f.Message = fmt.Sprintf("Shell left running by a web request: %s (PID %d)", h.exe, h.pid)
 			f.Details = fmt.Sprintf("PID: %d, UID: %s, parent PID: %d, exe: %s, cmdline: %s\nHolds PHP handler socket: %s", h.pid, h.uid, parent, h.exe, redactProcCommandLine(cmdline), strings.Join(sockets, ", "))
 			// The rules for a process that writes back a removed file decide
 			// what may be stopped: nil with a terminal or an SSH, cron or
 			// cPanel session in the ancestry.
-			f.WriterChain = restoreWriterChain(h.pid, now, false)
+			for _, pid := range restoreWriterChain(h.pid, now, false) {
+				id := strconv.Itoa(pid)
+				if isShellProcess(id, getProcessExe(id)) {
+					f.WriterChain = append(f.WriterChain, pid)
+				}
+			}
 			f.WriterObservedAt = now
 		}
 		findings = append(findings, f)
@@ -135,13 +140,33 @@ func CheckDetachedWebProcesses(ctx context.Context, _ *config.Config, _ *state.S
 	return dropCoveredDetachedProcesses(findings)
 }
 
-// isShellExe matches the command shells a webshell's loop runs in.
-func isShellExe(exe string) bool {
+// procfs resolves executable symlinks. argv[0] is only used for BusyBox,
+// whose executable is shared by shells and non-shell applets.
+func isShellCommand(exe string, cmdline []byte) bool {
 	switch filepath.Base(strings.TrimSuffix(exe, " (deleted)")) {
-	case "sh", "bash", "dash", "ash", "zsh", "ksh", "mksh", "csh", "tcsh", "busybox":
+	case "sh", "bash", "dash", "ash", "zsh", "ksh", "mksh", "csh", "tcsh":
 		return true
+	case "busybox":
+		arg0, rest, ok := strings.Cut(string(cmdline), "\x00")
+		if !ok {
+			return false
+		}
+		applet := filepath.Base(strings.TrimPrefix(arg0, "-"))
+		for strings.HasPrefix(applet, "busybox") {
+			applet, rest, ok = strings.Cut(rest, "\x00")
+			if !ok {
+				return false
+			}
+			applet = filepath.Base(applet)
+		}
+		return applet == "sh" || applet == "ash" || applet == "hush" || applet == "bash"
 	}
 	return false
+}
+
+func isShellProcess(pid, exe string) bool {
+	cmdline, _ := osFS.ReadFile(filepath.Join("/proc", pid, "cmdline"))
+	return isShellCommand(exe, cmdline) && getProcessExe(pid) == exe
 }
 
 // dropCoveredDetachedProcesses keeps one finding per process tree: a process

@@ -37,3 +37,23 @@ func FuzzUnixListener(f *testing.F) {
 		}
 	})
 }
+
+func FuzzShellCommand(f *testing.F) {
+	for _, tail := range []string{"", "-c\x00script\x00", "sh\x00", "\xff\x00", " sh "} {
+		f.Add(tail)
+	}
+	f.Fuzz(func(t *testing.T, tail string) {
+		for _, exe := range []string{"/bin/busybox", "/bin/busybox (deleted)"} {
+			if isShellCommand(exe, []byte("busybox\x00wget\x00"+tail)) || isShellCommand(exe, []byte("sleep\x00"+tail)) {
+				t.Fatal("arguments turned a non-shell applet into a shell")
+			}
+			if !isShellCommand(exe, []byte("busybox\x00sh\x00"+tail)) || !isShellCommand(exe, []byte("/bin/ash\x00"+tail)) {
+				t.Fatal("arguments changed a shell applet's classification")
+			}
+			_ = isShellCommand(exe, []byte(tail))
+		}
+		if isShellCommand("/usr/bin/curl", []byte(tail)) {
+			t.Fatal("command line overrode the executable")
+		}
+	})
+}

@@ -57,7 +57,7 @@ var errProcessNotEligible = errors.New("process is no longer eligible for termin
 
 // AutoKillProcesses kills processes that match critical findings.
 // Only targets: fake kernel threads, reverse shells, GSocket processes, and
-// the processes that wrote back a file CSM had removed.
+// detached web shells and the processes that wrote back a file CSM removed.
 // Never kills root system services or cPanel processes.
 // Marks evaluated input findings so alert delivery cannot repeat a response.
 func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
@@ -66,6 +66,8 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 	}
 
 	var actions []alert.Finding
+	// Sibling chains and independent checks can name the same process.
+	killed := make(map[int]bool)
 
 	for i, f := range findings {
 		// Only act on specific high-confidence critical checks
@@ -87,16 +89,21 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 			// a captured process can exec or acquire a terminal before this.
 			for j := len(f.WriterChain) - 1; j >= 0; j-- {
 				pid := f.WriterChain[j]
-				detached := f.Check == DetachedWebProcessCheck && j == 0
+				if killed[pid] {
+					continue
+				}
+				detached := f.Check == DetachedWebProcessCheck
 				allow := func(exe string) bool {
-					// Socket evidence makes only a shell stoppable.
-					if detached && !isShellExe(exe) {
+					chain := restoreWriterChain(pid, f.WriterObservedAt, !detached && j == 0)
+					if len(chain) == 0 || chain[0] != pid {
 						return false
 					}
-					chain := restoreWriterChain(pid, f.WriterObservedAt, j == 0)
-					return len(chain) > 0 && chain[0] == pid
+					// Every target must still be a shell, including ancestors.
+					// Read again after the ancestry walk, which can span an exec.
+					return !detached || isShellProcess(strconv.Itoa(pid), exe)
 				}
 				if action, ok := killFindingProcess(ctx, f, pid, allow); ok {
+					killed[pid] = true
 					actions = append(actions, action)
 				}
 			}
@@ -113,10 +120,11 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		}
 
 		pidInt, validPID := parseProcessPID(pid)
-		if !validPID {
+		if !validPID || killed[pidInt] {
 			continue
 		}
 		if action, ok := killFindingProcess(ctx, f, pidInt, func(exe string) bool { return !isSafeProcess(exe) }); ok {
+			killed[pidInt] = true
 			actions = append(actions, action)
 		}
 	}
@@ -132,7 +140,7 @@ func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowE
 	var uid, exe string
 	err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
 		uid, exe = getProcessUID(pid), getProcessExe(pid)
-		if uid == "0" || uid == "" || exe == "" || !allowExe(exe) || !processStartedBefore(pid, f.Timestamp) {
+		if uid == "0" || uid == "" || exe == "" || !processStartedBefore(pid, f.Timestamp) || !allowExe(exe) {
 			return errProcessNotEligible
 		}
 		return nil

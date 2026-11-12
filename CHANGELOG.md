@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Detached shell responses leave non-shell parents and utility jobs running, preserve their warnings, and avoid repeated termination attempts.
 - CSM now reports processes a web request left running in the background, and stops shell loops among them when process killing is on.
 - IMAP and POP3 password spray alerts now count upper and lower case spellings of a mailbox as one target.
 - Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.

@@ -19,13 +19,20 @@ import (
 // fake /proc.
 type webProcTable struct {
 	*procTable
-	fds  map[int][]string
-	unix string
+	fds      map[int][]string
+	unix     string
+	cmdlines map[int]string
 }
 
 func (m *webProcTable) ReadFile(name string) ([]byte, error) {
 	if name == "/proc/net/unix" {
 		return []byte(m.unix), nil
+	}
+	if strings.HasSuffix(name, "/cmdline") {
+		pid, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(name, "/proc/"), "/cmdline"))
+		if cmdline, ok := m.cmdlines[pid]; ok {
+			return []byte(cmdline), nil
+		}
 	}
 	return m.procTable.ReadFile(name)
 }
@@ -345,5 +352,198 @@ func TestAutoKillStopsANestedShellTreeOnce(t *testing.T) {
 
 	if !reflect.DeepEqual(killed, []int{700, 701}) {
 		t.Fatalf("killed %v, want the loop, then its child shell", killed)
+	}
+}
+
+func TestDetachedWebBusyboxApplets(t *testing.T) {
+	for _, tc := range []struct {
+		name, exe, cmdline string
+		shell              bool
+	}{
+		{"shell", "/bin/busybox", "busybox\x00sh\x00-c\x00sleep 1000\x00", true},
+		{"bash applet", "/bin/busybox", "busybox\x00bash\x00script\x00", true},
+		{"hush", "/bin/busybox", "busybox\x00hush\x00script\x00", true},
+		{"binary alias", "/bin/busybox", "busybox.static\x00sh\x00script\x00", true},
+		{"applet path", "/bin/busybox", "busybox\x00/bin/sh\x00script\x00", true},
+		{"nested dispatch", "/bin/busybox", "busybox\x00busybox\x00sh\x00script\x00", true},
+		{"nested utility", "/bin/busybox", "busybox\x00busybox\x00wget\x00sh\x00", false},
+		{"ash", "/bin/busybox", "busybox\x00ash\x00script\x00", true},
+		{"symlink", "/bin/busybox", "/bin/sh\x00script\x00", true},
+		{"login", "/bin/busybox", "-ash\x00", true},
+		{"deleted", "/bin/busybox (deleted)", "busybox\x00sh\x00script\x00", true},
+		{"wget", "/bin/busybox", "busybox\x00wget\x00https://example.test/\x00", false},
+		{"sleep symlink", "/bin/busybox", "/bin/sleep\x001000\x00", false},
+		{"no applet", "/bin/busybox", "busybox\x00", false},
+		{"unreadable", "/bin/busybox", "", false},
+		{"argument is not applet", "/bin/busybox", "wget\x00sh\x00", false},
+		{"spaces are not separators", "/bin/busybox", "busybox sh\x00", false},
+		{"canonical symlink target", bashPath, "/home/alice/runner\x00script\x00", true},
+		{"spoofed shell name", curlPath, "sh\x00", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			table := withWebProcTable(t, map[int]fakeProc{700: {ppid: 1, uid: "1001", exe: tc.exe}}, map[int][]string{700: {socketFD(5001)}})
+			table.cmdlines = map[int]string{700: tc.cmdline}
+			findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+			if len(findings) != 1 {
+				t.Fatalf("findings = %+v", findings)
+			}
+			want := alert.Warning
+			if tc.shell {
+				want = alert.Critical
+			}
+			if findings[0].Severity != want {
+				t.Errorf("severity = %v, want %v", findings[0].Severity, want)
+			}
+			killed := captureDetachedKills(t, nil)
+			AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+			if tc.shell && !reflect.DeepEqual(*killed, []int{700}) || !tc.shell && len(*killed) != 0 {
+				t.Fatalf("killed = %v, shell = %v", *killed, tc.shell)
+			}
+		})
+	}
+}
+
+func detachedKillConfig() *config.Config {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.KillProcesses = true
+	return cfg
+}
+
+func captureDetachedKills(t *testing.T, beforeVerify func(int)) *[]int {
+	t.Helper()
+	var killed []int
+	previous := signalProcess
+	signalProcess = func(_ context.Context, pid int, _ syscall.Signal, verify func() error) error {
+		if beforeVerify != nil {
+			beforeVerify(pid)
+		}
+		if err := verify(); err != nil {
+			return err
+		}
+		killed = append(killed, pid)
+		return nil
+	}
+	t.Cleanup(func() { signalProcess = previous })
+	return &killed
+}
+
+func TestDetachedShellLeavesNonShellParents(t *testing.T) {
+	withWebProcTable(t, map[int]fakeProc{
+		700: {ppid: 1, uid: "1001", exe: phpCLIPath},
+		701: {ppid: 700, uid: "1001", exe: bashPath},
+	}, map[int][]string{700: {socketFD(5001)}, 701: {socketFD(5001)}})
+	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+	want := map[int][]int{700: nil, 701: {701}}
+	if got := detachedPIDs(findings); !reflect.DeepEqual(got, want) {
+		t.Errorf("findings = %v, want %v", got, want)
+	}
+	killed := captureDetachedKills(t, nil)
+	AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+	if !reflect.DeepEqual(*killed, []int{701}) {
+		t.Fatalf("killed = %v, want only shell", *killed)
+	}
+}
+
+func TestDetachedShellRechecksEveryTarget(t *testing.T) {
+	for _, pid := range []int{700, 701} {
+		for _, exe := range []string{phpCLIPath, "/bin/busybox"} {
+			t.Run(strconv.Itoa(pid)+exe, func(t *testing.T) {
+				table := withWebProcTable(t, map[int]fakeProc{
+					700: {ppid: 1, uid: "1001", exe: bashPath},
+					701: {ppid: 700, uid: "1001", exe: bashPath},
+				}, map[int][]string{700: {socketFD(5001)}, 701: {socketFD(5001)}})
+				findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+				killed := captureDetachedKills(t, func(target int) {
+					if target == pid {
+						p := table.procs[pid]
+						p.exe = exe
+						table.procs[pid] = p
+						table.cmdlines = map[int]string{pid: "busybox\x00sleep\x001000\x00"}
+					}
+				})
+				AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+				want := []int{1401 - pid}
+				if !reflect.DeepEqual(*killed, want) {
+					t.Fatalf("killed = %v, want %v", *killed, want)
+				}
+			})
+		}
+	}
+}
+
+func TestDetachedSiblingShellsSignalSharedParentOnce(t *testing.T) {
+	withWebProcTable(t, map[int]fakeProc{
+		700: {ppid: 1, uid: "1001", exe: bashPath},
+		701: {ppid: 700, uid: "1001", exe: bashPath},
+		702: {ppid: 700, uid: "1001", exe: bashPath},
+	}, map[int][]string{700: {socketFD(5001)}, 701: {socketFD(5001)}, 702: {socketFD(5001)}})
+	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+	killed := captureDetachedKills(t, nil)
+	AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+	AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+	if !reflect.DeepEqual(*killed, []int{700, 701, 702}) {
+		t.Fatalf("killed = %v", *killed)
+	}
+}
+
+func TestDetachedBusyboxRechecksAppletAtSignal(t *testing.T) {
+	table := withWebProcTable(t, map[int]fakeProc{700: {ppid: 1, uid: "1001", exe: "/bin/busybox"}}, map[int][]string{700: {socketFD(5001)}})
+	table.cmdlines = map[int]string{700: "busybox\x00sh\x00script\x00"}
+	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].Severity != alert.Critical {
+		t.Fatalf("findings = %+v, want a shell", findings)
+	}
+	killed := captureDetachedKills(t, func(int) { table.cmdlines[700] = "busybox\x00sleep\x001000\x00" })
+	AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+	if len(*killed) != 0 {
+		t.Fatalf("non-shell applet killed: %v", *killed)
+	}
+}
+
+func TestDetachedShellExecDuringAncestryRecheck(t *testing.T) {
+	table := withWebProcTable(t, map[int]fakeProc{700: {ppid: 1, uid: "1001", exe: bashPath}}, map[int][]string{700: {socketFD(5001)}})
+	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || !reflect.DeepEqual(findings[0].WriterChain, []int{700}) {
+		t.Fatalf("findings = %+v, want a stoppable shell", findings)
+	}
+	var verifying bool
+	statReads := 0
+	withMockOS(t, &mockOS{readlink: table.Readlink, glob: table.Glob, readFile: func(name string) ([]byte, error) {
+		if verifying && name == "/proc/700/stat" {
+			statReads++
+		}
+		// The first stat read checks start time; the second starts ancestry.
+		if verifying && name == "/proc/700/stat" && statReads == 2 {
+			p := table.procs[700]
+			p.exe = phpCLIPath
+			table.procs[700] = p
+		}
+		return table.ReadFile(name)
+	}})
+	killed := captureDetachedKills(t, func(int) { verifying = true })
+	AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+	if statReads < 2 || len(*killed) != 0 {
+		t.Fatalf("stat reads = %d, killed = %v; want ancestry checked and no kill", statReads, *killed)
+	}
+}
+
+func TestAutoKillDeduplicatesDetachedAndIndependentFindings(t *testing.T) {
+	for _, detachedFirst := range []bool{false, true} {
+		t.Run(strconv.FormatBool(detachedFirst), func(t *testing.T) {
+			withWebProcTable(t, map[int]fakeProc{700: {ppid: 1, uid: "1001", exe: "/home/alice/bash"}}, map[int][]string{700: {socketFD(5001)}})
+			findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+			independent := alert.Finding{Check: "suspicious_process", Severity: alert.Critical, PID: 700, Timestamp: time.Now()}
+			if detachedFirst {
+				findings = append(findings, independent)
+			} else {
+				findings = append([]alert.Finding{independent}, findings...)
+			}
+			killed := captureDetachedKills(t, nil)
+			AutoKillProcesses(context.Background(), detachedKillConfig(), findings)
+			if !reflect.DeepEqual(*killed, []int{700}) {
+				t.Fatalf("killed = %v, want one signal", *killed)
+			}
+		})
 	}
 }
