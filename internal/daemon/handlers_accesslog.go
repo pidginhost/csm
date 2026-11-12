@@ -477,8 +477,7 @@ func isAccessLogSpace(b byte) bool {
 // paths suitable for hard-block auto-response. Drupal /user/login, Tomcat
 // /manager/html, generic /admin/login.php, /mysql/ are intentionally EXCLUDED
 // because they're either too generic (FP risk on shared hosting) or use a
-// different attack shape (Basic auth vs. POST forms). See spec Component 5
-// for the full rationale.
+// different attack shape (Basic auth vs. POST forms).
 func isAdminPanelPath(path string) bool {
 	return strings.Contains(path, "/phpmyadmin/index.php") ||
 		strings.Contains(path, "/pma/index.php") ||

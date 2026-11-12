@@ -402,8 +402,7 @@ func TestAccessLog_AdminPanelBruteForce_Suppression(t *testing.T) {
 // Drupal (/user/login) and Tomcat (/manager/html) are intentionally NOT
 // covered by this detector. Drupal's path is too generic on shared hosting;
 // Tomcat's attack shape is Basic auth GET/401, not POST form submission.
-// Both are flagged as follow-up work in the spec. TestAccessLog_AdminPanel
-// BruteForce_DoesNotMatchBarePaths pins the tight scope against future drift.
+// This test pins the tight scope against future drift.
 func TestAccessLog_AdminPanelBruteForce_DoesNotMatchBarePaths(t *testing.T) {
 	cfg := &config.Config{}
 	barePaths := []string{
