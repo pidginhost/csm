@@ -362,7 +362,11 @@ prints the one line each site needs. Add it inside every `<VirtualHost>`:
 
 Then run `apachectl configtest` and reload Apache. CSM never edits site
 files; `csm doctor challenge` warns while any `<VirtualHost>` in the files
-Apache loads lacks the line.
+Apache loads lacks the line. The check follows loaded includes through shared
+configuration fragments and ignores includes in inactive conditions. If Apache
+does not report its loaded configuration, doctor warns that coverage is unknown.
+Uninstall leaves a disabled per-site include so existing site configuration
+remains valid. Remove the Include lines before deleting that retained file.
 
 On cPanel, Apache and LiteSpeed alike, HTTPS site blocks do not inherit the
 server-wide snippet, so the installer also writes the rule to the per-site

@@ -30,14 +30,17 @@ func TestPlainApacheSitesRequireTheIncludeInEveryVirtualHost(t *testing.T) {
 	}
 	snippet := plainApacheSiteSnippetPath
 	include := "    Include " + snippet + "\n"
-	main := write("apache2.conf", "ServerRoot /etc/apache2\n")
+	main := write("apache2.conf", "ServerRoot /etc/apache2\nInclude sites/*.conf\n")
 	covered := write("site-a.conf", "<VirtualHost *:80>\n"+include+"</VirtualHost>\n<VirtualHost *:443>\n    IncludeOptional \""+snippet+"\"\n</VirtualHost>\n")
 	missing := write("site-b.conf", "<VirtualHost *:443>\n    # Include "+snippet+"\n</VirtualHost>\n")
 	dump := func(files ...string) string {
 		var b strings.Builder
 		b.WriteString("Included configuration files:\n  (*) " + main + "\n")
 		for _, f := range files {
-			b.WriteString("    (12) " + f + "\n")
+			b.WriteString("    (2) " + f + "\n")
+			if f == covered {
+				b.WriteString("      (2) " + snippet + "\n      (5) " + snippet + "\n")
+			}
 		}
 		return b.String()
 	}
@@ -96,5 +99,77 @@ func TestInstallDoesNotRebuildWhereSitesNeedManualIncludes(t *testing.T) {
 	}
 	if !strings.Contains(res.Message, h.fix) {
 		t.Fatalf("message does not give the manual step: %q", res.Message)
+	}
+}
+
+func TestPlainApacheCoverageUsesLoadedIncludes(t *testing.T) {
+	for _, tc := range []struct {
+		name, conf, helper, children string
+		want                         bool
+		wantErr                      bool
+	}{
+		{name: "uncovered file with spaces", conf: "<VirtualHost *:443>\n</VirtualHost>\n"},
+		{name: "inactive conditional include", conf: "<VirtualHost *:443>\n<IfDefine NEVER_SET>\nInclude SNIPPET\n</IfDefine>\n</VirtualHost>\n"},
+		{name: "direct include", conf: "<VirtualHost *:443>\nInclude SNIPPET\n</VirtualHost>\n", children: "    (2) SNIPPET\n", want: true},
+		{name: "nested include", conf: "<VirtualHost *:443>\nInclude HELPER\n</VirtualHost>\n", helper: "Include SNIPPET\n", children: "    (2) HELPER\n      (1) SNIPPET\n", want: true},
+		{name: "one covered one inactive", conf: "<VirtualHost *:80>\nInclude SNIPPET\n</VirtualHost>\n<VirtualHost *:443>\n<IfDefine NEVER_SET>\nInclude SNIPPET\n</IfDefine>\n</VirtualHost>\n", children: "    (2) SNIPPET\n"},
+		{name: "global include only", conf: "Include SNIPPET\n<VirtualHost *:443>\n</VirtualHost>\n", children: "    (1) SNIPPET\n"},
+		{name: "continued virtualhost", conf: "<VirtualHost \\\n*:443>\nInclude SNIPPET\n</VirtualHost>\n", children: "    (3) SNIPPET\n", want: true},
+		{name: "unreadable include", conf: "Include HELPER\n", children: "    (1) HELPER\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			main := filepath.Join(dir, "site.conf")
+			if tc.name == "uncovered file with spaces" {
+				main = filepath.Join(dir, "site with spaces.conf")
+			}
+			helper := filepath.Join(dir, "common.conf")
+			replace := strings.NewReplacer("SNIPPET", plainApacheSiteSnippetPath, "HELPER", helper)
+			if err := os.WriteFile(main, []byte(replace.Replace(tc.conf)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.helper != "" {
+				if err := os.WriteFile(helper, []byte(replace.Replace(tc.helper)), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dump := "Included configuration files:\n  (*) " + main + "\n" + replace.Replace(tc.children)
+			s := &plainApacheSites{ctl: "apachectl", runner: dumpIncludesRunner{dump}}
+			active, err := s.SiteIncludeActive()
+			if active != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("coverage = %v, %v; want %v, error %v", active, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestPlainApacheCoverageRejectsMissingDump(t *testing.T) {
+	for _, dump := range []string{"", "Syntax OK\n", "Included configuration files:\n", "  (*) relative.conf\n"} {
+		s := &plainApacheSites{ctl: "apachectl", runner: dumpIncludesRunner{dump}}
+		if active, err := s.SiteIncludeActive(); active || err == nil {
+			t.Errorf("dump %q: coverage = %v, %v; want an error", dump, active, err)
+		}
+	}
+}
+
+// A required Include can fail configtest until Install creates its target.
+// Successful installation must report the coverage of the new configuration.
+type fileAwareSiteHandler struct{ *fakeSiteHandler }
+
+func (h fileAwareSiteHandler) SiteIncludeActive() (bool, error) {
+	_, err := os.Stat(h.sitePath)
+	return err == nil, err
+}
+
+func TestInstallRefreshesCoverageAfterWritingSiteSnippet(t *testing.T) {
+	i, h := newSiteInstaller(t, false)
+	h.configPath = ""
+	i.Handler = fileAwareSiteHandler{h}
+	res, err := i.Install()
+	if err != nil || res.Status != "ok" {
+		t.Fatalf("Install = %+v, %v", res, err)
+	}
+	if strings.Contains(res.Message, "could not tell") || strings.Contains(res.Message, "only after") {
+		t.Fatalf("successful install reports stale coverage: %s", res.Message)
 	}
 }

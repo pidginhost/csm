@@ -339,6 +339,11 @@ func (i *Installer) Install() (Result, error) {
 		res.Message = "configtest: " + verr.Error()
 		return res, verr
 	}
+	// Plain Apache cannot dump loaded includes until a missing required
+	// snippet exists. Report the configuration that just passed configtest.
+	if siteWritten && !canRebuild {
+		site.active, site.activeErr = site.sites.SiteIncludeActive()
+	}
 
 	if rerr := i.Handler.Reload(); rerr != nil {
 		res.Status = "fail"

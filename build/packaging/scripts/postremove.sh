@@ -46,6 +46,26 @@ remove_challenge_snippets() {
     local nginx_snippet=/etc/nginx/conf.d/csm-challenge.conf snippet
     local removal_failed=0 grep_status nginx_ref nginx_in_use
     local nginx_file_list nginx_scan_failed
+    local site=/var/cache/csm/apache-challenge-site.conf header tmp
+    # Operator sites retain a required Include. Leave an inert managed file
+    # so Apache can still start, without changing any operator configuration.
+    if [ -e "$site" ] || [ -L "$site" ]; then
+        if [ -f "$site" ] && [ ! -L "$site" ] && IFS= read -r header < "$site" && [[ "$header" =~ ^\#\ csm-managed-version:\ [1-9][0-9]*$ ]]; then
+            tmp=$(mktemp "${site}.remove.XXXXXX") || tmp=""
+            if [ -n "$tmp" ] &&
+                printf '%s\n' '# csm-managed-version: 1' "# Challenge redirects disabled; keep this file for cPanel's required include." > "$tmp" &&
+                chmod 0644 "$tmp" && mv -f -- "$tmp" "$site"; then
+                :
+            else
+                [ -z "$tmp" ] || rm -f -- "$tmp"
+                echo "WARNING: could not disable $site; leaving challenge maps in place" >&2
+                removal_failed=1
+            fi
+        else
+            echo "WARNING: $site is not a managed regular file; leaving challenge maps in place" >&2
+            removal_failed=1
+        fi
+    fi
     for snippet in \
         /etc/apache2/conf.d/csm_challenge.conf \
         /etc/apache2/conf.d/csm-challenge.conf \
@@ -98,6 +118,9 @@ remove_challenge_snippets() {
             fi
         fi
     fi
+    if [ "$removal_failed" -eq 0 ]; then
+        rm -f -- /var/cache/csm/challenge_ips.txt /var/cache/csm/challenge_ips.nginx.map || removal_failed=1
+    fi
     return "$removal_failed"
 }
 
@@ -125,9 +148,7 @@ for user_conf in /etc/apache2/conf.d/modsec/modsec2.user.conf /usr/local/apache/
     fi
 done
 rm -f /etc/apache2/conf.d/modsec/csm_modsec_custom.conf 2>/dev/null || true
-if remove_challenge_snippets; then
-    rm -rf /var/cache/csm 2>/dev/null || true
-fi
+remove_challenge_snippets || true
 
 # Remove PHP Shield ini files
 rm -f /opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini 2>/dev/null || true

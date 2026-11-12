@@ -157,7 +157,7 @@ func (p *plainApacheSites) SiteFix() string {
 }
 
 func (p *plainApacheSites) RebuildSiteIncludes() error {
-	return fmt.Errorf("Apache site blocks need `Include %s` added by the operator", plainApacheSiteSnippetPath)
+	return fmt.Errorf("apache site blocks need `Include %s` added by the operator", plainApacheSiteSnippetPath)
 }
 
 // SiteIncludeActive reads every file Apache loads and requires each
@@ -170,45 +170,13 @@ func (p *plainApacheSites) SiteIncludeActive() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("%s -t -D DUMP_INCLUDES: %v\n%s", p.ctl, err, out)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 || !strings.HasPrefix(fields[0], "(") || !strings.HasPrefix(fields[1], "/") {
-			continue
-		}
-		// #nosec G304 -- a configuration file Apache itself reports loading.
-		data, err := os.ReadFile(fields[1])
-		if err != nil {
-			return false, err
-		}
-		if !everyVirtualHostIncludes(string(data), plainApacheSiteSnippetPath) {
-			return false, nil
-		}
+	root, err := parseApacheIncludes(string(out))
+	if err != nil {
+		return false, err
 	}
-	return true, nil
-}
-
-// everyVirtualHostIncludes reports whether each <VirtualHost> block in conf
-// has an active Include or IncludeOptional of path.
-func everyVirtualHostIncludes(conf, path string) bool {
-	inSite, included := false, false
-	for _, line := range strings.Split(conf, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
-			continue
-		}
-		switch strings.ToLower(fields[0]) {
-		case "<virtualhost":
-			inSite, included = true, false
-		case "</virtualhost>":
-			if inSite && !included {
-				return false
-			}
-			inSite = false
-		case "include", "includeoptional":
-			if inSite && len(fields) == 2 && strings.Trim(fields[1], "\"'") == path {
-				included = true
-			}
-		}
+	coverage := apacheSiteCoverage{}
+	if err := coverage.visit(root); err != nil {
+		return false, err
 	}
-	return !inSite
+	return !coverage.inSite && !coverage.missing, nil
 }
