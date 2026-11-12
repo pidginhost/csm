@@ -51,7 +51,9 @@ func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus
 	in := stalwartInputs(cfg, platform.Detect().WebServerUsers(), &automation)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	newAPI := func(url, user, password string) stalwartsetup.API { return stalwartapi.New(url, user, password) }
+	newAPI := func(url, user, password string) stalwartsetup.API {
+		return stalwartapi.NewWithPeerCheck(url, user, password, checkStalwartPeer)
+	}
 	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, defaultCheckStalwartListener, cfg.Stalwart, in)...)
 }
 

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -310,5 +312,50 @@ func TestClientPreservesAPIPathPrefix(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls = %d, want session and settings", calls)
+	}
+}
+
+// A successful preflight cannot authorize a replacement connection after a
+// restart. Each dial must pass the peer check before any HTTP bytes leave.
+func TestClientChecksEachLocalConnection(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Connection", "close")
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer srv.Close()
+	var checks atomic.Int32
+	refused := errors.New("untrusted replacement peer")
+	c := NewWithPeerCheck(srv.URL, testUser, testPassword, func(context.Context, net.Conn) error {
+		if checks.Add(1) == 1 {
+			return nil
+		}
+		return refused
+	})
+	if _, err := c.do(context.Background(), http.MethodGet, "/", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.do(context.Background(), http.MethodGet, "/", nil); !errors.Is(err, refused) {
+		t.Fatalf("replacement connection: %v", err)
+	}
+	if checks.Load() != 2 || requests.Load() != 1 {
+		t.Fatalf("checks=%d requests=%d; refused peer must receive no HTTP request", checks.Load(), requests.Load())
+	}
+}
+
+func TestClientPeerErrorRedactsLogin(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer srv.Close()
+	c := NewWithPeerCheck(srv.URL, testUser, testPassword, func(context.Context, net.Conn) error {
+		return errors.New("peer error: " + testPassword)
+	})
+	_, err := c.do(context.Background(), http.MethodGet, "/", nil)
+	if err == nil || strings.Contains(err.Error(), testPassword) || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatal("peer error was not safely reported")
+	}
+	if requests.Load() != 0 {
+		t.Fatal("unverified peer received an HTTP request")
 	}
 }

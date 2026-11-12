@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -71,6 +72,32 @@ func New(baseURL, user, password string) *Client {
 			},
 		},
 	}
+}
+
+// NewWithPeerCheck verifies each local TCP peer before sending the login.
+// Remote servers are authenticated by TLS. The check also runs on reconnects.
+func NewWithPeerCheck(baseURL, user, password string, check func(context.Context, net.Conn) error) *Client {
+	c := New(baseURL, user, password)
+	if !LocalURL(baseURL) {
+		return c
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Local credentials must never be sent through an environment proxy.
+	transport.Proxy = nil
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		if err := check(ctx, conn); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+	c.hc.Transport = transport
+	return c
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {

@@ -46,7 +46,7 @@ func defaultStalwartSetupDeps() stalwartSetupDeps {
 		readFile:      os.ReadFile,
 		checkListener: defaultCheckStalwartListener,
 		newAPI: func(url, user, password string) stalwartsetup.API {
-			return stalwartapi.New(url, user, password)
+			return stalwartapi.NewWithPeerCheck(url, user, password, checkStalwartPeer)
 		},
 	}
 }
