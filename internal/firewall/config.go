@@ -308,8 +308,10 @@ func DefaultConfig() *FirewallConfig {
 		DenyIPLimit:     3000,
 		DenyTempIPLimit: 500,
 		SMTPBlock:       false,
-		SMTPPorts:       []int{25, 465, 587},
-		LogDropped:      true,
-		LogRate:         5,
+		// cPanel's own sender and Mailman; users missing on a host are skipped.
+		SMTPAllowUsers: []string{"cpanel", "mailman"},
+		SMTPPorts:      []int{25, 465, 587},
+		LogDropped:     true,
+		LogRate:        5,
 	}
 }

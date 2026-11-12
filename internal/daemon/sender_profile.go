@@ -177,6 +177,8 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 
 	// Registered before the unlock defer so owner I/O runs after it.
 	defer func() { stampMailAccountOwner(findings, user) }()
+	unlock := lockMailResponse(store.MailboxSuspensionID(activeMailBackend.name(), user))
+	defer unlock()
 	w := lockSenderWindow(user, now)
 	defer w.mu.Unlock()
 
@@ -325,11 +327,67 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 // domain so rate alerts stay quiet while the response settles. The domain
 // marker is correlation state, not an auto-response action, so it is kept
 // even when the suspension is disabled or dry-run gated.
-func respondToMailboxCompromise(cfg *config.Config, authUser, reason string) {
+func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason string, at time.Time) {
 	if domain := extractDomainFromEmail(authUser); domain != "" {
-		maybeSuspendMailbox(cfg, authUser, reason)
+		maybeSuspendMailbox(cfg, authUser, check, reason, at)
 		RecordCompromisedDomain(domain)
 	}
+}
+
+// forgetSenderEvidence drops a released mailbox's sending evidence: its
+// rolling hour and today's counts. Sends from before a release must not
+// suspend the mailbox again.
+func forgetSenderEvidence(user string, now time.Time) error {
+	if !strings.Contains(user, "@") {
+		return nil
+	}
+	db := store.Global()
+	keys := map[string]bool{}
+	if db != nil {
+		stored, err := db.SenderProfileKeys(user)
+		if err != nil {
+			return err
+		}
+		for _, key := range stored {
+			keys[key] = true
+		}
+	}
+	senderWindows.Range(func(key, _ any) bool {
+		if strings.EqualFold(key.(string), user) {
+			keys[key.(string)] = true
+		}
+		return true
+	})
+	for key := range keys {
+		if err := forgetSenderWindow(key, now, db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func forgetSenderWindow(user string, now time.Time, db *store.DB) error {
+	w := lockSenderWindow(user, now)
+	defer w.mu.Unlock()
+	if (!w.loaded || w.db != db) && db != nil {
+		profile, err := db.GetSenderProfile(user)
+		if err != nil {
+			return fmt.Errorf("load sender profile for %s: %w", user, err)
+		} else {
+			w.profile = profile
+			w.db, w.loaded, w.dayKey = db, true, ""
+		}
+	}
+	w.events, w.countries = nil, nil
+	w.firedAt, w.firedSeverity = time.Time{}, 0
+	if w.loaded {
+		delete(w.profile.Days, senderDayKey(now))
+		w.dirty = true
+		if !w.flush(user) {
+			return fmt.Errorf("save cleared sender profile for %s", user)
+		}
+	}
+	return nil
 }
 
 // senderEvictWindow is how long a per-user window may stay idle before it is

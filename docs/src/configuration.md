@@ -12,7 +12,9 @@ configuration reload alone does not import those changes. See
 Packages and `csm install` write the same commented configuration, so a new
 host starts with the same settings whichever way it was installed. A key left
 out of the file takes the built-in default, which can differ from the value
-the shipped file sets.
+the shipped file sets. Left out or left blank, `backdoor_ports` and
+`firewall.smtp_allow_users` take the shipped lists; write `[]` for none.
+Users missing from the host are skipped.
 
 The CLI generates a fresh Web UI admin token and issue time, validates the
 result, and writes the new configuration with mode `0600`. Invalid templates
@@ -330,7 +332,9 @@ web_server:
   # HTTP readers protect these addresses without reading that header.
   # challenge.trusted_proxies entries count too. Addresses of this host
   # are never trusted. CSM skips an empty or unreadable entry and never
-  # trusts one covering every address; csm validate warns about both.
+  # trusts one covering every address; csm validate warns about both,
+  # and the daemon raises a High finding until a config without them runs.
+  # Restart after correcting the lists; a reload keeps the running lists.
   # Legacy null or non-string scalar entries do not prevent startup,
   # reload or plain csm doctor; usable entries beside them still work.
   # Leave both lists empty to use the direct peer.

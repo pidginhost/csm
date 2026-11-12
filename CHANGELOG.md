@@ -11,6 +11,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
+- A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
 - Crafted or malformed cPanel session log entries can no longer fake or hide logins and password changes.
 - A dismissed malware finding now alerts again when the file's content changes.
@@ -23,14 +25,23 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A file CSM quarantined or cleaned now alerts again when it comes back, instead of being held back as a repeat.
 - CSM now raises a Critical alert when a process writes back a file CSM quarantined or cleaned, and repeats that response.
 - With process killing on, CSM now stops a process that writes back a file it removed, when a web request started it or it runs detached.
+- CSM now raises a High alert while it skips unusable trusted proxy entries.
+
+### Added
+
+- The Email page has a Suspended tab listing the mailboxes and accounts CSM suspended, with their live status and a Release button.
 
 ### Changed
 
+- ModSecurity repeat-offender alerts now include the rule, message and site of the request that triggered them.
+- Account-wide outgoing mail holds now appear in the action log with the command that releases them.
 - Automatic response forecasts refuse web findings when Apache, nginx or LiteSpeed rewrites logged client addresses or CSM cannot read that setting, and `csm doctor` reports it.
+- Omitted backdoor port and SMTP sender lists now use packaged defaults; explicitly empty lists stay empty.
 
 ### Fixed
 
 - Deep scan findings for files that were rechecked and found clean now clear on large servers instead of staying listed indefinitely.
+- cPanel API failure alerts now cover every API and token endpoint, including encoded requests, and no longer count page requests from expired cPanel or webmail sessions.
 - API-created cPanel sessions and logins from the server itself no longer raise account hijack alerts or count toward multi-address login alerts.
 - On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
 - cPanel login checks now read session logs written without a time zone, so logins and multi-address logins on those servers are reported.
@@ -43,6 +54,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 - Restoring a mail message quarantined from a phishing finding now returns the whole message to the mail queue instead of failing, and a failed restore can be retried.
 - On servers whose Exim log adds a time zone or process ID, the deferral report now lists deferrals and outbound mail checks see delivered messages and real send times.
+- Settings saves no longer fail when the edited setting is left blank in the configuration file.
 
 ## [4.11.0] - 2026-11-10
 

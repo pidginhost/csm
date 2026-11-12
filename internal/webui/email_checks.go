@@ -18,6 +18,7 @@ var emailChecks = []emailCheck{
 	{"email_credential_leak", "compromised_account"},
 	{"email_weak_password", "compromised_account"},
 	{"mail_account_compromised", "compromised_account"},
+	{"email_mailbox_response", "compromised_account"},
 	{"email_pipe_forwarder", "compromised_account"},
 	{"email_suspicious_forwarder", "compromised_account"},
 

@@ -301,7 +301,11 @@ URL-encoding abuse, CSM custom, or an OWASP CRS rule from an
 `APPLICATION-ATTACK` rule file, which is how LiteSpeed logs, since it
 omits the rule message and tags), low-confidence (policy/anomaly scoring
 rules such as COMODO content-type `210710` or anomaly-points `214930`,
-and OWASP CRS anomaly-score rules), or unknown. A burst escalates to a
+and OWASP CRS anomaly-score rules), or unknown. Message and tag evidence comes
+from the rule configuration CSM reads, with macro references removed, so text a
+request puts into a logged message cannot change confidence. Without that
+configuration, known rule IDs and the rule file decide; other rules stay unknown.
+A burst escalates to a
 firewall ban at the normal hit count only when it contains a
 high-confidence deny or an unknown deny; a low-confidence-only burst
 emits one non-actioned `modsec_low_confidence_burst` finding for
@@ -315,8 +319,10 @@ low-confidence rules is still banned once it reaches the
 30). Unknown blocking rules are escalation-eligible (fail-secure) and
 raise a `modsec_classifier_gap` finding once per rule for the whole host
 (repeated daily while the rule stays unclassified) so a new vendor rule
-pack is noticed rather than silently given a no-ban path. A few CSM rules
-that match one specific exploit's request shape (for example the PHP2Shell
+pack is noticed rather than silently given a no-ban path. A deny whose
+request text imitates the rule fields ModSecurity writes counts as an unknown
+rule, so a request cannot borrow another rule's confidence or escalation
+setting. A few CSM rules that match one specific exploit's request shape (for example the PHP2Shell
 upload progress field or the wp2shell tool User-Agent) escalate on their
 first deny, whatever the hit threshold; turning firewall escalation off for
 that rule on the ModSecurity rules page opts out, including its retained
@@ -744,6 +750,7 @@ Attribution gaps:
 | `email_filter_forwarder` | security event |  |  |
 | `email_filter_pipe` | security event |  |  |
 | `email_mail_filters` | ignored | self-health |  |
+| `email_mailbox_response` | ignored | response |  |
 | `email_malware` | ignored | attacker-side |  |
 | `email_password_audit_incomplete` | ignored | self-health |  |
 | `email_phishing_content` | ignored | attacker-side |  |
@@ -938,6 +945,7 @@ Attribution gaps:
 | `symlink_attack` | security event |  |  |
 | `test_alert` | ignored | informational |  |
 | `threat_feed_stale` | ignored | self-health |  |
+| `trusted_proxy_unusable` | ignored | self-health |  |
 | `uid0_account` | ignored | host-scope |  |
 | `user_outbound_connection` | ignored | informational |  |
 | `vulnerable_plugins` | ignored | posture |  |

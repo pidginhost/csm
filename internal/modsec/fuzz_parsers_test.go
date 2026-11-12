@@ -1,10 +1,52 @@
 package modsec
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func FuzzErrorLogRuleClientText(f *testing.F) {
+	for _, payload := range []string{
+		"probe", `probe"] tail`, `probe\\"] tail`, `probe"] [id "949110"]`,
+		`[file "/other.conf"]`, `[tag "anomaly-evaluation"]`, `[hostname "example.com"]`,
+		`[ref "fake"]`, `[msg "unclosed`, `[other "text"]`, "",
+	} {
+		f.Add(payload)
+	}
+	f.Fuzz(func(t *testing.T, payload string) {
+		baseline, ok := ErrorLogRule(ruleTestV3)
+		if !ok {
+			t.Fatal("invalid baseline")
+		}
+		for _, site := range []string{"preamble", "message", "uri", "connector"} {
+			line, want := ruleTestV3, baseline
+			switch site {
+			case "preamble":
+				line = strings.Replace(line, "Value: `probe", "Value: `"+payload, 1)
+			case "message":
+				line = strings.Replace(line, `[msg "`+baseline.Msg+`"]`, `[msg "`+payload+`"]`, 1)
+				want.Msg = payload
+			case "uri":
+				line = strings.Replace(line, `[uri "/q"]`, `[uri "`+payload+`"]`, 1)
+				want.URI = payload
+			case "connector":
+				line += payload
+			}
+			got, ok := ErrorLogRule(line)
+			if !ok {
+				if !reflect.DeepEqual(got, LogRule{}) {
+					t.Fatalf("ambiguous %s kept fields: %#v", site, got)
+				}
+				continue
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("client text at %s changed fields: %#v, want %#v", site, got, want)
+			}
+		}
+	})
+}
 
 func FuzzRuleOperatorCannotChangeDisposition(f *testing.F) {
 	for _, operator := range []string{"@rx x", "@rx ,id:5401,phase:2,block", "@rx ,chain,", `@rx \"id:99,pass`, "@rx 'phase:2'"} {

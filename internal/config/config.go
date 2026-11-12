@@ -1641,6 +1641,7 @@ type defaultPresence struct {
 	httpASNCrawlReverseProxy   bool
 	xmlrpcThreshold            bool
 	integrityImmutable         bool
+	backdoorPorts              bool
 	suppressWebmail            bool
 	autoResponse               autoResponsePresence
 	// The trusted_proxies lists as written, null entries kept as "".
@@ -2018,6 +2019,10 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Challenge.Difficulty == 0 {
 		cfg.Challenge.Difficulty = 2
+	}
+	// An explicit empty list means no port is a backdoor port.
+	if !presence.backdoorPorts {
+		cfg.BackdoorPorts = []int{4444, 5555, 55553, 55555, 31337}
 	}
 	if cfg.Firewall == nil {
 		cfg.Firewall = firewall.DefaultConfig()
@@ -2434,13 +2439,14 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		Alerts struct {
 			BlockDigest map[string]yaml.Node `yaml:"block_digest"`
 		} `yaml:"alerts"`
-		Retention    map[string]yaml.Node `yaml:"retention"`
-		Integrity    map[string]yaml.Node `yaml:"integrity"`
-		Suppressions map[string]yaml.Node `yaml:"suppressions"`
-		AutoResponse map[string]yaml.Node `yaml:"auto_response"`
-		Firewall     map[string]yaml.Node `yaml:"firewall"`
-		WebServer    map[string]yaml.Node `yaml:"web_server"`
-		Challenge    map[string]yaml.Node `yaml:"challenge"`
+		Retention     map[string]yaml.Node `yaml:"retention"`
+		Integrity     map[string]yaml.Node `yaml:"integrity"`
+		Suppressions  map[string]yaml.Node `yaml:"suppressions"`
+		AutoResponse  map[string]yaml.Node `yaml:"auto_response"`
+		Firewall      map[string]yaml.Node `yaml:"firewall"`
+		BackdoorPorts yaml.Node            `yaml:"backdoor_ports"`
+		WebServer     map[string]yaml.Node `yaml:"web_server"`
+		Challenge     map[string]yaml.Node `yaml:"challenge"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
@@ -2464,6 +2470,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			presence.firewall[key] = !yamlNodeIsNull(&node)
 		}
 	}
+	presence.backdoorPorts = raw.BackdoorPorts.Kind != 0 && !yamlNodeIsNull(&raw.BackdoorPorts)
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
 	_, presence.suppressWebmail = raw.Suppressions["suppress_webmail_alerts"]
 	if node, ok := raw.AutoResponse["block_expiry"]; ok && !yamlNodeIsNull(&node) {
@@ -2691,6 +2698,9 @@ func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]
 	}
 	if !present["deny_temp_ip_limit"] {
 		fc.DenyTempIPLimit = def.DenyTempIPLimit
+	}
+	if !present["smtp_allow_users"] {
+		fc.SMTPAllowUsers = def.SMTPAllowUsers
 	}
 	if !present["smtp_ports"] {
 		fc.SMTPPorts = def.SMTPPorts

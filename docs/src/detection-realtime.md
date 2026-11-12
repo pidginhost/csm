@@ -253,7 +253,11 @@ and a login that names its method twice counts as a direct login. A password
 change entry with an unreadable header or timestamp cannot suppress a
 shadow-file alert.
 
-A cPanel API authentication failure on a session URL (`/cpsess<token>/...`)
+A cPanel API authentication failure is a 401 or 403 answer to a UAPI, JSON
+API or XML API call, a WHM DNS cluster call, or another endpoint that accepts
+API tokens (WebSocket, account transfer, WP Toolkit, Nova), percent-encoded or
+not. Page requests on a session URL are not API calls and are not counted.
+A failure on a session URL (`/cpsess<token>/...`)
 waits a few seconds for the session log. A browser tab left open after the
 account logged in again elsewhere still sends its old URL token, and cPanel
 ends that session after a few token failures. When the session log records
@@ -439,7 +443,7 @@ Signals:
 | `smtp_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `smtp_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
 | `mail_bruteforce_suspected` | Spray detection in observe mode: the spray rules matched an SMTP source. The message names SMTP and the rule | Visibility finding only |
-| `mail_account_compromised` | A successful SMTP login after failures on two or more mailboxes including another one, or on a missing one, or after repeated failures on the same mailbox, the first at least an hour before the login | Critical only in enforce mode when a failed name was a missing mailbox many networks tried, and the IP is then blocked. A source trusted on two or more other mailboxes is downgraded. Every other case is a High advisory, visibility only |
+| `mail_account_compromised` | A successful SMTP login after failures on two or more mailboxes including another one, or on a missing one, or after repeated failures on the same mailbox, the first at least an hour before the login | Critical only in enforce mode when a failed name was a missing mailbox many networks tried, and the IP is then blocked and the mailbox suspended under auto-response. A source trusted on two or more other mailboxes is downgraded. Every other case is a High advisory, visibility only |
 
 Tunable via the `thresholds.smtp_bruteforce_*`, `thresholds.smtp_probe_*` and `thresholds.mail_spray_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
 
@@ -484,7 +488,7 @@ Signals:
 | `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern, or spray detection in observe mode matched an IMAP/POP source. The spray message names IMAP/POP and the rule | Visibility finding only. No auto-block |
 | `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
-| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on two or more mailboxes including another one, or on a missing one, or repeated failures on the same mailbox, the first at least an hour before the login | Critical findings block immediately. A source with established history on at least two other mailboxes from before its current untrusted failures emits a High advisory and is not auto-blocked. A login after failures on other mailboxes is Critical only in enforce mode when one of them was a missing mailbox many networks tried; every other spray case is a High advisory |
+| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on two or more mailboxes including another one, or on a missing one, or repeated failures on the same mailbox, the first at least an hour before the login | Critical findings block immediately and, under auto-response on cPanel, suspend the mailbox (a cPanel account's own login holds the account's outgoing mail instead). A source with established history on at least two other mailboxes from before its current untrusted failures emits a High advisory and is not auto-blocked. A login after failures on other mailboxes is Critical only in enforce mode when one of them was a missing mailbox many networks tried; every other spray case is a High advisory |
 
 Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Established good sources with a confined stale-password pattern emit `mail_bruteforce_suspected` instead of an IP block, while wider spraying and compromise from a source without established multi-mailbox history still block. A compromise from an IP with established history on at least two other mailboxes from before its current untrusted failures remains visible as a High advisory but does not feed direct, incident, or spray auto-blocking. The `mail_bruteforce` and `mail_bruteforce_suspected` alerts name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so a real attack on a live mailbox is easy to tell apart from dictionary noise.
 

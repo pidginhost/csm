@@ -710,10 +710,7 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 
 	for _, rec := range records {
 		access, ok := ParseCpanelAccessRecord(rec.text)
-		// Look for 401/403 responses on API endpoints
-		// A status or target forged into client text can only count against
-		// the client that sent it, so any plausible reading counts.
-		if !ok || !access.MayHaveStatus("401", "403") || !access.TargetContains("json-api", "/execute/", "cpsess") {
+		if !ok || !access.APIAuthFailure() {
 			continue
 		}
 		ip := access.IP

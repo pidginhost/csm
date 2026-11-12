@@ -373,8 +373,7 @@ func Validate(cfg *Config) []ValidationResult {
 	if err := WebServerLocalTrustError(cfg.WebServer.TrustedProxies); err != nil {
 		results = append(results, ValidationResult{"warn", "web_server.trusted_proxies", err.Error()})
 	}
-	results = append(results, unusableTrustedProxyResults("warn", "web_server.trusted_proxies", cfg.WebServer.TrustedProxies)...)
-	results = append(results, unusableTrustedProxyResults("warn", "challenge.trusted_proxies", cfg.Challenge.TrustedProxies)...)
+	results = append(results, UnusableTrustedProxies(cfg)...)
 
 	// --- EmailAV ---
 	if cfg.EmailAV.Enabled && cfg.EmailAV.MaxAttachmentSize <= 0 {

@@ -2092,6 +2092,103 @@
         if (btn) btn.addEventListener('click', function() { heldBulkAction(action); });
     });
 
+    // ---------- Suspended mailboxes tab ----------
+    // Mailboxes and accounts CSM suspended, with the mail server's live state
+    // and a Release button. Names, reasons and actors come from mail logs, so
+    // every value is set as text.
+    var SUSPENDED_PARTS = { suspend_login: 'logins', suspend_outgoing: 'outgoing', hold_outgoing: 'account hold' };
+    var _suspendedSeq = 0;
+    var _suspendedBusy = Object.create(null);
+
+    function loadSuspended() {
+        var seq = ++_suspendedSeq;
+        CSM.get('/api/v1/email/suspensions', { silent: true })
+            .then(function(data) {
+                if (seq === _suspendedSeq) renderSuspended(data.items);
+            })
+            .catch(function(err) {
+                if (seq !== _suspendedSeq) return;
+                setTabCount('suspended', '?');
+                CSM.loadError(document.getElementById('email-suspended-tbody'), loadSuspended, { title: 'Failed to load suspended mailboxes', error: err });
+            });
+    }
+
+    function suspendedStatus(r) {
+        if (r.released_at) return node('span', 'text-muted', 'Released ' + CSM.timeAgo(r.released_at) + ' by ' + (r.released_by || 'unknown'));
+        if (r.status_unknown) return node('span', 'badge bg-yellow-lt', 'Status unknown');
+        return node('span', 'badge bg-red-lt', 'Suspended');
+    }
+
+    function renderSuspended(rows) {
+        var tbody = document.getElementById('email-suspended-tbody');
+        if (!tbody) return;
+        rows = Array.isArray(rows) ? rows : [];
+        setTabCount('suspended', rows.filter(function(r) { return !r.released_at; }).length);
+        if (rows.length === 0) {
+            emptyRow(tbody, 6, 'user-check', 'No suspended mailboxes.', 'Mailboxes CSM suspends after a cracked password or abused sending appear here.');
+            return;
+        }
+        tbody.replaceChildren();
+        rows.forEach(function(r) {
+            var tr = node('tr');
+            tr.setAttribute('data-suspension-id', r.id);
+            var who = rejectCell('Mailbox or account', r.subject);
+            if (r.account) who.appendChild(node('div', 'text-muted small', 'cPanel account ' + r.account));
+            tr.appendChild(who);
+            var when = rejectCell('Suspended', r.suspended_at ? CSM.timeAgo(r.suspended_at) : '');
+            when.title = String(r.suspended_at || '');
+            tr.appendChild(when);
+            var reason = node('td');
+            reason.setAttribute('data-label', 'Reason');
+            var link = node('a', 'font-monospace small', r.check || '');
+            link.href = '/findings?check=' + encodeURIComponent(r.check || '');
+            reason.appendChild(link);
+            reason.appendChild(node('div', 'text-muted small', r.reason || ''));
+            tr.appendChild(reason);
+            tr.appendChild(rejectCell('Applied', (r.applied || []).map(function(p) { return SUSPENDED_PARTS[p] || p; }).join(', ')));
+            var status = node('td');
+            status.setAttribute('data-label', 'Status');
+            status.appendChild(suspendedStatus(r));
+            tr.appendChild(status);
+            var actions = node('td', 'text-end');
+            if (!r.released_at) {
+                var btn = node('button', 'btn btn-sm btn-outline-warning', 'Release');
+                btn.type = 'button';
+                btn.setAttribute('data-suspension-action', 'release');
+                btn.disabled = !!_suspendedBusy[r.id];
+                btn.addEventListener('click', function() { releaseSuspended(r, btn); });
+                actions.appendChild(btn);
+            }
+            tr.appendChild(actions);
+            tbody.appendChild(tr);
+        });
+    }
+
+    // releaseSuspended asks first, then lifts what CSM applied. A refused
+    // release leaves the row suspended; the error says why.
+    function releaseSuspended(r, btn) {
+        if (_suspendedBusy[r.id]) return;
+        _suspendedBusy[r.id] = true;
+        btn.disabled = true;
+        // Releasing an account hold delivers the mail cPanel held, spam
+        // included, so it asks differently.
+        var asked = r.kind === 'account'
+            ? CSM.confirm('Release the outgoing mail hold on cPanel account ' + (r.account || r.subject) +
+                '? Mail held in the queue is delivered at once, so delete any spam on the Queue tab first.', { okLabel: 'Release', danger: true })
+            : CSM.confirm('Release ' + r.subject + '? Logins and sending resume at once.', { okLabel: 'Release' });
+        asked
+            .then(function() {
+                return CSM.post('/api/v1/email/suspensions/' + encodeURIComponent(r.id) + '/release', {})
+                    .then(function() { CSM.toast('Released', 'success'); })
+                    .catch(function(err) { CSM.toast('Release failed: ' + CSM.errorText(err), 'error'); });
+            })
+            .catch(function() { /* cancelled: the row stays suspended */ })
+            .then(function() {
+                delete _suspendedBusy[r.id];
+                loadSuspended();
+            });
+    }
+
     // ---------- Forwarders tab: inventory, and delete per destination ----------
 
     // Provider class -> badge colour. Free providers are the reputation-risk
@@ -3356,7 +3453,7 @@
 
     // What each job tab counts, one and many, for screen readers.
     var TAB_COUNT_WORDS = {
-        queue: ['queued', 'queued'], held: ['held', 'held'], rejects: ['rejected', 'rejected'],
+        queue: ['queued', 'queued'], held: ['held', 'held'], suspended: ['suspended', 'suspended'], rejects: ['rejected', 'rejected'],
         sending: ['abuse event', 'abuse events'], forwarders: ['outside forwarder', 'outside forwarders'],
         delays: ['provider deferring', 'providers deferring'],
         findings: ['finding', 'findings']
@@ -3430,6 +3527,8 @@
             loadQueue();
         } else if (id === 'held') {
             loadHeldMail();
+        } else if (id === 'suspended') {
+            loadSuspended();
         } else if (id === 'rejects') {
             loadRejects();
         } else if (id === 'delays') {

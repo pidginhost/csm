@@ -1,10 +1,42 @@
 package checks
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Encoding an API route or adding client text cannot erase its failure or
+// move it to an address supplied by that text.
+func FuzzCpanelAPIAuthFailureEncoding(f *testing.F) {
+	f.Add([]byte{0}, "agent")
+	f.Add([]byte{1}, `agent" 200 0 "`)
+	f.Add([]byte{0, 1}, `[bad] "GET / HTTP/1.1" 200 0 "`)
+	f.Fuzz(func(t *testing.T, mask []byte, client string) {
+		client = strings.NewReplacer("\r", "_", "\n", "_").Replace(client)
+		for _, target := range []string{
+			"/execute/Email/list_pops", "/json-api/listaccts", "/xml-api/cpanel",
+			"/scripts2/reloadbind_local", "/websocket/MysqlDump", "/cpxfer/dsync",
+			"/3rdparty/wpt/index.php", "/3rdparty/nova/index.live.php",
+		} {
+			var encoded strings.Builder
+			for i := range len(target) {
+				if len(mask) > 0 && mask[i%len(mask)]&1 != 0 {
+					fmt.Fprintf(&encoded, "%%%02x", target[i])
+				} else {
+					encoded.WriteByte(target[i])
+				}
+			}
+			line := `203.0.113.50 - - [04/12/2026:07:00:05 -0000] "GET /cpsess0123456789` +
+				encoded.String() + ` HTTP/1.1" 401 0 "-" "` + client + `" "-" "-" 2083`
+			rec, ok := ParseCpanelAccessRecord(line)
+			if !ok || rec.IP != "203.0.113.50" || !rec.APIAuthFailure() {
+				t.Fatalf("encoded API failure lost or misattributed: %+v (%v)", rec, ok)
+			}
+		}
+	})
+}
 
 // User text is opaque, including complete fake records. It can add requests
 // and invalidate the observation time, but cannot hide the real request or

@@ -348,6 +348,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_php_relay_account_volume_capped", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_php_relay_action_dry_run", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse, Summary: true},
 	{Name: "email_php_relay_action_failed", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "email_mailbox_response", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "email_php_relay_action_skipped", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "email_php_relay_cpanel_limit_unreadable", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_php_relay_disabled", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
@@ -488,6 +489,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "auto_response_withheld", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "response_capacity_exhausted", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "protection_queue_recovered", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "trusted_proxy_unusable", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 
 	// --- Internal (not shown in user-facing dropdowns) -------------------
 	{Name: "test_alert", Category: CategoryInternal, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},

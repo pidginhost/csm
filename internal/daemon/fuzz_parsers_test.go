@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/modsec"
 )
 
 func FuzzPHPRelayScriptPath(f *testing.F) {
@@ -143,7 +144,8 @@ func FuzzModSecRuleFileConfidence(f *testing.F) {
 	f.Add(900100, "", "", `] at [unclosed`)
 	f.Fuzz(func(t *testing.T, rule int, msg, tags, line string) {
 		baseline := classifyModSecConfidence(rule, msg, tags, "")
-		got := classifyModSecConfidence(rule, msg, tags, extractModSecRuleFile(line))
+		logRule, _ := modsec.ErrorLogRule(line)
+		got := classifyModSecConfidence(rule, msg, tags, modsecRuleFileBase(logRule.File))
 		// File evidence may promote any class to high. It must never turn
 		// an unknown deny into low-confidence policy or demote an attack.
 		if got != baseline && got != modsecConfHigh {
