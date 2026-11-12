@@ -17,7 +17,9 @@ JavaScript proof-of-work challenge pages - a CAPTCHA alternative for suspicious 
 - **HMAC token verification** - prevents replay attacks
 - **Nonce-based anti-replay**
 - **User-friendly** - progress bar, instant feedback
-- **Bot filtering** - headless browsers and scripts fail the challenge
+- **Bot filtering** - clients that do not run JavaScript never pass. Headless
+  browsers and scripts written for the puzzle can solve it, and a higher
+  difficulty costs real visitors more time than such clients
 
 ## Use Cases
 
