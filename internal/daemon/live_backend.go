@@ -12,7 +12,7 @@ import (
 // startLiveBackend selects the backend for one live monitor from the
 // operator's choice and host capability:
 //
-//	"auto" (default) -- try BPF, fall back to legacy polling.
+//	"auto" (default) -- try BPF, fall back to legacy polling, else none.
 //	"bpf"            -- require BPF; return nil if unavailable (no fallback).
 //	"legacy"         -- pin legacy polling.
 //	"none"           -- disable the live monitor (the periodic check still runs).
@@ -61,6 +61,15 @@ func startLiveBackend(feature, configured string, alertCh chan<- alert.Finding,
 	}
 
 	poller := legacy()
+	if poller == nil {
+		// Only a legacy backend that probes the kernel can fail to start.
+		csmlog.Info(feature+": no legacy backend available", "choice", choice)
+		bpf.SetActive(feature, bpf.BackendNone)
+		if bpfErr != nil {
+			emitBPFUnavailableFinding(alertCh, feature, choice, "", bpfErr)
+		}
+		return nil
+	}
 	csmlog.Info(feature, "backend", "legacy", "choice", choice)
 	bpf.SetActive(feature, bpf.BackendLegacy)
 	if bpfErr != nil {

@@ -407,6 +407,10 @@ type FileMonitor struct {
 	placedDirWG     sync.WaitGroup
 	placedDirHealth *queuehealth.Tracker
 
+	// placementWG joins the placement backend, whose workers admit into
+	// analyzerCh, before shutdown closes that channel.
+	placementWG sync.WaitGroup
+
 	// metricsOnce guards one-time registration of the fanotify-scoped
 	// Prometheus metrics. Each FileMonitor registers its own hooks when
 	// it first starts; subsequent calls are a no-op.
@@ -983,7 +987,9 @@ func (fm *FileMonitor) reportQueueOverflow() {
 func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		fm.drainDeadline.Store(time.Now().Add(analyzerDrainBudget).UnixNano())
-		// The walk worker admits into analyzerCh until it sees stopCh.
+		// The placement backend admits into analyzerCh and queues walks
+		// until it sees stopCh; the walk worker then admits until it does.
+		fm.placementWG.Wait()
 		fm.placedDirWG.Wait()
 		close(fm.analyzerCh)
 		fm.wg.Wait()

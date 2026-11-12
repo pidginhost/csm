@@ -109,14 +109,21 @@ func placementMounts(all []mountEntry, roots []watchRootMark) []mountEntry {
 // or a subdirectory of the same filesystem. Filtering those mounts first
 // would incorrectly treat a hidden whole-filesystem mount as usable.
 func placementRootMount(all []mountEntry, root watchRootMark) int {
-	best := -1
-	for i, m := range all {
-		if pathWithin(root.path, m.MountPoint) && (best < 0 || len(m.MountPoint) >= len(all[best].MountPoint)) {
-			best = i
-		}
-	}
+	best := visibleMount(all, root.path)
 	if best < 0 || all[best].Dev != root.device || all[best].Root != "/" {
 		return -1
+	}
+	return best
+}
+
+// visibleMount returns the index of the mount that shows path: the deepest
+// mount point above it, the later of two at one point being on top.
+func visibleMount(all []mountEntry, path string) int {
+	best := -1
+	for i, m := range all {
+		if pathWithin(path, m.MountPoint) && (best < 0 || len(m.MountPoint) >= len(all[best].MountPoint)) {
+			best = i
+		}
 	}
 	return best
 }
@@ -190,17 +197,18 @@ func (fm *FileMonitor) reportUnresolvedPlacement(dev uint64, raw PlacementRawEve
 			reason, strings.Join(names, "/"), raw.Ino, raw.PID))
 }
 
-// reportUncoveredPlacementRoots names roots that cannot use the selected
-// canonical path. Sharing a device does not imply sharing that path.
+// reportUncoveredPlacementRoots names roots that the running backend's
+// mounts, through which it turns events into paths, do not show. Sharing a
+// device does not imply sharing that path.
 func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry) {
 	for _, r := range fm.watchRoots {
-		if i := placementRootMount(all, r); i >= 0 && slices.Contains(mounts, all[i]) {
+		if i := visibleMount(all, r.path); i >= 0 && slices.Contains(mounts, all[i]) {
 			continue
 		}
-		csmlog.Warn("placement: watch root has no usable whole-filesystem mount", "root", r.path, "device", deviceName(r.device))
+		csmlog.Warn("placement: watch root is not visible through the placement mounts", "root", r.path, "device", deviceName(r.device))
 		fm.sendAlert(alert.High, placementUnresolvedCheck,
 			fmt.Sprintf("Realtime protection cannot see files moved or linked into %s (device %s)", r.path, deviceName(r.device)),
-			"This watch root has no usable whole-filesystem mount among the selected paths, so realtime protection cannot resolve placements at this location. The deep scan covers them.")
+			"Realtime protection resolves placements on this filesystem through a mount that does not show this watch root, so it cannot match them to this location. The deep scan covers them.")
 	}
 }
 

@@ -258,18 +258,24 @@ func startPlacementFID(_ context.Context, fm *FileMonitor) (*placementFID, error
 		return nil, fmt.Errorf("fanotify_init with directory handles: %w", err)
 	}
 	p := newPlacementFID(fm, fd, make(map[unix.Fsid]int))
-	if err = p.markFilesystems(); err != nil {
+	all, err := readMountinfo()
+	if err != nil {
+		p.close()
+		return nil, fmt.Errorf("read mountinfo: %w", err)
+	}
+	anchors, err := p.markFilesystems(all)
+	if err != nil {
 		p.close()
 		return nil, err
 	}
+	fm.reportUncoveredPlacementRoots(all, anchors)
 	return p, nil
 }
 
-func (p *placementFID) markFilesystems() error {
-	all, err := readMountinfo()
-	if err != nil {
-		return fmt.Errorf("read mountinfo: %w", err)
-	}
+// markFilesystems returns the mounts its directory fds sit on: handles
+// resolve to paths through them.
+func (p *placementFID) markFilesystems(all []mountEntry) ([]mountEntry, error) {
+	var anchors []mountEntry
 	whole := placementMounts(all, p.fm.watchRoots)
 	seen := make(map[uint64]bool)
 	for _, r := range p.fm.watchRoots {
@@ -288,26 +294,29 @@ func (p *placementFID) markFilesystems() error {
 		// open_by_handle_at reject an O_PATH descriptor with EBADF.
 		dirfd, err := unix.Open(anchor, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if err != nil {
-			return fmt.Errorf("open %s: %w", anchor, err)
+			return nil, fmt.Errorf("open %s: %w", anchor, err)
 		}
 		var sfs unix.Statfs_t
 		if err = unix.Fstatfs(dirfd, &sfs); err != nil {
 			_ = unix.Close(dirfd)
-			return fmt.Errorf("statfs %s: %w", r.path, err)
+			return nil, fmt.Errorf("statfs %s: %w", r.path, err)
 		}
 		if _, dup := p.mounts[sfs.Fsid]; dup {
 			_ = unix.Close(dirfd)
-			return fmt.Errorf("watch root %s shares a filesystem id with another device", r.path)
+			return nil, fmt.Errorf("watch root %s shares a filesystem id with another device", r.path)
 		}
 		p.mounts[sfs.Fsid] = dirfd
 		if err = unix.FanotifyMark(p.fd, FAN_MARK_ADD|FAN_MARK_FILESYSTEM, unix.FAN_MOVED_TO|unix.FAN_CREATE|unix.FAN_ONDIR, dirfd, ""); err != nil {
-			return fmt.Errorf("mark %s for placements: %w", r.path, err)
+			return nil, fmt.Errorf("mark %s for placements: %w", r.path, err)
+		}
+		if i := visibleMount(all, anchor); i >= 0 {
+			anchors = append(anchors, all[i])
 		}
 	}
 	if len(p.mounts) == 0 {
-		return errors.New("no watch root to mark")
+		return nil, errors.New("no watch root to mark")
 	}
-	return nil
+	return anchors, nil
 }
 
 func (p *placementFID) close() {

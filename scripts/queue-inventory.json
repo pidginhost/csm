@@ -721,6 +721,18 @@
       "queue": "placement.dir_walk"
     },
     {
+      "id": "internal/daemon/placement_fid_linux.go::newPlacementFID::out::accounted_channel::1",
+      "path": "internal/daemon/placement_fid_linux.go",
+      "owner": "newPlacementFID",
+      "target": "out",
+      "kind": "accounted_channel",
+      "source": "queuehealth.NewChannel[placementEvent](256, time.Minute)",
+      "capacity": "256",
+      "class": "work",
+      "rationale": "Owns resolved fanotify placements from the reader until a placement worker finishes them; a full queue drops and counts.",
+      "queue": "bpf.placement"
+    },
+    {
       "id": "internal/daemon/fanotify.go::newFileMonitorCore::stopCh::channel::1",
       "path": "internal/daemon/fanotify.go",
       "owner": "newFileMonitorCore",
@@ -3307,6 +3319,72 @@
           "path": "internal/daemon/fanotify.go",
           "symbol": "reconcileDirCap",
           "shape": "1024"
+        }
+      ]
+    },
+    {
+      "id": "bpf.placement",
+      "rows": [
+        "bpf.placement.output",
+        "bpf.placement.kernel",
+        "bpf.placement.unresolved",
+        "bpf.placement.create_settle"
+      ],
+      "bounds": "Whichever placement backend runs: 256 events in its output queue, drained by four workers that each wait at most the rename retry budget. BPF keeps a kernel ring; fanotify counts kernel overflows and holds up to 16384 creates for their close-write window. Events with no usable path count as unresolved. A full queue drops and counts; the deep scan covers dropped files.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPlacementQueuesPublishUnderBPFPlacement",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPlacementBackendStopsBeforeAnalyzerQueueCloses",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPlacementFIDOverflowIsCountedReportedAndShutdownDiscards",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestFIDCreateSettleOverflowAnalysesOldest",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPlacementWorkersAreBoundedAndOverflowIsCounted",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestUnresolvedPlacementIsCountedAndNotHandled",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/daemon/placement_fid_linux.go",
+          "symbol": "placementFID.out",
+          "shape": "*queuehealth.Channel[placementEvent]"
+        },
+        {
+          "path": "internal/daemon/placement_fid_linux.go",
+          "symbol": "fidPendingCap",
+          "shape": "16384"
+        },
+        {
+          "path": "internal/daemon/placement_bpf.go",
+          "symbol": "placementBPF.source",
+          "shape": "placementSource"
+        },
+        {
+          "path": "internal/daemon/placement_workers.go",
+          "symbol": "placementWorkers",
+          "shape": "4"
         }
       ]
     },

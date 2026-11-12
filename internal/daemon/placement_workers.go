@@ -6,6 +6,8 @@ import (
 	"context"
 	"sync"
 
+	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
@@ -54,5 +56,23 @@ func processPlacement[T any](fm *FileMonitor, work queuehealth.Work[T], resolve 
 		}
 		path = ev.Path
 		handle(ev)
+	})
+}
+
+// runPlacement runs b until the monitor stops. drainAndClose waits for it.
+func (fm *FileMonitor) runPlacement(b bpf.Backend) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fm.placementWG.Add(1)
+	obs.Go("placement", func() {
+		defer fm.placementWG.Done()
+		defer cancel()
+		go func() {
+			select {
+			case <-fm.stopCh:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		b.Run(ctx)
 	})
 }

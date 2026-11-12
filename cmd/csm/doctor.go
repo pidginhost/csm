@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/clientaddr"
 	"github.com/pidginhost/csm/internal/config"
@@ -163,6 +166,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		}
 		report.Checks = append(report.Checks, st)
 	}
+	report.Checks = append(report.Checks, backendDoctorChecks(sr.Snapshot.Backends)...)
 	if !sr.Snapshot.StoreHealthy {
 		report.Checks = append(report.Checks, DoctorCheck{
 			Name:    "bbolt store healthy",
@@ -771,6 +775,23 @@ func challengeListenAddrIsLoopbackDoctor(addr string) bool {
 
 // collapseDoctor reduces a slice of checks to the worst status seen:
 // "fail" > "warn" > "ok".
+// backendDoctorChecks names each live monitor's backend. A monitor running
+// on none warns rather than fails: a kernel without the support is no fault
+// the operator can fix.
+func backendDoctorChecks(backends map[string]string) []DoctorCheck {
+	checks := make([]DoctorCheck, 0, len(backends))
+	for _, feature := range slices.Sorted(maps.Keys(backends)) {
+		check := DoctorCheck{Name: "backend: " + feature, Status: "ok", Message: backends[feature]}
+		if backends[feature] == bpf.BackendNone {
+			check.Status = "warn"
+			check.Message = "no live backend"
+			check.Fix = fmt.Sprintf("see why in journalctl -u csm.service -g %s; detection.%s_backend: none turns this monitor off on purpose", feature, feature)
+		}
+		checks = append(checks, check)
+	}
+	return checks
+}
+
 func collapseDoctor(checks []DoctorCheck) string {
 	worst := "ok"
 	for _, c := range checks {

@@ -237,3 +237,20 @@ func TestCapabilitiesIncludeLearningOnPostfix(t *testing.T) {
 		t.Fatal("mail.antispam.learning.postfix.v1 capability missing")
 	}
 }
+
+func TestPlacementCapabilityWhenBPFActive(t *testing.T) {
+	bpf.SetActive("placement", bpf.BackendBPF)
+	if !contains(Capabilities(), "bpf-file-placement") {
+		t.Error("bpf-file-placement missing when placement backend is BPF")
+	}
+
+	bpf.SetActive("placement", bpf.BackendLegacy)
+	if contains(Capabilities(), "bpf-file-placement") {
+		t.Error("bpf-file-placement present when placement backend is legacy")
+	}
+
+	bpf.SetActive("placement", bpf.BackendNone)
+	if contains(Capabilities(), "bpf-file-placement") {
+		t.Error("bpf-file-placement present when placement backend is none")
+	}
+}

@@ -89,3 +89,42 @@ func TestLiveBackendsReportTheirFeature(t *testing.T) {
 		}
 	}
 }
+
+// A feature whose legacy backend cannot start runs nothing and says so; the
+// legacy constructors of the polling features never return nil.
+func TestLiveBackendWithoutLegacyPublishesNone(t *testing.T) {
+	failBPF := func() (bpf.Backend, error) { return nil, bpf.ErrUnsupported }
+	noLegacy := func() bpf.Backend { return nil }
+	for _, choice := range []string{"auto", "legacy"} {
+		t.Run(choice, func(t *testing.T) {
+			bpf.SetActive("test_no_legacy", bpf.BackendLegacy)
+			ch := make(chan alert.Finding, 2)
+			if b := startLiveBackend("test_no_legacy", choice, ch, failBPF, noLegacy); b != nil {
+				t.Fatalf("backend %q, want none", b.Mode())
+			}
+			if got := bpf.ActiveKind("test_no_legacy"); got != bpf.BackendNone {
+				t.Errorf("active kind %q, want none", got)
+			}
+			var found []alert.Finding
+			for len(ch) > 0 {
+				found = append(found, <-ch)
+			}
+			if choice == "legacy" {
+				if len(found) != 0 {
+					t.Fatalf("legacy choice never tried BPF, got %+v", found)
+				}
+				return
+			}
+			if len(found) != 1 || found[0].Severity != alert.High || !strings.Contains(found[0].Message, "no live fallback active") {
+				t.Fatalf("findings %+v, want one High with no fallback", found)
+			}
+		})
+	}
+	for _, feat := range liveFeatures() {
+		cfg := &config.Config{}
+		feat.set(cfg, bpf.BackendLegacy)
+		if b := feat.start(make(chan alert.Finding, 2), cfg); b == nil || b.Mode() != bpf.BackendLegacy {
+			t.Errorf("%s legacy backend = %#v, want a running poller", feat.name, b)
+		}
+	}
+}

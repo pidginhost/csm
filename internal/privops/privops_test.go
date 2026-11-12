@@ -89,6 +89,8 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"detect.process_exec", "daemon/exec_bpf.go: tracepoint load and attach", "detection.exec_monitor_backend", "none", []Privilege{"CAP_BPF", "CAP_PERFMON"}, []string{"kernel:BPF programs and maps"}},
 		{"detect.outbound_connections", "daemon/connection_bpf.go: cgroup socket load and attach", "detection.connection_tracker_backend", "none", []Privilege{"CAP_BPF", "CAP_NET_ADMIN"}, []string{"kernel:BPF programs and maps"}},
 		{"detect.sensitive_file_writes", "daemon/sensitive_file_bpf.go: LSM load", "detection.sensitive_files_backend", "none", []Privilege{"CAP_BPF", "CAP_PERFMON"}, []string{"kernel:BPF programs and maps"}},
+		{"detect.file_placement_bpf", "daemon/placement_bpf.go: LSM inode_rename and inode_link load", "detection.placement_backend", "none", []Privilege{"CAP_BPF", "CAP_PERFMON", Root}, []string{"kernel:BPF programs and maps"}},
+		{"detect.file_placement_fanotify", "daemon/placement_fid_linux.go: filesystem marks and open_by_handle_at", "detection.placement_backend", "none", []Privilege{CapSysAdmin, CapDACReadSearch, Root}, nil},
 		{"detect.af_alg_sockets", "daemon/af_alg_bpf.go: LSM program denies sockets", "detection.af_alg_backend", "none", []Privilege{"CAP_BPF", "CAP_PERFMON"}, []string{"kernel:AF_ALG socket denial"}},
 		{"detect.kernel_oom", "checks/performance.go: CheckSwapAndOOM reads dmesg", "", "", []Privilege{"CAP_SYSLOG"}, nil},
 		{"detect.bpf_probe", "health/capabilities.go: probe loads and attaches even when monitors are disabled", "", "", []Privilege{"CAP_BPF", "CAP_PERFMON", "CAP_NET_ADMIN"}, nil},
@@ -633,6 +635,9 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"state.update_signatures":       RiskObserve,
 	"state.write_logs":              RiskObserve,
 	"state.write_store":             RiskObserve,
+
+	"detect.file_placement_bpf":      RiskReversible,
+	"detect.file_placement_fanotify": RiskObserve,
 }
 
 func TestRiskTiersMatchReviewedInventory(t *testing.T) {
@@ -668,6 +673,7 @@ func TestRiskTiersMatchReviewedInventory(t *testing.T) {
 var reviewedRecoveryGaps = map[string]string{
 	"detect.af_alg_sockets":         "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.bpf_probe":              "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"detect.file_placement_bpf":     "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.kernel_livepatch_probe": "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
 	"detect.mail_queue_probe":       "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
 	"detect.parse_worker_memory":    "Memory and swap limits end with the worker cgroup; this inventory specifies no separate cleanup contract.",

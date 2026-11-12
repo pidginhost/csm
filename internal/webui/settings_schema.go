@@ -369,6 +369,17 @@ var settingsSections = []SettingsSection{
 		},
 	},
 	{
+		ID:       "detection",
+		Title:    "Detection",
+		YAMLPath: "detection",
+		Icon:     "radar",
+		Group:    SectionGroupDetection,
+		Restart:  false,
+		Fields: []SettingsField{
+			{YAMLPath: "placement_backend", Type: "enum", Label: "Moved and linked file backend", Options: []string{"auto", "bpf", "legacy", "none"}, Help: "How realtime protection sees files renamed or hard-linked into a site. auto tries BPF, then fanotify (kernel 5.9 or newer), then none. bpf requires BPF. legacy uses fanotify only. none leaves those files to the deep scan. Takes effect after a restart."},
+		},
+	},
+	{
 		ID:       "signatures",
 		Title:    "Signatures",
 		YAMLPath: "signatures",

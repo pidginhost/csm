@@ -238,3 +238,22 @@ func TestUncoveredPlacementBindBelowWholeMountRaisesFinding(t *testing.T) {
 		t.Fatalf("findings %+v, want one for the covered-over root", found)
 	}
 }
+
+// The fanotify backend reads a filesystem without a whole mount through the
+// first watch root's own mount. A second root on another bind of that
+// filesystem reads back under the first, so it is reported as uncovered.
+func TestUncoveredPlacementRootBesideSubtreeAnchor(t *testing.T) {
+	alerts := make(chan alert.Finding, 8)
+	fm := placementTestMonitor(alerts)
+	dev := unix.Mkdev(253, 1)
+	fm.watchRoots = []watchRootMark{{path: "/srv/a", device: dev}, {path: "/srv/a/sub", device: dev}, {path: "/srv/b", device: dev}}
+	all := []mountEntry{
+		{Dev: dev, Root: "/x", MountPoint: "/srv/a"},
+		{Dev: dev, Root: "/y", MountPoint: "/srv/b"},
+	}
+	fm.reportUncoveredPlacementRoots(all, all[:1])
+	found := unresolvedPlacementFindings(t, alerts)
+	if len(found) != 1 || !strings.Contains(found[0].Message, "/srv/b") {
+		t.Fatalf("findings %+v, want one for the root outside the anchor mount", found)
+	}
+}

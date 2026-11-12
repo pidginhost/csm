@@ -3035,6 +3035,7 @@ func (d *Daemon) startFileMonitor() {
 	})
 	csmlog.Info("fanotify file monitor active", "roots", fm.WatchScopeSummary())
 	d.MarkWatcher("fanotify", true)
+	d.startPlacementMonitor(fm)
 }
 
 func (d *Daemon) startSpoolWatcher() {

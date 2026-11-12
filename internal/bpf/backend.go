@@ -11,6 +11,7 @@ package bpf
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 
 	"github.com/pidginhost/csm/internal/metrics"
@@ -92,6 +93,13 @@ func SetActive(feature, active string) {
 	}
 	activeKinds[feature] = active
 	activeMu.Unlock()
+}
+
+// ActiveKinds returns a copy of every feature's selected kind, for status.
+func ActiveKinds() map[string]string {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+	return maps.Clone(activeKinds)
 }
 
 // ActiveKind returns the kind currently selected for the given feature, or
