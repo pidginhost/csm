@@ -599,12 +599,34 @@ func defaultChallengeWebserverChecks(cfg *config.Config) []DoctorCheck {
 		}}
 	}
 
-	checks := make([]DoctorCheck, 0, 2)
+	checks := make([]DoctorCheck, 0, 3)
 	status, statusErr := inst.Status()
 	checks = append(checks, challengeSnippetCheck(status, statusErr))
+	if check, ok := challengeHTTPSSitesCheck(inst.SiteCoverage()); ok {
+		checks = append(checks, check)
+	}
 	validate, validateErr := inst.Validate()
 	checks = append(checks, challengeConfigtestCheck(validate, validateErr))
 	return checks
+}
+
+// challengeHTTPSSitesCheck reports whether HTTPS sites read the per-site
+// snippet, on stacks that need one. ok is false elsewhere.
+func challengeHTTPSSitesCheck(applicable, active bool, path string, err error) (DoctorCheck, bool) {
+	const name = "challenge HTTPS sites"
+	switch {
+	case !applicable:
+		return DoctorCheck{}, false
+	case err != nil:
+		return DoctorCheck{Name: name, Status: "warn", Message: "cannot tell whether HTTPS sites read " + path + ": " + err.Error(),
+			Fix: "check that the web server configuration is readable"}, true
+	case !active:
+		return DoctorCheck{Name: name, Status: "warn",
+			Message: "HTTPS sites do not read " + path + ", so challenged visitors there get normal pages",
+			Fix:     "run `csm webserver-integration upgrade`"}, true
+	default:
+		return DoctorCheck{Name: name, Status: "ok", Message: "HTTPS sites read " + path}, true
+	}
 }
 
 func challengeSnippetCheck(res webserver.Result, err error) DoctorCheck {

@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Challenge pages now also appear on HTTPS sites on cPanel servers. Run csm webserver-integration upgrade once if csm doctor warns about HTTPS sites.
 - Realtime PHP alerts that cannot be confirmed now get the scheduled scan's verdict right away, so a Critical file is removed within moments.
 - Scheduled PHP scans keep earlier alerts when a file cannot be read.
 - CSM now reports processes a web request left running in the background, and stops shell loops among them when process killing is on.
@@ -40,6 +41,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
+- Challenge passes are now logged and counted in the challenge stats.
 - On Stalwart mail servers CSM now reads Stalwart's log to detect password guessing, stolen logins and hacked mailboxes, and blocks addresses Stalwart bans; map other listener ports in stalwart.ports. Raise Stalwart's auth.failed event to info to see failed logins.
 - The Email page has a Suspended tab listing the mailboxes and accounts CSM suspended, with their live status and a Release button.
 
@@ -52,6 +54,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Visitors who pass a challenge are no longer blocked or named in distributed attack alerts for requests they already answered.
+- Certificate validation requests are no longer sent to the challenge page.
 - Japanese SEO and post spam alerts no longer fire on ordinary words that contain a spam keyword, such as in plugin translation files.
 - Deep scan findings for files that were rechecked and found clean now clear on large servers instead of staying listed indefinitely.
 - cPanel API failure alerts now cover every API and token endpoint, including encoded requests, and no longer count page requests from expired cPanel or webmail sessions.

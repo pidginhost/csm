@@ -74,6 +74,28 @@ A timeout block of an address that recently logged in as a customer sends
 the [known-customer block alert](auto-response.md#known-customer-block-alert)
 at once. The block still applies.
 
+### Passed challenges
+
+Each pass is logged as `CHALLENGE-PASS: <ip> passed (<method>)` and counted
+in `csm_challenge_passed_total` and the `passed` field of the challenge stats.
+CSM remembers passes for 7 days, across restarts, and expires stored passes
+during normal operation:
+
+- A challenge that times out within 4 hours of the address's last pass
+  expires without a block. A returning browser is waved through by its
+  verification cookie for the same 4 hours.
+- WordPress login, XML-RPC and user enumeration counts read each site's last
+  log lines, which on a quiet site can be days old. Lines an address logged
+  before or at its last pass no longer count against it or attribute a
+  distributed attack to that site; newer ones do. While the challenge service
+  is active, these counts also ignore lines older than the pass retention
+  period, so forgotten passes cannot revive answered requests. Lines without
+  a readable timestamp still count because CSM cannot establish their age.
+
+A pass does not exempt an address from new challenges or hard-block checks.
+A client without a valid verification cookie must solve a new challenge when
+routed again, including during the timeout grace period.
+
 ### Bind address
 
 The listener binds to `127.0.0.1` by default, so enabling the challenge
@@ -323,6 +345,31 @@ The installer auto-detects the active webserver via
 | RHEL family Apache (httpd)  | `/etc/httpd/conf.d/csm-challenge.conf`              |
 | LiteSpeed (LSWS)            | `/usr/local/lsws/conf/templates/csm-challenge.conf` |
 | Nginx (plain + Engintron + phpanel) | `/etc/nginx/conf.d/csm-challenge.conf`      |
+
+On cPanel, Apache and LiteSpeed alike, HTTPS site blocks do not inherit the
+server-wide snippet, so the installer also writes the rule to the per-site
+include `/etc/apache2/conf.d/userdata/csm-challenge.conf`. It skips
+`/.well-known/` paths so certificate validation keeps working. cPanel adds
+that include to every site block when it rebuilds `httpd.conf` with a file
+present. `csm webserver-integration install` and `upgrade` run that rebuild
+once when needed, inside the same configtest-then-reload run. The daemon's
+startup refresh writes the file but never rebuilds `httpd.conf`; HTTPS sites
+are then covered after cPanel's next rebuild, and `csm doctor challenge`
+warns until they are. Coverage checks inspect each HTTPS site block and
+require the per-site snippet to be present.
+
+If a rebuild, configtest, or reload fails, the installer restores the
+previous snippets and the saved `httpd.conf`, including its permissions.
+It does not run a second rebuild during recovery. A failed restore or
+recovery configtest prevents a recovery reload and reports the failure.
+
+`csm webserver-integration remove` disables both redirects even if one
+snippet is missing. It leaves a managed, comment-only per-site snippet:
+cPanel's required wildcard include must still match a file for the web
+server to start. Removal never rebuilds `httpd.conf`. Installing again
+replaces the placeholder with the redirect rule. Automatic startup
+refreshes leave both snippets alone if either has a newer template version
+than the running binary.
 
 The snippets are rendered from the effective CSM config. Apache and LSWS
 read their RewriteMap from `/var/cache/csm/challenge_ips.txt`; Nginx reads

@@ -17,11 +17,13 @@ func (s *Server) apiChallengeStats(w http.ResponseWriter, _ *http.Request) {
 		"recent":          stats.Recent,
 		"pending":         0,
 		"escalated":       0,
+		"passed":          0,
 	}
 	if s.provider != nil {
 		automation := s.provider.AutomationStatus()
 		resp["pending"] = automation.ChallengePending
 		resp["escalated"] = automation.ChallengeEscalated
+		resp["passed"] = automation.ChallengePassed
 	}
 	writeJSON(w, resp)
 }

@@ -213,7 +213,8 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  is a legacy alias kept for older clients and will be removed.
                                  `uptime_seconds` is the time since the daemon started.
 GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending`, `escalated`
-                                 (timeouts that became hard blocks), `routed_by_check` (per source
+                                 (timeouts that became hard blocks), `passed` (challenges solved
+                                 or bypassed, since restart), `routed_by_check` (per source
                                  check, since restart), and `recent` routes. Read scope.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
                                  `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`,

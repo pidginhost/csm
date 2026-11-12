@@ -299,8 +299,8 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// Bypass paths run before the PoW page is generated. Each
 	// short-circuits to the same markVerified flow, so a passing
 	// visitor never sees the challenge UI even once.
-	if s.bypassByAdminCookie(r, ip) || s.bypassByVerifiedCrawler(r.Context(), ip) || s.bypassByVerifyCookie(r, ip) {
-		s.markVerified(w, r, ip, "")
+	if method := s.bypassMethod(r, ip); method != "" {
+		s.markVerified(w, r, ip, "", method)
 		return
 	}
 
@@ -416,7 +416,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	s.verified[nonce] = time.Now()
 	s.verifiedMu.Unlock()
 
-	s.markVerified(w, r, ip, r.FormValue("dest"))
+	s.markVerified(w, r, ip, r.FormValue("dest"), passMethodPoW)
 }
 
 // handleCaptchaVerify accepts a provider token, validates it
@@ -475,7 +475,7 @@ func (s *Server) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 	s.verified[nonce] = time.Now()
 	s.verifiedMu.Unlock()
 
-	s.markVerified(w, r, ip, r.FormValue("dest"))
+	s.markVerified(w, r, ip, r.FormValue("dest"), passMethodCaptcha)
 }
 
 // handleAdminToken issues a signed-session cookie when the operator
@@ -586,9 +586,14 @@ func (s *Server) challengePending(ip string) bool {
 // copy-pasting four times -- is the easiest way to drift the behaviour of
 // one path away from the others over time. Nothing here touches the
 // firewall: a passed challenge proves a browser, not a trustworthy client,
-// so the visitor goes back to the ordinary rules like everyone else.
-func (s *Server) markVerified(w http.ResponseWriter, r *http.Request, ip, destOverride string) {
-	s.ipList.Remove(ip)
+// so the visitor goes back to the ordinary rules like everyone else. The
+// list remembers the pass, so evidence the visitor already answered does
+// not turn into a timeout block.
+func (s *Server) markVerified(w http.ResponseWriter, r *http.Request, ip, destOverride, method string) {
+	if s.ipList.MarkPassed(ip) {
+		observeChallengePassed(method)
+		fmt.Fprintf(os.Stderr, "[%s] CHALLENGE-PASS: %s passed (%s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, method)
+	}
 
 	// Set verification cookie so a visitor who is listed again inside the
 	// window skips the puzzle. Secure is always on: CSM is designed to run

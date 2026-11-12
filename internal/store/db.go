@@ -54,6 +54,7 @@ var bucketNames = []string{
 	adminEmailsBucket,
 	mailboxSuspensionsBucket,
 	"botverify",
+	challengePassBucket,
 	botVerifyUnverifiableBucket,
 	prefsBucket,
 	"scan_jobs",

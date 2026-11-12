@@ -75,9 +75,11 @@ type Result struct {
 	Status      string `json:"status"`       // "ok" | "no-op" | "skipped" | "fail"
 	Webserver   string `json:"webserver"`    // detected handler kind, "" if none
 	SnippetPath string `json:"snippet_path"` // "" if no handler
-	OnDiskVer   int    `json:"on_disk_version,omitempty"`
-	ShippedVer  int    `json:"shipped_version,omitempty"`
-	Message     string `json:"message,omitempty"`
+	// SitePath is the per-site snippet on stacks whose HTTPS sites need it.
+	SitePath   string `json:"site_snippet_path,omitempty"`
+	OnDiskVer  int    `json:"on_disk_version,omitempty"`
+	ShippedVer int    `json:"shipped_version,omitempty"`
+	Message    string `json:"message,omitempty"`
 	// FollowUp is the operator-facing setup the integration could not
 	// automate on this stack. Empty when install is fully automatic.
 	// The CLI prints it after the result block on successful install.
@@ -100,6 +102,10 @@ type Installer struct {
 	// in the same configtest and reload as its own write. Set only when
 	// the handler's configtest covers that file; empty elsewhere.
 	LegacySnippetPath string
+	// RebuildSiteIncludes lets Install regenerate the web server
+	// configuration once so site blocks read the per-site snippet. Only the
+	// explicit command sets it; the daemon never rebuilds on its own.
+	RebuildSiteIncludes bool
 }
 
 // LegacySnippetPath is where the package installer used to deploy a
@@ -211,11 +217,51 @@ func (i *Installer) Install() (Result, error) {
 		return res, rerr
 	}
 
+	site, err := i.prepareSite()
+	if err != nil {
+		res.Status = "fail"
+		res.Message = err.Error()
+		return res, err
+	}
+	if site != nil {
+		res.SitePath = site.path
+	}
+	rebuild := site != nil && i.RebuildSiteIncludes && !site.active
+	if site != nil && i.RebuildSiteIncludes && site.activeErr != nil {
+		res.Status = "fail"
+		res.Message = "read site includes: " + site.activeErr.Error()
+		return res, site.activeErr
+	}
+
 	current := prevExists && bytes.Equal(prevBytes, rendered)
-	if current && !legacyExists {
+	if current && !legacyExists && (site == nil || site.current) && !rebuild {
 		res.Status = "no-op"
-		res.Message = "snippet already current"
+		res.Message = "snippet already current" + site.pendingNote()
 		return res, nil
+	}
+
+	// A second rebuild is not a rollback: it can fail or regenerate the same
+	// bad configuration. Save the exact active file before changing anything.
+	var configBefore []byte
+	var configMode os.FileMode
+	if rebuild {
+		configBefore, err = i.ReadAt(site.sites.SiteConfigPath())
+		if err == nil {
+			statAt := i.StatAt
+			if statAt == nil {
+				statAt = os.Stat
+			}
+			var info os.FileInfo
+			info, err = statAt(site.sites.SiteConfigPath())
+			if err == nil {
+				configMode = info.Mode().Perm()
+			}
+		}
+		if err != nil {
+			res.Status = "fail"
+			res.Message = "save site configuration: " + err.Error()
+			return res, err
+		}
 	}
 
 	if !current {
@@ -225,16 +271,40 @@ func (i *Installer) Install() (Result, error) {
 			return res, err
 		}
 	}
+	siteWritten := false
 	legacyRemoved := false
+	rebuilt := false
 	rollback := func() error {
 		var errs []error
 		if !current {
 			errs = append(errs, i.restore(prevBytes, prevExists))
 		}
+		if siteWritten {
+			errs = append(errs, i.restoreAt(site.path, site.prevBytes, site.prevExists))
+		}
 		if legacyRemoved {
 			errs = append(errs, i.restoreLegacySnippet(legacyBytes))
 		}
+		if rebuilt {
+			if err := i.WriteAt(site.sites.SiteConfigPath(), configBefore, configMode); err != nil {
+				errs = append(errs, fmt.Errorf("rollback site configuration: %w", err))
+			}
+		}
 		return errors.Join(errs...)
+	}
+
+	if site != nil && !site.current {
+		err := i.mkdirAll(filepath.Dir(site.path), 0o755)
+		if err == nil {
+			err = i.WriteAt(site.path, site.rendered, 0o644)
+		}
+		if err != nil {
+			err = errors.Join(err, rollback())
+			res.Status = "fail"
+			res.Message = "write site snippet: " + err.Error()
+			return res, err
+		}
+		siteWritten = true
 	}
 
 	if legacyExists {
@@ -245,6 +315,18 @@ func (i *Installer) Install() (Result, error) {
 			return res, err
 		}
 		legacyRemoved = true
+	}
+
+	if rebuild {
+		// Even a failed command may have replaced httpd.conf.
+		rebuilt = true
+		if err := site.sites.RebuildSiteIncludes(); err != nil {
+			err = errors.Join(err, rollback())
+			res.Status = "fail"
+			res.Message = err.Error()
+			return res, err
+		}
+		site.active, site.activeErr = site.sites.SiteIncludeActive()
 	}
 
 	if verr := i.Handler.Validate(); verr != nil {
@@ -261,8 +343,19 @@ func (i *Installer) Install() (Result, error) {
 			res.Message = "reload: " + err.Error()
 			return res, err
 		}
-		// Only reload after both files are back to their previous content.
-		_ = i.Handler.Reload()
+		if rebuilt {
+			if err := i.Handler.Validate(); err != nil {
+				err = errors.Join(rerr, fmt.Errorf("rollback configtest: %w", err))
+				res.Message = err.Error()
+				return res, err
+			}
+		}
+		// Only reload after all changed files are back to their previous content.
+		if err := i.Handler.Reload(); err != nil {
+			err = errors.Join(rerr, fmt.Errorf("recovery reload: %w", err))
+			res.Message = err.Error()
+			return res, err
+		}
 		res.Message = "reload: " + rerr.Error() + " (rolled back)"
 		return res, rerr
 	}
@@ -279,8 +372,107 @@ func (i *Installer) Install() (Result, error) {
 	if legacyExists {
 		res.Message += "; legacy snippet " + i.LegacySnippetPath + " removed"
 	}
+	if siteWritten {
+		res.Message += "; site snippet " + site.path + " written"
+	}
+	if rebuilt {
+		res.Message += "; httpd.conf rebuilt"
+	}
+	res.Message += site.pendingNote()
 	res.FollowUp = i.Handler.PostInstallInstructions()
 	return res, nil
+}
+
+// siteChange is the per-site snippet Install manages beside the server one.
+type siteChange struct {
+	sites      siteIncluder
+	path       string
+	prevBytes  []byte
+	prevExists bool
+	rendered   []byte
+	current    bool
+	active     bool
+	activeErr  error
+}
+
+// pendingNote tells the operator when HTTPS sites still miss the rule. Safe
+// on a nil receiver.
+func (s *siteChange) pendingNote() string {
+	switch {
+	case s == nil || s.active:
+		return ""
+	case s.activeErr != nil:
+		return "; could not tell whether HTTPS sites read " + s.path + ": " + s.activeErr.Error()
+	default:
+		return "; HTTPS sites are redirected only after httpd.conf is rebuilt: run `csm webserver-integration upgrade`"
+	}
+}
+
+// SiteCoverage reports, on stacks with a per-site snippet, whether the site
+// blocks read it. applicable is false on other stacks.
+func (i *Installer) SiteCoverage() (applicable, active bool, path string, err error) {
+	sites := i.siteSnippets()
+	if sites == nil {
+		return false, false, "", nil
+	}
+	path = sites.SiteSnippetPath()
+	body, readErr := i.ReadAt(path)
+	if errors.Is(readErr, os.ErrNotExist) || bytes.Equal(body, []byte(disabledSiteSnippet)) {
+		return true, false, path, nil
+	}
+	if readErr != nil {
+		return true, false, path, readErr
+	}
+	active, err = sites.SiteIncludeActive()
+	return true, active && err == nil, path, err
+}
+
+// siteSnippets returns the handler's per-site include support, or nil.
+func (i *Installer) siteSnippets() siteIncluder {
+	s, ok := i.Handler.(siteIncluder)
+	if !ok || s.SiteSnippetPath() == "" {
+		return nil
+	}
+	return s
+}
+
+// prepareSite reads and renders the per-site snippet, or returns nil when
+// the handler has none.
+func (i *Installer) prepareSite() (*siteChange, error) {
+	sites := i.siteSnippets()
+	if sites == nil {
+		return nil, nil
+	}
+	path := sites.SiteSnippetPath()
+	prev, exists, ver, err := i.readManaged(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if exists && ver == 0 {
+		return nil, fmt.Errorf("%w: %s", ErrManualEdits, path)
+	}
+	rendered, err := i.renderBody(i.Handler.Kind()+"-site", sites.SiteTemplate())
+	if err != nil {
+		return nil, fmt.Errorf("render site snippet: %w", err)
+	}
+	active, activeErr := sites.SiteIncludeActive()
+	return &siteChange{
+		sites:      sites,
+		path:       path,
+		prevBytes:  prev,
+		prevExists: exists,
+		rendered:   rendered,
+		current:    exists && bytes.Equal(prev, rendered),
+		active:     active && activeErr == nil,
+		activeErr:  activeErr,
+	}, nil
+}
+
+func (i *Installer) mkdirAll(path string, mode os.FileMode) error {
+	if i.MkdirAll == nil {
+		return os.MkdirAll(path, mode)
+	}
+	return i.MkdirAll(path, mode)
 }
 
 // Upgrade is an alias for Install with a more honest CLI verb. The
@@ -323,6 +515,27 @@ func (i *Installer) Status() (Result, error) {
 			res.Message = fmt.Sprintf("legacy snippet %s still present; run `csm webserver-integration upgrade`", i.LegacySnippetPath)
 		}
 	}
+	if sites := i.siteSnippets(); sites != nil && ver <= TemplateVersion && (res.Status == "ok" || res.Status == "stale") {
+		path := sites.SiteSnippetPath()
+		res.SitePath = path
+		_, exists, siteVer, err := i.readManaged(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			res.Status = "fail"
+			res.Message = err.Error()
+			return res, err
+		}
+		switch {
+		case siteVer > TemplateVersion:
+			res.Status = "ok"
+			res.Message = "site snippet is newer than this binary; leaving both snippets unchanged"
+		case !exists || (siteVer > 0 && siteVer < TemplateVersion):
+			res.Status = "stale"
+			res.Message = fmt.Sprintf("site snippet %s missing or old; run `csm webserver-integration upgrade`", path)
+		case siteVer == 0:
+			res.Status = "modified"
+			res.Message = ErrManualEdits.Error() + ": " + path
+		}
+	}
 	return res, nil
 }
 
@@ -342,7 +555,10 @@ func classifyStatus(exists bool, onDisk, shipped int) (status, message string) {
 	}
 }
 
-// Remove deletes the snippet, runs configtest to confirm the webserver
+// disabledSiteSnippet remains managed so a later install can replace it.
+const disabledSiteSnippet = "# csm-managed-version: 1\n# Challenge redirects disabled; keep this file for cPanel's required include.\n"
+
+// Remove disables the snippets, runs configtest to confirm the webserver
 // is happy without it, and reloads. Mirrors the install rollback
 // discipline: if removing the file makes configtest fail, restore the
 // original and exit non-zero.
@@ -360,31 +576,91 @@ func (i *Installer) Remove() (Result, error) {
 		return res, err
 	}
 	res.OnDiskVer = prevVer
-	if !prevExists {
-		res.Status = "no-op"
-		res.Message = "snippet not present"
-		return res, nil
-	}
-	if prevVer == 0 {
+	if prevExists && prevVer == 0 {
 		res.Status = "fail"
 		res.Message = ErrManualEdits.Error() + ": refusing to delete an operator-edited file"
 		return res, ErrManualEdits
 	}
-	if err := i.RemoveAt(i.Handler.SnippetPath()); err != nil {
-		res.Status = "fail"
-		res.Message = "delete: " + err.Error()
-		return res, err
+	var (
+		sitePath   string
+		siteBytes  []byte
+		siteExists bool
+	)
+	if sites := i.siteSnippets(); sites != nil {
+		sitePath = sites.SiteSnippetPath()
+		var siteVer int
+		siteBytes, siteExists, siteVer, err = i.readManaged(sitePath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			res.Status = "fail"
+			res.Message = err.Error()
+			return res, err
+		}
+		if siteExists && siteVer == 0 {
+			res.Status = "fail"
+			res.Message = ErrManualEdits.Error() + ": refusing to delete an operator-edited file: " + sitePath
+			return res, ErrManualEdits
+		}
+	}
+	res.SitePath = sitePath
+	changeSite := siteExists && !bytes.Equal(siteBytes, []byte(disabledSiteSnippet))
+	if !prevExists && !changeSite {
+		res.Status = "no-op"
+		res.Message = "challenge redirects not installed"
+		return res, nil
+	}
+	serverRemoved, siteWritten := false, false
+	restoreAll := func() error {
+		var errs []error
+		if serverRemoved {
+			errs = append(errs, i.restore(prevBytes, true))
+		}
+		if siteWritten {
+			errs = append(errs, i.restoreAt(sitePath, siteBytes, true))
+		}
+		return errors.Join(errs...)
+	}
+	if prevExists {
+		if err := i.RemoveAt(i.Handler.SnippetPath()); err != nil {
+			res.Status = "fail"
+			res.Message = "delete: " + err.Error()
+			return res, err
+		}
+		serverRemoved = true
+	}
+	if changeSite {
+		// cPanel uses Include, not IncludeOptional. Keep a comment-only
+		// match so removing the last snippet cannot break server startup.
+		if err := i.WriteAt(sitePath, []byte(disabledSiteSnippet), 0o644); err != nil {
+			err = errors.Join(err, restoreAll())
+			res.Status = "fail"
+			res.Message = "disable site snippet: " + err.Error()
+			return res, err
+		}
+		siteWritten = true
 	}
 	if verr := i.Handler.Validate(); verr != nil {
-		_ = i.restore(prevBytes, prevExists)
+		verr = errors.Join(verr, restoreAll())
 		res.Status = "fail"
 		res.Message = "configtest after remove: " + verr.Error()
 		return res, verr
 	}
 	if rerr := i.Handler.Reload(); rerr != nil {
-		_ = i.restore(prevBytes, prevExists)
-		_ = i.Handler.Reload()
 		res.Status = "fail"
+		if err := restoreAll(); err != nil {
+			err = errors.Join(rerr, err)
+			res.Message = "reload: " + err.Error()
+			return res, err
+		}
+		if err := i.Handler.Validate(); err != nil {
+			err = errors.Join(rerr, fmt.Errorf("rollback configtest: %w", err))
+			res.Message = err.Error()
+			return res, err
+		}
+		if err := i.Handler.Reload(); err != nil {
+			err = errors.Join(rerr, fmt.Errorf("recovery reload: %w", err))
+			res.Message = err.Error()
+			return res, err
+		}
 		res.Message = "reload: " + rerr.Error() + " (rolled back)"
 		return res, rerr
 	}
@@ -415,7 +691,12 @@ func (i *Installer) Validate() (Result, error) {
 // renderTemplate prefixes the handler's body with the version marker
 // the installer reads back at status/upgrade time.
 func (i *Installer) renderTemplate() ([]byte, error) {
-	tpl, err := template.New(i.Handler.Kind()).Parse(i.Handler.Template())
+	return i.renderBody(i.Handler.Kind(), i.Handler.Template())
+}
+
+// renderBody renders one snippet template behind the version marker.
+func (i *Installer) renderBody(name, body string) ([]byte, error) {
+	tpl, err := template.New(name).Parse(body)
 	if err != nil {
 		return nil, err
 	}
@@ -564,7 +845,12 @@ func isLoopbackHost(host string) bool {
 // embedded version. Returns the raw bytes, a presence flag, and the
 // parsed version (zero when the file exists but lacks the marker).
 func (i *Installer) readSnippet() ([]byte, bool, int, error) {
-	data, err := i.ReadAt(i.Handler.SnippetPath())
+	return i.readManaged(i.Handler.SnippetPath())
+}
+
+// readManaged reads a managed snippet at path like readSnippet does.
+func (i *Installer) readManaged(path string) ([]byte, bool, int, error) {
+	data, err := i.ReadAt(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, 0, err
@@ -580,14 +866,19 @@ func (i *Installer) readSnippet() ([]byte, bool, int, error) {
 // I/O errors are also returned so Install can refuse a recovery reload
 // when either part of the configuration could not be restored.
 func (i *Installer) restore(prevBytes []byte, prevExists bool) error {
+	return i.restoreAt(i.Handler.SnippetPath(), prevBytes, prevExists)
+}
+
+// restoreAt puts path back to its previous state like restore does.
+func (i *Installer) restoreAt(path string, prevBytes []byte, prevExists bool) error {
 	if !prevExists {
-		if err := i.RemoveAt(i.Handler.SnippetPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := i.RemoveAt(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(i.Stderr, "webserver integration: rollback delete failed: %v\n", err)
 			return fmt.Errorf("rollback delete: %w", err)
 		}
 		return nil
 	}
-	if err := i.WriteAt(i.Handler.SnippetPath(), prevBytes, 0o644); err != nil {
+	if err := i.WriteAt(path, prevBytes, 0o644); err != nil {
 		fmt.Fprintf(i.Stderr, "webserver integration: rollback write failed: %v\n", err)
 		return fmt.Errorf("rollback write: %w", err)
 	}

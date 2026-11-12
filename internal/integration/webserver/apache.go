@@ -13,6 +13,7 @@ import (
 // pointing at the EasyApache binary; plain Apache on Debian/Ubuntu has
 // `apache2ctl`. The selector picks the right one at construction.
 type apacheHandler struct {
+	*cpanelSites
 	snippetPath  string
 	ctlBinary    string // "apachectl" or "apache2ctl"
 	reloadAction []string
@@ -24,6 +25,7 @@ func newApacheHandler(info platform.Info, r cmdRunner) *apacheHandler {
 	switch {
 	case info.IsCPanel():
 		// cPanel always runs EasyApache, conf.d is the canonical drop-in.
+		h.cpanelSites = newCPanelSites(r)
 		h.snippetPath = "/etc/apache2/conf.d/csm-challenge.conf"
 		h.ctlBinary = "apachectl"
 		h.reloadAction = []string{"apachectl", "graceful"}

@@ -10,7 +10,8 @@ type LogRule struct {
 }
 
 // Only tags may repeat in the order both ModSecurity engines write fields.
-var ruleFields = [...]string{"file", "line", "id", "rev", "msg", "data", "severity", "ver",
+// LiteSpeed writes the matched data as logdata where the engines write data.
+var ruleFields = [...]string{"file", "line", "id", "rev", "msg", "data", "logdata", "severity", "ver",
 	"maturity", "accuracy", "tag", "hostname", "uri", "unique_id", "ref"}
 
 // ErrorLogRule reads the rule fields of a ModSecurity error-log line. Both
