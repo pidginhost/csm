@@ -4,6 +4,7 @@ import (
 	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -440,4 +441,96 @@ func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
 func (c *Cache) IsVerifiedPluginFile(fd int, path string) bool {
 	v := c.Describe(path)
 	return v.Kind == KindPlugin && c.resolve(fd, v) == VerdictVerified
+}
+
+// PackageListing reports whether the official release of the WordPress core
+// or wordpress.org plugin that path belongs to ships a file at that path.
+// known is true only when that release's manifest is cached and the header
+// naming the release, version.php or the plugin's main file, is the release's
+// own copy: the account can edit either. Theme files, staged upgrades and core
+// paths outside wp-admin and wp-includes, where sites add their own files, are
+// never known. Only cached manifests are consulted; nothing is fetched.
+func (c *Cache) PackageListing(path string) (listed, known bool) {
+	if root, _ := detectStagedPluginRoot(path); root != "" {
+		return false, false
+	}
+	if root, slug := detectInstalledPluginRoot(path); root != "" {
+		main := slug + ".php"
+		data, ok := readAuthenticHeader(filepath.Join(root, main))
+		if !ok {
+			return false, false
+		}
+		header := data[:min(len(data), pluginHeaderReadLimit)]
+		m := rePluginVersionHeader.FindSubmatch(header)
+		if m == nil || !rePluginNameHeader.Match(header) {
+			return false, false
+		}
+		version := string(m[1])
+		sum := sha256.Sum256(data)
+		// Authenticate and test membership against one cache state. A refresh
+		// must not turn a missing replacement manifest into a known absence.
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		manifest := c.pluginChecksums[pluginKey(slug, version)]
+		want, ok := manifest[main]
+		if !ok || !hexDigestEqual(hex.EncodeToString(sum[:]), want) {
+			return false, false
+		}
+		_, listed = manifest[RelativePath(root, path)]
+		return listed, true
+	}
+	if strings.Contains(path, "/wp-content/themes/") {
+		return false, false
+	}
+	root := DetectWPRoot(path)
+	if root == "" {
+		return false, false
+	}
+	rel := RelativePath(root, path)
+	if !strings.HasPrefix(rel, "wp-admin/") && !strings.HasPrefix(rel, "wp-includes/") {
+		return false, false
+	}
+	data, ok := readAuthenticHeader(filepath.Join(root, "wp-includes", "version.php"))
+	if !ok {
+		return false, false
+	}
+	version, locale, err := ParseVersionContent(data)
+	if err != nil {
+		return false, false
+	}
+	sum := md5.Sum(data) // #nosec G401 -- wordpress.org publishes MD5 digests for core files
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	manifest := c.checksums[cacheKey(version, locale)]
+	want, ok := manifest["wp-includes/version.php"]
+	if !ok || !hexDigestEqual(hex.EncodeToString(sum[:]), want) {
+		return false, false
+	}
+	_, listed = manifest[rel]
+	return listed, true
+}
+
+// authenticHeaderMax bounds a header file read whole for hashing. Release
+// copies of version.php and plugin main files are far smaller.
+const authenticHeaderMax = 1 << 20
+
+// readAuthenticHeader reads a whole header file, refusing special files and
+// anything over authenticHeaderMax. The caller parses and hashes the same
+// bytes, so a file swapped between the two cannot pass.
+func readAuthenticHeader(path string) ([]byte, bool) {
+	// #nosec G304 -- path is a header under a scanner-derived package root.
+	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > authenticHeaderMax {
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, authenticHeaderMax+1))
+	if err != nil || len(data) > authenticHeaderMax {
+		return nil, false
+	}
+	return data, true
 }

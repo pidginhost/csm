@@ -51,8 +51,11 @@ func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
 		return RemediationResult{}, false
 	}
 	if ShouldCleanInsteadOfQuarantine(f.FilePath) {
-		clean := CleanInfectedFile(f.FilePath)
+		clean := cleanInfectedFileIdentified(f.FilePath, info)
 		switch {
+		case clean.WholeFile:
+			// Nothing of the file is the site's; a clean would leave a stub.
+			return quarantineWholeFile(f.FilePath, clean), true
 		case clean.Cleaned:
 			return RemediationResult{
 				Success:           true,
@@ -72,4 +75,29 @@ func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
 		}
 	}
 	return fixQuarantine(f.FilePath), true
+}
+
+// The cleaner's refusal describes bytes it read earlier, not whatever now
+// occupies the pathname. Retain that evidence through the quarantine lease.
+func quarantineWholeFile(path string, clean CleanResult) RemediationResult {
+	path, _, err := resolveExistingFixPath(path, effectiveFixRoots(fixQuarantineAllowedRoots, quarantineExtraRoots...))
+	if err != nil {
+		return RemediationResult{Error: err.Error()}
+	}
+	qPath := newQuarantinePath(quarantineDir, path)
+	meta := quarantineMetadata(path, clean.wholeFileInfo, "Whole-file malware")
+	err = quarantineVersionedTargetFD(path, qPath, clean.wholeFileInfo, meta, -1, clean.wholeFileContent)
+	warning := ""
+	if err != nil {
+		var completed bool
+		warning, completed = completedQuarantineWarning(err)
+		if !completed {
+			return RemediationResult{Error: err.Error()}
+		}
+	}
+	description := fmt.Sprintf("Moved to quarantine: %s", qPath)
+	if warning != "" {
+		description += ". Warning: " + warning
+	}
+	return RemediationResult{Success: true, Action: fmt.Sprintf("quarantined %s", path), Description: description}
 }

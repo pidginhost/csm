@@ -39,6 +39,14 @@ func TestPackageHeaderRejectsNonregularFilesWithoutBlocking(t *testing.T) {
 			done := make(chan error, 1)
 			go func() {
 				_, err := readPackageHeader(header)
+				if err == nil {
+					done <- nil
+					return
+				}
+				if _, ok := readAuthenticHeader(header); ok {
+					done <- nil
+					return
+				}
 				done <- err
 			}()
 			select {

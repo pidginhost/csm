@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -31,6 +32,11 @@ type CleanResult struct {
 	// Refused marks a safety refusal without changing the customer file.
 	// It consumes attempt capacity but does not indicate a broken action.
 	Refused bool
+	// WholeFile marks a refusal because cleaning would leave nothing of a file
+	// that sends no page output: it is quarantined whole instead.
+	WholeFile        bool
+	wholeFileInfo    os.FileInfo
+	wholeFileContent []byte
 }
 
 var (
@@ -161,6 +167,22 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 		audit.rec.Result = actionlog.Refused
 		result.Refused = true
 		result.Error = "no known injection patterns found - file may need manual review"
+		return result
+	}
+	if cleanLeavesNothing(content) {
+		audit.rec.Result = actionlog.Refused
+		result.Refused = true
+		// Line and block removals can take site code with the injection; a
+		// stub would lose it as well, so the file goes to quarantine whole,
+		// where a restore can recover it. Page output stays for an operator.
+		if !phpWithoutOutput(string(data)) {
+			result.Error = "cleaning would erase the file's page output; manual review required"
+			return result
+		}
+		result.WholeFile = true
+		result.wholeFileInfo = target.Info
+		result.wholeFileContent = data
+		result.Error = "cleaning would leave nothing of the file - quarantine it whole instead"
 		return result
 	}
 
@@ -396,14 +418,45 @@ func cleanReplacementMode(mode os.FileMode) os.FileMode {
 	return mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 }
 
+// packageListingFunc reports whether the official WordPress core or plugin
+// release that path belongs to ships it. A known absence requires trusted
+// installation provenance; a tenant-selected release cannot supply it.
+type packageListingFunc func(path string) (listed, known bool)
+
+// packageListing is unset until the daemon provides its checksum cache.
+var packageListing atomic.Pointer[packageListingFunc]
+
+// SetPackageListing supplies the official file lists of WordPress releases.
+func SetPackageListing(fn func(path string) (listed, known bool)) {
+	if fn == nil {
+		packageListing.Store(nil)
+		return
+	}
+	listing := packageListingFunc(fn)
+	packageListing.Store(&listing)
+}
+
+// notShippedByRelease accepts only a definitive absence from the provider.
+// A manifest miss is known only with an authenticated release header.
+func notShippedByRelease(path string) bool {
+	listing := packageListing.Load()
+	if listing == nil {
+		return false
+	}
+	listed, known := (*listing)(path)
+	return known && !listed
+}
+
 // ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned
 // (surgical removal) instead of quarantined (full removal).
 // WP core files and plugin files are better cleaned - removing them breaks the site.
 // Unknown standalone files (droppers, webshells) should be quarantined.
+// Package paths stay with the cleaner unless the provider can prove the
+// file does not belong to the installed site; manifest misses alone cannot.
 func ShouldCleanInsteadOfQuarantine(path string) bool {
-	// WP core files - always clean, never quarantine
+	// Keep core paths with the cleaner whenever membership is uncertain.
 	if strings.Contains(path, "/wp-includes/") || strings.Contains(path, "/wp-admin/") {
-		return true
+		return !notShippedByRelease(path)
 	}
 	// Plugin/theme main files - clean to preserve functionality
 	if strings.Contains(path, "/wp-content/plugins/") || strings.Contains(path, "/wp-content/themes/") {
@@ -412,10 +465,70 @@ func ShouldCleanInsteadOfQuarantine(path string) bool {
 		if isWebshellName(name) {
 			return false // quarantine this - it's a standalone webshell
 		}
-		return true
+		return !notShippedByRelease(path)
 	}
 	// Everything else - quarantine
 	return false
+}
+
+// cleanLeavesNothing reports whether cleaned content keeps nothing of the
+// file: no PHP code and no page output, only PHP tags, comments, statement
+// separators and whitespace.
+func cleanLeavesNothing(content string) bool {
+	inPHP := false
+	for i := 0; i < len(content); {
+		if isPHPSpace(content[i]) {
+			i++
+			continue
+		}
+		if !inPHP {
+			if i+5 > len(content) || !strings.EqualFold(content[i:i+5], "<?php") ||
+				i+5 < len(content) && !isPHPOpenTagSpace(content[i+5]) {
+				return false
+			}
+			inPHP = true
+			i += 5
+			continue
+		}
+		switch {
+		case strings.HasPrefix(content[i:], "?>"):
+			inPHP = false
+			i += 2
+		case strings.HasPrefix(content[i:], "/*"):
+			end := strings.Index(content[i+2:], "*/")
+			if end < 0 {
+				return false
+			}
+			i += end + 4
+		case isPHPLineCommentStart(content, i):
+			i = skipPHPLineComment(content, i)
+		case content[i] == ';':
+			i++
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// phpWithoutOutput reports whether src has only whitespace outside long-tag
+// PHP regions. It does not evaluate output from PHP statements. Short and echo
+// tags stay for review. Use the lexer boundary, not its mask: the mask also
+// removes line comments ending at a closing tag and loses tag positions.
+func phpWithoutOutput(src string) bool {
+	var code strings.Builder
+	for i := 0; i < len(src); {
+		if isPHPSpace(src[i]) {
+			i++
+			continue
+		}
+		if i+5 > len(src) || !strings.EqualFold(src[i:i+5], "<?php") ||
+			i+5 < len(src) && !isPHPOpenTagSpace(src[i+5]) {
+			return false
+		}
+		i = copyPHPModeRegion(&code, src, i+5)
+	}
+	return true
 }
 
 // removeIncludeInjections removes @include lines that load malicious files.

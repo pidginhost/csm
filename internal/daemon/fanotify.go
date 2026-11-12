@@ -663,6 +663,8 @@ func newFileMonitorCore(cfg *config.Config, alertCh chan<- alert.Finding) *FileM
 	wpCache := wpcheck.NewCache(cfg.StatePath)
 	wpCache.SetStopCh(fm.stopCh)
 	fm.wpCache = wpCache
+	// File responses tell a planted file from a shipped one by these lists.
+	checks.SetPackageListing(wpCache.PackageListing)
 	fm.wpPending = newStagedPackageQueue(stagedPackageQueueMax)
 
 	fm.initDropperDetector(cfg)

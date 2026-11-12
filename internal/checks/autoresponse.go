@@ -244,6 +244,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			}
 			// Cleaning is one response attempt. A failed cleaner leaves the file
 			// and any backup for review; it must not escalate to removing the file.
+			var wholeFile CleanResult
 			if clean {
 				if restored && filepath.Base(path) == ".htaccess" {
 					result := cleanHtaccessFileIdentified(path, info)
@@ -256,30 +257,38 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 					return nil
 				}
 				result := cleanInfectedFileIdentified(path, info)
-				if result.Error != "" {
-					outcome := "failed"
-					if result.Refused {
-						outcome = "refused"
+				// Malware that is the whole file is quarantined below: a
+				// clean would leave an empty stub in its place.
+				if !result.WholeFile {
+					if result.Error != "" {
+						outcome := "failed"
+						if result.Refused {
+							outcome = "refused"
+						}
+						actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
+						// Safety refusals consume capacity without charging a failure.
+						if result.Refused {
+							return nil
+						}
+						return errors.New(result.Error)
 					}
-					actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
-					// Safety refusals consume capacity without charging a failure.
-					if result.Refused {
-						return nil
+					if result.Cleaned {
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
 					}
-					return errors.New(result.Error)
+					return nil
 				}
-				if result.Cleaned {
-					actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
-				}
-				return nil
+				wholeFile = result
 			}
 			qPath := newQuarantinePath(quarantineDir, path)
 			meta := quarantineMetadata(path, info, f.Message)
 			meta.FindingID = alert.FindingID(f)
 			var err error
-			if restored {
+			switch {
+			case restored:
 				err = quarantineRestoredTarget(path, qPath, info, meta, removed)
-			} else {
+			case wholeFile.WholeFile:
+				err = quarantineVersionedTargetFD(path, qPath, wholeFile.wholeFileInfo, meta, -1, wholeFile.wholeFileContent)
+			default:
 				err = quarantineTarget(path, qPath, info, meta)
 			}
 			warning := ""
