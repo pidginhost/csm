@@ -69,7 +69,7 @@ func TestResponsePolicyForFollowsRenamedProducers(t *testing.T) {
 func TestRegistryResponsePolicyMatchesGoldenTables(t *testing.T) {
 	for _, c := range checkRegistry {
 		want := ResponsePolicy{
-			CriticalOnly:   c.Name == "mail_account_compromised",
+			CriticalOnly:   goldenCriticalOnly[c.Name],
 			ChallengeFirst: goldenChallengeable[c.Name],
 			NeverChallenge: goldenNeverChallenge[c.Name],
 			Evidence:       evidencePolicy[c.Name].Family,

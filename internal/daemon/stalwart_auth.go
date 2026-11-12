@@ -181,13 +181,23 @@ func (d *Daemon) stalwartBan(ev stalwartlog.Event, s stalwartlog.Session, cfg *c
 	if reason := ev.Fields["reason"]; reason != "" {
 		what += ": " + reason
 	}
-	return []alert.Finding{{
-		Severity:    alert.High,
+	f := alert.Finding{
+		Severity:    alert.Critical,
 		Check:       "stalwart_ban",
 		Message:     fmt.Sprintf("Stalwart banned %s on its %s listener (port %d) for %s", ip, proto, s.LocalPort, what),
 		Details:     "CSM blocks the address at its firewall for the auto-response block length. Stalwart's own ban stays in place.",
 		Timestamp:   ev.Time,
 		SourceIP:    ip,
 		Attribution: admission.AttributionPeer,
-	}}
+	}
+	// A customer logged in from here recently: an office network with one
+	// stale password, or failures another listener attributed to it. Only
+	// Critical bans block, so this one is reported and not blocked.
+	if _, known := d.knownCustomers.Lookup(ip); known {
+		f.Severity = alert.High
+		f.Message += "; not blocked, a customer logged in from this address recently"
+		f.Details = "A customer logged in successfully from this address within the last 30 days, so CSM reports " +
+			"Stalwart's ban without blocking the address at its firewall. Stalwart's own ban still refuses its mail connections."
+	}
+	return []alert.Finding{f}
 }

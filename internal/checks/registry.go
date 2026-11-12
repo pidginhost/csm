@@ -149,7 +149,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "smtp_probe_abuse", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: attributedByPeer}},
 	{Name: "smtp_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: attributedByPeer, Subnet: admission.EntryMailSubnet}},
 	// Stalwart's verdict on a peer it served on a mail listener of this host.
-	{Name: "stalwart_ban", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: attributedByPeer}},
+	// A ban of a known customer's address is High and is not blocked.
+	{Name: "stalwart_ban", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, CriticalOnly: true, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: attributedByPeer}},
 	// Stalwart's HTTP listener can log a forwarded address: alert only.
 	{Name: "stalwart_webmail_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	// These WordPress probes reach public HTTP endpoints before authentication;

@@ -3,6 +3,7 @@ package daemon
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
@@ -18,7 +19,7 @@ func TestStalwartAuthBanOnSMTPBlocks(t *testing.T) {
 		t.Fatalf("findings = %+v, want one", got)
 	}
 	f := got[0]
-	if f.Check != "stalwart_ban" || f.SourceIP != "203.0.113.30" || f.Attribution != admission.AttributionPeer || f.Severity != alert.High {
+	if f.Check != "stalwart_ban" || f.SourceIP != "203.0.113.30" || f.Attribution != admission.AttributionPeer || f.Severity != alert.Critical {
 		t.Fatalf("finding = %+v", f)
 	}
 	if !strings.Contains(f.Message, "repeated failed logins") || !strings.Contains(f.Message, "port 25") {
@@ -74,5 +75,26 @@ func TestStalwartBanSkipsInfraAndPrivate(t *testing.T) {
 		if got := feedStalwart(d, stalwartLine(stalwartTestStart, "security.authentication-ban", 587, ip, "")); len(got) != 0 {
 			t.Fatalf("%s: findings = %+v, want none", ip, got)
 		}
+	}
+}
+
+// An address a customer logged in from recently, such as an office network
+// where one device holds a stale password, is reported but never blocked:
+// following Stalwart's ban must not bypass the protection CSM's own trackers
+// give established sources.
+func TestStalwartBanOfKnownCustomerAlertsOnly(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.BlockIPs = true, true
+	d, _ := newStalwartAuthDaemon(t, cfg)
+	d.knownCustomers.Note("203.0.113.34", knownCustomerIMAP, "user@example.com", time.Now(), serviceLog)
+	got := feedStalwart(d, stalwartLine(stalwartTestStart, "security.authentication-ban", 993, "203.0.113.34", ""))
+	if len(got) != 1 || got[0].Check != "stalwart_ban" || got[0].Severity != alert.High {
+		t.Fatalf("findings = %+v, want one High stalwart_ban", got)
+	}
+	if checks.BlockableFinding(cfg, got[0]) {
+		t.Fatal("a known customer's address must not be blocked")
+	}
+	if !strings.Contains(got[0].Message, "not blocked") {
+		t.Fatalf("message = %q, want it to say the address is not blocked", got[0].Message)
 	}
 }

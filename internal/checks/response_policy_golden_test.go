@@ -75,9 +75,14 @@ func goldenBlockable(check string, blockCpanelLogins bool) bool {
 	return goldenAlwaysBlock[check] || (blockCpanelLogins && goldenCpanelFailure[check])
 }
 
+// goldenCriticalOnly lists the checks whose findings block only at Critical:
+// a compromise below Critical and a Stalwart ban of a known customer's
+// address are reported, not blocked.
+var goldenCriticalOnly = setOf("mail_account_compromised", "stalwart_ban")
+
 func goldenBlockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
 	return goldenBlockable(f.Check, blockCpanelLogins) &&
-		(f.Check != "mail_account_compromised" || f.Severity == alert.Critical)
+		(!goldenCriticalOnly[f.Check] || f.Severity == alert.Critical)
 }
 
 func goldenHardBlock(check string) bool {
