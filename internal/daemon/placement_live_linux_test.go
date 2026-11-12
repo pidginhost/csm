@@ -82,3 +82,40 @@ func TestPlacementBackendStopsBeforeAnalyzerQueueCloses(t *testing.T) {
 		t.Fatal("placement backend saw the analyzer queue closed before it stopped")
 	}
 }
+
+// A stop that arrives while the placement backend is still loading must not
+// close the analyzer queue under it. The backend joins the file monitor's
+// shutdown before that monitor can start draining.
+func TestPlacementBackendJoinsBeforeFileMonitorCanDrain(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	var probe *stopProbeBackend
+	drainedDuringLoad := false
+	oldBPF := tryStartPlacementBPFFn
+	t.Cleanup(func() { tryStartPlacementBPFFn = oldBPF })
+	tryStartPlacementBPFFn = func(_ context.Context, fm *FileMonitor) (bpf.Backend, error) {
+		close(d.stopCh)
+		// A file monitor already running drains within milliseconds.
+		for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline) && !drainedDuringLoad; {
+			select {
+			case _, ok := <-fm.analyzerCh:
+				drainedDuringLoad = !ok
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		probe = &stopProbeBackend{fm: fm, started: make(chan struct{})}
+		return probe, nil
+	}
+
+	d.startFileMonitor()
+	if d.fileMonitor == nil {
+		t.Skip("fanotify unavailable")
+	}
+	d.wg.Wait()
+
+	if drainedDuringLoad {
+		t.Fatal("file monitor closed its analyzer queue while the placement backend was loading")
+	}
+	if probe == nil || !probe.returned.Load() || probe.closedEarly.Load() {
+		t.Fatalf("placement backend did not stop before the analyzer queue closed: %+v", probe)
+	}
+}

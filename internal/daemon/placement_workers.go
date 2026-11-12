@@ -60,7 +60,8 @@ func processPlacement[T any](fm *FileMonitor, work queuehealth.Work[T], resolve 
 	})
 }
 
-// runPlacement runs b until the monitor stops. drainAndClose waits for it.
+// runPlacement runs b until the monitor stops. drainAndClose waits for it, so
+// call it before Run: an Add after that Wait admits into a closed queue.
 func (fm *FileMonitor) runPlacement(b bpf.Backend) {
 	ctx, cancel := context.WithCancel(context.Background())
 	fm.placementWG.Add(1)
