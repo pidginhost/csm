@@ -53,6 +53,15 @@ func GetChallengeIPList() ChallengeIPList {
 	return challengeIPList
 }
 
+// challengePasses returns when each address last passed a challenge, or nil
+// when the list keeps no passes.
+func challengePasses() map[string]time.Time {
+	if list, ok := challengeIPList.(interface{ Passes() map[string]time.Time }); ok {
+		return list.Passes()
+	}
+	return nil
+}
+
 func isChallengeableCheck(check string) bool {
 	return ResponsePolicyFor(check).ChallengeFirst
 }

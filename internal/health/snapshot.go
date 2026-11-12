@@ -84,6 +84,7 @@ type AutomationStatus struct {
 	ChallengePortGateActive  bool   `json:"challenge_port_gate_active"`
 	ChallengePending         int    `json:"challenge_pending"`
 	ChallengeEscalated       int    `json:"challenge_escalated"`
+	ChallengePassed          int    `json:"challenge_passed"`
 	// FirewallEnabled reflects firewall.enabled in config. FirewallManaged is
 	// true only when the daemon has a live nftables engine wired. The
 	// combination FirewallEnabled && !FirewallManaged means the firewall is

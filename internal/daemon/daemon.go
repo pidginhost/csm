@@ -3255,6 +3255,11 @@ func (d *Daemon) startChallengeServer() {
 	}
 
 	d.ipList = challenge.NewIPList(challenge.DefaultMapPath)
+	if db := store.Global(); db != nil {
+		if err := d.ipList.SetPassStore(db); err != nil {
+			csmlog.Warn("challenge passes from before this start are unknown", "err", err)
+		}
+	}
 	if platform.Detect().WebServer == platform.WSNginx {
 		d.ipList.SetNginxMap(challenge.DefaultNginxMapPath, d.reloadChallengeNginxMap)
 	}

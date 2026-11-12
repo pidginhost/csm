@@ -53,6 +53,26 @@ type ExpiredEntry struct {
 	Root      admission.Evidence
 }
 
+// PassStore keeps challenge passes across restarts.
+type PassStore interface {
+	PutChallengePass(ip string, at time.Time) error
+	// ChallengePasses returns the passes recorded after cutoff.
+	ChallengePasses(cutoff time.Time) (map[string]time.Time, error)
+}
+
+const (
+	// passEscalationGrace is how long a pass spares an address the timeout
+	// block. The bypass cookie waves a returning browser through for as long,
+	// so a timeout inside it means the visitor left, not that it failed.
+	passEscalationGrace = verifyCookieTTL
+	// passMemory is how long a pass is remembered. Login, XML-RPC and
+	// enumeration counts read each site's last log lines, which on a quiet
+	// site can be days old; an address's lines from before its pass stop
+	// counting while the pass is remembered.
+	// shortcut: lines older than this still count again, upgrade if quiet sites keep week-old lines in their window.
+	passMemory = 7 * 24 * time.Hour
+)
+
 // IPList manages the set of IPs that should see challenge pages.
 // Webserver integrations read its maps to redirect IPs to the challenge server.
 type IPList struct {
@@ -60,19 +80,54 @@ type IPList struct {
 	nginxPath   string
 	nginxReload func() error
 	ips         map[string]challengeEntry
-	mu          sync.Mutex
-	gate        PortGate
+	// passes holds when each address last passed a challenge.
+	passes    map[string]time.Time
+	passStore PassStore
+	mu        sync.Mutex
+	gate      PortGate
 }
 
 // NewIPList creates an IP list writer for the webserver-facing map at
 // mapPath and clears any entries a previous run left in it.
 func NewIPList(mapPath string) *IPList {
 	l := &IPList{
-		path: mapPath,
-		ips:  make(map[string]challengeEntry),
+		path:   mapPath,
+		ips:    make(map[string]challengeEntry),
+		passes: make(map[string]time.Time),
 	}
 	_ = l.flush()
 	return l
+}
+
+// SetPassStore persists future passes to ps and restores the ones it still
+// remembers. On a read error the earlier passes stay unknown; the list and
+// future passes still work.
+func (l *IPList) SetPassStore(ps PassStore) error {
+	cutoff := time.Now().Add(-passMemory)
+	known, err := ps.ChallengePasses(cutoff)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.passStore = ps
+	for ip, at := range known {
+		if at.After(cutoff) && at.After(l.passes[ip]) {
+			l.passes[ip] = at
+		}
+	}
+	return err
+}
+
+// Passes returns when each address last passed, for passes still remembered.
+func (l *IPList) Passes() map[string]time.Time {
+	cutoff := time.Now().Add(-passMemory)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make(map[string]time.Time, len(l.passes))
+	for ip, at := range l.passes {
+		if at.After(cutoff) {
+			out[ip] = at
+		}
+	}
+	return out
 }
 
 // SetPortGate attaches a PortGate so every Add/Remove also opens or
@@ -145,17 +200,28 @@ func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscala
 	l.reloadNginx(changed, reload)
 }
 
-// Remove stops challenging an IP (passed or manually removed).
-func (l *IPList) Remove(ip string) {
+// Remove stops challenging an IP without recording a pass.
+func (l *IPList) Remove(ip string) { l.remove(ip, time.Time{}) }
+
+// MarkPassed takes a challenged address off the list and remembers the pass.
+// It reports false when the address was not listed, so concurrent completions
+// of one challenge count once.
+func (l *IPList) MarkPassed(ip string) bool { return l.remove(ip, time.Now()) }
+
+func (l *IPList) remove(ip string, passedAt time.Time) bool {
 	l.mu.Lock()
 	if _, listed := l.ips[ip]; !listed {
 		l.mu.Unlock()
-		return
+		return false
 	}
 	delete(l.ips, ip)
+	if !passedAt.IsZero() {
+		l.passes[ip] = passedAt
+	}
 	changed := l.flush()
 	gate := l.gate
 	reload := l.nginxReload
+	store := l.passStore
 	l.mu.Unlock()
 
 	// Only revoke the kernel gate for an IP that was actually on the list: the
@@ -169,6 +235,12 @@ func (l *IPList) Remove(ip string) {
 		}
 	}
 	l.reloadNginx(changed, reload)
+	if !passedAt.IsZero() && store != nil {
+		if err := store.PutChallengePass(ip, passedAt); err != nil {
+			fmt.Fprintf(os.Stderr, "challenge: keep pass of %s: %v\n", ip, err)
+		}
+	}
+	return true
 }
 
 // Contains returns true if the IP is currently on the challenge list.
@@ -187,15 +259,23 @@ func (l *IPList) Count() int {
 }
 
 // ExpiredEntries removes expired entries and returns those eligible for escalation.
-// The caller is expected to hard-block returned IPs.
+// The caller is expected to hard-block returned IPs. An address that passed
+// within passEscalationGrace is not returned: it proved a browser and left.
 func (l *IPList) ExpiredEntries() []ExpiredEntry {
 	l.mu.Lock()
 	now := time.Now()
+	graceStart := now.Add(-passEscalationGrace)
+	forgetBefore := now.Add(-passMemory)
+	for ip, at := range l.passes {
+		if !at.After(forgetBefore) {
+			delete(l.passes, ip)
+		}
+	}
 	var expired []ExpiredEntry
 	removed := false
 	for ip, entry := range l.ips {
 		if now.After(entry.ExpiresAt) {
-			if !entry.NonEscalating {
+			if !entry.NonEscalating && !l.passes[ip].After(graceStart) {
 				expired = append(expired, ExpiredEntry{IP: ip, Reason: entry.Reason, FindingID: entry.FindingID, Check: entry.Check, Root: entry.Root})
 			}
 			delete(l.ips, ip)

@@ -369,6 +369,10 @@ Registered when `reputation.upstream.enabled: true`.
   `outcome`: `live` (a new block landed), `noop` (the IP was already
   blocked), plus `dry_run`, `allowed`, and `allowlisted`. `outcome=live`
   is how many challenges actually became blocks.
+- `csm_challenge_passed_total{method}` (counter): challenged addresses
+  that got through, by `method`: `pow` (solved the puzzle), `captcha`,
+  `verify_cookie` (passed earlier and came back), `admin_cookie`, and
+  `crawler` (verified search crawler).
 
 ### Firewall blocks
 

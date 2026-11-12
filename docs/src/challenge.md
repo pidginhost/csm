@@ -74,6 +74,19 @@ A timeout block of an address that recently logged in as a customer sends
 the [known-customer block alert](auto-response.md#known-customer-block-alert)
 at once. The block still applies.
 
+### Passed challenges
+
+Each pass is logged as `CHALLENGE-PASS: <ip> passed (<method>)` and counted
+in `csm_challenge_passed_total` and the `passed` field of the challenge stats.
+CSM remembers passes for 7 days, across restarts:
+
+- A challenge that times out within 4 hours of the address's last pass
+  expires without a block. The visitor proved a browser and left; a returning
+  browser is waved through by its verification cookie for the same 4 hours.
+- WordPress login, XML-RPC and user enumeration counts read each site's last
+  log lines, which on a quiet site can be days old. Lines an address logged
+  before its last pass no longer count against it; newer ones do.
+
 ### Bind address
 
 The listener binds to `127.0.0.1` by default, so enabling the challenge

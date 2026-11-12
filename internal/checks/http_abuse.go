@@ -180,6 +180,10 @@ type domlogStats struct {
 	scannerPct            int
 	scannerMinPaths       int
 	scannerEnabled        bool
+	// passes holds when each address last passed a challenge, read once per
+	// scan.
+	passes    map[string]time.Time
+	passesSet bool
 }
 
 func newDomlogStats() *domlogStats {
@@ -263,6 +267,16 @@ func (s *domlogStats) trustedFor(cfg *config.Config) clientaddr.Trusted {
 	return s.trusted
 }
 
+// answeredBefore reports whether ip passed a challenge at or after at, which
+// makes a line logged at at part of what the challenge answered.
+func (s *domlogStats) answeredBefore(ip string, at time.Time) bool {
+	if !s.passesSet {
+		s.passes, s.passesSet = challengePasses(), true
+	}
+	passed, ok := s.passes[ip]
+	return ok && !at.IsZero() && !at.After(passed)
+}
+
 // scan updates counters for one parsed record. cfg may be nil
 // (parity tests pass nil); otherwise thresholds come from it. bot is
 // consulted before any count so a verified Googlebot does not contribute
@@ -302,10 +316,13 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		}
 	}
 
+	// These counts read each site's last log lines, which can be days old;
+	// lines from before an address passed a challenge are what it answered.
+	answered := s.answeredBefore(ip, rec.Time)
 	wpLoginHit := rec.Method == "POST" && strings.Contains(rec.URI, "wp-login.php")
 	xmlrpcHit := rec.Method == "POST" && strings.Contains(rec.URI, "xmlrpc.php")
 	userEnumHit := false
-	if rec.Method == "POST" {
+	if rec.Method == "POST" && !answered {
 		if wpLoginHit {
 			s.wpLogin[ip]++
 			s.observe("wp_login_bruteforce", ip, r, direct)
@@ -315,10 +332,10 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.observe("xmlrpc_abuse", ip, r, direct)
 		}
 	}
-	if strings.Contains(rec.URI, "?author=") {
+	if !answered && strings.Contains(rec.URI, "?author=") {
 		s.userEnum[ip]++
 		userEnumHit = true
-	} else if strings.Contains(rec.URI, "/wp-json/wp/v2/users") &&
+	} else if !answered && strings.Contains(rec.URI, "/wp-json/wp/v2/users") &&
 		!strings.Contains(rec.URI, "/users/me") {
 		s.userEnum[ip]++
 		userEnumHit = true

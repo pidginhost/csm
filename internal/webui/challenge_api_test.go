@@ -47,6 +47,7 @@ func TestApiChallengeStatsUsesProviderAutomationOnly(t *testing.T) {
 	s.SetHealthProvider(challengeStatsOnlyProvider{automation: health.AutomationStatus{
 		ChallengePending:   7,
 		ChallengeEscalated: 3,
+		ChallengePassed:    2,
 	}})
 
 	rec := httptest.NewRecorder()
@@ -55,12 +56,13 @@ func TestApiChallengeStatsUsesProviderAutomationOnly(t *testing.T) {
 	var resp struct {
 		Pending   int `json:"pending"`
 		Escalated int `json:"escalated"`
+		Passed    int `json:"passed"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
 	}
-	if resp.Pending != 7 || resp.Escalated != 3 {
-		t.Fatalf("pending/escalated = %d/%d, want 7/3", resp.Pending, resp.Escalated)
+	if resp.Pending != 7 || resp.Escalated != 3 || resp.Passed != 2 {
+		t.Fatalf("pending/escalated/passed = %d/%d/%d, want 7/3/2", resp.Pending, resp.Escalated, resp.Passed)
 	}
 }
 
