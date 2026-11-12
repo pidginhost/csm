@@ -97,6 +97,7 @@ func Redact(cfg *Config) *Config {
 	}
 
 	// Credential-bearing URLs keep scheme and host only.
+	c.Stalwart.APIURL = RedactURL(c.Stalwart.APIURL)
 	c.Alerts.Webhook.URL = RedactURL(c.Alerts.Webhook.URL)
 	c.Alerts.Heartbeat.URL = RedactURL(c.Alerts.Heartbeat.URL)
 	c.AutoResponse.VerdictCallback.URL = RedactURL(c.AutoResponse.VerdictCallback.URL)

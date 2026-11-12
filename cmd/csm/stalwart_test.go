@@ -267,3 +267,40 @@ func TestStalwartSetupExitCodes(t *testing.T) {
 		t.Fatalf("stray argument: code %d, want 2", code)
 	}
 }
+
+func TestStalwartSetupRedactsPlanAndLogin(t *testing.T) {
+	for _, mode := range []string{"dry", "apply", "login"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newSetupHarness(t)
+			h.api.http.ClientIPSource = setupTestPassword
+			if mode == "login" {
+				h.env["STALWART_USER"] = setupTestPassword
+				h.api.readErr = stalwartapi.ErrUnauthorized
+			}
+			args := []string{}
+			if mode == "dry" {
+				args = append(args, "--dry-run")
+			}
+			_, out := h.run(args...)
+			if strings.Contains(out, setupTestPassword) {
+				t.Fatal("password exposed by output")
+			}
+		})
+	}
+}
+
+func TestStalwartSetupRejectsUnsafeURLOverride(t *testing.T) {
+	h := newSetupHarness(t)
+	code, _ := h.run("--url", "http://192.0.2.1:8080")
+	if code != 2 || h.gotURL != "" {
+		t.Fatal("unsafe override reached API")
+	}
+}
+
+func TestStalwartSetupRemoteCannotUseLocalLocks(t *testing.T) {
+	h := newSetupHarness(t)
+	code, out := h.run("--url", "https://mail.example.org", "--dry-run")
+	if code != 0 || !strings.Contains(out, "webmail client addresses: skipped:") {
+		t.Fatal("remote listener trusted local firewall")
+	}
+}

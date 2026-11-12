@@ -532,17 +532,17 @@ Stalwart logs failed logins at debug level by default, so password guessing over
 
 ### Preparing Stalwart
 
-`csm stalwart setup` changes three settings through Stalwart's admin API at `stalwart.api_url` (default `http://127.0.0.1:8080`), then reloads Stalwart's settings once. Run it as root with a Stalwart admin login:
+`csm stalwart setup` changes three settings through Stalwart's admin API at `stalwart.api_url` (default `http://127.0.0.1:8080`), then reloads Stalwart's settings once. The API address, including a `--url` override, must not contain a login, query or fragment. Remote addresses require HTTPS and cannot use this host's port locks as protection. Run it as root with a Stalwart admin login:
 
 ```
 STALWART_USER=admin csm stalwart setup --dry-run --password-file /root/stalwart-admin.pw
 STALWART_USER=admin csm stalwart setup --password-file /root/stalwart-admin.pw
 ```
 
-`STALWART_PASSWORD` works in place of `--password-file`. The password is never printed. `--dry-run` shows each step and changes nothing; a second run after a successful one changes nothing and does not reload.
+`STALWART_PASSWORD` works in place of `--password-file`. The password is never printed. `--dry-run` shows each step and changes nothing; a second run after a successful one changes nothing and does not reload. If setup fails, some settings may already be stored. Resolve the error and reload settings in Stalwart before running setup again.
 
 1. **Failed-login logging.** Sets the `auth.failed` event to info unless it is already logged at info, warn or error.
-2. **Webmail client addresses.** Makes Stalwart's HTTP listener take the client address from `X-Forwarded-For` (1 hop), so webmail and JMAP failures name the real client instead of the web server. Anyone who can connect to the listener could forge that header, so setup only does this when every HTTP listener binds loopback addresses only and the running CSM daemon locks each of their ports to the web server and Stalwart. Otherwise it skips the step and prints what is missing, including the line to add under `firewall` in `csm.yaml`, for example `local_port_locks: ["8080:www-data,stalwart"]`; restart CSM after adding it. If Stalwart already takes forwarded addresses without that protection, setup reports the step as unsafe and exits 1 without changing it. See [Local port locks](firewall.md#local-port-locks).
+2. **Webmail client addresses.** Makes Stalwart's HTTP listener take the client address from `X-Forwarded-For` (1 hop), so webmail and JMAP failures name the real client instead of the web server. Anyone who can connect to the listener could forge that header, so setup only does this when the API address names this host on loopback, every HTTP listener has known loopback-only binds, and the running CSM daemon locks each of their ports to the web server and Stalwart. Otherwise it skips the step and prints what is missing, including the line to add under `firewall` in `csm.yaml`, for example `local_port_locks: ["8080:www-data,stalwart"]`; restart CSM after adding it. If Stalwart already takes forwarded addresses without that protection, setup reports the step as unsafe and exits 1 without changing it. See [Local port locks](firewall.md#local-port-locks).
 3. **Ban expiry.** Sets Stalwart's failed-login, abuse and scan ban periods to `auto_response.block_expiry`, so its bans end when CSM's blocks do. Loiter bans are left alone.
 
 Setup also reports listeners that accept the PROXY protocol, which it does not change.

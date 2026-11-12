@@ -5,6 +5,7 @@ package firewall
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/google/nftables"
@@ -12,10 +13,22 @@ import (
 	"github.com/google/nftables/expr"
 )
 
-// LockedLocalPorts returns the ports the engine's current config locks,
-// sorted.
+// LockedLocalPorts reports installed locks only while the live rules still
+// match the installation. A rollback or external edit invalidates that proof.
 func (e *Engine) LockedLocalPorts() []int {
-	cfg := e.Config()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.lockedLocalPorts) == 0 || e.appliedRuleset == "" {
+		return nil
+	}
+	current, err := e.readRulesetLocked()
+	if err != nil || current != e.appliedRuleset {
+		return nil
+	}
+	return slices.Clone(e.lockedLocalPorts)
+}
+
+func configuredLockPorts(cfg *FirewallConfig) []int {
 	if cfg == nil {
 		return nil
 	}

@@ -123,7 +123,7 @@ func (c *Client) Listeners(ctx context.Context) ([]Listener, error) {
 		for _, b := range setKeys(r.Bind) {
 			ap, err := netip.ParseAddrPort(b)
 			if err != nil {
-				return nil, fmt.Errorf("stalwart %s: listener %q binds %q, not an address and port", method, r.Name, b)
+				return nil, fmt.Errorf("stalwart %s: listener %q binds %q, not an address and port", method, Redact(r.Name, c.user, c.password), Redact(b, c.user, c.password))
 			}
 			l.Bind = append(l.Bind, ap)
 		}
@@ -172,7 +172,7 @@ func (c *Client) ReloadSettings(ctx context.Context) ([]string, error) {
 		if json.Unmarshal(v, &s) != nil {
 			s = string(v)
 		}
-		warnings = append(warnings, k+": "+s)
+		warnings = append(warnings, Redact(k+": "+s, c.user, c.password))
 	}
 	sort.Strings(warnings)
 	return warnings, nil

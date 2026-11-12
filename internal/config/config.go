@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/stalwartlog"
 )
 
@@ -3052,28 +3052,11 @@ func validateStalwartField(cfg *Config) (string, error) {
 	}
 	if raw := cfg.Stalwart.APIURL; raw != "" {
 		const field = "stalwart.api_url"
-		u, err := url.Parse(raw)
-		switch {
-		case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
-			return field, fmt.Errorf("%s: %q must be an http or https address", field, raw)
-		case u.User != nil:
-			// The admin login comes from the environment, never from config.
-			return field, fmt.Errorf("%s: must not contain a login", field)
-		case u.Scheme == "http" && !loopbackHost(u.Hostname()):
-			// Basic auth over plain http is readable on the way to another host.
-			return field, fmt.Errorf("%s: %q must use https unless it is on this host", field, raw)
+		if err := stalwartapi.ValidateURL(raw); err != nil {
+			return field, fmt.Errorf("%s: %w", field, err)
 		}
 	}
 	return "", nil
-}
-
-// loopbackHost reports whether host names this machine's loopback.
-func loopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	a, err := netip.ParseAddr(host)
-	return err == nil && a.Unmap().IsLoopback()
 }
 
 func validateMailLogs(cfg *Config) error {

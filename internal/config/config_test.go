@@ -2127,7 +2127,7 @@ func TestStalwartAPIURLDefaultAndValidation(t *testing.T) {
 	if cfg.Stalwart.APIURL != "http://127.0.0.1:8080" {
 		t.Fatalf("api_url default = %q", cfg.Stalwart.APIURL)
 	}
-	for _, ok := range []string{"http://127.0.0.1:8080", "https://[::1]:443/", "http://localhost:8080", "http://[::1]:8080", "https://mail.example.org"} {
+	for _, ok := range []string{"http://127.0.0.1:8080", "https://[::1]:443/", "http://localhost:8080", "http://[::1]:8080", "https://mail.example.org", "https://mail.example.org/admin/"} {
 		if _, err := LoadBytes([]byte("stalwart:\n  api_url: \"" + ok + "\"\n")); err != nil {
 			t.Fatalf("%s refused: %v", ok, err)
 		}
@@ -2137,6 +2137,14 @@ func TestStalwartAPIURLDefaultAndValidation(t *testing.T) {
 		_, err := LoadBytes([]byte("stalwart:\n  api_url: \"" + bad + "\"\n"))
 		if err == nil || !strings.Contains(err.Error(), "stalwart.api_url") {
 			t.Errorf("%s: err = %v, want a stalwart.api_url error", bad, err)
+		}
+	}
+}
+
+func TestStalwartAPIURLRejectsAmbiguousOrigin(t *testing.T) {
+	for _, address := range []string{"https://mail.example.org/?q=x", "https://mail.example.org/#x"} {
+		if _, err := LoadBytes([]byte("stalwart:\n  api_url: " + address + "\n")); err == nil {
+			t.Fatal("ambiguous API origin accepted")
 		}
 	}
 }

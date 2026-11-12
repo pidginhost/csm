@@ -186,3 +186,129 @@ func TestClientCapsResponseSize(t *testing.T) {
 		t.Fatal("a 5 MiB response was accepted")
 	}
 }
+
+func TestClientRejectsUnacknowledgedWrites(t *testing.T) {
+	for _, reply := range []map[string]any{{}, {"created": map[string]any{"c": nil}}} {
+		f := newFake(t)
+		f.reply = func(method string, _ map[string]any) (string, any) { return method, reply }
+		if err := f.client().SetTracingLevel(context.Background(), "", "auth.failed", "info"); err == nil {
+			t.Fatal("unacknowledged write reported success")
+		}
+	}
+	f := newFake(t)
+	if err := f.client().SetHTTPSettings(context.Background(), HTTPSettings{}); err == nil {
+		t.Fatal("unacknowledged update reported success")
+	}
+}
+
+func TestClientRedactsServerErrors(t *testing.T) {
+	for _, kind := range []string{"method", "set", "name", "decode"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				switch kind {
+				case "method":
+					return "error", map[string]any{"type": testPassword, "description": testPassword}
+				case "set":
+					return method, map[string]any{"notUpdated": map[string]any{"singleton": map[string]any{"type": testPassword, "description": testPassword}}}
+				case "name":
+					return testPassword, map[string]any{}
+				default:
+					return method, map[string]any{"list": []any{map[string]any{"forwardedHops": testPassword}}}
+				}
+			}
+			var err error
+			if kind == "set" {
+				err = f.client().SetHTTPSettings(context.Background(), HTTPSettings{})
+			} else {
+				_, err = f.client().HTTPSettings(context.Background())
+			}
+			if err == nil {
+				t.Fatal("expected failure")
+			}
+			if strings.Contains(err.Error(), testPassword) {
+				t.Fatal("password exposed by error")
+			}
+		})
+	}
+}
+
+func TestClientRejectsUnsafeAddressesBeforeSending(t *testing.T) {
+	for _, address := range []string{"http://192.0.2.1:8080", "http://admin:" + testPassword + "@127.0.0.1:8080", "http://127.0.0.1:8080/?q=x", "http://127.0.0.1:8080/#x"} {
+		c := New(address, testUser, testPassword)
+		c.hc.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("unsafe address reached transport")
+			return nil, nil
+		})
+		if _, err := c.TracingLevels(context.Background()); err == nil || strings.Contains(err.Error(), testPassword) {
+			t.Fatal("unsafe address accepted or leaked login")
+		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestClientRejectsRedirectDowngrade(t *testing.T) {
+	c := New("https://mail.example.org:443", testUser, testPassword)
+	calls := 0
+	c.hc.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"http://mail.example.org:443/jmap/"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	})
+	if _, err := c.TracingLevels(context.Background()); err == nil {
+		t.Fatal("downgrade accepted")
+	}
+	if calls != 1 {
+		t.Fatal("login sent after downgrade redirect")
+	}
+}
+
+func TestClientRejectsNullSettings(t *testing.T) {
+	for _, list := range []any{nil, []any{nil}} {
+		f := newFake(t)
+		f.reply = func(method string, _ map[string]any) (string, any) { return method, map[string]any{"list": list} }
+		if _, err := f.client().HTTPSettings(context.Background()); err == nil {
+			t.Fatal("null settings accepted")
+		}
+	}
+}
+
+func TestClientRedactsReloadWarnings(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"r": map[string]any{"warnings": map[string]any{testPassword: testPassword}}}}
+	}
+	warnings, err := f.client().ReloadSettings(context.Background())
+	if err != nil || len(warnings) != 1 {
+		t.Fatal("expected a reload warning")
+	}
+	if strings.Contains(warnings[0], testPassword) {
+		t.Fatal("warning exposed password")
+	}
+}
+
+func TestClientPreservesAPIPathPrefix(t *testing.T) {
+	c := New("https://mail.example.org/admin/", testUser, testPassword)
+	calls := 0
+	c.hc.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		want := "/admin/.well-known/jmap"
+		body := `{"primaryAccounts":{"urn:stalwart:jmap":"admin"}}`
+		if calls == 2 {
+			want = "/admin/jmap/"
+			body = `{"methodResponses":[["x:EventTracingLevel/get",{"list":[]},"a"]]}`
+		}
+		if r.URL.Path != want {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, want)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	if _, err := c.TracingLevels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want session and settings", calls)
+	}
+}

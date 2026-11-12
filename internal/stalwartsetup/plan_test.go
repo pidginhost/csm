@@ -330,3 +330,51 @@ func TestPlanRewritesSpoofableForwardedSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanApplySamePlanTwice(t *testing.T) {
+	api := freshAPI()
+	p := inspect(t, api, fieldInputs())
+	applyCalls(t, api, p)
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("second apply made calls: %v", calls)
+	}
+}
+
+func TestPlanRejectsUnknownHTTPBind(t *testing.T) {
+	api := freshAPI()
+	api.listeners = append(api.listeners, listener("unknown", "http"))
+	p := inspect(t, api, fieldInputs())
+	if p.Steps[1].State != Skipped {
+		t.Fatal("enabled forwarded addresses without all HTTP binds")
+	}
+}
+
+func TestPlanRetriesReloadWithoutRewriting(t *testing.T) {
+	api := freshAPI()
+	p := inspect(t, api, fieldInputs())
+	api.failOn = "ReloadSettings"
+	if _, err := p.Apply(context.Background(), api); err == nil {
+		t.Fatal("expected reload failure")
+	}
+	api.failOn = ""
+	api.calls = nil
+	if _, err := p.Apply(context.Background(), api); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(api.calls, []string{"ReloadSettings"}) {
+		t.Fatalf("retry calls = %v", api.calls)
+	}
+	api.calls = nil
+	if _, err := p.Apply(context.Background(), api); err != nil || len(api.calls) != 0 {
+		t.Fatal("completed plan was not idle")
+	}
+}
+
+func TestPlanOnlyUnknownHTTPBindIsNotDone(t *testing.T) {
+	api := freshAPI()
+	api.listeners = []stalwartapi.Listener{listener("unknown", "http")}
+	p := inspect(t, api, fieldInputs())
+	if p.Steps[1].State != Skipped {
+		t.Fatal("unknown HTTP binding reported done")
+	}
+}

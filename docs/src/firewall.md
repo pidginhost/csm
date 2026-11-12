@@ -601,7 +601,7 @@ Use it for a service that trusts what local clients tell it, such as a mail
 server that takes the webmail client's address from a forwarded header. A user
 name that does not exist is reported at startup and skipped; the port stays
 locked to the others. The status page and `csm doctor` read the locked ports
-from the running daemon, so a change takes effect after a restart.
+from the running daemon after successful installation. Unapplied changes, failed replacements, and live rules that no longer match the installation do not count as protection.
 
 ## Infrastructure IP DNS guard
 

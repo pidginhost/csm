@@ -59,6 +59,11 @@ func runStalwart() {
 // done or was left for a stated reason, 1 when a setting is unsafe or a write
 // failed, and 2 on a usage, login or host error.
 func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int {
+	user, password := deps.getenv("STALWART_USER"), deps.getenv("STALWART_PASSWORD")
+	var output bytes.Buffer
+	destination := out
+	out = &output
+	defer func() { _, _ = io.WriteString(destination, stalwartapi.Redact(output.String(), user, password)) }()
 	fs := flag.NewFlagSet("csm stalwart setup", flag.ContinueOnError)
 	fs.SetOutput(out)
 	dryRun := fs.Bool("dry-run", false, "show what would change and change nothing")
@@ -89,8 +94,6 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 		return 2
 	}
 
-	user := deps.getenv("STALWART_USER")
-	password := deps.getenv("STALWART_PASSWORD")
 	if *passwordFile != "" {
 		data, readErr := deps.readFile(*passwordFile)
 		if readErr != nil {
@@ -112,7 +115,15 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	if *apiURL != "" {
 		url = *apiURL
 	}
+	if addressErr := stalwartapi.ValidateURL(url); addressErr != nil {
+		fmt.Fprintln(out, addressErr)
+		return 2
+	}
 	in := stalwartSetupInputs(cfg, deps)
+	if !stalwartapi.LocalURL(url) {
+		in.LockManaged = false
+		in.LockedPorts = nil
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -135,7 +146,7 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	warnings, err := plan.Apply(ctx, api)
 	if err != nil {
 		fmt.Fprintf(out, "Setup stopped at %s\n", redact(err.Error()))
-		fmt.Fprintln(out, "Changes made before it were applied. Run csm stalwart setup again after fixing the cause.")
+		fmt.Fprintln(out, "Some settings may have been stored. Resolve the error and reload settings in Stalwart before running setup again.")
 		return 1
 	}
 	printStalwartSteps(out, plan, true)

@@ -28,6 +28,7 @@ func RedactURL(raw string) string {
 // urlScalarPaths are config keys whose value is a credential-bearing URL;
 // hot-reload diff logging shows them through RedactURL.
 var urlScalarPaths = map[string]struct{}{
+	"stalwart.api_url":                   {},
 	"alerts.webhook.url":                 {},
 	"alerts.heartbeat.url":               {},
 	"auto_response.verdict_callback.url": {},

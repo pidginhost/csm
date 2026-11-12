@@ -210,3 +210,15 @@ func TestStalwartDoctorCDNBan(t *testing.T) {
 		t.Fatalf("no ban: %+v, want ok", c)
 	}
 }
+
+func TestStalwartDoctorRedactsPlan(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.http.ClientIPSource = setupTestPassword
+	cfg, _ := h.deps.loadConfig()
+	got := stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, h.deps.newAPI, cfg.Stalwart, stalwartsetup.Inputs{})
+	for _, c := range got {
+		if strings.Contains(c.Message+c.Fix+c.Name, setupTestPassword) {
+			t.Fatal("password exposed by doctor")
+		}
+	}
+}

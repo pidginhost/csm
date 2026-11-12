@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -92,5 +94,38 @@ func TestValidateDoesNotEchoWebhookOrHeartbeatURL(t *testing.T) {
 				t.Errorf("%s result echoes the URL secret: %q", r.Field, r.Message)
 			}
 		}
+	}
+}
+
+func TestStalwartURLRedactedBeforeValidation(t *testing.T) {
+	password := "fixture-" + t.Name() + "-value"
+	raw := "http://admin:" + password + "@127.0.0.1:8080"
+	cfg := &Config{Stalwart: StalwartConfig{APIURL: raw}}
+	if strings.Contains(Redact(cfg).Stalwart.APIURL, password) {
+		t.Error("config display exposed API login")
+	}
+	if cfg.Stalwart.APIURL != raw {
+		t.Fatal("redaction mutated original config")
+	}
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("stalwart:\n  api_url: "+raw+"\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "10-stalwart.yaml"), []byte("stalwart:\n  api_url: http://127.0.0.1:8080\n"), 0o600))
+	output := captureStderr(t, func() {
+		loaded, err := LoadWithDir(main, confd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.Stalwart.APIURL != "http://127.0.0.1:8080" {
+			t.Fatal("override not applied")
+		}
+	})
+	if strings.Contains(output, password) {
+		t.Fatal("merge log exposed API login")
+	}
+	if !strings.Contains(output, "stalwart.api_url") || !strings.Contains(output, redactedURLTail) {
+		t.Fatal("expected redacted override log")
 	}
 }

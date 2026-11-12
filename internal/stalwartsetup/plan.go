@@ -61,7 +61,8 @@ type Step struct {
 
 // Plan is the setup steps in order.
 type Plan struct {
-	Steps []Step
+	Steps         []Step
+	pendingReload bool
 }
 
 const (
@@ -103,10 +104,10 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 // once. It makes no call when nothing changes. A failed write stops it, and
 // the settings written before it are still reloaded: a later run reads them
 // as done, so they must not be left stored but inactive.
-func (p Plan) Apply(ctx context.Context, api API) ([]string, error) {
-	changed := false
+func (p *Plan) Apply(ctx context.Context, api API) ([]string, error) {
 	var failed error
-	for _, s := range p.Steps {
+	for i := range p.Steps {
+		s := &p.Steps[i]
 		if s.State != Change || s.apply == nil {
 			continue
 		}
@@ -114,15 +115,17 @@ func (p Plan) Apply(ctx context.Context, api API) ([]string, error) {
 			failed = fmt.Errorf("%s: %w", s.Name, err)
 			break
 		}
-		changed = true
+		p.pendingReload = true
+		s.apply = nil
 	}
-	if !changed {
+	if !p.pendingReload {
 		return nil, failed
 	}
 	warnings, err := api.ReloadSettings(ctx)
 	if err != nil {
 		return nil, errors.Join(failed, fmt.Errorf("settings reload: %w", err))
 	}
+	p.pendingReload = false
 	return warnings, failed
 }
 
@@ -166,6 +169,9 @@ func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Liste
 		if l.Protocol != "http" {
 			continue
 		}
+		if len(l.Bind) == 0 {
+			public = append(public, l.Name+" has no known bind address")
+		}
 		for _, b := range l.Bind {
 			if !b.Addr().Unmap().IsLoopback() {
 				public = append(public, fmt.Sprintf("%s binds %s", l.Name, b))
@@ -175,7 +181,7 @@ func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Liste
 			}
 		}
 	}
-	if len(ports) == 0 {
+	if len(ports) == 0 && len(public) == 0 {
 		s.State, s.Detail = Done, "Stalwart has no HTTP listener"
 		return s
 	}

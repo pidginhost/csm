@@ -4,10 +4,12 @@ package firewall
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/google/nftables"
@@ -159,16 +161,86 @@ func TestLocalPortLockUnknownUserFailsClosed(t *testing.T) {
 	}
 }
 
-func TestLockedLocalPortsReportsLiveConfig(t *testing.T) {
-	e, err := NewEngine(&FirewallConfig{LocalPortLocks: []string{"9000:a", "8080:b"}}, t.TempDir())
-	if err != nil {
+// Only an acknowledged kernel transaction establishes a port lock.
+func TestLockedLocalPortsReportsAppliedRules(t *testing.T) {
+	withLockUsers(t, map[string]string{"web": "33"})
+	conn, _ := nftConnCapturingRules(t)
+	e := &Engine{conn: conn, cfg: &FirewallConfig{LocalPortLocks: []string{"8080:web"}}, statePath: t.TempDir(),
+		listTables:  func() ([]*nftables.Table, error) { return nil, nil },
+		readRuleset: func() (string, error) { return "rules", nil },
+	}
+	if got := e.LockedLocalPorts(); len(got) != 0 {
+		t.Fatal("unapplied lock reported active")
+	}
+	if err := e.Apply(); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.LockedLocalPorts(); !reflect.DeepEqual(got, []int{8080, 9000}) {
-		t.Fatalf("LockedLocalPorts = %v", got)
+	if got := e.LockedLocalPorts(); !reflect.DeepEqual(got, []int{8080}) {
+		t.Fatalf("applied locks = %v", got)
+	}
+	e.SetConfig(&FirewallConfig{LocalPortLocks: []string{"9000:web"}})
+	e.listTables = func() ([]*nftables.Table, error) { return nil, errors.New("unavailable") }
+	if err := e.Apply(); err == nil {
+		t.Fatal("expected failed apply")
+	}
+	if got := e.LockedLocalPorts(); !reflect.DeepEqual(got, []int{8080}) {
+		t.Fatalf("failed apply changed reported locks: %v", got)
+	}
+	e.listTables = func() ([]*nftables.Table, error) { return nil, nil }
+	e.conn = nftConnReturningErr(t, syscall.EPERM)
+	if err := e.Apply(); err == nil {
+		t.Fatal("expected rejected kernel transaction")
+	}
+	if got := e.LockedLocalPorts(); !reflect.DeepEqual(got, []int{8080}) {
+		t.Fatalf("rejected transaction changed locks: %v", got)
+	}
+	e.conn = conn
+	if err := e.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.LockedLocalPorts(); !reflect.DeepEqual(got, []int{9000}) {
+		t.Fatalf("replacement locks = %v", got)
 	}
 	e.SetConfig(&FirewallConfig{})
+	if err := e.Apply(); err != nil {
+		t.Fatal(err)
+	}
 	if got := e.LockedLocalPorts(); len(got) != 0 {
-		t.Fatalf("after reload LockedLocalPorts = %v, want none", got)
+		t.Fatal("removed lock reported active")
+	}
+}
+
+func TestLockedLocalPortsRejectsUnprovenLiveRules(t *testing.T) {
+	withLockUsers(t, map[string]string{"web": "33"})
+	conn, _ := nftConnCapturingRules(t)
+	live := "protected rules"
+	var readErr error
+	e := &Engine{conn: conn, cfg: &FirewallConfig{LocalPortLocks: []string{"8080:web"}}, statePath: t.TempDir(),
+		listTables:  func() ([]*nftables.Table, error) { return nil, nil },
+		readRuleset: func() (string, error) { return live, readErr },
+	}
+	if err := e.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.LockedLocalPorts(); !reflect.DeepEqual(got, []int{8080}) {
+		t.Fatal("installed lock not reported")
+	}
+	live = "previous rules without locks"
+	e.SetConfig(&FirewallConfig{})
+	if got := e.LockedLocalPorts(); len(got) != 0 {
+		t.Fatal("rollback left stale lock protection")
+	}
+	live = "protected rules"
+	readErr = errors.New("cannot inspect rules")
+	if got := e.LockedLocalPorts(); len(got) != 0 {
+		t.Fatal("unreadable live rules reported protected")
+	}
+	e.SetConfig(&FirewallConfig{LocalPortLocks: []string{"8080:web"}})
+	if err := e.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	readErr = nil
+	if got := e.LockedLocalPorts(); len(got) != 0 {
+		t.Fatal("missing installation baseline reported protected")
 	}
 }

@@ -197,11 +197,22 @@ func tailLines(path string, n int, maxBytes int64) ([]string, error) {
 
 // stalwartSettingsDoctorChecks reports each setup step read-only. It needs
 // an admin login, which only the environment supplies.
-func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartsetup.API, sc config.StalwartConfig, in stalwartsetup.Inputs) []DoctorCheck {
+func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartsetup.API, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
 	user, password := getenv("STALWART_USER"), getenv("STALWART_PASSWORD")
 	if user == "" || password == "" {
 		return []DoctorCheck{{Name: "stalwart settings", Status: "ok",
 			Message: "Not checked; set STALWART_USER and STALWART_PASSWORD to a Stalwart admin login to check Stalwart's settings"}}
+	}
+	defer func() {
+		for i := range result {
+			result[i].Name = stalwartapi.Redact(result[i].Name, user, password)
+			result[i].Message = stalwartapi.Redact(result[i].Message, user, password)
+			result[i].Fix = stalwartapi.Redact(result[i].Fix, user, password)
+		}
+	}()
+	if !stalwartapi.LocalURL(sc.APIURL) {
+		in.LockManaged = false
+		in.LockedPorts = nil
 	}
 	plan, err := stalwartsetup.Inspect(ctx, newAPI(sc.APIURL, user, password), in)
 	if err != nil {

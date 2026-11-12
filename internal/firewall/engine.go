@@ -51,8 +51,9 @@ type Engine struct {
 
 	// Captured only after our own successful ruleset transaction. Config-file
 	// hashes cannot authenticate the rules currently installed in the kernel.
-	appliedRuleset string
-	readRuleset    func() (string, error)
+	appliedRuleset   string
+	lockedLocalPorts []int
+	readRuleset      func() (string, error)
 
 	// dryRunRecorder is called by BlockIP when auto_response.dry_run is
 	// active. Set by SetDryRunRecorder after construction so the firewall
@@ -830,12 +831,17 @@ func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("applying ruleset: %w", err)
 	}
+	e.lockedLocalPorts = configuredLockPorts(e.cfg)
 	if err := e.saveLeaseLocked(); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: lease checkpoint not saved: %v\n", err)
 	}
 	// A failed capture leaves monitoring visibly unbaselined; it must neither
 	// undo an applied firewall nor bless a later, possibly external edit.
-	e.appliedRuleset, _ = e.readRulesetLocked()
+	snapshot, captureErr := e.readRulesetLocked()
+	e.appliedRuleset = snapshot
+	if captureErr != nil {
+		e.appliedRuleset = ""
+	}
 
 	return nil
 }
