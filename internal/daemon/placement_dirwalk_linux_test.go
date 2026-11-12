@@ -3,12 +3,18 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
@@ -253,5 +259,161 @@ func TestPlacedDirWalkStopsOnShutdown(t *testing.T) {
 	fm.drainAndClose()
 	if got := requirePlacedDirQueue(t, fm); got.Depth != 0 || got.DroppedTotal != 1 {
 		t.Fatalf("shutdown status = %+v, want the waiting directory counted lost", got)
+	}
+}
+
+// fillAnalyzerQueue stands in for live events already waiting for analysis.
+func fillAnalyzerQueue(fm *FileMonitor) {
+	for len(fm.analyzerCh) < cap(fm.analyzerCh) {
+		fm.analyzerCh <- fileEvent{path: "live", fd: -1}
+	}
+}
+
+// A walk that admits faster than the analyzers drain overflows into
+// per-directory recovery, which has its own cap. Pacing keeps every walked
+// file on the analyzer queue.
+func TestPlacedDirWalkWaitsForAnalyzerHeadroom(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lowerPlacedDirLimit(t, &placedDirTimeLimit, time.Second)
+		fm := placementTestMonitor(make(chan alert.Finding, 64))
+		files := make(map[string]string)
+		for i := 0; i < 20; i++ {
+			files[fmt.Sprintf("d%02d/x.php", i)] = "<?php echo 1;"
+		}
+		placed := placeDir(t, fm, stagedTree(t, files), "pkg")
+		fillAnalyzerQueue(fm)
+
+		done := make(chan struct{})
+		walked := make(map[string]int)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for {
+				select {
+				case <-done:
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+				select {
+				case ev := <-fm.analyzerCh:
+					if ev.fd >= 0 {
+						walked[ev.path]++
+						_ = unix.Close(ev.fd)
+					}
+				default:
+				}
+			}
+		}()
+		passes := 0
+		for fm.walkNextPlacedDir() {
+			passes++
+		}
+		synctest.Wait()
+		for len(fm.analyzerCh) > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		close(done)
+		<-drained
+
+		if passes < 2 {
+			t.Fatalf("walk finished in %d pass, want the paced walk to span passes", passes)
+		}
+		for i := 0; i < 20; i++ {
+			path := filepath.Join(placed, fmt.Sprintf("d%02d", i), "x.php")
+			if walked[path] != 1 {
+				t.Fatalf("%s reached the analyzers %d times, want once", path, walked[path])
+			}
+		}
+		if got := fm.EventStats(); got.Dropped != 0 || len(fm.reconcileDirs) != 0 {
+			t.Fatalf("walked files overflowed into recovery: dropped=%d recovery=%d", got.Dropped, len(fm.reconcileDirs))
+		}
+	})
+}
+
+func TestPlacedDirWalkWithoutHeadroomRaisesHigh(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lowerPlacedDirLimit(t, &placedDirTimeLimit, time.Second)
+		fm, alerts := placedDirTestMonitor(t)
+		placed := placeDir(t, fm, stagedTree(t, map[string]string{"x.php": "<?php echo 1;"}), "pkg")
+		fillAnalyzerQueue(fm)
+
+		walkAllPlacedDirs(fm)
+
+		if got := len(fm.analyzerCh); got != cap(fm.analyzerCh) {
+			t.Fatalf("analyzer queue holds %d events, want only the %d live ones", got, cap(fm.analyzerCh))
+		}
+		found := incompleteDirFindings(drainFindings(alerts))
+		if len(found) != 1 || found[0].Severity != alert.High || found[0].FilePath != placed {
+			t.Fatalf("incomplete findings %+v, want one High for %s", found, placed)
+		}
+		if fm.EventStats().Dropped != 0 || len(fm.reconcileDirs) != 0 {
+			t.Fatal("walk without headroom overflowed into recovery")
+		}
+	})
+}
+
+// Restore detection's PID-reuse guard compares the writer's start time with
+// the event time. The walk runs later than the rename, so a process that
+// took the renamer's PID meanwhile must not pass as the writer.
+func TestPlacedDirWalkKeepsPlacementTime(t *testing.T) {
+	fm, _ := placedDirTestMonitor(t)
+	staged := stagedTree(t, map[string]string{"x.php": "<?php echo 1;"})
+	site := filepath.Join(t.TempDir(), "public_html")
+	if err := os.Mkdir(site, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	placed := filepath.Join(site, "pkg")
+	if err := os.Rename(staged, placed); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(placed, "x.php")
+	stubRemovedFileAt(t, map[string]checks.RemovedFile{file: removalOf(file, "<?php echo 1;", 1)})
+	var chainAt []time.Time
+	prev := restoreWriterChain
+	restoreWriterChain = func(_ int, writtenAt time.Time) []int {
+		chainAt = append(chainAt, writtenAt)
+		return nil
+	}
+	t.Cleanup(func() { restoreWriterChain = prev })
+	ev := placementOf(t, placed, writerPID)
+	ev.At = time.Now().Add(-time.Hour)
+
+	fm.handlePlacement(ev)
+	walkAllPlacedDirs(fm)
+
+	events := queuedPlacements(t, fm)
+	if len(events) != 1 || !events[0].at.Equal(ev.At) {
+		t.Fatalf("walked events %+v, want one stamped with the placement time %v", events, ev.At)
+	}
+	if len(chainAt) != 1 || !chainAt[0].Equal(ev.At) {
+		t.Fatalf("writer chain resolved at %v, want the placement time %v", chainAt, ev.At)
+	}
+}
+
+func TestPlacedDirWalkBoundsListing(t *testing.T) {
+	lowerPlacedDirLimit(t, &placedDirEntryLimit, 10)
+	read := 0
+	prev := placedDirReadNames
+	placedDirReadNames = func(dir *os.File, n int) ([]string, error) {
+		names, err := prev(dir, n)
+		read += len(names)
+		return names, err
+	}
+	t.Cleanup(func() { placedDirReadNames = prev })
+	fm, alerts := placedDirTestMonitor(t)
+	files := make(map[string]string)
+	for i := 0; i < 2000; i++ {
+		files[fmt.Sprintf("f%04d.txt", i)] = ""
+	}
+	placed := placeDir(t, fm, stagedTree(t, files), "pkg")
+
+	walkAllPlacedDirs(fm)
+
+	if read >= 2000 {
+		t.Fatalf("walk read %d names of a 2000-entry directory with a 10-entry budget", read)
+	}
+	found := incompleteDirFindings(drainFindings(alerts))
+	if len(found) != 1 || found[0].FilePath != placed {
+		t.Fatalf("incomplete findings %+v, want one High for %s", found, placed)
 	}
 }

@@ -59,7 +59,7 @@ func (fm *FileMonitor) handlePlacement(ev placementEvent) {
 	}
 	if isDir {
 		_ = unix.Close(fd)
-		fm.queuePlacedDir(ev.Path, ev.Dev, ev.Ino, ev.PID)
+		fm.queuePlacedDir(ev.Path, ev.Dev, ev.Ino, ev.PID, ev.At)
 		return
 	}
 	fm.handlePlacedFile(fd, ev.PID, ev.At)
