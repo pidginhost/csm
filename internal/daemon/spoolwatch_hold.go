@@ -161,15 +161,7 @@ func (w *holdWatchdog) recordExpiry(now time.Time) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	cutoff := now.Add(-spoolHoldExpiryWindow)
-	kept := w.expiries[:0]
-	for _, at := range w.expiries {
-		if at.After(cutoff) {
-			kept = append(kept, at)
-		}
-	}
-	kept = append(kept, now)
-	w.expiries = kept
+	w.expiries = append(pruneTimes(w.expiries, now.Add(-spoolHoldExpiryWindow)), now)
 
 	if len(w.expiries) < spoolHoldExpiryThreshold || now.Before(w.bypassUntil) {
 		return false

@@ -1175,14 +1175,7 @@ func (rw *rateWindow) countInWindow(now time.Time, window time.Duration) int {
 // prune removes timestamps older than the window duration and resets the
 // alerted flag when the count drops below thresholds. Caller must hold rw.mu.
 func (rw *rateWindow) prune(now time.Time, window time.Duration) {
-	cutoff := now.Add(-window)
-	kept := rw.times[:0]
-	for _, t := range rw.times {
-		if t.After(cutoff) {
-			kept = append(kept, t)
-		}
-	}
-	rw.times = kept
+	rw.times = pruneTimes(rw.times, now.Add(-window))
 }
 
 // emailRateWindows tracks per-user send rate windows.
