@@ -82,14 +82,6 @@ account, and re-arm after the same check returns successfully.
 
 ## Filesystem
 
-Scheduled and on-demand scans report request-body command shell patterns,
-including decoder chains and error-suppressed calls. These command patterns
-also run in realtime protection. They require a direct body read or a read
-assigned immediately before the command, rather than a body read and an
-unrelated command elsewhere in the file. They are signature matches, not proof
-of data flow. Scheduled YARA findings remain alerts for operator review and
-do not automatically quarantine files.
-
 | Check | Description |
 |-------|-------------|
 | `filesystem` | Backdoors, hidden executables, suspicious SUID binaries |
