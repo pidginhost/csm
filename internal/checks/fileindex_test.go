@@ -50,6 +50,19 @@ func TestIsSuspiciousPHPName(t *testing.T) {
 		{"index.php", false},
 		{"style.css", false},
 		{"my-long-plugin-name.php", false},
+		// Short words inside ordinary words are not the word.
+		{"rulevalidator.php", false},
+		{"retrieval.php", false},
+		{"evaluation.php", false},
+		{"execute.php", false},
+		{"assertions.php", false},
+		{"eval.php", true},
+		{"my_eval.php", true},
+		{"eval2.php", true},
+		{"exec.php", true},
+		{"assert.php", true},
+		{"c99shell.php", true},
+		{"uploader.php", true},
 	}
 	for _, tt := range tests {
 		if got := isSuspiciousPHPName(tt.name); got != tt.want {

@@ -444,6 +444,8 @@ func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newF
 		// Path-only Critical buried real alerts under location noise (WPML
 		// translation queues, WP auto-update staging). See classifySensitiveDirPHP.
 		sev, ck, msg, hash, readOK := classifySensitiveDirPHPWithFingerprint(path, name)
+		// There the content was read and judged; a word in the name adds nothing.
+		contentJudged := readOK && isSensitiveDirPHPPath(path)
 		if !readOK {
 			recordCoverageGapPaths(ctx, "file_index", coveragePathAliases(path))
 			reportFileIndexFailure(ctx)
@@ -467,7 +469,7 @@ func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newF
 			message = fmt.Sprintf("New file with webshell name: %s", path)
 		}
 
-		if isExecutablePHPName(nameLower) && isSuspiciousPHPName(nameLower) {
+		if isExecutablePHPName(nameLower) && isSuspiciousPHPName(nameLower) && !contentJudged {
 			if severity < 0 {
 				severity = alert.High
 				check = "new_suspicious_php"
@@ -514,18 +516,21 @@ func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string)
 	return sev, check, message
 }
 
+// isSensitiveDirPHPPath reports whether the content check judges PHP at path.
+func isSensitiveDirPHPPath(path string) bool {
+	return strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")
+}
+
 func classifySensitiveDirPHPWithFingerprint(path, name string) (alert.Severity, string, string, string, bool) {
 	nameLower := strings.ToLower(name)
 	if !phpPathExecutes(path, nameLower) {
 		return -1, "", "", "", true
 	}
-	isLanguages := strings.Contains(path, "/wp-content/languages/")
-	isUpgrade := strings.Contains(path, "/wp-content/upgrade/")
-	if !isLanguages && !isUpgrade {
+	if !isSensitiveDirPHPPath(path) {
 		return -1, "", "", "", true
 	}
 	locLabel := "wp-content/languages"
-	if isUpgrade {
+	if strings.Contains(path, "/wp-content/upgrade/") {
 		locLabel = "wp-content/upgrade"
 	}
 	result, contentSHA256 := analyzePHPContentWithFingerprint(path)
@@ -916,12 +921,19 @@ func isWebshellName(name string) bool {
 
 func isSuspiciousPHPName(name string) bool {
 	suspicious := []string{
-		"shell", "cmd", "exec", "hack", "backdoor", "upload",
+		"shell", "cmd", "hack", "backdoor", "upload",
 		"exploit", "reverse", "connect", "proxy", "tunnel",
-		"0x", "x0", "eval", "assert", "passthru",
+		"0x", "x0", "passthru",
 	}
 	for _, s := range suspicious {
 		if strings.Contains(name, s) {
+			return true
+		}
+	}
+	// These also sit inside ordinary words (retrieval, execute, assertions),
+	// so they count only where no letter adjoins them.
+	for _, w := range []string{"eval", "exec", "assert"} {
+		if containsStandaloneWord(name, w) {
 			return true
 		}
 	}
@@ -930,6 +942,24 @@ func isSuspiciousPHPName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// containsStandaloneWord reports whether w occurs in name with no letter
+// directly before or after it.
+func containsStandaloneWord(name, w string) bool {
+	isLetter := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
+	for start := 0; ; {
+		i := strings.Index(name[start:], w)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(w)
+		if (i == 0 || !isLetter(name[i-1])) && (end == len(name) || !isLetter(name[end])) {
+			return true
+		}
+		start = i + 1
+	}
 }
 
 func writeIndex(path string, entries []string) error {

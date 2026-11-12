@@ -49,13 +49,18 @@ func TestInstallerUninstallRemovesChallengeSnippetsBeforeTheirMaps(t *testing.T)
 	if err := inst.Uninstall(false); err != nil {
 		t.Fatal(err)
 	}
-	maps := slices.Index(events, "removeAll "+filepath.Dir(challenge.DefaultMapPath))
-	if maps < 0 {
-		t.Fatalf("challenge map directory was not removed: %v", events)
+	if slices.Contains(events, "removeAll "+filepath.Dir(challenge.DefaultMapPath)) {
+		t.Fatal("uninstall deletes the required Apache site include with the cache directory")
 	}
-	for _, ev := range []string{"integration", "remove /etc/apache2/conf.d/csm_challenge.conf"} {
-		if i := slices.Index(events, ev); i < 0 || i > maps {
-			t.Errorf("%q must happen before the maps are removed: %v", ev, events)
+	for _, path := range []string{challenge.DefaultMapPath, challenge.DefaultNginxMapPath} {
+		maps := slices.Index(events, "remove "+path)
+		if maps < 0 {
+			t.Fatalf("challenge map was not removed: %v", events)
+		}
+		for _, ev := range []string{"integration", "remove /etc/apache2/conf.d/csm_challenge.conf"} {
+			if i := slices.Index(events, ev); i < 0 || i > maps {
+				t.Errorf("%q must happen before the maps are removed: %v", ev, events)
+			}
 		}
 	}
 }
@@ -71,7 +76,9 @@ func TestInstallerUninstallKeepsChallengeMapsWhenASnippetRemains(t *testing.T) {
 	if err := inst.Uninstall(false); err != nil {
 		t.Fatalf("uninstall must finish when a snippet stays in place: %v", err)
 	}
-	if slices.Contains(events, "removeAll "+filepath.Dir(challenge.DefaultMapPath)) {
+	if slices.Contains(events, "removeAll "+filepath.Dir(challenge.DefaultMapPath)) ||
+		slices.Contains(events, "remove "+challenge.DefaultMapPath) ||
+		slices.Contains(events, "remove "+challenge.DefaultNginxMapPath) {
 		t.Fatalf("challenge maps removed while a snippet still references them: %v", events)
 	}
 	if !slices.Contains(events, "remove "+inst.BinaryPath) {

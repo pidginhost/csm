@@ -602,7 +602,9 @@ func defaultChallengeWebserverChecks(cfg *config.Config) []DoctorCheck {
 	checks := make([]DoctorCheck, 0, 3)
 	status, statusErr := inst.Status()
 	checks = append(checks, challengeSnippetCheck(status, statusErr))
-	if check, ok := challengeHTTPSSitesCheck(inst.SiteCoverage()); ok {
+	applicable, active, path, coverageErr := inst.SiteCoverage()
+	scope, fix := inst.SiteGuidance()
+	if check, ok := challengeSitesCheck(applicable, active, path, scope, fix, coverageErr); ok {
 		checks = append(checks, check)
 	}
 	validate, validateErr := inst.Validate()
@@ -610,22 +612,22 @@ func defaultChallengeWebserverChecks(cfg *config.Config) []DoctorCheck {
 	return checks
 }
 
-// challengeHTTPSSitesCheck reports whether HTTPS sites read the per-site
+// challengeSitesCheck reports whether site blocks read the per-site
 // snippet, on stacks that need one. ok is false elsewhere.
-func challengeHTTPSSitesCheck(applicable, active bool, path string, err error) (DoctorCheck, bool) {
-	const name = "challenge HTTPS sites"
+func challengeSitesCheck(applicable, active bool, path, scope, fix string, err error) (DoctorCheck, bool) {
+	const name = "challenge sites"
 	switch {
 	case !applicable:
 		return DoctorCheck{}, false
 	case err != nil:
-		return DoctorCheck{Name: name, Status: "warn", Message: "cannot tell whether HTTPS sites read " + path + ": " + err.Error(),
+		return DoctorCheck{Name: name, Status: "warn", Message: "cannot tell whether " + scope + " read " + path + ": " + err.Error(),
 			Fix: "check that the web server configuration is readable"}, true
 	case !active:
 		return DoctorCheck{Name: name, Status: "warn",
-			Message: "HTTPS sites do not read " + path + ", so challenged visitors there get normal pages",
-			Fix:     "run `csm webserver-integration upgrade`"}, true
+			Message: scope + " do not read " + path + ", so challenged visitors there get normal pages",
+			Fix:     fix}, true
 	default:
-		return DoctorCheck{Name: name, Status: "ok", Message: "HTTPS sites read " + path}, true
+		return DoctorCheck{Name: name, Status: "ok", Message: scope + " read " + path}, true
 	}
 }
 

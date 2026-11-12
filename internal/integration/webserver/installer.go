@@ -226,8 +226,11 @@ func (i *Installer) Install() (Result, error) {
 	if site != nil {
 		res.SitePath = site.path
 	}
-	rebuild := site != nil && i.RebuildSiteIncludes && !site.active
-	if site != nil && i.RebuildSiteIncludes && site.activeErr != nil {
+	// Only a stack with generated site configuration can be rebuilt; on
+	// others the operator adds the includes and the note says how.
+	canRebuild := site != nil && site.sites.SiteConfigPath() != ""
+	rebuild := canRebuild && i.RebuildSiteIncludes && !site.active
+	if canRebuild && i.RebuildSiteIncludes && site.activeErr != nil {
 		res.Status = "fail"
 		res.Message = "read site includes: " + site.activeErr.Error()
 		return res, site.activeErr
@@ -320,6 +323,7 @@ func (i *Installer) Install() (Result, error) {
 	if rebuild {
 		// Even a failed command may have replaced httpd.conf.
 		rebuilt = true
+		site.rebuilt = true
 		if err := site.sites.RebuildSiteIncludes(); err != nil {
 			err = errors.Join(err, rollback())
 			res.Status = "fail"
@@ -334,6 +338,11 @@ func (i *Installer) Install() (Result, error) {
 		res.Status = "fail"
 		res.Message = "configtest: " + verr.Error()
 		return res, verr
+	}
+	// Plain Apache cannot dump loaded includes until a missing required
+	// snippet exists. Report the configuration that just passed configtest.
+	if siteWritten && !canRebuild {
+		site.active, site.activeErr = site.sites.SiteIncludeActive()
 	}
 
 	if rerr := i.Handler.Reload(); rerr != nil {
@@ -393,6 +402,7 @@ type siteChange struct {
 	current    bool
 	active     bool
 	activeErr  error
+	rebuilt    bool
 }
 
 // pendingNote tells the operator when HTTPS sites still miss the rule. Safe
@@ -402,10 +412,21 @@ func (s *siteChange) pendingNote() string {
 	case s == nil || s.active:
 		return ""
 	case s.activeErr != nil:
-		return "; could not tell whether HTTPS sites read " + s.path + ": " + s.activeErr.Error()
+		return "; could not tell whether " + s.sites.SiteScope() + " read " + s.path + ": " + s.activeErr.Error()
+	case s.rebuilt:
+		return "; " + s.sites.SiteScope() + " still do not read " + s.path + " after the rebuild: check cPanel's Apache virtual host templates"
 	default:
-		return "; HTTPS sites are redirected only after httpd.conf is rebuilt: run `csm webserver-integration upgrade`"
+		return "; " + s.sites.SiteScope() + " are redirected only after they read " + s.path + ": " + s.sites.SiteFix()
 	}
+}
+
+// SiteGuidance names, on stacks with a per-site snippet, the site blocks
+// that need it and what the operator does while they do not read it.
+func (i *Installer) SiteGuidance() (scope, fix string) {
+	if sites := i.siteSnippets(); sites != nil {
+		return sites.SiteScope(), sites.SiteFix()
+	}
+	return "", ""
 }
 
 // SiteCoverage reports, on stacks with a per-site snippet, whether the site

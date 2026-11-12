@@ -387,10 +387,14 @@ func (inst *Installer) Uninstall(purge bool) error {
 		return err
 	}
 	if snippetsGone {
-		if err := ops.removeAll(challengeMapDir); err != nil {
-			return fmt.Errorf("removing challenge maps: %w", err)
+		// Plain Apache sites still require the disabled include in this
+		// directory. Remove only the maps, never their containing directory.
+		for _, path := range []string{challenge.DefaultMapPath, challenge.DefaultNginxMapPath} {
+			if err := removeInstallerPath(ops.remove, filepath.Join(challengeMapDir, filepath.Base(path))); err != nil {
+				return fmt.Errorf("removing challenge maps: %w", err)
+			}
 		}
-		fmt.Println("  challenge snippets and maps removed")
+		fmt.Println("  challenge redirects disabled and maps removed")
 	} else {
 		fmt.Printf("  challenge maps kept at %s until the remaining snippet is removed\n", challengeMapDir)
 	}

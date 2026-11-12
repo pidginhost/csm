@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Challenge pages now work on Apache servers without cPanel after the setup steps, and doctor warns about sites missing challenge coverage.
 - Challenge pages now also appear on HTTPS sites on cPanel servers. Run csm webserver-integration upgrade once if csm doctor warns about HTTPS sites.
 - Realtime PHP alerts that cannot be confirmed now get the scheduled scan's verdict right away, so a Critical file is removed within moments.
 - Scheduled PHP scans keep earlier alerts when a file cannot be read.
@@ -57,6 +58,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Ordinary PHP files, such as WP Toolkit and translation files, no longer raise suspicious file alerts for a word inside their names.
 - Visitors who pass a challenge are no longer blocked or named in distributed attack alerts for requests they already answered.
 - Certificate validation requests are no longer sent to the challenge page.
 - Japanese SEO and post spam alerts no longer fire on ordinary words that contain a spam keyword, such as in plugin translation files.

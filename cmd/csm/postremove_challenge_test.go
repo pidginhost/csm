@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/integration/webserver"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func postremoveChallengeFunction(t *testing.T, root string) string {
@@ -180,5 +183,103 @@ func TestPostremoveNginxGuardKeepsSnippetWhenInspectionFails(t *testing.T) {
 	}
 	if _, statErr := os.Stat(snippet); statErr != nil {
 		t.Fatalf("nginx map snippet removed after inspection failed: %v", statErr)
+	}
+}
+
+func TestPostremovePreservesDisabledApacheSiteInclude(t *testing.T) {
+	for _, tc := range []struct{ name, failure string }{
+		{"disabled", ""}, {"rename failure", "mv() { return 1; }"}, {"unmanaged", "unmanaged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failure := tc.failure
+			root := t.TempDir()
+			cache := filepath.Join(root, "var/cache/csm")
+			if err := os.MkdirAll(cache, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			site := filepath.Join(cache, "apache-challenge-site.conf")
+			body := "# csm-managed-version: 9\nRewriteEngine On\n"
+			if failure == "unmanaged" {
+				body = "# operator configuration\nRewriteEngine On\n"
+			}
+			for _, name := range []string{"apache-challenge-site.conf", "challenge_ips.txt", "challenge_ips.nginx.map"} {
+				if err := os.WriteFile(filepath.Join(cache, name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			suffix := failure + "\nremove_challenge_snippets"
+			if failure == "unmanaged" {
+				suffix = "remove_challenge_snippets"
+			}
+			output, err := runPostremoveChallengeFunction(t, postremoveChallengeFunction(t, root), suffix)
+			if (err != nil) != (failure != "") {
+				t.Fatalf("cleanup = %v: %s", err, output)
+			}
+			got, err := os.ReadFile(site)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failure == "" {
+				installer, err := webserver.New(platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSApache}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				installer.ReadAt = func(string) ([]byte, error) { return got, nil }
+				applicable, active, _, err := installer.SiteCoverage()
+				if !applicable || active || err != nil {
+					t.Fatalf("disabled coverage = %v, %v, %v", applicable, active, err)
+				}
+				for _, line := range strings.Split(string(got), "\n") {
+					if line != "" && !strings.HasPrefix(line, "#") {
+						t.Fatalf("active directive left: %q", line)
+					}
+				}
+			} else if string(got) != body {
+				t.Fatal("failed cleanup changed the original snippet")
+			}
+			for _, name := range []string{"challenge_ips.txt", "challenge_ips.nginx.map"} {
+				_, err := os.Stat(filepath.Join(cache, name))
+				if failure == "" && !os.IsNotExist(err) {
+					t.Fatalf("map %s not removed: %v", name, err)
+				}
+				if failure != "" && err != nil {
+					t.Fatalf("map %s removed after failure: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+// cPanel keeps including the per-site file once it has existed, and Apache
+// refuses a RewriteMap whose map is gone. Package removal must leave the
+// inert placeholder there before it deletes the maps.
+func TestPostremoveDisablesTheCPanelSiteSnippet(t *testing.T) {
+	root := t.TempDir()
+	site := filepath.Join(root, "etc/apache2/conf.d/userdata/csm-challenge.conf")
+	maps := filepath.Join(root, "var/cache/csm/challenge_ips.txt")
+	for _, p := range []string{site, maps} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(site, []byte("# csm-managed-version: 9\nRewriteEngine On\nRewriteMap csm_chal \"txt:/var/cache/csm/challenge_ips.txt\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(maps, []byte("# map\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runPostremoveChallengeFunction(t, postremoveChallengeFunction(t, root), "remove_challenge_snippets")
+	if err != nil {
+		t.Fatalf("removal failed: %v: %s", err, output)
+	}
+	body, err := os.ReadFile(site)
+	if err != nil {
+		t.Fatalf("cPanel site file removed; its required include would fail: %v", err)
+	}
+	if strings.Contains(string(body), "RewriteMap") || !strings.HasPrefix(string(body), "# csm-managed-version: ") {
+		t.Fatalf("cPanel site file still active after removal: %q", body)
+	}
+	if _, err := os.Stat(maps); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("map kept after its references were disabled: %v", err)
 	}
 }
