@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Realtime PHP alerts now receive prompt follow-up analysis without delaying other alerts, repeating file responses, or acting on linked or replaced files.
+- Realtime PHP alerts that cannot be confirmed now get the scheduled scan's verdict right away, so a Critical file is removed within moments.
 - IMAP and POP3 password spray alerts now count upper and lower case spellings of a mailbox as one target.
 - Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
 - A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
