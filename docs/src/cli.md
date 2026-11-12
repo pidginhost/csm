@@ -188,6 +188,14 @@ Teaches or corrects [learning from Spam folders](antispam.md#teaching-and-correc
 
 Each file gets a request ID, printed before it is sent; `csm actions --op integrate.antispam_learn --json` shows its recorded outcome and full digests. A lost or truncated reply is retried once with the same ID and snapshot. The exit status is 0 only when every file was learned, already learned, forgotten or matched nothing.
 
+## Stalwart
+
+Prepares a Stalwart mail server for CSM through its admin API. See [Preparing Stalwart](detection-realtime.md#preparing-stalwart).
+
+| Command | Description |
+|---------|-------------|
+| `csm stalwart setup [--dry-run] [--password-file PATH] [--url URL]` | Make Stalwart log failed logins, end its bans with CSM's blocks, and take webmail client addresses from the web server behind CSM's port lock. Prints each step as `name: state: detail`. The admin login comes from `STALWART_USER` and `STALWART_PASSWORD`, or the first line of `--password-file`; it is never printed. `--url` overrides `stalwart.api_url`. Exits 1 when a setting is unsafe or a change failed, and 2 when the host is not a Stalwart host or the login is missing or refused. |
+
 ## Firewall
 
 See [Firewall](firewall.md) for the full reference.

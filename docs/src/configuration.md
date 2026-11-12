@@ -360,6 +360,7 @@ stalwart:
   log_dir: /var/log/stalwart            # where Stalwart writes stalwart.log.YYYY-MM-DD
   log_prefix: stalwart.log              # file name before the date suffix
   ports: []                             # non-standard listeners as PORT:PROTOCOL (smtp, imap, pop3, sieve, http), e.g. ["10465:smtp"]
+  api_url: http://127.0.0.1:8080        # Stalwart admin API for csm stalwart setup and csm doctor; the login comes from the environment
 
 # --- State ---
 state_path: "/var/lib/csm/state"        # bbolt DB and state files

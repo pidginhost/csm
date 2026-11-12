@@ -2118,3 +2118,24 @@ func TestPerformanceErrorLogCriticalSizeDefault(t *testing.T) {
 		t.Fatalf("explicit critical size = %d, want 300", cfg.Performance.ErrorLogCriticalSizeMB)
 	}
 }
+
+func TestStalwartAPIURLDefaultAndValidation(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Stalwart.APIURL != "http://127.0.0.1:8080" {
+		t.Fatalf("api_url default = %q", cfg.Stalwart.APIURL)
+	}
+	for _, ok := range []string{"http://127.0.0.1:8080", "https://[::1]:443/"} {
+		if _, err := LoadBytes([]byte("stalwart:\n  api_url: \"" + ok + "\"\n")); err != nil {
+			t.Fatalf("%s refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"ftp://x", "http://", "127.0.0.1:8080", "http://admin:pw@127.0.0.1:8080"} {
+		_, err := LoadBytes([]byte("stalwart:\n  api_url: \"" + bad + "\"\n"))
+		if err == nil || !strings.Contains(err.Error(), "stalwart.api_url") {
+			t.Errorf("%s: err = %v, want a stalwart.api_url error", bad, err)
+		}
+	}
+}

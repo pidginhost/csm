@@ -287,6 +287,7 @@ stalwart:
   log_dir: /var/log/stalwart
   log_prefix: stalwart.log
   ports: []
+  api_url: http://127.0.0.1:8080   # admin API for csm stalwart setup; the login comes from the environment
 
 # Detection knobs. Each subsection controls a separate detector.
 detection:
