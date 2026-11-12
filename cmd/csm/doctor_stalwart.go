@@ -34,7 +34,7 @@ func stalwartLogDoctorCheck(mta platform.MTAKind, sc config.StalwartConfig, now 
 	if mta != platform.MTAStalwart {
 		return nil
 	}
-	path, err := stalwartlog.NewestFile(sc.LogDir, sc.LogPrefix)
+	path, err := stalwartlog.NewestFile(sc.LogDir, sc.LogPrefix, now)
 	if err != nil {
 		return []DoctorCheck{{
 			Name:    "stalwart log",

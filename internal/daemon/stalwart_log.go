@@ -96,7 +96,7 @@ func (d *Daemon) startStalwartLogReader(cfg *config.Config) {
 		defer cancel()
 		defer d.MarkWatcher(stalwartLogWatcher, false)
 		maillog.Supervise(ctx, func() (maillog.Reader, error) {
-			return maillog.NewResolvedFileReader(func() (string, error) { return stalwartlog.NewestFile(dir, prefix) }, queue)
+			return maillog.NewResolvedFileReader(func() (string, error) { return stalwartlog.NewestFile(dir, prefix, time.Now()) }, queue)
 		}, func(err error) {
 			if err != nil {
 				csmlog.Warn("stalwart log unavailable; retrying", "err", err)
