@@ -547,6 +547,8 @@ STALWART_USER=admin csm stalwart setup --password-file /root/stalwart-admin.pw
 
 Setup also reports listeners that accept the PROXY protocol, which it does not change.
 
+`csm doctor` checks the same steps read-only when `STALWART_USER` and `STALWART_PASSWORD` are set; a step setup would change is a warning. From the log alone it also warns when Stalwart's HTTP listener logs a login from another host on a port CSM does not lock, and when Stalwart bans a CDN or proxy address, which locks out every client behind it.
+
 
 `stalwart_log_degraded` warns when an hour of log lines holds none in Stalwart's layout, as after an upgrade that changes it; when many authenticated SMTP sends in an hour cannot be matched to a login; and when the log stops growing for hours while Stalwart runs.
 

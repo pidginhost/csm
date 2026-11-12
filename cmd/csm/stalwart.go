@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/stalwartsetup"
@@ -144,22 +145,32 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	return stalwartSetupExit(plan)
 }
 
-// stalwartSetupInputs gathers what the planner needs from CSM. The lock
-// counts only when the running daemon reports it: a lock written to the
-// config but not loaded protects nothing.
+// stalwartSetupInputs reads the running daemon's status for the planner. A
+// daemon that cannot be reached manages no lock.
 func stalwartSetupInputs(cfg *config.Config, deps stalwartSetupDeps) stalwartsetup.Inputs {
-	in := stalwartsetup.Inputs{WebUsers: deps.webUsers()}
+	var automation *health.AutomationStatus
+	if raw, err := deps.readStatus(); err == nil {
+		var sr control.StatusResult
+		if json.Unmarshal(raw, &sr) == nil && sr.Snapshot != nil {
+			automation = &sr.Snapshot.Automation
+		}
+	}
+	return stalwartInputs(cfg, deps.webUsers(), automation)
+}
+
+// stalwartInputs gathers what the planner needs from CSM. The lock counts
+// only when the running daemon reports it: a lock written to the config but
+// not loaded protects nothing.
+func stalwartInputs(cfg *config.Config, webUsers []string, automation *health.AutomationStatus) stalwartsetup.Inputs {
+	in := stalwartsetup.Inputs{WebUsers: webUsers}
 	expiry, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry)
 	if err != nil || expiry <= 0 {
 		expiry, _ = time.ParseDuration(config.DefaultBlockExpiry)
 	}
 	in.BlockExpiry = expiry
-	if raw, err := deps.readStatus(); err == nil {
-		var sr control.StatusResult
-		if json.Unmarshal(raw, &sr) == nil && sr.Snapshot != nil {
-			in.LockManaged = sr.Snapshot.Automation.FirewallManaged
-			in.LockedPorts = sr.Snapshot.Automation.FirewallLocalPortLocks
-		}
+	if automation != nil {
+		in.LockManaged = automation.FirewallManaged
+		in.LockedPorts = automation.FirewallLocalPortLocks
 	}
 	return in
 }
