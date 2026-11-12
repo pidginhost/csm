@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -129,19 +130,19 @@ func TestDetachedWebProcessesFindsLoopsAWebRequestLeftRunning(t *testing.T) {
 	got := detachedPIDs(CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil))
 
 	want := map[int][]int{
-		700: {700},
-		750: {750},
+		700: nil,
+		750: nil,
 		// A terminal means a person: reported, never stopped.
 		770: nil,
 		// The listener path names no PHP handler, but a PHP worker holds it.
-		780: {780},
+		780: nil,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("detached web processes = %v, want %v", got, want)
 	}
 }
 
-func TestDetachedWebProcessFindingIsCriticalAndNamesTheProcess(t *testing.T) {
+func TestDetachedWebProcessFindingIsAdvisoryAndNamesTheProcess(t *testing.T) {
 	withWebProcTable(t, map[int]fakeProc{
 		700: {ppid: 1, uid: "1001", exe: bashPath},
 	}, map[int][]string{700: {socketFD(5001)}})
@@ -152,15 +153,15 @@ func TestDetachedWebProcessFindingIsCriticalAndNamesTheProcess(t *testing.T) {
 		t.Fatalf("findings = %+v, want one", findings)
 	}
 	f := findings[0]
-	if f.Severity != alert.Critical || f.PID != 700 || f.WriterObservedAt.IsZero() ||
+	if f.Severity != alert.Warning || f.PID != 700 || !f.WriterObservedAt.IsZero() || len(f.WriterChain) != 0 ||
 		!strings.Contains(f.Message, bashPath) || !strings.Contains(f.Details, "APVH_alice_Suea-php84.sock") {
 		t.Fatalf("finding = %+v", f)
 	}
 }
 
-// With process killing on, the loop is stopped through the same ancestry
-// rules as a process that writes back a removed file.
-func TestAutoKillStopsADetachedWebProcessChain(t *testing.T) {
+// Inherited sockets also occur in legitimate background jobs. They are not
+// evidence of malicious behavior, even when process killing is enabled.
+func TestAutoKillLeavesDetachedWebProcesses(t *testing.T) {
 	withWebProcTable(t, map[int]fakeProc{
 		701: {ppid: 700, uid: "1001", exe: curlPath},
 		700: {ppid: 1, uid: "1001", exe: bashPath},
@@ -182,8 +183,14 @@ func TestAutoKillStopsADetachedWebProcessChain(t *testing.T) {
 
 	AutoKillProcesses(context.Background(), cfg, findings)
 
-	if !reflect.DeepEqual(killed, []int{700, 701}) {
-		t.Fatalf("killed %v, want the loop, then its child", killed)
+	if len(findings) != 2 || len(killed) != 0 {
+		t.Fatalf("findings=%v killed=%v, want two advisory findings and no kills", findings, killed)
+	}
+	// Even stale findings from the previous policy cannot authorize a kill.
+	legacy := []alert.Finding{{Check: DetachedWebProcessCheck, Severity: alert.Critical, PID: 701, Timestamp: time.Now(), WriterObservedAt: time.Now(), WriterChain: []int{701, 700}}}
+	AutoKillProcesses(context.Background(), cfg, legacy)
+	if len(killed) != 0 {
+		t.Fatalf("killed from legacy socket evidence: %v", killed)
 	}
 }
 
@@ -202,5 +209,89 @@ func TestDetachedWebProcessFindingStampsOwner(t *testing.T) {
 		if f := findings[0]; f.TenantID != owner || extractAccountFromFinding(f) != owner {
 			t.Errorf("uid %s: tenant %q, correlation owner %q, want %q", uid, f.TenantID, extractAccountFromFinding(f), owner)
 		}
+	}
+}
+
+func TestDetachedWebProcessesLeaveActiveRequestDescendants(t *testing.T) {
+	withWebProcTable(t, map[int]fakeProc{
+		600: {ppid: 1, uid: "1001", exe: lsphpPath},
+		700: {ppid: 600, uid: "1001", exe: bashPath},
+		701: {ppid: 700, uid: "1001", exe: "/usr/bin/convert"},
+	}, map[int][]string{600: {socketFD(5001)}, 700: {socketFD(5001)}, 701: {socketFD(5001)}})
+	if got := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil); len(got) != 0 {
+		t.Fatalf("active request reported as detached: %+v", got)
+	}
+}
+
+func TestDetachedWebProcessesRequireCompleteAncestry(t *testing.T) {
+	for _, parent := range []int{0, 700, 999} {
+		t.Run(strconv.Itoa(parent), func(t *testing.T) {
+			withWebProcTable(t, map[int]fakeProc{700: {ppid: parent, uid: "1001", exe: bashPath}}, map[int][]string{700: {socketFD(5001)}})
+			if got := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil); len(got) != 0 {
+				t.Fatalf("incomplete or cyclic ancestry reported: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDetachedWebProcessesFilterBeforeReadingFDs(t *testing.T) {
+	table := withWebProcTable(t, map[int]fakeProc{
+		600: {ppid: 1, uid: "0", exe: "/usr/bin/service"},
+		700: {ppid: 1, uid: "1001", exe: bashPath, start: int64((100000 - 30) * procClockTicks)},
+		800: {ppid: 1, uid: "0", exe: lsphpPath},
+		900: {ppid: 1, uid: "1001", exe: bashPath},
+	}, map[int][]string{800: {socketFD(5005)}, 900: {socketFD(5005)}})
+	var reads []string
+	withMockOS(t, &mockOS{readFile: table.ReadFile, readlink: table.Readlink, glob: func(pattern string) ([]string, error) {
+		if strings.Contains(pattern, "/fd/") {
+			reads = append(reads, pattern)
+		}
+		return table.Glob(pattern)
+	}})
+	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].PID != 900 {
+		t.Fatalf("lost PHP holder evidence: %+v", findings)
+	}
+	if !reflect.DeepEqual(reads, []string{"/proc/800/fd/*", "/proc/900/fd/*"}) {
+		t.Fatalf("unnecessary descriptor scans: %v", reads)
+	}
+}
+
+func TestDetachedWebProcessesRejectChangedIdentity(t *testing.T) {
+	for _, change := range []string{"pid reuse", "exec", "owner"} {
+		t.Run(change, func(t *testing.T) {
+			table := withWebProcTable(t, map[int]fakeProc{700: {ppid: 1, uid: "1001", exe: bashPath}}, map[int][]string{700: {socketFD(5001)}})
+			withMockOS(t, &mockOS{readFile: table.ReadFile, glob: table.Glob, readlink: func(name string) (string, error) {
+				target, err := table.Readlink(name)
+				if strings.Contains(name, "/fd/") {
+					p := table.procs[700]
+					switch change {
+					case "pid reuse":
+						p.start++
+					case "exec":
+						p.exe = phpCLIPath
+					case "owner":
+						p.uid = "1002"
+					}
+					table.procs[700] = p
+				}
+				return target, err
+			}})
+			if got := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil); len(got) != 0 {
+				t.Fatalf("mixed process evidence: %+v", got)
+			}
+		})
+	}
+}
+
+func TestUnixListenersPreservePaths(t *testing.T) {
+	for _, path := range []string{"/run/php fpm/pool.sock", "@php pool", "/run/php-fpm/pool.sock (deleted)"} {
+		t.Run(path, func(t *testing.T) {
+			table := withWebProcTable(t, nil, nil)
+			table.unix = "Num RefCount Protocol Flags Type St Inode Path\n" + "0000: 00000002 00000000 00010000 0001 01 42 " + path + "\n"
+			if got := unixListeners(); !reflect.DeepEqual(got, map[string]string{"42": path}) {
+				t.Fatalf("listeners=%q, want full path %q", got, path)
+			}
+		})
 	}
 }
