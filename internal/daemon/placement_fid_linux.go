@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -237,7 +238,9 @@ type placementFID struct {
 	fd int
 	// Handles identify an inode, not the watched mount path. Keep each
 	// watched view so a bind alias gets its own location-dependent analysis.
-	mounts  map[unix.Fsid][]fidMount
+	mounts map[unix.Fsid][]fidMount
+	// roots uses resolved names, as /proc/self/fd does for delivered events.
+	roots   []watchRootMark
 	fm      *FileMonitor
 	handle  func(placementEvent)
 	out     *queuehealth.Channel[placementEvent]
@@ -252,7 +255,7 @@ type placementFID struct {
 
 func newPlacementFID(fm *FileMonitor, fd int, mounts map[unix.Fsid][]fidMount) *placementFID {
 	return &placementFID{
-		fd: fd, mounts: mounts, fm: fm, handle: fm.handlePlacement,
+		fd: fd, mounts: mounts, roots: slices.Clone(fm.watchRoots), fm: fm, handle: fm.handlePlacement,
 		out:        queuehealth.NewChannel[placementEvent](256, time.Minute),
 		creates:    newCreateSettler(fidPendingCap),
 		openDir:    unix.OpenByHandleAt,
@@ -287,8 +290,8 @@ func startPlacementFID(_ context.Context, fm *FileMonitor) (*placementFID, error
 // filesystem this kernel cannot mark (one Warning), and any root left out of
 // the marked mounts (a High each).
 func (p *placementFID) reportCoverage(all, skipped []mountEntry) {
-	p.fm.reportUnmarkablePlacementRoots(all, skipped)
-	p.fm.reportUncoveredPlacementRoots(all, append(p.markedMounts(all), skipped...))
+	p.fm.reportUnmarkablePlacementRoots(all, skipped, p.roots)
+	p.fm.reportUncoveredPlacementRoots(all, append(p.markedMounts(all), skipped...), p.roots)
 }
 
 // markedMounts returns the mounts the group resolves handles through. Today
@@ -320,11 +323,20 @@ func fidInitError(err error) error {
 // ENODEV or EOPNOTSUPP; some btrfs subvolumes give EXDEV) is skipped and
 // returned; any other failure, or skipping every root, fails the group.
 func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) ([]mountEntry, error) {
+	// statDevice and fanotify_mark follow watch-root symlinks. Mountinfo
+	// does not contain those aliases, and resolved event fds do not use them.
+	for i := range p.roots {
+		path, err := filepath.EvalSymlinks(p.roots[i].path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve watch root %s: %w", p.roots[i].path, err)
+		}
+		p.roots[i].path = path
+	}
 	var skipped []mountEntry
 	var skipErr error
 	seen := make(map[mountEntry]bool)
 	devices := make(map[unix.Fsid]uint64)
-	for _, r := range p.fm.watchRoots {
+	for _, r := range p.roots {
 		i := placementVisibleMount(all, r)
 		if i < 0 {
 			return nil, fmt.Errorf("watch root %s has no visible mount on its recorded device", r.path)
@@ -500,7 +512,7 @@ func (p *placementFID) resolve(rec fidRecord, mount fidMount, at time.Time) (ev 
 		return ev, false, err
 	}
 	path := filepath.Join(dir, rec.Name)
-	if !pathWithin(dir, mount.path) || !p.fm.withinWatchRoots(path) {
+	if !pathWithin(dir, mount.path) || !p.withinWatchRoots(path) {
 		return ev, false, nil
 	}
 	var st unix.Stat_t
@@ -533,8 +545,8 @@ func (p *placementFID) resolve(rec fidRecord, mount fidMount, at time.Time) (ev 
 	return ev, true, nil
 }
 
-func (fm *FileMonitor) withinWatchRoots(path string) bool {
-	for _, r := range fm.watchRoots {
+func (p *placementFID) withinWatchRoots(path string) bool {
+	for _, r := range p.roots {
 		if pathWithin(path, r.path) {
 			return true
 		}

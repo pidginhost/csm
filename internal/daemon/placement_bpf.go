@@ -74,7 +74,7 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 	p.source = reader
 	// Only the backend that runs reports roots it cannot see; a failed
 	// start falls back to one that may see them.
-	fm.reportUncoveredPlacementRoots(all, mounts)
+	fm.reportUncoveredPlacementRoots(all, mounts, fm.watchRoots)
 	return p, nil
 }
 

@@ -181,7 +181,7 @@ func TestUncoveredPlacementRootsRaiseFindings(t *testing.T) {
 		{path: "/home", device: home},
 		{path: "/srv/bound", device: bound},
 	}
-	fm.reportUncoveredPlacementRoots([]mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}}, []mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}})
+	fm.reportUncoveredPlacementRoots([]mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}}, []mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}}, fm.watchRoots)
 	found := unresolvedPlacementFindings(t, alerts)
 	if len(found) != 1 {
 		t.Fatalf("findings %+v, want one for the uncovered root", found)
@@ -219,7 +219,7 @@ func TestUncoveredPlacementAliasRaisesFinding(t *testing.T) {
 		{Dev: dev, Root: "/", MountPoint: "/home"},
 		{Dev: dev, Root: "/user", MountPoint: "/srv/site"},
 	}
-	fm.reportUncoveredPlacementRoots(all, placementMounts(all, fm.watchRoots))
+	fm.reportUncoveredPlacementRoots(all, placementMounts(all, fm.watchRoots), fm.watchRoots)
 	found := unresolvedPlacementFindings(t, alerts)
 	if len(found) != 1 || !strings.Contains(found[0].Message, "/srv/site") {
 		t.Fatalf("findings %+v, want one for the uncovered alias", found)
@@ -232,7 +232,7 @@ func TestUncoveredPlacementBindBelowWholeMountRaisesFinding(t *testing.T) {
 	dev := unix.Mkdev(8, 2)
 	fm.watchRoots = []watchRootMark{{path: "/tmp", device: dev}, {path: "/srv/site", device: dev}}
 	all := []mountEntry{{Dev: dev, Root: "/", MountPoint: "/"}, {Dev: dev, Root: "/data/site", MountPoint: "/srv/site"}}
-	fm.reportUncoveredPlacementRoots(all, placementMounts(all, fm.watchRoots))
+	fm.reportUncoveredPlacementRoots(all, placementMounts(all, fm.watchRoots), fm.watchRoots)
 	found := unresolvedPlacementFindings(t, alerts)
 	if len(found) != 1 || !strings.Contains(found[0].Message, "/srv/site") {
 		t.Fatalf("findings %+v, want one for the covered-over root", found)
@@ -251,7 +251,7 @@ func TestUncoveredPlacementRootBesideSubtreeAnchor(t *testing.T) {
 		{Dev: dev, Root: "/x", MountPoint: "/srv/a"},
 		{Dev: dev, Root: "/y", MountPoint: "/srv/b"},
 	}
-	fm.reportUncoveredPlacementRoots(all, all[:1])
+	fm.reportUncoveredPlacementRoots(all, all[:1], fm.watchRoots)
 	found := unresolvedPlacementFindings(t, alerts)
 	if len(found) != 1 || !strings.Contains(found[0].Message, "/srv/b") {
 		t.Fatalf("findings %+v, want one for the root outside the anchor mount", found)

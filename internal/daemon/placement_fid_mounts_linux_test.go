@@ -5,6 +5,7 @@ package daemon
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,93 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 )
+
+func TestFIDFollowsSymlinkWatchRoot(t *testing.T) {
+	for _, deviceDelta := range []uint64{0, 1} {
+		t.Run(fmt.Sprint("deviceDelta=", deviceDelta), func(t *testing.T) {
+			parent, target := t.TempDir(), t.TempDir()
+			alias := filepath.Join(parent, "alias")
+			if err := os.Symlink(target, alias); err != nil {
+				t.Fatal(err)
+			}
+			dev, err := statDevice(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			alerts := make(chan alert.Finding, 16)
+			fm := placementTestMonitor(alerts)
+			fm.watchRoots = []watchRootMark{{path: alias, device: dev}}
+			// Mountinfo describes mounts, so it never contains the symlink alias.
+			all := []mountEntry{
+				{Dev: dev ^ deviceDelta, Root: "/", MountPoint: parent},
+				{Dev: dev, Root: "/", MountPoint: target},
+			}
+			p := newPlacementFID(fm, -1, make(map[unix.Fsid][]fidMount))
+			t.Cleanup(p.close)
+			marks := 0
+			skipped, err := p.markFilesystemsWith(all, func(int, uint, uint64, int, string) error {
+				marks++
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("valid symlink watch root disabled placement: %v", err)
+			}
+			if marks != 1 || len(skipped) != 0 {
+				t.Fatalf("marks=%d skipped=%v, want one marked filesystem", marks, skipped)
+			}
+			p.reportCoverage(all, skipped)
+			if found := unresolvedPlacementFindings(t, alerts); len(found) != 0 {
+				t.Fatalf("resolved watch root reported uncovered: %+v", found)
+			}
+			p.openDir = func(fd int, _ unix.FileHandle, _ int) (int, error) { return unix.Dup(fd) }
+			path := filepath.Join(target, "placed.php")
+			if err := os.WriteFile(path, []byte("<?php echo 1;"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			want := placementOf(t, path, 0)
+			want.At = now
+			resolved := 0
+			for _, mounts := range p.mounts {
+				for _, mount := range mounts {
+					ev, ok, err := p.resolve(fidRecord{Mask: unix.FAN_MOVED_TO, Name: "placed.php"}, mount, now)
+					if err != nil || !ok || ev != want {
+						t.Fatalf("symlink target placement = %+v, %v, %v; want %+v", ev, ok, err, want)
+					}
+					fm.handlePlacement(ev)
+					resolved++
+				}
+			}
+			if resolved != 1 || fm.watchRoots[0].path != alias {
+				t.Fatalf("resolved=%d roots=%+v, want one placement without changing the close-write roots", resolved, fm.watchRoots)
+			}
+			if events := queuedPlacements(t, fm); len(events) != 1 || events[0].path != path || events[0].mask != eventPlacedIn {
+				t.Fatalf("resolved placement did not reach analysis: %+v", events)
+			}
+		})
+	}
+}
+
+func TestFIDRejectsUnresolvableWatchRoot(t *testing.T) {
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), alias); err != nil {
+		t.Fatal(err)
+	}
+	fm := placementTestMonitor(make(chan alert.Finding, 16))
+	fm.watchRoots = []watchRootMark{{path: alias}}
+	p := newPlacementFID(fm, -1, make(map[unix.Fsid][]fidMount))
+	t.Cleanup(p.close)
+	_, err := p.markFilesystemsWith(nil, func(int, uint, uint64, int, string) error {
+		t.Fatal("marked a filesystem despite an unresolved watch root")
+		return nil
+	})
+	if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), alias) {
+		t.Fatalf("unresolved watch root error = %v, want the root and lookup failure", err)
+	}
+	if len(p.mounts) != 0 {
+		t.Fatalf("unresolved root retained mounts: %+v", p.mounts)
+	}
+}
 
 func TestFIDKeepsEachWatchedMountOfOneFilesystem(t *testing.T) {
 	fm := placementTestMonitor(make(chan alert.Finding, 16))

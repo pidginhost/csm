@@ -210,8 +210,8 @@ func (fm *FileMonitor) reportUnresolvedPlacement(dev uint64, raw PlacementRawEve
 // reportUncoveredPlacementRoots names roots that the running backend's
 // mounts, through which it turns events into paths, do not show. Sharing a
 // device does not imply sharing that path.
-func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry) {
-	for _, r := range fm.watchRoots {
+func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry, roots []watchRootMark) {
+	for _, r := range roots {
 		if i := visibleMount(all, r.path); i >= 0 && slices.Contains(mounts, all[i]) {
 			continue
 		}
@@ -225,9 +225,9 @@ func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry) {
 // reportUnmarkablePlacementRoots raises one Warning per start for the roots
 // whose filesystem this kernel cannot watch for placements: a kernel limit,
 // not a fault.
-func (fm *FileMonitor) reportUnmarkablePlacementRoots(all, skipped []mountEntry) {
+func (fm *FileMonitor) reportUnmarkablePlacementRoots(all, skipped []mountEntry, watched []watchRootMark) {
 	var roots []string
-	for _, r := range fm.watchRoots {
+	for _, r := range watched {
 		if i := placementVisibleMount(all, r); i >= 0 && slices.Contains(skipped, all[i]) {
 			roots = append(roots, r.path)
 		}
