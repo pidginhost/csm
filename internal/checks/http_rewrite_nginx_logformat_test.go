@@ -196,3 +196,29 @@ func TestHTTPRewriteNginxLogFormatAcrossFiles(t *testing.T) {
 		RewriteActive, "log_format combined $proxy_protocol_addr", streamFormat)
 
 }
+
+// nginx refuses to redefine a built-in variable, so a file that does is not
+// the configuration nginx runs. A user definition never inherits the
+// built-in's trust, whatever spelling or module defines it.
+func TestHTTPRewriteNginxRedefinedBuiltins(t *testing.T) {
+	for _, tc := range []struct{ name, body, directive string }{
+		{"map", "http { map $http_x_client $Remote_Addr { default $http_x_client; } log_format custom '$REMOTE_ADDR $status'; access_log logs/access custom; }\n", "log_format custom $REMOTE_ADDR $status"},
+		{"set", "http { log_format custom '$remote_addr $status'; server { set $remote_addr $http_x_client; access_log logs/access custom; } }\n", "log_format custom $remote_addr $status"},
+		{"geo", "http { geo $remote_addr { default 203.0.113.7; } log_format custom '$remote_addr $status'; access_log logs/access custom; }\n", "log_format custom $remote_addr $status"},
+		{"split_clients", "http { split_clients $http_x_client $remote_addr { * 203.0.113.7; } log_format custom '$remote_addr $status'; access_log logs/access custom; }\n", "log_format custom $remote_addr $status"},
+		{"auth_request_set", "http { auth_request_set $remote_addr $upstream_http_x_client; log_format custom '$remote_addr $status'; access_log logs/access custom; }\n", "log_format custom $remote_addr $status"},
+		{"perl_set", "http { perl_set $remote_addr 'sub { return shift->header(\"X-Client\"); }'; log_format custom '$remote_addr $status'; access_log logs/access custom; }\n", "log_format custom $remote_addr $status"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := writeRewriteFile(t, t.TempDir(), "nginx.conf", tc.body)
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), RewriteActive, tc.directive, conf)
+		})
+	}
+}
+
+// A stream format is never an HTTP format of the same name, even when it is
+// declared before the HTTP log that names it.
+func TestHTTPRewriteNginxStreamFormatBeforeHTTPUse(t *testing.T) {
+	conf := writeRewriteFile(t, t.TempDir(), "nginx.conf", "stream { log_format main '$remote_addr'; } http { log_format other '$remote_addr'; access_log logs/http main; }\n")
+	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), RewriteUnknown, "", "")
+}
