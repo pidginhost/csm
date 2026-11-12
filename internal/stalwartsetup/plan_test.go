@@ -310,3 +310,23 @@ func TestPlanApplyReloadsWhatItWroteBeforeAFailure(t *testing.T) {
 		t.Fatalf("calls = %q, want %q", api.calls, want)
 	}
 }
+
+// Behind the lock, only X-Forwarded-For with one hop is safe: with more hops,
+// or the Forwarded header the web server does not set, the client supplies
+// the address Stalwart reads.
+func TestPlanRewritesSpoofableForwardedSettings(t *testing.T) {
+	for _, h := range []stalwartapi.HTTPSettings{
+		{ClientIPSource: "xForwardedFor", ForwardedHops: 2},
+		{ClientIPSource: "forwarded", ForwardedHops: 1},
+	} {
+		api := configuredAPI()
+		api.http = h
+		p := inspect(t, api, fieldInputs())
+		if p.Steps[1].State != Change {
+			t.Fatalf("%+v: step 2 = %+v, want Change", h, p.Steps[1])
+		}
+		if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SetHTTPSettings(xForwardedFor,1)", "ReloadSettings"}) {
+			t.Fatalf("%+v: calls = %q", h, calls)
+		}
+	}
+}

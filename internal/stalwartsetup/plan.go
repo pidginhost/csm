@@ -201,18 +201,26 @@ func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Liste
 			h.ClientIPSource, reason)
 	case reason != "":
 		s.State, s.Detail = Skipped, reason
-	case forwarded:
-		s.State = Done
-		s.Detail = fmt.Sprintf("client addresses come from %s behind CSM's port lock", h.ClientIPSource)
+	case h == safeForwarded:
+		s.State, s.Detail = Done, "client addresses come from X-Forwarded-For (1 hop) behind CSM's port lock"
 	default:
 		s.State = Change
 		s.Detail = "client addresses are the web server's; take them from X-Forwarded-For (1 hop)"
+		if forwarded {
+			// More hops, or a header the web server does not set, lets the
+			// client choose the address Stalwart reads.
+			s.Detail = fmt.Sprintf("client addresses come from %s with %d hops, which a client can forge; take them from X-Forwarded-For (1 hop)",
+				h.ClientIPSource, h.ForwardedHops)
+		}
 		s.apply = func(ctx context.Context, api API) error {
-			return api.SetHTTPSettings(ctx, stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1})
+			return api.SetHTTPSettings(ctx, safeForwarded)
 		}
 	}
 	return s
 }
+
+// safeForwarded takes the address the web server, the only hop, appends.
+var safeForwarded = stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1}
 
 func allLocked(ports, locked []int) bool {
 	for _, p := range ports {
