@@ -72,13 +72,14 @@ const (
 //
 // Aggregates per-IP counts across ALL domains -- catches attackers who
 // distribute requests across many sites to stay under per-site thresholds.
-func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPBruteForce(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	window := cfg.Thresholds.BruteForceWindow
 	if window <= 0 {
 		window = 5000
 	}
 
 	stats := newDomlogStats()
+	stats.callers = loadWebshellCallers(store)
 	hostInfo := platform.Detect()
 	var centralPath string
 	var centralRecords []syslogRecord
@@ -305,6 +306,10 @@ func effectiveDomlogMaxAge(cfg *config.Config) time.Duration {
 // per-file ctx gate, the parse-or-skip behaviour, and the scanned
 // counter cannot drift between callers.
 func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, stats *domlogStats, classifier botClassifier, tailLines int) int {
+	parse := parseAccessLogRecord
+	if stats.callers != nil {
+		parse = parseWebshellCallerRecord
+	}
 	scanned := 0
 	for _, p := range paths {
 		if ctx != nil {
@@ -315,7 +320,7 @@ func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, st
 		domain := domainFromDomlogPath(p)
 		account := domainAccountOwner(domain)
 		for _, r := range tailFileRecords(p, tailLines) {
-			rec, ok := parseAccessLogRecord(r.text)
+			rec, ok := parse(r.text)
 			if !ok {
 				continue
 			}

@@ -124,6 +124,7 @@ var nonActionableAttackerSide = map[string]string{
 	"modsec_low_confidence_burst":   "low-confidence advisory",
 	"modsec_warning_realtime":       "warning-level WAF event",
 	"smtp_account_spray":            "per-mailbox summary of many sources",
+	"webshell_caller":               "report only; a page can send its visitors to the flagged file",
 	"whm_unauth_scripts_realtime":   "unauthenticated WHM script probe; visibility only",
 }
 

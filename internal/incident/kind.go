@@ -162,6 +162,8 @@ func isInboundWebAttackCheck(check string) bool {
 		"wp_user_enumeration",
 		"xmlrpc_abuse",
 		"waf_attack_blocked",
+		"webshell_caller",
+		"webshell_path_public",
 		"api_auth_failure",
 		"api_auth_failure_realtime",
 		"webmail_bruteforce",

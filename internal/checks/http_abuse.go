@@ -32,10 +32,12 @@ import (
 // The parser tolerates either the 9-field plain CLF or the 10-field
 // cPanel variant. Bad lines return ok=false; callers must skip them.
 type accessLogRecord struct {
-	RemoteIP  string
-	Time      time.Time
-	Method    string
-	URI       string
+	RemoteIP string
+	Time     time.Time
+	Method   string
+	URI      string
+	// fullURI preserves the request target for file attribution before display truncation.
+	fullURI   string
 	Status    int
 	UserAgent string
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
@@ -163,6 +165,9 @@ type domlogStats struct {
 	// and reads as a trusted chain.
 	forwarded map[string]map[string]bool
 
+	// callers collects requests for flagged files; nil when none is flagged.
+	callers *webshellCallers
+
 	// trusted is the trust list scan resolves clients against, parsed from
 	// cfg once per scan like the thresholds below.
 	trusted    clientaddr.Trusted
@@ -274,10 +279,14 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		return
 	}
 	ip := client.Client.String()
-	if cfg != nil && isInfraIP(ip, cfg.InfraIPs) {
+	infra := cfg != nil && isInfraIP(ip, cfg.InfraIPs)
+	verifiedBot := !infra && bot != nil && bot.IsVerifiedBot(ip, rec.UserAgent)
+	// Exempt clients still show that a URL is public, but never get caller findings.
+	s.callers.record(rec, ip, s.scanTime, !infra && !verifiedBot)
+	if infra {
 		return
 	}
-	if bot != nil && bot.IsVerifiedBot(ip, rec.UserAgent) {
+	if verifiedBot {
 		removeChallengeIP(ip)
 		return
 	}
@@ -529,6 +538,7 @@ func (s *domlogStats) emitLegacy(cfg *config.Config) []alert.Finding {
 // running through emit), then http_request_flood, then http_ua_spoof.
 func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	out := s.emitLegacy(cfg)
+	out = append(out, s.callers.emit()...)
 
 	if cfg != nil && cfg.Thresholds.HTTPFloodThreshold > 0 {
 		for ip, count := range s.httpReqs {
@@ -1074,6 +1084,8 @@ func itoa(n int) string {
 	return string(buf[pos:])
 }
 
+const accessLogURILimit = 4096
+
 // parseAccessLogRecord parses one Combined Log Format line into an
 // accessLogRecord. It does NOT use strings.Fields because quoted
 // request/referer/user-agent fields can contain spaces.
@@ -1084,7 +1096,7 @@ func itoa(n int) string {
 //
 // Returns ok=false for any line that cannot be parsed. Never panics.
 func parseAccessLogRecord(line string) (accessLogRecord, bool) {
-	return parseAccessLogRecordWithURILimit(line, 4096)
+	return parseAccessLogRecordWithURILimit(line, accessLogURILimit)
 }
 
 // Callers grouping by request target must retain its full identity rather than

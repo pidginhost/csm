@@ -51,9 +51,13 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `http_ua_spoof` | IP hitting the per-IP spoof threshold with a search-engine bot UA that fails reverse-DNS verification, or with scripting/headless/empty UAs when those opt-in flags are enabled |
 | `http_distributed_flood` | Many already-abusive HTTP source IPs hitting the same vhost in one scheduled scan window |
 | `http_asn_crawl` | A single ASN distributing expensive, uncacheable requests across many addresses while one account's PHP worker pool is saturated. Request classification is a heuristic, not proof of backend cost. Reverse-proxy ASNs and operator allowlists are excluded; Critical findings can carry the specific source CIDRs eligible for temporary blocking. |
+| `webshell_caller` | A client that requested a PHP file CSM flagged as a webshell, one finding per client and account, with request and POST counts, the files and a sample request. Requests keep counting after CSM removes the file. Known site entry points, files the installed WordPress or plugin release ships, and a document root's own index are excluded from caller attribution. A request alone does not prove the client operated the shell; a compromised page can direct visitors there. cPanel hosts only. It reads the recent tail of each site log, so a single request on a busy site can be missed, and a file detected only in real time counts once a scheduled scan reports it. Alert only: no automatic response |
+| `webshell_path_public` | A flagged PHP file requested by many distinct clients across all domains serving it. Infrastructure addresses and verified bots count toward this summary but never receive individual caller findings. Its clients are not reported one by one as `webshell_caller` |
 | `ftp_logins` | FTP access patterns and failed auth |
 | `webmail_logins` | Roundcube/Horde access anomalies |
 | `api_auth_failures` | API authentication failure patterns |
+
+Webshell caller attribution uses dated requests from the last 24 hours and preserves the full request target before resolving dot segments and PHP path info. Above-root traversal is rejected. Requests containing encoded slashes in their URL path are omitted because [Apache's encoded-slash policy](https://httpd.apache.org/docs/2.4/mod/core.html#allowencodedslashes) can reject, preserve, or decode them. URL rewrites and custom directory indexes are not inferred. When a client accesses the same file through several domains, its account finding does not name a single domain. These exclusions affect caller attribution only; file scanning is unchanged.
 
 ## Email
 

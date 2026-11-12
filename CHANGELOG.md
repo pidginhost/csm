@@ -36,6 +36,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Realtime protection now also quarantines confirmed PHP shells placed after a shell command in backticks.
 - Scheduled and on-demand scans now report PHP shells that run commands sent in the raw request body, and realtime catches more of their variants.
 - Files that cleaning would leave empty, and files planted at WordPress core or plugin paths their release does not ship, are now quarantined instead.
+- CSM reports recent requests to suspected webshells, including removed files, and summarizes widely requested content without naming individual clients.
 
 ### Added
 

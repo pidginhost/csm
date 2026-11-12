@@ -447,6 +447,16 @@ func notShippedByRelease(path string) bool {
 	return known && !listed
 }
 
+// shippedByRelease accepts only a definitive listing from the provider.
+func shippedByRelease(path string) bool {
+	listing := packageListing.Load()
+	if listing == nil {
+		return false
+	}
+	listed, known := (*listing)(path)
+	return known && listed
+}
+
 // ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned
 // (surgical removal) instead of quarantined (full removal).
 // WP core files and plugin files are better cleaned - removing them breaks the site.
