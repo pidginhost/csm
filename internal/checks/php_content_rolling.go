@@ -175,7 +175,10 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 			break
 		}
 		// The fixed walk or the changed pass already read it this cycle.
-		if _, done := scan.attempted[file]; done {
+		if ok, done := scan.attempted[file]; done {
+			if !ok {
+				windowComplete = false
+			}
 			continue
 		}
 		// Opening FIFOs or device nodes can block the scan; rolling only needs
@@ -219,26 +222,37 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	return windowComplete, read
 }
 
-// rollingChangedMargin is taken off a pass's start time before it becomes an
-// account's watermark, so a clock stepped back by less than this cannot hide
-// a file changed right after the pass. Var, not const, so tests can zero it.
+// The overlap covers coarse ctime ticks and small clock corrections. Larger
+// backward steps rewind the bound using the account's wall/boot clock pair.
+// Tests zero this only for fixtures written just before their first scan.
 var rollingChangedMargin = 2 * time.Minute
 
-// rollingChangedPass reads, before any rolling window, the files changed since
-// each account's watermark: written, replaced or modified after it. Accounts
-// are listed each cycle until the budget runs out, so a file planted outside
-// the fixed directories is read within a cycle instead of when a window
-// reaches it. Accounts served longest ago go first, and an account the budget
-// cuts short resumes after the last file read. It returns how many files it
-// read.
+// rollingChangedPass uses the existing host-wide file budget. Only one
+// account's file list is retained at a time, and no content-cache sweep is
+// needed to discover changes: forced cache expiry must not create a backlog.
 func rollingChangedPass(ctx context.Context, cfg *config.Config, scan *phpContentScan, db *store.DB, accounts []rollingAccount, budget int, findings *[]alert.Finding) int {
 	start := phpContentNow()
+	uptime, clockOK := procUptime()
+	boot, _ := osFS.ReadFile("/proc/sys/kernel/random/boot_id")
+	clock := rollingChangeClock{wall: start, uptime: uptime}
+	if clockOK {
+		clock.boot = strings.TrimSpace(string(boot))
+	}
+	ordered := rollingChangedOrder(db, accounts)
+	// Logical service time keeps rotation fair through backward clock steps.
+	served := start
+	for _, account := range ordered {
+		cur, _ := rollingContentCursors.load(db, account.name)
+		if !cur.ChangedServedAt.Before(served) {
+			served = cur.ChangedServedAt.Add(time.Nanosecond)
+		}
+	}
 	read := 0
-	for _, account := range rollingChangedOrder(db, accounts) {
+	for _, account := range ordered {
 		if ctx.Err() != nil || read >= budget {
 			break
 		}
-		read += rollingChangedAccount(ctx, cfg, scan, db, account, start, budget-read, findings)
+		read += rollingChangedAccount(ctx, cfg, scan, db, account, clock, served, budget-read, findings)
 	}
 	return read
 }
@@ -266,101 +280,159 @@ func rollingChangedOrder(db *store.DB, accounts []rollingAccount) []rollingAccou
 	return out
 }
 
-func rollingChangedAccount(ctx context.Context, cfg *config.Config, scan *phpContentScan, db *store.DB, account rollingAccount, start time.Time, limit int, findings *[]alert.Finding) int {
+type rollingChangeClock struct {
+	wall   time.Time
+	uptime float64
+	boot   string
+}
+
+func (clock rollingChangeClock) update(cur *store.ScanCursorRecord) {
+	if clock.boot == "" && cur.ChangedBootID != "" {
+		// Keep the last verifiable reference and bound until procfs recovers.
+		cur.ChangedLapFailed = true
+		return
+	}
+	through := cur.ChangedThrough
+	if !cur.ChangedClock.IsZero() {
+		delta := clock.wall.Sub(cur.ChangedClock)
+		if clock.boot != "" && cur.ChangedBootID != "" {
+			if clock.boot != cur.ChangedBootID || clock.uptime < cur.ChangedUptime {
+				// A reboot can reset the wall clock by an arbitrary amount. Revisit
+				// metadata without depending on the clean-content cache surviving it.
+				through = time.Unix(0, 1)
+			} else {
+				delta -= time.Duration((clock.uptime - cur.ChangedUptime) * float64(time.Second))
+			}
+		}
+		// procfs uptime is rounded; the overlap absorbs subsecond jitter.
+		if delta < -time.Second {
+			through = through.Add(delta)
+		}
+	}
+	if clock.wall.Before(through) {
+		through = clock.wall.Add(-rollingChangedMargin)
+	}
+	if through.Before(cur.ChangedThrough) {
+		cur.ChangedThrough = through
+		clearChangedLap(cur)
+	}
+	cur.ChangedClock, cur.ChangedUptime, cur.ChangedBootID = clock.wall, clock.uptime, clock.boot
+}
+
+func clearChangedLap(cur *store.ScanCursorRecord) {
+	cur.ChangedFrom, cur.ChangedEnd = "", ""
+	cur.ChangedLapStart = time.Time{}
+	cur.ChangedLapFailed = false
+}
+
+func rollingChangedAccount(ctx context.Context, cfg *config.Config, scan *phpContentScan, db *store.DB, account rollingAccount, clock rollingChangeClock, served time.Time, limit int, findings *[]alert.Finding) int {
 	cur, curErr := rollingContentCursors.load(db, account.name)
 	if curErr != nil {
 		fmt.Fprintf(os.Stderr, "php_content changed pass: cursor read for %s: %v\n", account.name, curErr)
 	}
 	cur.Account, cur.Check = account.name, rollingScanCheck
+	clock.update(&cur)
+	cur.ChangedServedAt = served
+	// Publish service before I/O, so a timed-out account yields to its peers.
+	// A canceled scan must not later overwrite its successor's progress.
+	saveRollingCursor(db, cur)
+	defer func() {
+		if cur.ChangedLapFailed {
+			markCheckIncomplete(ctx, "php_content")
+		}
+		if ctx.Err() == nil {
+			saveRollingCursor(db, cur)
+		}
+	}()
 	if cur.ChangedThrough.IsZero() {
-		// First sight: files already here are the rolling windows' job.
-		cur.ChangedThrough = start.Add(-rollingChangedMargin)
-		saveRollingCursor(db, cur)
+		cur.ChangedThrough = clock.wall.Add(-rollingChangedMargin)
 		return 0
 	}
-	roots := accountDocRoots(account.home)
-	files := enumeratePHPFiles(ctx, cfg, roots)
+	roots, rootsComplete := accountDocRootsComplete(account.home)
+	files, complete := enumeratePHPFilesComplete(ctx, cfg, roots)
 	if ctx.Err() != nil {
 		return 0
 	}
-	changed := scan.changedSince(files, cur.ChangedThrough)
-	lapStart := cur.ChangedLapStart
-	if lapStart.IsZero() {
-		lapStart = start
-	}
-	if len(changed) == 0 {
-		if cur.ChangedFrom != "" {
-			// What the cut-short lap had left is gone.
-			cur.ChangedThrough = lapStart.Add(-rollingChangedMargin)
-			cur.ChangedFrom, cur.ChangedLapStart = "", time.Time{}
-			saveRollingCursor(db, cur)
+	if cur.ChangedLapStart.IsZero() {
+		cur.ChangedLapStart = clock.wall
+		if len(files) > 0 {
+			cur.ChangedEnd = files[len(files)-1]
 		}
-		return 0
 	}
-	ordered := rotateAfter(changed, cur.ChangedFrom)
+	cur.ChangedLapFailed = cur.ChangedLapFailed || !complete || !rootsComplete
 	overlays := make(map[string]phpHandlerOverlay)
-	read, next := 0, 0
-	for ; next < len(ordered) && read < limit; next++ {
+	read := 0
+	for _, file := range files {
 		if ctx.Err() != nil {
-			// Leave the cursor: the next cycle reads this lap again.
 			return read
 		}
-		file := ordered[next]
-		if !rollingRegularCandidate(file) {
-			delete(scan.prev, file)
-			delete(scan.next, file)
+		if file <= cur.ChangedFrom || (cur.ChangedEnd != "" && file > cur.ChangedEnd) {
 			continue
 		}
-		read++
-		dir := filepath.Dir(file)
-		overlay, ok := overlays[dir]
-		if !ok {
-			overlay = reconstructOverlay(rollingDocRootFor(file, roots), dir)
-			overlays[dir] = overlay
+		if read >= limit {
+			return read
 		}
-		scan.scanFile(ctx, file, overlay, findings)
+		info, ctime, err := rollingChangedInfo(file)
+		if err != nil || !info.Mode().IsRegular() {
+			delete(scan.prev, file)
+			delete(scan.next, file)
+			cur.ChangedLapFailed = cur.ChangedLapFailed || (err != nil && !os.IsNotExist(err))
+		} else {
+			changed := ctime == 0 || !time.Unix(0, ctime).Before(cur.ChangedThrough)
+			// Changes made after this lap started belong to the next lap. This
+			// bounds a burst even if the account keeps creating files. Future
+			// timestamps after a clock step are still read, never silently skipped.
+			later := ctime != 0 && time.Unix(0, ctime).After(cur.ChangedLapStart) && !time.Unix(0, ctime).After(clock.wall)
+			if changed && !later {
+				if ok, attempted := scan.attempted[file]; attempted {
+					cur.ChangedLapFailed = cur.ChangedLapFailed || !ok
+				} else {
+					read++
+					dir := filepath.Dir(file)
+					overlay, ok := overlays[dir]
+					if !ok {
+						overlay = reconstructOverlay(rollingDocRootFor(file, roots), dir)
+						overlays[dir] = overlay
+					}
+					if !scan.scanFile(ctx, file, overlay, findings) {
+						cur.ChangedLapFailed = true
+					}
+				}
+			}
+		}
+		cur.ChangedFrom = file
 	}
-	if next == len(ordered) {
-		cur.ChangedThrough = lapStart.Add(-rollingChangedMargin)
-		cur.ChangedFrom, cur.ChangedLapStart = "", time.Time{}
-	} else {
-		cur.ChangedFrom, cur.ChangedLapStart = ordered[next-1], lapStart
+	if ctx.Err() == nil {
+		if !cur.ChangedLapFailed {
+			cur.ChangedThrough = cur.ChangedLapStart.Add(-rollingChangedMargin)
+		} else {
+			markCheckIncomplete(ctx, "php_content")
+		}
+		clearChangedLap(&cur)
 	}
-	cur.ChangedServedAt = start
-	saveRollingCursor(db, cur)
 	return read
 }
 
-// changedSince returns the files this run has not read whose change time is
-// after through. A file's owner cannot set its change time back. A file
-// without one counts as changed.
-func (s *phpContentScan) changedSince(files []string, through time.Time) []string {
-	var out []string
-	for _, file := range files {
-		if _, done := s.attempted[file]; done {
-			continue
-		}
-		info, err := osFS.Stat(file)
-		if err != nil {
-			continue
-		}
-		if ctime := phpFileStampOf(info).Ctime; ctime == 0 || time.Unix(0, ctime).After(through) {
-			out = append(out, file)
-		}
+// A new symlink can point at an old inode without changing the target's
+// ctime. Either the link or its target changing must queue a priority read.
+func rollingChangedInfo(file string) (os.FileInfo, int64, error) {
+	info, err := osFS.Lstat(file)
+	if err != nil {
+		return nil, 0, err
 	}
-	return out
-}
-
-// rotateAfter returns the path-sorted files starting after from, wrapping.
-func rotateAfter(files []string, from string) []string {
-	if from == "" {
-		return files
+	ctime := phpFileStampOf(info).Ctime
+	if info.Mode()&os.ModeSymlink == 0 {
+		return info, ctime, nil
 	}
-	i := sort.SearchStrings(files, from)
-	if i < len(files) && files[i] == from {
-		i++
+	target, err := osFS.Stat(file)
+	if err != nil {
+		return nil, 0, err
 	}
-	return append(append([]string(nil), files[i:]...), files[:i]...)
+	targetTime := phpFileStampOf(target).Ctime
+	if ctime == 0 || targetTime == 0 {
+		return target, 0, nil
+	}
+	return target, max(ctime, targetTime), nil
 }
 
 func saveRollingCursor(db *store.DB, cur store.ScanCursorRecord) {
@@ -398,36 +470,48 @@ func rollingDocRootFor(file string, docRoots []string) string {
 // an explicit full-scan/audit. The result is ascending-sorted and de-duplicated
 // so rollingCandidatesAfter can cursor through it stably.
 func enumeratePHPFiles(ctx context.Context, cfg *config.Config, docRoots []string) []string {
+	files, _ := enumeratePHPFilesComplete(ctx, cfg, docRoots)
+	return files
+}
+
+func enumeratePHPFilesComplete(ctx context.Context, cfg *config.Config, docRoots []string) ([]string, bool) {
 	seen := make(map[string]struct{})
+	complete := true
 	respectIgnores := scanRespectsIgnores(ctx, cfg)
 	for _, root := range docRoots {
-		walkPHPFiles(ctx, cfg, root, rollingWalkMaxDepth, respectIgnores, seen)
+		if !walkPHPFiles(ctx, cfg, root, rollingWalkMaxDepth, respectIgnores, seen) {
+			complete = false
+		}
 		if ctx.Err() != nil {
 			break
 		}
 	}
 	if len(seen) == 0 {
-		return nil
+		return nil, complete
 	}
 	files := make([]string, 0, len(seen))
 	for f := range seen {
 		files = append(files, f)
 	}
 	sort.Strings(files)
-	return files
+	return files, complete
 }
 
-func walkPHPFiles(ctx context.Context, cfg *config.Config, dir string, maxDepth int, respectIgnores bool, seen map[string]struct{}) {
-	if ctx.Err() != nil || maxDepth <= 0 {
-		return
+func walkPHPFiles(ctx context.Context, cfg *config.Config, dir string, maxDepth int, respectIgnores bool, seen map[string]struct{}) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if maxDepth <= 0 {
+		return true
 	}
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
-		return
+		return os.IsNotExist(err)
 	}
+	complete := true
 	for _, entry := range entries {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		fullPath := filepath.Join(dir, entry.Name())
 
@@ -440,13 +524,16 @@ func walkPHPFiles(ctx context.Context, cfg *config.Config, dir string, maxDepth 
 		}
 
 		if entry.IsDir() {
-			walkPHPFiles(ctx, cfg, fullPath, maxDepth-1, respectIgnores, seen)
+			if !walkPHPFiles(ctx, cfg, fullPath, maxDepth-1, respectIgnores, seen) {
+				complete = false
+			}
 			continue
 		}
 		if contenttype.IsPHPSourceName(strings.ToLower(entry.Name())) {
 			seen[fullPath] = struct{}{}
 		}
 	}
+	return complete
 }
 
 func pathIsIgnored(cfg *config.Config, fullPath string) bool {

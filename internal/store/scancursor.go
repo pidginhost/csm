@@ -28,14 +28,22 @@ type ScanCursorRecord struct {
 	RulesWrapped    bool   `json:"rules_wrapped,omitempty"`
 	RulesRootsHash  string `json:"rules_roots_hash,omitempty"`
 
-	// Changed-file progress (PHP content cursor only). Every file whose change
-	// time is at or before ChangedThrough has been read. ChangedFrom and
-	// ChangedLapStart resume a pass the budget cut short, and ChangedServedAt
-	// puts the accounts served longest ago first when the budget runs out.
-	ChangedThrough  time.Time `json:"changed_through,omitempty"`
-	ChangedFrom     string    `json:"changed_from,omitempty"`
-	ChangedLapStart time.Time `json:"changed_lap_start,omitempty"`
+	// ChangedThrough is the lower ctime bound for priority scans, not proof
+	// that older files were read: those remain the rolling window's job.
+	// A lap visits paths once up to ChangedEnd. Errors retain the old bound
+	// after the lap, so unreadable files get another chance on the next lap.
+	ChangedThrough   time.Time `json:"changed_through,omitempty"`
+	ChangedFrom      string    `json:"changed_from,omitempty"`
+	ChangedEnd       string    `json:"changed_end,omitempty"`
+	ChangedLapStart  time.Time `json:"changed_lap_start,omitempty"`
+	ChangedLapFailed bool      `json:"changed_lap_failed,omitempty"`
+	// ServedAt is a logical ordering timestamp, independent of clock steps.
 	ChangedServedAt time.Time `json:"changed_served_at,omitempty"`
+	// Wall and boot clocks allow a backward clock step to rewind the ctime
+	// bound even when the next scan's wall time exceeds the previous one.
+	ChangedClock  time.Time `json:"changed_clock,omitempty"`
+	ChangedUptime float64   `json:"changed_uptime,omitempty"`
+	ChangedBootID string    `json:"changed_boot_id,omitempty"`
 }
 
 // scanCursorKey builds the bucket key for a (account, check) pair.

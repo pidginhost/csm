@@ -2057,8 +2057,8 @@ type phpContentScan struct {
 	// prior stamps are authoritative-by-absence: a cached file the walk did
 	// not see again is gone. Everything else is simply unreached.
 	visited map[string]bool
-	// attempted holds files this run already read or tried to read.
-	attempted map[string]struct{}
+	// attempted records whether each attempted content read succeeded.
+	attempted map[string]bool
 }
 
 func newPHPContentScan(cfg *config.Config, prev phpContentCache, forceFull bool) *phpContentScan {
@@ -2071,7 +2071,7 @@ func newPHPContentScan(cfg *config.Config, prev phpContentCache, forceFull bool)
 		next:      phpContentCache{},
 		forceFull: forceFull,
 		visited:   map[string]bool{},
-		attempted: map[string]struct{}{},
+		attempted: map[string]bool{},
 	}
 }
 
@@ -2123,14 +2123,19 @@ func (s *phpContentScan) pruneMissing(roots []string, present []string) {
 // addon-domain directories beside it, skipping the mail, control and temp
 // directories that never serve web content.
 func accountDocRoots(homeDir string) []string {
+	roots, _ := accountDocRootsComplete(homeDir)
+	return roots
+}
+
+func accountDocRootsComplete(homeDir string) ([]string, bool) {
 	docRoots := []string{filepath.Join(homeDir, "public_html")}
-	subDirs, _ := osFS.ReadDir(homeDir)
+	subDirs, err := osFS.ReadDir(homeDir)
 	for _, sd := range subDirs {
 		if sd.IsDir() && sd.Name() != "public_html" && accountContentDir(sd.Name()) {
 			docRoots = append(docRoots, filepath.Join(homeDir, sd.Name()))
 		}
 	}
-	return docRoots
+	return docRoots, err == nil || os.IsNotExist(err)
 }
 
 func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
@@ -2274,14 +2279,15 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 // overlay. Files that produce a finding are never cached, so they re-surface
 // each cycle for the alert pipeline. scanDir calls this for every non-directory
 // entry; the rolling driver calls it for each path in its bounded slice.
-func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay phpHandlerOverlay, findings *[]alert.Finding) {
+func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay phpHandlerOverlay, findings *[]alert.Finding) (readOK bool) {
 	// Once attempted, only a fresh clean result may retain a stamp. Rolling
 	// and interrupted directory walks cannot rely on directory completion to
 	// invalidate a finding, read failure, or an earlier read in the same run.
-	s.attempted[fullPath] = struct{}{}
+	s.attempted[fullPath] = false
 	previous, cached := s.prev[fullPath]
 	delete(s.next, fullPath)
 	defer func() {
+		s.attempted[fullPath] = readOK
 		if _, clean := s.next[fullPath]; !clean {
 			delete(s.prev, fullPath)
 		}
@@ -2328,7 +2334,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 	// between Stat and Open. Only reuse the clean result for the same inode.
 	if canCache && !s.forceFull && cached && previous == stamp {
 		s.next[fullPath] = stamp
-		return
+		return true
 	}
 	var size int64 = -1
 	if openStatErr == nil {
@@ -2339,6 +2345,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 	// clean files produce no finding, so there is no benefit to skipping
 	// them, and any skip is a place an attacker can hide a backdoor.
 	result := analyzePHPContentReaderAt(fullPath, f, size)
+	readOK = result.readOK
 	if result.severity >= 0 {
 		*findings = append(*findings, phpContentFinding(fullPath, result, info, FileContentSHA256(fullPath)))
 		return
@@ -2355,6 +2362,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 			s.next[fullPath] = stamp
 		}
 	}
+	return readOK
 }
 
 // phpContentFinding is the finding for one flagged PHP file. info may be nil
