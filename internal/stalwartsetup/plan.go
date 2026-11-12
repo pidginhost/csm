@@ -5,6 +5,7 @@ package stalwartsetup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -99,27 +100,30 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 }
 
 // Apply makes each planned change in order, then reloads Stalwart's settings
-// once. It makes no call when nothing changes. A failed write stops it;
-// settings already written stay written and the next run sees them.
+// once. It makes no call when nothing changes. A failed write stops it, and
+// the settings written before it are still reloaded: a later run reads them
+// as done, so they must not be left stored but inactive.
 func (p Plan) Apply(ctx context.Context, api API) ([]string, error) {
 	changed := false
+	var failed error
 	for _, s := range p.Steps {
 		if s.State != Change || s.apply == nil {
 			continue
 		}
 		if err := s.apply(ctx, api); err != nil {
-			return nil, fmt.Errorf("%s: %w", s.Name, err)
+			failed = fmt.Errorf("%s: %w", s.Name, err)
+			break
 		}
 		changed = true
 	}
 	if !changed {
-		return nil, nil
+		return nil, failed
 	}
 	warnings, err := api.ReloadSettings(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("settings reload: %w", err)
+		return nil, errors.Join(failed, fmt.Errorf("settings reload: %w", err))
 	}
-	return warnings, nil
+	return warnings, failed
 }
 
 func failedLoginStep(levels []stalwartapi.TracingLevel) Step {

@@ -21,6 +21,7 @@ type fakeAPI struct {
 	proxy     []string
 	readErr   error
 	writeErr  error
+	failOn    string
 	calls     []string
 }
 
@@ -31,6 +32,9 @@ func (f *fakeAPI) read(name string) error {
 
 func (f *fakeAPI) write(call string) error {
 	f.calls = append(f.calls, call)
+	if f.failOn != "" && strings.HasPrefix(call, f.failOn) {
+		return errors.New("refused")
+	}
 	return f.writeErr
 }
 
@@ -287,5 +291,22 @@ func TestPlanApplyStopsAtFailedWrite(t *testing.T) {
 	}
 	if len(api.calls) != 1 {
 		t.Fatalf("calls after the failure = %q, want the one failed write", api.calls)
+	}
+}
+
+// Settings written before a failed write are reloaded, so a second run that
+// finds them stored does not leave them inactive.
+func TestPlanApplyReloadsWhatItWroteBeforeAFailure(t *testing.T) {
+	api := freshAPI()
+	p := inspect(t, api, fieldInputs())
+	api.calls = nil
+	api.failOn = "SetHTTPSettings"
+	_, err := p.Apply(context.Background(), api)
+	if err == nil || !strings.Contains(err.Error(), "webmail client addresses") {
+		t.Fatalf("err = %v, want the failed step named", err)
+	}
+	want := []string{"SetTracingLevel(,auth.failed,info)", "SetHTTPSettings(xForwardedFor,1)", "ReloadSettings"}
+	if !reflect.DeepEqual(api.calls, want) {
+		t.Fatalf("calls = %q, want %q", api.calls, want)
 	}
 }
