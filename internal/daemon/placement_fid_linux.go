@@ -266,7 +266,7 @@ func newPlacementFID(fm *FileMonitor, fd int, mounts map[unix.Fsid][]fidMount) *
 func startPlacementFID(_ context.Context, fm *FileMonitor) (*placementFID, error) {
 	fd, err := unix.FanotifyInit(FAN_CLASS_NOTIF|FAN_CLOEXEC|FAN_NONBLOCK|unix.FAN_REPORT_DFID_NAME, unix.O_RDONLY|unix.O_CLOEXEC)
 	if err != nil {
-		return nil, fmt.Errorf("fanotify_init with directory handles: %w", err)
+		return nil, fidInitError(err)
 	}
 	p := newPlacementFID(fm, fd, make(map[unix.Fsid][]fidMount))
 	all, err := readMountinfo()
@@ -295,6 +295,15 @@ func (p *placementFID) markedMounts(all []mountEntry) []mountEntry {
 		}
 	}
 	return marked
+}
+
+// fidInitError marks the errors a kernel without directory-entry reports
+// returns (EINVAL before 5.9, ENOSYS without fanotify) as missing support.
+func fidInitError(err error) error {
+	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOSYS) {
+		return fmt.Errorf("%w: fanotify_init with directory handles: %w", errPlacementFIDUnsupported, err)
+	}
+	return fmt.Errorf("fanotify_init with directory handles: %w", err)
 }
 
 func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) error {

@@ -2,10 +2,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
@@ -47,11 +51,12 @@ func captureWarnings(t *testing.T, fn func()) []string {
 }
 
 func TestStartPlacementMonitorSelection(t *testing.T) {
+	noFID := fmt.Errorf("%w: fanotify_init: invalid argument", errPlacementFIDUnsupported)
 	cases := []struct {
 		name      string
 		setting   string
 		bpfErr    error
-		fidOK     bool
+		fidErr    error
 		wantMode  string
 		wantKind  string
 		wantFound string // bpf_unavailable message part; empty: no finding
@@ -59,14 +64,17 @@ func TestStartPlacementMonitorSelection(t *testing.T) {
 		wantWarns int
 		wantTries string // which starters ran, in order
 	}{
-		{"auto with BPF", "auto", nil, true, "bpf", bpf.BackendBPF, "", 0, 0, "b"},
-		{"auto falls back to fanotify", "", bpf.ErrUnsupported, true, "legacy", bpf.BackendLegacy, "running on legacy fallback", alert.Warning, 0, "bf"},
-		{"auto with neither", "auto", bpf.ErrUnsupported, false, "", bpf.BackendNone, "no live fallback active", alert.High, 1, "bf"},
-		{"none", "none", nil, true, "", bpf.BackendNone, "", 0, 1, ""},
-		{"legacy pins fanotify", "legacy", nil, true, "legacy", bpf.BackendLegacy, "", 0, 0, "f"},
-		{"legacy without fanotify", "legacy", nil, false, "", bpf.BackendNone, "", 0, 1, "f"},
-		{"bpf strict never falls back", "bpf", bpf.ErrUnsupported, true, "", bpf.BackendNone, "no live fallback active", alert.High, 2, "b"},
-		{"unknown value runs auto", "potato", nil, true, "bpf", bpf.BackendBPF, "", 0, 1, "b"},
+		{"auto with BPF", "auto", nil, nil, "bpf", bpf.BackendBPF, "", 0, 0, "b"},
+		{"auto falls back to fanotify", "", bpf.ErrUnsupported, nil, "legacy", bpf.BackendLegacy, "running on legacy fallback", alert.Warning, 0, "bf"},
+		{"auto on a kernel with neither", "auto", bpf.ErrUnsupported, noFID, "", bpf.BackendNone, "", 0, 1, "bf"},
+		{"auto without the bpf build or fanotify", "auto", bpf.ErrNotBuilt, noFID, "", bpf.BackendNone, "", 0, 1, "bf"},
+		{"auto with an unexpected fanotify error", "auto", bpf.ErrUnsupported, unix.EPERM, "", bpf.BackendNone, "no live fallback active", alert.High, 1, "bf"},
+		{"auto with an unexpected BPF error", "auto", errors.New("load BPF objects: verifier rejected"), noFID, "", bpf.BackendNone, "no live fallback active", alert.High, 1, "bf"},
+		{"none", "none", nil, nil, "", bpf.BackendNone, "", 0, 1, ""},
+		{"legacy pins fanotify", "legacy", nil, nil, "legacy", bpf.BackendLegacy, "", 0, 0, "f"},
+		{"legacy without fanotify", "legacy", nil, noFID, "", bpf.BackendNone, "", 0, 1, "f"},
+		{"bpf strict never falls back", " BPF ", bpf.ErrUnsupported, nil, "", bpf.BackendNone, "no live fallback active", alert.High, 1, "b"},
+		{"unknown value runs auto", "potato", nil, nil, "bpf", bpf.BackendBPF, "", 0, 1, "b"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,12 +88,12 @@ func TestStartPlacementMonitorSelection(t *testing.T) {
 				}
 				return &fakeConnBackend{mode: bpf.BackendBPF}, nil
 			}
-			tryStartPlacementFIDFn = func(context.Context, *FileMonitor) bpf.Backend {
+			tryStartPlacementFIDFn = func(context.Context, *FileMonitor) (bpf.Backend, error) {
 				tries += "f"
-				if !tc.fidOK {
-					return nil
+				if tc.fidErr != nil {
+					return nil, tc.fidErr
 				}
-				return &fakeConnBackend{mode: bpf.BackendLegacy}
+				return &fakeConnBackend{mode: bpf.BackendLegacy}, nil
 			}
 
 			cfg := &config.Config{}
@@ -110,7 +118,7 @@ func TestStartPlacementMonitorSelection(t *testing.T) {
 			if len(warns) != tc.wantWarns {
 				t.Errorf("warnings %q, want %d", warns, tc.wantWarns)
 			}
-			if tc.wantKind == bpf.BackendNone && tc.wantWarns > 0 && !strings.Contains(warns[len(warns)-1], "renamed or hard-linked") {
+			if tc.wantKind == bpf.BackendNone && strings.TrimSpace(strings.ToLower(tc.setting)) != "bpf" && !strings.Contains(warns[len(warns)-1], "renamed or hard-linked") {
 				t.Errorf("none warning %q does not name what is not seen", warns[len(warns)-1])
 			}
 			var found []alert.Finding
@@ -124,8 +132,12 @@ func TestStartPlacementMonitorSelection(t *testing.T) {
 				return
 			}
 			if len(found) != 1 || found[0].Check != "bpf_unavailable" || found[0].Severity != tc.wantSev ||
-				!strings.Contains(found[0].Message, "for placement ") || !strings.Contains(found[0].Message, tc.wantFound) {
-				t.Fatalf("findings %+v, want one bpf_unavailable %q", found, tc.wantFound)
+				!strings.Contains(found[0].Message, "for placement ") || !strings.Contains(found[0].Message, tc.wantFound) ||
+				!strings.Contains(found[0].Details, tc.bpfErr.Error()) {
+				t.Fatalf("findings %+v, want one bpf_unavailable %q naming the BPF error", found, tc.wantFound)
+			}
+			if tc.fidErr != nil && !strings.Contains(found[0].Details, tc.fidErr.Error()) {
+				t.Errorf("finding details %q do not name the fanotify error", found[0].Details)
 			}
 		})
 	}

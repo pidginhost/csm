@@ -22,7 +22,7 @@ func TestPlacementQueuesPublishUnderBPFPlacement(t *testing.T) {
 	oldBPF, oldFID := tryStartPlacementBPFFn, tryStartPlacementFIDFn
 	t.Cleanup(func() { tryStartPlacementBPFFn, tryStartPlacementFIDFn = oldBPF, oldFID })
 	tryStartPlacementBPFFn = func(context.Context, *FileMonitor) (bpf.Backend, error) { return nil, bpf.ErrNotBuilt }
-	tryStartPlacementFIDFn = func(context.Context, *FileMonitor) bpf.Backend { return newPlacementFID(fm, readFD, nil) }
+	tryStartPlacementFIDFn = func(context.Context, *FileMonitor) (bpf.Backend, error) { return newPlacementFID(fm, readFD, nil), nil }
 
 	d := &Daemon{cfg: &config.Config{}, alertCh: alerts}
 	d.startPlacementMonitor(fm)

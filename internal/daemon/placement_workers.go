@@ -66,13 +66,13 @@ func (fm *FileMonitor) runPlacement(b bpf.Backend) {
 	obs.Go("placement", func() {
 		defer fm.placementWG.Done()
 		defer cancel()
-		go func() {
+		obs.SafeGo("placement-stop-forward", func() {
 			select {
 			case <-fm.stopCh:
 				cancel()
 			case <-ctx.Done():
 			}
-		}()
+		})
 		b.Run(ctx)
 	})
 }

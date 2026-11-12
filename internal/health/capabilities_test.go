@@ -239,6 +239,7 @@ func TestCapabilitiesIncludeLearningOnPostfix(t *testing.T) {
 }
 
 func TestPlacementCapabilityWhenBPFActive(t *testing.T) {
+	restoreActive(t, "placement")
 	bpf.SetActive("placement", bpf.BackendBPF)
 	if !contains(Capabilities(), "bpf-file-placement") {
 		t.Error("bpf-file-placement missing when placement backend is BPF")

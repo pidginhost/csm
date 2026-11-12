@@ -69,3 +69,26 @@ func TestActiveKindTracksSetActive(t *testing.T) {
 		t.Fatalf("ActiveKind after re-set = %q, want %q", got, BackendBPF)
 	}
 }
+
+// Status serializes this map, so it is never nil, and a feature reset to ""
+// reads as never selected.
+func TestActiveKindsIsACopyWithoutUnselectedFeatures(t *testing.T) {
+	if ActiveKinds() == nil {
+		t.Fatal("ActiveKinds returned nil")
+	}
+	prev := ActiveKind("test_kinds")
+	t.Cleanup(func() { SetActive("test_kinds", prev) })
+	SetActive("test_kinds", BackendLegacy)
+	got := ActiveKinds()
+	if got["test_kinds"] != BackendLegacy {
+		t.Fatalf("kinds %v, want test_kinds legacy", got)
+	}
+	got["test_kinds"] = BackendBPF
+	if ActiveKind("test_kinds") != BackendLegacy {
+		t.Fatal("caller changed the live kinds through the copy")
+	}
+	SetActive("test_kinds", "")
+	if _, ok := ActiveKinds()["test_kinds"]; ok {
+		t.Fatal("a reset feature still reports a kind")
+	}
+}

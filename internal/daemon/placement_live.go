@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
@@ -14,13 +16,44 @@ import (
 // hooks, else the fanotify directory-entry group ("legacy"), else none.
 func StartPlacementMonitor(fm *FileMonitor, alertCh chan<- alert.Finding, cfg *config.Config) bpf.Backend {
 	ctx := context.Background()
+	var bpfErr, fidErr error
 	mon := startLiveBackend("placement", cfg.Detection.PlacementBackend, alertCh,
-		func() (bpf.Backend, error) { return tryStartPlacementBPFFn(ctx, fm) },
-		func() bpf.Backend { return tryStartPlacementFIDFn(ctx, fm) })
-	if mon == nil {
+		func() (bpf.Backend, error) {
+			b, err := tryStartPlacementBPFFn(ctx, fm)
+			bpfErr = err
+			return b, err
+		},
+		func() bpf.Backend {
+			b, err := tryStartPlacementFIDFn(ctx, fm)
+			if err != nil {
+				fidErr = err
+				csmlog.Info("placement: fanotify directory-entry group unavailable", "reason", err.Error())
+				return nil
+			}
+			return b
+		})
+	if mon != nil {
+		return mon
+	}
+	// Both ran only under auto. A kernel with neither is expected on older
+	// hosts and is shown in status; an unexpected failure is a finding.
+	if bpfErr != nil && fidErr != nil && !placementUnsupported(bpfErr, fidErr) {
+		emitBPFUnavailableFinding(alertCh, "placement", bpf.BackendAuto, "", errors.Join(bpfErr, fidErr))
+	}
+	// An explicit bpf choice already warned.
+	if !strings.EqualFold(strings.TrimSpace(cfg.Detection.PlacementBackend), bpf.BackendBPF) {
 		csmlog.Warn("placement: no live backend; files renamed or hard-linked into watched trees, and directories moved into them, are checked only by the deep scan")
 	}
-	return mon
+	return nil
+}
+
+// errPlacementFIDUnsupported marks a kernel that cannot report directory
+// entries through fanotify at all.
+var errPlacementFIDUnsupported = errors.New("kernel lacks fanotify directory-entry events")
+
+func placementUnsupported(bpfErr, fidErr error) bool {
+	return (errors.Is(bpfErr, bpf.ErrUnsupported) || errors.Is(bpfErr, bpf.ErrNotBuilt)) &&
+		errors.Is(fidErr, errPlacementFIDUnsupported)
 }
 
 // startPlacementMonitor runs the placement backend beside the file monitor
@@ -49,13 +82,11 @@ func tryStartPlacementBPF(ctx context.Context, fm *FileMonitor) (bpf.Backend, er
 	return p, nil
 }
 
-// tryStartPlacementFID returns nil, never a typed nil, when the group cannot
-// start, so the selection publishes none.
-func tryStartPlacementFID(ctx context.Context, fm *FileMonitor) bpf.Backend {
+// tryStartPlacementFID returns nil, never a typed nil, with the error.
+func tryStartPlacementFID(ctx context.Context, fm *FileMonitor) (bpf.Backend, error) {
 	p, err := startPlacementFID(ctx, fm)
 	if err != nil {
-		csmlog.Info("placement: fanotify directory-entry group unavailable", "reason", err.Error())
-		return nil
+		return nil, err
 	}
-	return p
+	return p, nil
 }

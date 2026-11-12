@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,5 +365,19 @@ func TestStartPlacementFIDFailureLeavesNothingOpen(t *testing.T) {
 	}
 	if len(after) != len(before) {
 		t.Fatalf("failed start left %d descriptors open", len(after)-len(before))
+	}
+}
+
+// Only a kernel that cannot create the group at all counts as lacking
+// support; any other failure is unexpected and stays loud.
+func TestFIDInitErrorMarksMissingKernelSupport(t *testing.T) {
+	for _, errno := range []unix.Errno{unix.EINVAL, unix.ENOSYS} {
+		err := fidInitError(errno)
+		if !errors.Is(err, errPlacementFIDUnsupported) || !errors.Is(err, errno) {
+			t.Errorf("%v: %v does not mark missing support and keep the errno", errno, err)
+		}
+	}
+	if err := fidInitError(unix.EPERM); errors.Is(err, errPlacementFIDUnsupported) || !errors.Is(err, unix.EPERM) {
+		t.Errorf("EPERM classified as missing kernel support: %v", err)
 	}
 }

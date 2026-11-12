@@ -90,8 +90,9 @@ func TestLiveBackendsReportTheirFeature(t *testing.T) {
 	}
 }
 
-// A feature whose legacy backend cannot start runs nothing and says so; the
-// legacy constructors of the polling features never return nil.
+// A feature whose legacy backend cannot start runs nothing. The caller, which
+// knows why its legacy backend failed, decides whether that is worth a
+// finding. The legacy constructors of the polling features never return nil.
 func TestLiveBackendWithoutLegacyPublishesNone(t *testing.T) {
 	failBPF := func() (bpf.Backend, error) { return nil, bpf.ErrUnsupported }
 	noLegacy := func() bpf.Backend { return nil }
@@ -109,14 +110,8 @@ func TestLiveBackendWithoutLegacyPublishesNone(t *testing.T) {
 			for len(ch) > 0 {
 				found = append(found, <-ch)
 			}
-			if choice == "legacy" {
-				if len(found) != 0 {
-					t.Fatalf("legacy choice never tried BPF, got %+v", found)
-				}
-				return
-			}
-			if len(found) != 1 || found[0].Severity != alert.High || !strings.Contains(found[0].Message, "no live fallback active") {
-				t.Fatalf("findings %+v, want one High with no fallback", found)
+			if len(found) != 0 {
+				t.Fatalf("findings %+v, want none from the selection itself", found)
 			}
 		})
 	}

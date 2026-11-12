@@ -122,6 +122,7 @@ func TestBuildReportsOperatingMode(t *testing.T) {
 // Status names the backend each live monitor runs on, including none, so a
 // host without the kernel support for one says so.
 func TestBuildReportsActiveBackends(t *testing.T) {
+	restoreActive(t, "placement", "sensitive_files")
 	bpf.SetActive("placement", bpf.BackendNone)
 	bpf.SetActive("sensitive_files", bpf.BackendLegacy)
 	snap := Build(&fakeProvider{}, "v1.2.3", nil)
@@ -131,5 +132,14 @@ func TestBuildReportsActiveBackends(t *testing.T) {
 	bpf.SetActive("placement", bpf.BackendBPF)
 	if snap.Backends["placement"] != bpf.BackendNone {
 		t.Fatal("snapshot shares the live backend map")
+	}
+}
+
+// restoreActive puts the process-wide backend kinds back after a test.
+func restoreActive(t *testing.T, features ...string) {
+	t.Helper()
+	for _, f := range features {
+		prev := bpf.ActiveKind(f)
+		t.Cleanup(func() { bpf.SetActive(f, prev) })
 	}
 }
