@@ -313,7 +313,7 @@ type FileMonitor struct {
 	droppedEvents int64
 	droppedAlerts int64
 	// placementUnverified and placementSkipped are published through
-	// EventStats.
+	// EventStats; the process-wide metrics count the same events.
 	placementUnverified atomic.Int64
 	placementSkipped    atomic.Int64
 	recent              *recentAnalyses
@@ -498,6 +498,8 @@ var (
 	fanotifyEventsAdmittedTotal *metrics.Counter
 	fanotifyDroppedTotal        *metrics.Counter
 	fanotifyKernelOverflowTotal *metrics.Counter
+	fanotifyPlacementUnverified *metrics.Counter
+	fanotifyPlacementSkipped    *metrics.Counter
 	fanotifyReconcileDur        *metrics.Histogram
 	contentScanTruncated        *metrics.CounterVec
 )
@@ -533,6 +535,18 @@ func (fm *FileMonitor) registerMetrics() {
 				"FAN_Q_OVERFLOW events: the kernel fanotify notification queue filled and dropped events before userspace read them. Unlike analyzer-queue drops these carry no fd, so the affected files are unknown; the next scheduled deep scan is the backstop. Sustained growth means a storm (bulk unzip, backup restore) or an attack producing more file activity than the reader can drain.",
 			)
 			metrics.MustRegister("csm_fanotify_kernel_queue_overflow_total", fanotifyKernelOverflowTotal)
+
+			fanotifyPlacementUnverified = metrics.NewCounter(
+				"csm_fanotify_placement_unverified_total",
+				"Files and directories renamed, hard-linked or created into watched trees that did not open as the file the placement backend reported, so they reached no admission decision. A file replaced again right after it was placed lands here; sustained growth means placements are being raced.",
+			)
+			metrics.MustRegister("csm_fanotify_placement_unverified_total", fanotifyPlacementUnverified)
+
+			fanotifyPlacementSkipped = metrics.NewCounter(
+				"csm_fanotify_placement_skipped_total",
+				"Files placed into watched trees and not analysed again because the same version was analysed recently under the same conditions, such as an atomic save renamed to its final name.",
+			)
+			metrics.MustRegister("csm_fanotify_placement_skipped_total", fanotifyPlacementSkipped)
 
 			fanotifyReconcileDur = metrics.NewHistogram(
 				"csm_fanotify_reconcile_latency_seconds",

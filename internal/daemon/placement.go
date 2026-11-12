@@ -67,6 +67,9 @@ func (fm *FileMonitor) verifyPlacement(ev placementEvent, retryDelays []time.Dur
 	fd, isDir, err := openPlacedFile(ev.Path, ev.Dev, ev.Ino, retryDelays)
 	if err != nil {
 		fm.placementUnverified.Add(1)
+		if fanotifyPlacementUnverified != nil {
+			fanotifyPlacementUnverified.Inc()
+		}
 		return
 	}
 	if isDir {
@@ -99,6 +102,9 @@ func (fm *FileMonitor) handlePlacedFile(fd int, pid int32, at time.Time) {
 	event, admit := fm.classifyEvent(path, fd)
 	if admit && fm.analyzedUnchanged(event) {
 		fm.placementSkipped.Add(1)
+		if fanotifyPlacementSkipped != nil {
+			fanotifyPlacementSkipped.Inc()
+		}
 		// Only the content analysis is redundant. The deletion probe checks
 		// the path a candidate was tracked at, and this path is new.
 		event.pid, event.mask, event.at = pid, eventPlacedIn, at

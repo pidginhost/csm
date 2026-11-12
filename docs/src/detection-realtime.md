@@ -297,7 +297,9 @@ final name is not scanned twice. A recent clean scan is reused only when the
 file's content, size, modification time, permissions and owner match that
 scan, its final name gets the same analysis, and no setting or rule changed
 since. Executable files and files too large for a complete read are always
-analyzed. Queue health for the monitor appears under `bpf.placement` and
+analyzed. `csm_fanotify_placement_skipped_total` counts those reuses, and
+`csm_fanotify_placement_unverified_total` counts placements that failed the
+identity check. Queue health for the monitor appears under `bpf.placement` and
 `placement.dir_walk` in [protection queue health](api.md#protection-queue-health).
 
 ## Sensitive System File Watcher
