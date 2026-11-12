@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,7 +128,10 @@ func (rec *fidRecord) decodeDirName(info []byte) error {
 	return nil
 }
 
-type devIno struct{ dev, ino uint64 }
+type createKey struct {
+	dev, ino uint64
+	path     string
+}
 
 type pendingCreate struct {
 	ev     placementEvent
@@ -138,12 +140,12 @@ type pendingCreate struct {
 }
 
 // createSettler holds creates until their window ends. The close-write path
-// settles a create by dev+inode; reader and close-write goroutines share it.
+// settles a create by dev+inode+path; reader and close-write goroutines share it.
 type createSettler struct {
 	mu      sync.Mutex
 	cap     int
 	order   *list.List // *pendingCreate, oldest first
-	pending map[devIno]*list.Element
+	pending map[createKey]*list.Element
 	// A drop here is a create analysed before its window ended, never one
 	// skipped, except at shutdown.
 	health *queuehealth.Tracker
@@ -151,7 +153,7 @@ type createSettler struct {
 
 func newCreateSettler(capacity int) *createSettler {
 	return &createSettler{
-		cap: capacity, order: list.New(), pending: make(map[devIno]*list.Element),
+		cap: capacity, order: list.New(), pending: make(map[createKey]*list.Element),
 		health: queuehealth.New(capacity, time.Minute),
 	}
 }
@@ -160,9 +162,11 @@ func newCreateSettler(capacity int) *createSettler {
 func (s *createSettler) add(ev placementEvent, now time.Time) (placementEvent, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := devIno{ev.Dev, ev.Ino}
+	key := createKey{ev.Dev, ev.Ino, ev.Path}
 	if old, ok := s.pending[key]; ok {
-		s.removeLocked(old).ticket.Finish(now)
+		// Repeated publication of the same inode must not postpone its scan.
+		old.Value.(*pendingCreate).ev = ev
+		return placementEvent{}, false
 	}
 	var released placementEvent
 	full := s.order.Len() >= s.cap
@@ -177,12 +181,12 @@ func (s *createSettler) add(ev placementEvent, now time.Time) (placementEvent, b
 
 func (s *createSettler) removeLocked(e *list.Element) *pendingCreate {
 	p := s.order.Remove(e).(*pendingCreate)
-	delete(s.pending, devIno{p.ev.Dev, p.ev.Ino})
+	delete(s.pending, createKey{p.ev.Dev, p.ev.Ino, p.ev.Path})
 	return p
 }
 
 // settle drops a create whose own close-write analyses the file.
-func (s *createSettler) settle(key devIno, now time.Time) {
+func (s *createSettler) settle(key createKey, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e, ok := s.pending[key]; ok {
@@ -214,25 +218,31 @@ func (s *createSettler) discard(now time.Time) {
 	}
 }
 
-// noteClosedWrite settles a pending create for dev+ino: the close-write
-// analyses the file at the name the create reported.
-func (fm *FileMonitor) noteClosedWrite(dev, ino uint64) {
+// noteClosedWrite settles only the name the close-write analyses. Another
+// hard link can have different admission and location-dependent checks.
+func (fm *FileMonitor) noteClosedWrite(dev, ino uint64, path string) {
 	if s := fm.placementCreates.Load(); s != nil {
-		s.settle(devIno{dev, ino}, time.Now())
+		s.settle(createKey{dev, ino, path}, time.Now())
 	}
+}
+
+type fidMount struct {
+	fd   int
+	path string
 }
 
 // placementFID reports placements through a second fanotify group that
 // reports directory handles and entry names. It needs kernel 5.9.
 type placementFID struct {
 	fd int
-	// mounts maps each marked filesystem to a directory fd on it, the
-	// mount argument open_by_handle_at needs.
-	mounts  map[unix.Fsid]int
+	// Handles identify an inode, not the watched mount path. Keep each
+	// watched view so a bind alias gets its own location-dependent analysis.
+	mounts  map[unix.Fsid][]fidMount
 	fm      *FileMonitor
 	handle  func(placementEvent)
 	out     *queuehealth.Channel[placementEvent]
 	creates *createSettler
+	openDir func(int, unix.FileHandle, int) (int, error)
 	// kernel counts FAN_Q_OVERFLOW: placements the kernel dropped unseen.
 	kernel *queuehealth.Tracker
 	// unresolved counts records that could not be turned into a path.
@@ -240,11 +250,12 @@ type placementFID struct {
 	count      atomic.Uint64
 }
 
-func newPlacementFID(fm *FileMonitor, fd int, mounts map[unix.Fsid]int) *placementFID {
+func newPlacementFID(fm *FileMonitor, fd int, mounts map[unix.Fsid][]fidMount) *placementFID {
 	return &placementFID{
 		fd: fd, mounts: mounts, fm: fm, handle: fm.handlePlacement,
 		out:        queuehealth.NewChannel[placementEvent](256, time.Minute),
 		creates:    newCreateSettler(fidPendingCap),
+		openDir:    unix.OpenByHandleAt,
 		kernel:     queuehealth.New(0, time.Minute),
 		unresolved: queuehealth.New(0, time.Minute),
 	}
@@ -257,71 +268,89 @@ func startPlacementFID(_ context.Context, fm *FileMonitor) (*placementFID, error
 	if err != nil {
 		return nil, fmt.Errorf("fanotify_init with directory handles: %w", err)
 	}
-	p := newPlacementFID(fm, fd, make(map[unix.Fsid]int))
+	p := newPlacementFID(fm, fd, make(map[unix.Fsid][]fidMount))
 	all, err := readMountinfo()
 	if err != nil {
 		p.close()
 		return nil, fmt.Errorf("read mountinfo: %w", err)
 	}
-	anchors, err := p.markFilesystems(all)
-	if err != nil {
+	if err = p.markFilesystemsWith(all, unix.FanotifyMark); err != nil {
 		p.close()
 		return nil, err
 	}
-	fm.reportUncoveredPlacementRoots(all, anchors)
+	fm.reportUncoveredPlacementRoots(all, p.markedMounts(all))
 	return p, nil
 }
 
-// markFilesystems returns the mounts its directory fds sit on: handles
-// resolve to paths through them.
-func (p *placementFID) markFilesystems(all []mountEntry) ([]mountEntry, error) {
-	var anchors []mountEntry
-	whole := placementMounts(all, p.fm.watchRoots)
-	seen := make(map[uint64]bool)
+// markedMounts returns the mounts the group resolves handles through. Today
+// every root's own mount is marked or the start fails; the report guards
+// against a root left out.
+func (p *placementFID) markedMounts(all []mountEntry) []mountEntry {
+	var marked []mountEntry
+	for _, mounts := range p.mounts {
+		for _, m := range mounts {
+			if i := visibleMount(all, m.path); i >= 0 {
+				marked = append(marked, all[i])
+			}
+		}
+	}
+	return marked
+}
+
+func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) error {
+	seen := make(map[mountEntry]bool)
+	devices := make(map[unix.Fsid]uint64)
 	for _, r := range p.fm.watchRoots {
-		if seen[r.device] {
+		i := placementVisibleMount(all, r)
+		if i < 0 {
+			return fmt.Errorf("watch root %s has no visible mount on its recorded device", r.path)
+		}
+		m := all[i]
+		if seen[m] {
 			continue
 		}
-		seen[r.device] = true
-		// A directory resolved by handle reads back relative to this fd's
-		// mount. A whole-filesystem mount names every directory by the path
-		// admission uses; a bind of a subtree names only that subtree.
-		anchor := r.path
-		if i := slices.IndexFunc(whole, func(m mountEntry) bool { return m.Dev == r.device }); i >= 0 {
-			anchor = whole[i].MountPoint
-		}
+		seen[m] = true
+		anchor := m.MountPoint
 		// Not O_PATH: fanotify_mark and, on older kernels,
 		// open_by_handle_at reject an O_PATH descriptor with EBADF.
 		dirfd, err := unix.Open(anchor, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", anchor, err)
+			return fmt.Errorf("open %s: %w", anchor, err)
+		}
+		var st unix.Stat_t
+		if err = unix.Fstat(dirfd, &st); err != nil || uint64(st.Dev) != r.device {
+			_ = unix.Close(dirfd)
+			return fmt.Errorf("watch mount %s changed or could not be inspected: %v", anchor, err)
 		}
 		var sfs unix.Statfs_t
 		if err = unix.Fstatfs(dirfd, &sfs); err != nil {
 			_ = unix.Close(dirfd)
-			return nil, fmt.Errorf("statfs %s: %w", r.path, err)
+			return fmt.Errorf("statfs %s: %w", r.path, err)
 		}
-		if _, dup := p.mounts[sfs.Fsid]; dup {
+		device, marked := devices[sfs.Fsid]
+		if marked && device != r.device {
 			_ = unix.Close(dirfd)
-			return nil, fmt.Errorf("watch root %s shares a filesystem id with another device", r.path)
+			return fmt.Errorf("watch root %s shares a filesystem id with another device", r.path)
 		}
-		p.mounts[sfs.Fsid] = dirfd
-		if err = unix.FanotifyMark(p.fd, FAN_MARK_ADD|FAN_MARK_FILESYSTEM, unix.FAN_MOVED_TO|unix.FAN_CREATE|unix.FAN_ONDIR, dirfd, ""); err != nil {
-			return nil, fmt.Errorf("mark %s for placements: %w", r.path, err)
-		}
-		if i := visibleMount(all, anchor); i >= 0 {
-			anchors = append(anchors, all[i])
+		p.mounts[sfs.Fsid] = append(p.mounts[sfs.Fsid], fidMount{fd: dirfd, path: anchor})
+		if !marked {
+			if err = mark(p.fd, FAN_MARK_ADD|FAN_MARK_FILESYSTEM, unix.FAN_MOVED_TO|unix.FAN_CREATE|unix.FAN_ONDIR, dirfd, ""); err != nil {
+				return fmt.Errorf("mark %s for placements: %w", r.path, err)
+			}
+			devices[sfs.Fsid] = r.device
 		}
 	}
 	if len(p.mounts) == 0 {
-		return nil, errors.New("no watch root to mark")
+		return errors.New("no watch root to mark")
 	}
-	return anchors, nil
+	return nil
 }
 
 func (p *placementFID) close() {
-	for _, fd := range p.mounts {
-		_ = unix.Close(fd)
+	for _, mounts := range p.mounts {
+		for _, m := range mounts {
+			_ = unix.Close(m.fd)
+		}
 	}
 	_ = unix.Close(p.fd)
 }
@@ -400,13 +429,20 @@ func (p *placementFID) dispatch(buf []byte, now time.Time) {
 			p.fm.reportPlacementOverflow()
 			continue
 		}
-		ev, ok, err := p.resolve(rec, now)
-		if err != nil {
+		mounts := p.mounts[rec.Fsid]
+		if len(mounts) == 0 {
 			p.unresolved.Lose(now, 1)
 			continue
 		}
-		if ok {
-			p.route(ev, now)
+		for _, m := range mounts {
+			ev, ok, err := p.resolve(rec, m, now)
+			if err != nil {
+				p.unresolved.Lose(now, 1)
+				continue
+			}
+			if ok {
+				p.route(ev, now)
+			}
 		}
 	}
 }
@@ -414,12 +450,8 @@ func (p *placementFID) dispatch(buf []byte, now time.Time) {
 // resolve finds the entry a record names. ok is false, with no error, when
 // nothing analysable is left there: the entry or its directory is gone, it
 // is not a regular file or directory, or it is outside the watch roots.
-func (p *placementFID) resolve(rec fidRecord, at time.Time) (ev placementEvent, ok bool, err error) {
-	mountFD, known := p.mounts[rec.Fsid]
-	if !known {
-		return ev, false, errors.New("event on an unmarked filesystem")
-	}
-	dirfd, err := unix.OpenByHandleAt(mountFD, unix.NewFileHandle(rec.HandleType, rec.Handle), unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
+func (p *placementFID) resolve(rec fidRecord, mount fidMount, at time.Time) (ev placementEvent, ok bool, err error) {
+	dirfd, err := p.openDir(mount.fd, unix.NewFileHandle(rec.HandleType, rec.Handle), unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC)
 	if errors.Is(err, unix.ESTALE) || errors.Is(err, unix.ENOENT) {
 		return ev, false, nil
 	}
@@ -433,7 +465,8 @@ func (p *placementFID) resolve(rec fidRecord, at time.Time) (ev placementEvent, 
 	if err != nil {
 		return ev, false, err
 	}
-	if !p.fm.withinWatchRoots(dir) {
+	path := filepath.Join(dir, rec.Name)
+	if !pathWithin(dir, mount.path) || !p.fm.withinWatchRoots(path) {
 		return ev, false, nil
 	}
 	var st unix.Stat_t
@@ -444,7 +477,7 @@ func (p *placementFID) resolve(rec fidRecord, at time.Time) (ev placementEvent, 
 		return ev, false, err
 	}
 	ev = placementEvent{
-		Path: filepath.Join(dir, rec.Name), Dev: uint64(st.Dev), Ino: st.Ino, // #nosec G115 -- device ids are non-negative on Linux
+		Path: path, Dev: uint64(st.Dev), Ino: st.Ino, // #nosec G115 -- device ids are non-negative on Linux
 		PID: rec.PID, Kind: placementRename, At: at,
 	}
 	switch st.Mode & unix.S_IFMT {
@@ -457,9 +490,7 @@ func (p *placementFID) resolve(rec fidRecord, at time.Time) (ev placementEvent, 
 		return ev, false, nil
 	}
 	if rec.Mask&unix.FAN_MOVED_TO == 0 {
-		// A second name means a hard link, which no close-write follows.
-		// An attacker could otherwise write the inode through its first
-		// name inside the window and settle the create.
+		// A second name identifies a hard link, which needs no settle window.
 		ev.Kind = placementCreate
 		if st.Nlink > 1 {
 			ev.Kind = placementLink

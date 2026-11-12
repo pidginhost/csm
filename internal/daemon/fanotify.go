@@ -1036,20 +1036,23 @@ func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time
 	}
 	// Before admission: a write under a name admission ignores still changes
 	// what a later rename back would place.
+	var st unix.Stat_t
+	var closedWrite bool
 	if mask&FAN_CLOSE_WRITE != 0 {
-		var st unix.Stat_t
 		if unix.Fstat(fd, &st) == nil {
 			fm.recent.Invalidate(uint64(st.Dev), st.Ino)
 			// A descriptor whose name is gone (O_TMPFILE, an unlinked link
 			// source) is analysed under that name, not the one the inode
 			// was linked to, so it cannot stand in for the create.
-			if !unlinked {
-				fm.noteClosedWrite(uint64(st.Dev), st.Ino)
-			}
+			closedWrite = !unlinked
 		}
 	}
 	event, admit := fm.classifyEvent(path, fd)
-	fm.admitEvent(fd, event, admit, pid, mask, readAt)
+	if fm.admitEvent(fd, event, admit, pid, mask, readAt) && closedWrite {
+		// A dropped close-write cannot replace the placement scan: its
+		// mtime-based recovery may exclude an old inode linked into place.
+		fm.noteClosedWrite(uint64(st.Dev), st.Ino, path)
+	}
 }
 
 // eventFDPath resolves the path an event descriptor was opened at. unlinked
@@ -1071,13 +1074,13 @@ func (fm *FileMonitor) rejectUnresolved(fd int) {
 }
 
 // admitEvent queues the event classifyEvent built for fd and takes
-// ownership of fd. A rejected event carries no descriptor of its own.
-func (fm *FileMonitor) admitEvent(fd int, event fileEvent, admit bool, pid int32, mask uint64, readAt time.Time) {
+// ownership of fd. It returns whether the analyzer queue accepted it.
+func (fm *FileMonitor) admitEvent(fd int, event fileEvent, admit bool, pid int32, mask uint64, readAt time.Time) bool {
 	var admitted, dropped bool
 	defer func() { fm.recordEvent(admitted, dropped) }()
 	if !admit {
 		_ = unix.Close(fd)
-		return
+		return false
 	}
 
 	// Send to analyzer pool (with backpressure)
@@ -1103,6 +1106,7 @@ func (fm *FileMonitor) admitEvent(fd int, event fileEvent, admit bool, pid int32
 		fm.maybeTriggerEagerReconcile(n)
 		_ = unix.Close(fd)
 	}
+	return admitted
 }
 
 // classifyEvent decides whether a write at path is queued for analysis and

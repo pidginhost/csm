@@ -109,8 +109,18 @@ func placementMounts(all []mountEntry, roots []watchRootMark) []mountEntry {
 // or a subdirectory of the same filesystem. Filtering those mounts first
 // would incorrectly treat a hidden whole-filesystem mount as usable.
 func placementRootMount(all []mountEntry, root watchRootMark) int {
+	best := placementVisibleMount(all, root)
+	if best < 0 || all[best].Root != "/" {
+		return -1
+	}
+	return best
+}
+
+// placementVisibleMount returns the mount that shows root, if it is on the
+// root's recorded device.
+func placementVisibleMount(all []mountEntry, root watchRootMark) int {
 	best := visibleMount(all, root.path)
-	if best < 0 || all[best].Dev != root.device || all[best].Root != "/" {
+	if best < 0 || all[best].Dev != root.device {
 		return -1
 	}
 	return best
