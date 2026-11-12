@@ -11,8 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Mail attack detection keeps distinct international login names separate, and IMAP and POP compromise alerts preserve the authenticated account's spelling for mailbox suspensions.
-- IMAP and POP3 password spray alerts now count ASCII case variants of a mailbox as one target.
+- IMAP and POP3 password spray alerts now count upper and lower case spellings of a mailbox as one target.
 - Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
 - A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
