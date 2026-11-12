@@ -341,10 +341,26 @@ The installer auto-detects the active webserver via
 | Stack                       | Snippet path                                        |
 |-----------------------------|-----------------------------------------------------|
 | cPanel + Apache (EasyApache)| `/etc/apache2/conf.d/csm-challenge.conf`            |
-| Debian/Ubuntu Apache        | `/etc/apache2/conf-enabled/csm-challenge.conf`      |
-| RHEL family Apache (httpd)  | `/etc/httpd/conf.d/csm-challenge.conf`              |
+| Debian/Ubuntu Apache        | `/etc/apache2/conf-enabled/csm-challenge.conf` + per-site include |
+| RHEL family Apache (httpd)  | `/etc/httpd/conf.d/csm-challenge.conf` + per-site include |
 | LiteSpeed (LSWS)            | `/usr/local/lsws/conf/templates/csm-challenge.conf` |
 | Nginx (plain + Engintron + phpanel) | `/etc/nginx/conf.d/csm-challenge.conf`      |
+
+Apache without cPanel applies the server-wide snippet inside no
+`<VirtualHost>` on its own, HTTP or HTTPS. The installer also writes the
+rule to `/var/cache/csm/apache-challenge-site.conf`, next to the maps, and
+prints the one line each site needs. Add it inside every `<VirtualHost>`:
+
+```apache
+<VirtualHost *:443>
+    ...
+    Include /var/cache/csm/apache-challenge-site.conf
+</VirtualHost>
+```
+
+Then run `apachectl configtest` and reload Apache. CSM never edits site
+files; `csm doctor challenge` warns while any `<VirtualHost>` in the files
+Apache loads lacks the line.
 
 On cPanel, Apache and LiteSpeed alike, HTTPS site blocks do not inherit the
 server-wide snippet, so the installer also writes the rule to the per-site

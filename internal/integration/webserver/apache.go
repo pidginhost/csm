@@ -13,7 +13,7 @@ import (
 // pointing at the EasyApache binary; plain Apache on Debian/Ubuntu has
 // `apache2ctl`. The selector picks the right one at construction.
 type apacheHandler struct {
-	*cpanelSites
+	siteIncluder
 	snippetPath  string
 	ctlBinary    string // "apachectl" or "apache2ctl"
 	reloadAction []string
@@ -25,7 +25,7 @@ func newApacheHandler(info platform.Info, r cmdRunner) *apacheHandler {
 	switch {
 	case info.IsCPanel():
 		// cPanel always runs EasyApache, conf.d is the canonical drop-in.
-		h.cpanelSites = newCPanelSites(r)
+		h.siteIncluder = newCPanelSites(r)
 		h.snippetPath = "/etc/apache2/conf.d/csm-challenge.conf"
 		h.ctlBinary = "apachectl"
 		h.reloadAction = []string{"apachectl", "graceful"}
@@ -40,13 +40,27 @@ func newApacheHandler(info platform.Info, r cmdRunner) *apacheHandler {
 		h.ctlBinary = "apachectl"
 		h.reloadAction = []string{"systemctl", "reload", "httpd"}
 	}
+	if h.siteIncluder == nil {
+		h.siteIncluder = &plainApacheSites{ctl: h.ctlBinary, runner: r}
+	}
 	return h
 }
 
-func (h *apacheHandler) Kind() string                    { return "apache" }
-func (h *apacheHandler) SnippetPath() string             { return h.snippetPath }
-func (h *apacheHandler) Template() string                { return apacheTemplate }
-func (h *apacheHandler) PostInstallInstructions() string { return "" }
+func (h *apacheHandler) Kind() string        { return "apache" }
+func (h *apacheHandler) SnippetPath() string { return h.snippetPath }
+func (h *apacheHandler) Template() string    { return apacheTemplate }
+
+// PostInstallInstructions names the per-site step plain Apache needs: its
+// site blocks never apply the server-wide snippet on their own.
+func (h *apacheHandler) PostInstallInstructions() string {
+	if h.SiteConfigPath() != "" {
+		return ""
+	}
+	return "Apache applies the server-wide challenge rule inside no <VirtualHost> on its own.\n" +
+		"Add this line inside every <VirtualHost>, HTTP and HTTPS:\n\n" +
+		"    Include " + plainApacheSiteSnippetPath + "\n\n" +
+		"Then run: " + h.ctlBinary + " configtest and reload Apache. `csm doctor challenge` warns while a site block lacks it."
+}
 
 func (h *apacheHandler) Validate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

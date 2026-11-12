@@ -6,7 +6,7 @@ import _ "embed"
 // version embedded in the on-disk snippet's header to this constant to
 // decide whether `upgrade` needs to rewrite the file. Increment in
 // lockstep with template content changes.
-const TemplateVersion = 8
+const TemplateVersion = 9
 
 //go:embed templates/apache.conf
 var apacheTemplate string
@@ -17,5 +17,5 @@ var lswsTemplate string
 //go:embed templates/nginx.conf
 var nginxTemplate string
 
-//go:embed templates/cpanel-site.conf
-var cpanelSiteTemplate string
+//go:embed templates/site.conf
+var siteTemplate string

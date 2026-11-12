@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Challenge pages now work on Apache servers without cPanel once each site includes one line, which the setup command prints and csm doctor checks.
 - Challenge pages now also appear on HTTPS sites on cPanel servers. Run csm webserver-integration upgrade once if csm doctor warns about HTTPS sites.
 - Realtime PHP alerts that cannot be confirmed now get the scheduled scan's verdict right away, so a Critical file is removed within moments.
 - Scheduled PHP scans keep earlier alerts when a file cannot be read.

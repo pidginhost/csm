@@ -14,8 +14,13 @@ import (
 type siteIncluder interface {
 	SiteSnippetPath() string
 	SiteTemplate() string
-	// SiteConfigPath is the generated configuration changed by a rebuild.
+	// SiteConfigPath is the generated configuration changed by a rebuild,
+	// or empty where the operator adds the includes and nothing rebuilds.
 	SiteConfigPath() string
+	// SiteScope names the site blocks that need the include.
+	SiteScope() string
+	// SiteFix is what the operator does while they do not read it.
+	SiteFix() string
 	// SiteIncludeActive reports whether the site blocks read the include.
 	SiteIncludeActive() (bool, error)
 	// RebuildSiteIncludes regenerates the web server configuration so its
@@ -51,9 +56,13 @@ func (c *cpanelSites) SiteSnippetPath() string {
 	return cpanelSiteSnippetPath
 }
 
-func (c *cpanelSites) SiteTemplate() string { return cpanelSiteTemplate }
+func (c *cpanelSites) SiteTemplate() string { return siteTemplate }
 
 func (c *cpanelSites) SiteConfigPath() string { return c.httpdConf }
+
+func (c *cpanelSites) SiteScope() string { return "HTTPS sites" }
+
+func (c *cpanelSites) SiteFix() string { return "run `csm webserver-integration upgrade`" }
 
 func (c *cpanelSites) SiteIncludeActive() (bool, error) {
 	// #nosec G304 -- fixed cPanel httpd.conf path, or a test's temp file.
@@ -120,4 +129,86 @@ func (c *cpanelSites) RebuildSiteIncludes() error {
 		return fmt.Errorf("rebuild httpd.conf: %v\n%s", err, out)
 	}
 	return nil
+}
+
+// plainApacheSiteSnippetPath lives beside the challenge maps: the daemon may
+// write there, it survives daemon stops, and Apache never loads it on its
+// own, only through the Include line each site block carries.
+const plainApacheSiteSnippetPath = "/var/cache/csm/apache-challenge-site.conf"
+
+// plainApacheSites covers Apache without cPanel. No site block inherits the
+// server-wide snippet and CSM does not edit operator site files, so the
+// operator adds the Include line to each <VirtualHost>.
+type plainApacheSites struct {
+	ctl    string
+	runner cmdRunner
+}
+
+func (p *plainApacheSites) SiteSnippetPath() string { return plainApacheSiteSnippetPath }
+
+func (p *plainApacheSites) SiteTemplate() string { return siteTemplate }
+
+func (p *plainApacheSites) SiteConfigPath() string { return "" }
+
+func (p *plainApacheSites) SiteScope() string { return "Apache sites" }
+
+func (p *plainApacheSites) SiteFix() string {
+	return "add `Include " + plainApacheSiteSnippetPath + "` inside every <VirtualHost>, then reload Apache"
+}
+
+func (p *plainApacheSites) RebuildSiteIncludes() error {
+	return fmt.Errorf("Apache site blocks need `Include %s` added by the operator", plainApacheSiteSnippetPath)
+}
+
+// SiteIncludeActive reads every file Apache loads and requires each
+// <VirtualHost> in them to include the snippet. A server with no site block
+// has nothing to cover.
+func (p *plainApacheSites) SiteIncludeActive() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := p.runner.Run(ctx, p.ctl, "-t", "-D", "DUMP_INCLUDES")
+	if err != nil {
+		return false, fmt.Errorf("%s -t -D DUMP_INCLUDES: %v\n%s", p.ctl, err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !strings.HasPrefix(fields[0], "(") || !strings.HasPrefix(fields[1], "/") {
+			continue
+		}
+		// #nosec G304 -- a configuration file Apache itself reports loading.
+		data, err := os.ReadFile(fields[1])
+		if err != nil {
+			return false, err
+		}
+		if !everyVirtualHostIncludes(string(data), plainApacheSiteSnippetPath) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// everyVirtualHostIncludes reports whether each <VirtualHost> block in conf
+// has an active Include or IncludeOptional of path.
+func everyVirtualHostIncludes(conf, path string) bool {
+	inSite, included := false, false
+	for _, line := range strings.Split(conf, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "<virtualhost":
+			inSite, included = true, false
+		case "</virtualhost>":
+			if inSite && !included {
+				return false
+			}
+			inSite = false
+		case "include", "includeoptional":
+			if inSite && len(fields) == 2 && strings.Trim(fields[1], "\"'") == path {
+				included = true
+			}
+		}
+	}
+	return !inSite
 }

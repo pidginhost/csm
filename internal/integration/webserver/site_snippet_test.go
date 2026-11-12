@@ -19,11 +19,19 @@ type fakeSiteHandler struct {
 	active     bool
 	rebuildErr error
 	rebuilds   atomic.Int32
+	fix        string
 }
 
 func (h *fakeSiteHandler) SiteSnippetPath() string { return h.sitePath }
 func (h *fakeSiteHandler) SiteConfigPath() string  { return h.configPath }
 func (h *fakeSiteHandler) SiteTemplate() string    { return h.siteBody }
+func (h *fakeSiteHandler) SiteScope() string       { return "HTTPS sites" }
+func (h *fakeSiteHandler) SiteFix() string {
+	if h.fix != "" {
+		return h.fix
+	}
+	return "run `csm webserver-integration upgrade`"
+}
 func (h *fakeSiteHandler) SiteIncludeActive() (bool, error) {
 	return h.active, nil
 }
@@ -190,7 +198,7 @@ func TestCPanelSitesReadTheSiteSnippet(t *testing.T) {
 
 // Certificate validation must keep working for an address on the list.
 func TestSiteTemplateLeavesValidationPathsReachable(t *testing.T) {
-	if !strings.Contains(cpanelSiteTemplate, `RewriteCond %{REQUEST_URI} !^/\.well-known/`) {
+	if !strings.Contains(siteTemplate, `RewriteCond %{REQUEST_URI} !^/\.well-known/`) {
 		t.Fatal("site rule also redirects /.well-known/ validation requests")
 	}
 }

@@ -182,7 +182,7 @@ func TestSiteCoverageRequiresSnippet(t *testing.T) {
 }
 
 func TestServerAndSiteTemplatesExemptValidation(t *testing.T) {
-	for name, body := range map[string]string{"apache": apacheTemplate, "lsws": lswsTemplate, "site": cpanelSiteTemplate} {
+	for name, body := range map[string]string{"apache": apacheTemplate, "lsws": lswsTemplate, "site": siteTemplate} {
 		if !strings.Contains(body, "RewriteCond %{REQUEST_URI} !^/\\.well-known/\nRewriteCond ${csm_chal:%{REMOTE_ADDR}} =challenge") {
 			t.Errorf("%s redirects validation requests when inherited", name)
 		}
