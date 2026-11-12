@@ -1,6 +1,11 @@
 package checks
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/pidginhost/csm/internal/platform"
+)
 
 // A request-controlled first field must never become direct, whatever
 // valid or malformed format bytes follow it.
@@ -74,6 +79,24 @@ func FuzzNginxLogFormat(f *testing.F) {
 			if value, ok := nginxFormatLogsClientValue(module, "default", nil, "$realip_remote_addr ", format); ok && !value {
 				t.Fatalf("optional peer spelling classified direct without module proof: %q, module=%s", format, module)
 			}
+		}
+	})
+}
+
+// FuzzApacheVariableLogTarget varies what follows a variable that starts a
+// log target. Only Debian's ${APACHE_LOG_DIR}/ names a directory; any other
+// leading variable could hold a pipe, so the detector never reads it as a
+// direct log, whatever the path after it.
+func FuzzApacheVariableLogTarget(f *testing.F) {
+	for _, seed := range []string{"access.log", "a b", "\"", "{x}", "|splitlogs", "${APACHE_LOG_DIR}/x", "", " ", "\t"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, suffix string) {
+		// One configuration line: a line break would start another.
+		suffix = strings.NewReplacer("\n", "x", "\r", "x").Replace(suffix)
+		conf := writeRewriteFile(t, t.TempDir(), "httpd.conf", "CustomLog ${LOG_PIPE}/"+suffix+" \"%h %t\"\n")
+		if got := detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: conf}); got.State == RewriteNone {
+			t.Fatalf("target ${LOG_PIPE}/%q read as a direct log", suffix)
 		}
 	})
 }

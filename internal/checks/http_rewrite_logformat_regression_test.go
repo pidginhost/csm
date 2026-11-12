@@ -198,6 +198,7 @@ func TestHTTPRewriteApacheMacroParameters(t *testing.T) {
 		{"macro name contains spaces", combined + "<Macro \"Logging combined\" $path>\nCustomLog \"/var/log/$path\" combined\n</Macro>\nUse \"Logging combined\" access\n", RewriteNone},
 		{"quoted parameter preserves spaces", combined + "<Macro Logging \"$path combined\">\nCustomLog logs/access combined\n</Macro>\nUse Logging unused\n", RewriteNone},
 		{"macro inside virtual host", "<VirtualHost *:80>\n<Macro Logged $fmt>\nCustomLog logs/access_log \"$fmt\"\n</Macro>\nUse Logged \"%{X-Client}i %t\"\n</VirtualHost>\n", RewriteUnknown},
+		{"log directory parameter", combined + "<Macro L $dir>\nCustomLog $dir/access_log combined\n</Macro>\nUse L /var/log\n", RewriteUnknown},
 		{"log file parameter", combined + "<Macro VHost $name $domain>\n<VirtualHost *:80>\nServerName $domain\nCustomLog \"/var/log/httpd/$name.access_log\" combined\n</VirtualHost>\n</Macro>\nUse VHost example example.com\n", RewriteNone},
 		{"literal macro body", "<Macro Plain $x>\nCustomLog logs/x \"%{X-Client}i %t\"\n</Macro>\n", RewriteActive},
 	}

@@ -422,9 +422,10 @@ func apacheSplitlogsPipe(target string) bool {
 }
 
 // apacheLogTargetUnresolved reports whether expansion can change whether a
-// log target is a splitlogs pipe. Only a leading "|" pipes, so a variable in
-// a file path is harmless; a leading variable followed by "/" names a log
-// directory, as Debian's ${APACHE_LOG_DIR}/access.log does.
+// log target is a splitlogs pipe. Only a leading "|" pipes, so a variable
+// later in a file path is harmless. A leading variable could hold a pipe,
+// except Debian's APACHE_LOG_DIR, which its envvars file sets to a
+// directory, as in ${APACHE_LOG_DIR}/access.log.
 func apacheLogTargetUnresolved(target string) bool {
 	switch {
 	case !apacheArgumentHasVariable(target):
@@ -434,8 +435,7 @@ func apacheLogTargetUnresolved(target string) bool {
 	case !strings.HasPrefix(target, "${"):
 		return false
 	}
-	end := strings.IndexByte(target, '}')
-	return end < 0 || !strings.HasPrefix(target[end+1:], "/")
+	return !strings.HasPrefix(target, "${APACHE_LOG_DIR}/")
 }
 
 // apacheMacroFields reads a line inside mod_macro's <Macro> as it may look
