@@ -328,6 +328,7 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 		findings[i].LoginAccount = r.ResponseLoginAccount
 		findings[i].Attribution = r.ResponseAttribution
 		findings[i].ScanCarryForward = r.ScanCarryForward
+		findings[i].FileResponseIdentity = r.ResponseFileIdentity
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
@@ -1084,6 +1085,7 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		findings[i].LoginAccount = r.ResponseLoginAccount
 		findings[i].Attribution = r.ResponseAttribution
 		findings[i].ScanCarryForward = r.ScanCarryForward
+		findings[i].FileResponseIdentity = r.ResponseFileIdentity
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

@@ -113,6 +113,9 @@ type Finding struct {
 	// the alert dispatcher must not retry it, including a refused attempt.
 	// New detections and findings read from storage get a fresh evaluation.
 	AutoFileResponseEvaluated bool `json:"-"`
+	// FileResponseIdentity pins asynchronous content analysis to the inspected
+	// file version. A replacement must not receive the older file's response.
+	FileResponseIdentity string `json:"-"`
 	// AutoIPResponseEvaluated records that challenge routing and IP blocking
 	// already considered the finding in this process, so a later pass over
 	// the same finding neither acts again nor reaches admission twice.

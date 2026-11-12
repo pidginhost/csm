@@ -124,12 +124,22 @@ Tail windows retain raw content because they can begin inside a literal whose
 opening delimiter is outside the window.
 
 A Critical `obfuscated_php_realtime`, `webshell_content_realtime` or
-`php_dropper_realtime` alert that realtime could not confirm also runs the
-scheduled content analysis on that file at once. When that analysis rates the
-file Critical, its finding joins the same batch and the scheduled response
-applies to it immediately, under the usual `quarantine_files` setting and file
-response budget. The file is opened without following links or waiting on
-special files.
+`php_dropper_realtime` alert that has not already received a file response
+queues scheduled content analysis for that file. One bounded background worker
+performs the analysis so slow storage cannot delay other alerts. If its queue
+is full, the original alert remains available and the refusal is logged.
+
+A Critical result returns through normal dispatch, including state
+deduplication, history, suppressions and incident correlation. Remediation uses
+the existing `quarantine_files` setting and shared file response budget.
+WordPress files eligible for cleaning are cleaned in place, never removed as
+a fallback after cleaning fails. A response already evaluated inline or by a
+scheduled scan is not repeated for the same batch.
+
+Analysis rejects symlinks in every path component and special files. It
+checks that the file stayed unchanged during analysis; remediation rejects a
+replacement or rewritten file, including when a queued result is replayed
+after a restart.
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
