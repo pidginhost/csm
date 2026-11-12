@@ -52,7 +52,8 @@ deep scan. Both budgets are checked between scans, so a scan or directory
 read already in progress must still finish before shutdown completes. A file
 renamed or hard-linked into a watched tree, or a directory moved into one,
 raises no close-write event at its new path. The
-[placement monitor](#files-moved-or-linked-into-a-site) covers those.
+[placement monitor](#files-moved-or-linked-into-a-site) covers those when a
+placement backend runs; otherwise they are left to the deep scan.
 
 Realtime YARA scans hand the worker a sealed memory-backed copy of the
 captured bytes, whatever their size, without reopening the event path for
@@ -256,8 +257,11 @@ response names the selection under `backends.placement` (`bpf`, `legacy` or
 `none`), and `csm doctor` shows it as the `backend: placement` check. That
 check warns on `none` unless the config chose it. `GET /api/v1/capabilities`
 lists `bpf-file-placement` while the BPF backend runs. A failed start raises
-`bpf_unavailable`, as for the other BPF monitors, except on a kernel that
-supports neither backend, which shows `none` without a finding.
+`bpf_unavailable`, as for the other BPF monitors. It is High when an explicit
+`bpf` choice cannot start, or when an explicit `legacy` choice or `auto` fails
+for an unexpected reason, and a Warning when `auto` falls back to `legacy`. A
+kernel that supports neither backend under `auto`, or lacks the `legacy`
+backend when it is chosen explicitly, shows `none` without a finding.
 
 A directory moved into a watched tree is walked, because its files raised no
 events of their own. Each file gets the same identity check and analysis as
@@ -269,12 +273,15 @@ analyzers stay busy for a whole pass, or entries cannot be read, it raises
 one High `placed_dir_incomplete_realtime` naming the directory. The next deep
 scan covers the files it did not check.
 
-`placement_unresolved_realtime` reports what the monitor cannot see. It is
-High for a moved or linked file whose path realtime could not resolve, such
-as a path deeper or longer than realtime protection follows, and for a watch
-root the running backend cannot see. One Warning per start names the roots on
-a filesystem this kernel cannot watch for placements. The deep scan covers
-those files. A kernel queue overflow in the `legacy` backend raises
+`placement_unresolved_realtime` reports what the monitor cannot see, with
+either backend. It is High for a moved or linked file whose path realtime
+could not resolve, such as a path deeper or longer than realtime protection
+follows or a directory the `legacy` backend could not open, and for a watch
+root the running backend cannot see. Unresolved files repeat the finding at
+most once per alert cooldown for each device. A file or directory removed
+before realtime reached it raises nothing. One Warning per start names the
+roots on a filesystem this kernel cannot watch for placements. The deep scan
+covers those files. A kernel queue overflow in the `legacy` backend raises
 `fanotify_kernel_overflow`.
 
 A PHP file saved under an atomic-save temporary name and then renamed to its
