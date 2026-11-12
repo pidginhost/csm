@@ -515,7 +515,7 @@ success wording in a failed login name does not qualify.
 
 ## Stalwart Mail Server
 
-On hosts where the `stalwart` service is the mail server and cPanel is absent, CSM reads Stalwart's daily log instead of the Postfix and Dovecot mail log. It follows the newest `stalwart.log.YYYY-MM-DD` file in `stalwart.log_dir` (default `/var/log/stalwart`), starting at the end of the current file. When Stalwart starts the next day's file, CSM reads the old file to its end and then the new one from its start. A missing directory or file raises `mail_log_source_unavailable`.
+On hosts where the `stalwart` service is the mail server and cPanel is absent, CSM reads Stalwart's daily log instead of the Postfix and Dovecot mail log. It follows the newest `stalwart.log.YYYY-MM-DD` file in `stalwart.log_dir` (default `/var/log/stalwart`), starting at the end of the current file. Files dated later than tomorrow in UTC are ignored. When Stalwart starts the next day's file, CSM reads the old file to its end and then the new one from its start. A missing directory or file raises `mail_log_source_unavailable`.
 
 If the next day's file cannot be found or opened for a while, CSM raises `mail_log_source_unavailable` and keeps retrying. If the current file is removed, CSM does not go back to an older day's file.
 
