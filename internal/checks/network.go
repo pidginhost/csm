@@ -109,6 +109,7 @@ func scanOutboundConnections(cfg *config.Config, store *state.Store) ([]alert.Fi
 				identity := fmt.Sprintf("%s:%d>%s:%d", localIP, localPort, remoteIP, remotePort)
 				if inode != "" {
 					details += ", socket inode " + inode
+					identity += " inode " + inode
 				}
 				if uidKnown {
 					details += fmt.Sprintf(", uid %d", uid)

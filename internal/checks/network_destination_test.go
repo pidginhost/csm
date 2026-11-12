@@ -325,6 +325,12 @@ func TestC2ConnectionAlertIdentity(t *testing.T) {
 	if other := scan(); other.Key() == plain.Key() {
 		t.Fatal("another connection to the same address shares the alert identity")
 	}
+	// A new socket on the same ports is another connection: a dismissal of
+	// the first must not hide it.
+	sock.table = strings.Replace(c2Row, " 12345\n", " 12399\n", 1)
+	if reconnected := scan(); reconnected.Key() == plain.Key() {
+		t.Fatal("a new socket reusing the same ports shares the alert identity")
+	}
 }
 
 func TestC2ConnectionNamesSocketProcess(t *testing.T) {
