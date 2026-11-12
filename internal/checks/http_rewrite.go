@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -174,27 +176,44 @@ func apacheClientAddressRewrite(path string) (directive, file string, complete b
 		}
 		switch {
 		case is("RemoteIPHeader", "CloudFlareRemoteIPHeader"):
-			if len(fields) != 2 {
+			if len(fields) != 2 || is("CloudFlareRemoteIPHeader") && fields[1] == "" {
 				malformed = true
 				return
 			}
 			directive, file = strings.Join(fields, " "), line.File
 		case is("CloudFlareRemoteIPTrustedProxy"):
-			if len(fields) < 2 {
+			if len(fields) < 2 || fields[1] == "" {
 				malformed = true
 				return
 			}
+			for _, proxy := range fields[1:] {
+				// Apache's ITERATE handler stops at an empty quoted argument.
+				if proxy == "" {
+					break
+				}
+				if !apacheCloudflareProxyKnown(proxy) {
+					malformed = true
+					return
+				}
+			}
 			directive, file = strings.Join(fields, " "), line.File
-		case is("LoadModule") && len(fields) > 1 && apacheArgumentHasVariable(fields[1]):
+		case is("DenyAllButCloudFlare"):
+			if len(fields) != 1 {
+				malformed = true
+				return
+			}
+			// This also implies mod_cloudflare's default address rewrite.
+			directive, file = strings.Join(fields, " "), line.File
+		case is("LoadModule"):
 			// Only Apache can resolve its Define and environment values.
-			malformed = true
-		case is("LoadModule") && len(fields) > 1 && fields[1] == "cloudflare_module":
-			if len(fields) != 3 {
+			if len(fields) != 3 || fields[1] == "" || fields[2] == "" || apacheArgumentHasVariable(fields[1]) {
 				malformed = true
 				return
 			}
-			// mod_cloudflare trusts its built-in Cloudflare ranges once loaded.
-			directive, file = strings.Join(fields, " "), line.File
+			if fields[1] == "cloudflare_module" {
+				// mod_cloudflare trusts its built-in Cloudflare ranges once loaded.
+				directive, file = strings.Join(fields, " "), line.File
+			}
 		case is("RemoteIPProxyProtocol", "RPAF_Enable", "RPAFenable"):
 			switch {
 			case len(fields) == 2 && strings.EqualFold(fields[1], "On"):
@@ -210,6 +229,45 @@ func apacheClientAddressRewrite(path string) (directive, file string, complete b
 		}
 	}
 	return directive, file, complete && valid && !malformed && !logs.malformed
+}
+
+// apacheCloudflareProxyKnown follows APR's numeric subnet syntax. Hostnames
+// and variables need Apache's own resolution, so cannot prove a valid setting.
+func apacheCloudflareProxyKnown(value string) bool {
+	ip, mask, hasMask := strings.Cut(value, "/")
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		// APR also accepts one to four decimal octets, with an optional final
+		// dot, as an implicit IPv4 network, but only without an explicit mask.
+		if hasMask || ip == "" || len(ip) > len("255.255.255.255") || strings.Trim(ip, "0123456789.") != "" {
+			return false
+		}
+		octets := strings.Split(strings.TrimSuffix(ip, "."), ".")
+		if len(octets) > 4 {
+			return false
+		}
+		for _, octet := range octets {
+			n, parseErr := strconv.Atoi(octet)
+			if parseErr != nil || n > 255 {
+				return false
+			}
+		}
+		return true
+	}
+	if addr.Is4In6() || addr.Zone() != "" {
+		return false
+	}
+	if !hasMask {
+		return true
+	}
+	// APR uses strtol for prefix lengths and accepts a dotted IPv4 mask,
+	// including non-contiguous masks. A zero prefix length is rejected.
+	bits, err := strconv.Atoi(strings.TrimLeft(mask, " \t\r\n\v\f"))
+	if err == nil && bits > 0 && bits <= addr.BitLen() {
+		return true
+	}
+	netmask, err := netip.ParseAddr(mask)
+	return err == nil && addr.Is4() && netmask.Is4()
 }
 
 // nginxClientAddressRewrite returns the first set_real_ip_from, which
