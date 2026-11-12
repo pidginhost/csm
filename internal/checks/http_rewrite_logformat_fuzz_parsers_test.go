@@ -84,9 +84,8 @@ func FuzzNginxLogFormat(f *testing.F) {
 }
 
 // FuzzApacheVariableLogTarget varies what follows a variable that starts a
-// log target. Only Debian's ${APACHE_LOG_DIR}/ names a directory; any other
-// leading variable could hold a pipe, so the detector never reads it as a
-// direct log, whatever the path after it.
+// log target. A leading variable, including an overridden APACHE_LOG_DIR,
+// could hold a pipe, whatever the path after it.
 func FuzzApacheVariableLogTarget(f *testing.F) {
 	for _, seed := range []string{"access.log", "a b", "\"", "{x}", "|splitlogs", "${APACHE_LOG_DIR}/x", "", " ", "\t"} {
 		f.Add(seed)
@@ -94,9 +93,14 @@ func FuzzApacheVariableLogTarget(f *testing.F) {
 	f.Fuzz(func(t *testing.T, suffix string) {
 		// One configuration line: a line break would start another.
 		suffix = strings.NewReplacer("\n", "x", "\r", "x").Replace(suffix)
-		conf := writeRewriteFile(t, t.TempDir(), "httpd.conf", "CustomLog ${LOG_PIPE}/"+suffix+" \"%h %t\"\n")
-		if got := detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: conf}); got.State == RewriteNone {
-			t.Fatalf("target ${LOG_PIPE}/%q read as a direct log", suffix)
+		for _, prefix := range []string{
+			"CustomLog ${LOG_PIPE}/",
+			"Define APACHE_LOG_DIR \"|splitlogs --suffix=\"\nCustomLog ${APACHE_LOG_DIR}/",
+		} {
+			conf := writeRewriteFile(t, t.TempDir(), "httpd.conf", prefix+suffix+" \"%h %t\"\n")
+			if got := detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: conf}); got.State == RewriteNone {
+				t.Fatalf("target %q with suffix %q read as a direct log", prefix, suffix)
+			}
 		}
 	})
 }

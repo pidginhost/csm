@@ -424,9 +424,8 @@ func apacheSplitlogsPipe(target string) bool {
 // apacheLogTargetUnresolved reports whether expansion can change whether a
 // log target is a splitlogs pipe. Only a leading "|" pipes, so a variable
 // later in a file path is harmless. A leading variable could hold a pipe,
-// except Debian's APACHE_LOG_DIR, which its envvars file sets to a
-// directory, as in ${APACHE_LOG_DIR}/access.log.
-func apacheLogTargetUnresolved(target string) bool {
+// except Debian's APACHE_LOG_DIR when configuration has not overridden it.
+func apacheLogTargetUnresolved(target string, logDirOverridden bool) bool {
 	switch {
 	case !apacheArgumentHasVariable(target):
 		return false
@@ -435,7 +434,7 @@ func apacheLogTargetUnresolved(target string) bool {
 	case !strings.HasPrefix(target, "${"):
 		return false
 	}
-	return !strings.HasPrefix(target, "${APACHE_LOG_DIR}/")
+	return logDirOverridden || !strings.HasPrefix(target, "${APACHE_LOG_DIR}/")
 }
 
 // apacheMacroFields reads a line inside mod_macro's <Macro> as it may look
@@ -503,9 +502,9 @@ func (f apacheLogFormat) availableIn(scope string, conditions ...string) bool {
 
 // apacheLogUse is a log that writes a named, inline or default format.
 type apacheLogUse struct {
-	transfer  bool
-	splitlogs bool
-	inline    apacheLogFormat
+	transfer bool
+	target   string
+	inline   apacheLogFormat
 }
 
 // apacheLogFormats collects the access formats an Apache tree defines and
@@ -519,6 +518,9 @@ type apacheLogFormats struct {
 	liteSpeed bool
 	// hostnames is set by HostnameLookups On in any scope.
 	hostnames bool
+	// Define values are global, including those in conditional and macro
+	// bodies. A macro may use a value declared after its body was read.
+	logDirOverridden bool
 }
 
 func (l *apacheLogFormats) parse(format string, splitlogs bool) (bool, bool) {
@@ -536,12 +538,12 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apach
 	switch name := strings.ToLower(fields[0]); name {
 	case "logformat", "customlog", "globallog", "transferlog", "errorlogformat", "servername":
 		for i, arg := range fields[1:] {
-			unresolved := apacheArgumentHasVariable(arg)
 			if i == 0 && (name == "customlog" || name == "globallog" || name == "transferlog") {
-				unresolved = apacheLogTargetUnresolved(arg)
+				// Check targets after all possible Define values are known.
+				continue
 			}
-			if unresolved {
-				// Expansion can change the format, nickname or pipe target.
+			if apacheArgumentHasVariable(arg) {
+				// Expansion can change the format, nickname or server name.
 				l.malformed = true
 				return
 			}
@@ -559,6 +561,10 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apach
 		return true
 	}
 	switch {
+	case strings.EqualFold(fields[0], "Define") || strings.EqualFold(fields[0], "UnDefine"):
+		if len(fields) > 1 && (fields[1] == "APACHE_LOG_DIR" || apacheArgumentHasVariable(fields[1])) {
+			l.logDirOverridden = true
+		}
 	case strings.EqualFold(fields[0], "LogFormat"):
 		switch len(fields) {
 		case 2:
@@ -598,13 +604,13 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apach
 				l.malformed = true
 			}
 		}
-		l.uses = append(l.uses, apacheLogUse{splitlogs: apacheSplitlogsPipe(fields[1]), inline: def})
+		l.uses = append(l.uses, apacheLogUse{target: fields[1], inline: def})
 	case strings.EqualFold(fields[0], "TransferLog"):
 		if len(fields) != 2 {
 			l.malformed = true
 			return
 		}
-		l.uses = append(l.uses, apacheLogUse{transfer: true, splitlogs: apacheSplitlogsPipe(fields[1]), inline: def})
+		l.uses = append(l.uses, apacheLogUse{transfer: true, target: fields[1], inline: def})
 	case strings.EqualFold(fields[0], "HostnameLookups"):
 		switch {
 		case len(fields) != 2:
@@ -685,6 +691,10 @@ func (l *apacheLogFormats) clientValue() *apacheLogFormat {
 		return l.rewrite
 	}
 	for _, use := range l.uses {
+		if apacheLogTargetUnresolved(use.target, l.logDirOverridden) {
+			l.malformed = true
+			continue
+		}
 		var formats []apacheLogFormat
 		switch {
 		case use.transfer:
@@ -706,7 +716,7 @@ func (l *apacheLogFormats) clientValue() *apacheLogFormat {
 			formats = l.resolve(use.inline, use.inline)
 		}
 		for i := range formats {
-			value, ok := l.parse(formats[i].format, use.splitlogs)
+			value, ok := l.parse(formats[i].format, apacheSplitlogsPipe(use.target))
 			if !ok {
 				l.malformed = true
 				continue
