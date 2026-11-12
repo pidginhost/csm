@@ -3,10 +3,14 @@
 package daemon
 
 import (
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -15,6 +19,144 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
+
+func TestPlacementRetriesOldSocket(t *testing.T) {
+	dir := t.TempDir()
+	staged, path := filepath.Join(dir, "staged.php"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte("<?php echo 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ev := placementOf(t, staged, 0)
+	fd, _, retry, err := openPlacedOnce(path, ev.Dev, ev.Ino)
+	if fd >= 0 {
+		_ = unix.Close(fd)
+	}
+	if err == nil || !retry || fd != -1 {
+		t.Fatalf("old socket: fd=%d retry=%v err=%v, want retry without a descriptor", fd, retry, err)
+	}
+	if err := os.Rename(staged, path); err != nil {
+		t.Fatal(err)
+	}
+	ev.Path = path
+	fm := placementTestMonitor(make(chan alert.Finding, 4))
+	fm.handlePlacement(ev)
+	if events := queuedPlacements(t, fm); len(events) != 1 || events[0].path != path {
+		t.Fatalf("queued %+v, want the replacement once", events)
+	}
+}
+
+// Even a nonblocking read-open of a FIFO changes what another process sees.
+// Inspecting an unverified entry must not open it for I/O.
+func TestPlacementDoesNotReadOpenSpecialFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.php")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ev := placementOf(t, path, 0)
+	watch, err := unix.InotifyInit1(unix.IN_NONBLOCK | unix.IN_CLOEXEC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(watch)
+	if _, err := unix.InotifyAddWatch(watch, path, unix.IN_OPEN); err != nil {
+		t.Fatal(err)
+	}
+	fd, _, retry, err := openPlacedOnce(path, ev.Dev, ev.Ino)
+	if fd >= 0 {
+		_ = unix.Close(fd)
+	}
+	if err == nil || retry || fd != -1 {
+		t.Fatalf("FIFO: fd=%d retry=%v err=%v, want final rejection", fd, retry, err)
+	}
+	var buf [4096]byte
+	if n, err := unix.Read(watch, buf[:]); n > 0 || !errors.Is(err, unix.EAGAIN) {
+		t.Fatalf("FIFO was opened for I/O: inotify read n=%d err=%v", n, err)
+	}
+}
+
+func TestPlacementOverflowRecoversOldFiles(t *testing.T) {
+	for _, refresh := range []bool{false, true} {
+		t.Run(fmt.Sprint("refresh=", refresh), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "x.php")
+			if err := os.WriteFile(path, []byte("<?php echo 1;"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().Add(-24 * time.Hour)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(path, filepath.Join(filepath.Dir(path), "link.php")); err != nil {
+				t.Fatal(err)
+			}
+			fm := placementTestMonitor(make(chan alert.Finding, 4))
+			fm.analyzerCh = make(chan fileEvent)
+			fm.handlePlacement(placementOf(t, path, 0))
+			if got := fm.EventStats(); got.Dropped != 1 {
+				t.Fatalf("stats = %+v, want one dropped placement", got)
+			}
+			if refresh {
+				fm.recordDroppedDir(path)
+			}
+			previous := fileAnalyzer
+			t.Cleanup(func() { fileAnalyzer = previous })
+			var scanned []string
+			fileAnalyzer = func(_ *FileMonitor, event fileEvent) {
+				scanned = append(scanned, event.path)
+			}
+			fm.reconcileDrops()
+			if !reflect.DeepEqual(scanned, []string{path}) {
+				t.Fatalf("recovered %v, want the old placed file", scanned)
+			}
+		})
+	}
+}
+
+func TestPlacementRecoverySurvivesConcurrentDropAndYield(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		paths := []string{filepath.Join(dir, "a.php"), filepath.Join(dir, "b.php")}
+		for _, path := range paths {
+			if err := os.WriteFile(path, []byte("<?php echo 1;"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().Add(-24 * time.Hour)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+		fm := placementTestMonitor(make(chan alert.Finding, 4))
+		fm.analyzerCh = make(chan fileEvent)
+		fm.handlePlacement(placementOf(t, paths[0], 0))
+		previous := fileAnalyzer
+		defer func() { fileAnalyzer = previous }()
+		var scanned []string
+		fileAnalyzer = func(_ *FileMonitor, event fileEvent) {
+			scanned = append(scanned, event.path)
+			if len(scanned) == 1 {
+				// A write arrives while the placement recovery owns the old batch.
+				fm.recordDroppedDir(paths[1])
+				time.Sleep(reconcileBudget)
+			}
+		}
+		fm.reconcileDrops()
+		if !reflect.DeepEqual(scanned, paths[:1]) {
+			t.Fatalf("first pass scanned %v, want only %s", scanned, paths[0])
+		}
+		fm.reconcileDrops()
+		want := []string{paths[0], paths[0], paths[1]}
+		if !reflect.DeepEqual(scanned, want) {
+			t.Fatalf("resumed recovery scanned %v, want %v", scanned, want)
+		}
+		if got := requireReconcileQueue(t, fm); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+			t.Fatalf("completed recovery status = %+v", got)
+		}
+	})
+}
 
 // A file renamed or linked into a site raises no close-write, so the
 // placement backends report it and handlePlacement must give it the same

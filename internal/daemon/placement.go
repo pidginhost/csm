@@ -116,32 +116,50 @@ func openPlacedFile(path string, dev, ino uint64) (fd int, isDir bool, err error
 // openPlacedOnce reports retry for the two states a pending rename or link
 // can leave behind: no entry yet, or the old inode still in place.
 func openPlacedOnce(path string, dev, ino uint64) (fd int, isDir, retry bool, err error) {
-	fd, err = unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	if errors.Is(err, unix.ELOOP) {
-		// An old symlink about to be replaced is still the old inode. Only a
-		// placed symlink, which is never followed, is final.
-		var st unix.Stat_t
-		placed := unix.Lstat(path, &st) == nil && uint64(st.Dev) == dev && st.Ino == ino
-		return -1, false, !placed, err
-	}
+	// A pending rename may replace any entry, including a socket or device.
+	// O_PATH lets identity checks precede I/O and keeps mismatches retryable.
+	probe, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, false, errors.Is(err, unix.ENOENT), err
 	}
+	defer func() { _ = unix.Close(probe) }()
 	var st unix.Stat_t
-	if err = unix.Fstat(fd, &st); err != nil {
-		_ = unix.Close(fd)
+	if err = unix.Fstat(probe, &st); err != nil {
 		return -1, false, false, err
 	}
 	if uint64(st.Dev) != dev || st.Ino != ino {
-		_ = unix.Close(fd)
 		return -1, false, true, errors.New("identity mismatch")
 	}
 	switch st.Mode & unix.S_IFMT {
 	case unix.S_IFREG:
-		return fd, false, false, nil
 	case unix.S_IFDIR:
-		return fd, true, false, nil
+		isDir = true
+	default:
+		return -1, false, false, errors.New("not a regular file or directory")
 	}
-	_ = unix.Close(fd)
-	return -1, false, false, errors.New("not a regular file or directory")
+	// Follow only our own procfs descriptor link, not the mutable entry.
+	// The pinned inode cannot become a special file between stat and open.
+	fd, err = unix.Open(fmt.Sprintf("/proc/self/fd/%d", probe), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, false, false, err
+	}
+	return fd, isDir, false, nil
+}
+
+// Recovery runs inline under the existing reconcile budget; enqueueing again
+// would lose the file to the same backpressure that started recovery.
+func (fm *FileMonitor) reconcilePlacedFile(path string, dev, ino uint64) bool {
+	fd, isDir, _, err := openPlacedOnce(path, dev, ino)
+	if err != nil {
+		return errors.Is(err, unix.ENOENT)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if isDir {
+		return true
+	}
+	if event, admit := fm.classifyEvent(path, fd); admit {
+		event.mask, event.at = eventPlacedIn, time.Now()
+		fileAnalyzer(fm, event)
+	}
+	return true
 }

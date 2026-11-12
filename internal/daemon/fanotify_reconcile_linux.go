@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/obs"
@@ -22,12 +23,18 @@ type reconcileDirectory struct {
 	cutoff time.Time
 	after  string
 	failed bool
+	// Renames and hard links preserve mtime, so their recovery has no age gate.
+	placements bool
 }
 
 // Repeated drops refresh eviction priority without postponing recovery age.
 func (fm *FileMonitor) recordDroppedDir(path string) {
+	fm.recordDroppedEvent(fileEvent{path: path})
+}
+
+func (fm *FileMonitor) recordDroppedEvent(event fileEvent) {
 	fm.initQueueHealth()
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(event.path)
 	fm.reconcileMu.Lock()
 	defer fm.reconcileMu.Unlock()
 	if fm.reconcileDirs == nil {
@@ -41,6 +48,7 @@ func (fm *FileMonitor) recordDroppedDir(path string) {
 	}
 	// A new write may precede the saved cursor and must be examined again.
 	entry.after = ""
+	entry.placements = entry.placements || event.mask&eventPlacedIn != 0
 	entry.lastDrop = now
 	fm.reconcileDirs[dir] = entry
 	fm.evictOverflowDirLocked(now)
@@ -142,8 +150,8 @@ func (fm *FileMonitor) reconcileDrops() {
 			fm.deferReconcileDirs(dirs)
 			return
 		}
-		// A refreshed drop cannot recover an older obligation outside this scan's window.
-		if !entry.failed && !entry.firstDrop.Before(entry.cutoff) {
+		// Write-only recovery cannot recover an obligation outside its scan window.
+		if !entry.failed && (entry.placements || !entry.firstDrop.Before(entry.cutoff)) {
 			entry.ticket.Finish(time.Now())
 		} else {
 			entry.ticket.Reject(time.Now())
@@ -188,6 +196,7 @@ func (fm *FileMonitor) deferReconcileDirs(dirs map[string]reconcileDirectory) {
 			// The new admission may concern a file behind the old cursor.
 			waiting.after = ""
 			waiting.failed = waiting.failed || entry.failed
+			waiting.placements = waiting.placements || entry.placements
 			fm.reconcileDirs[dir] = waiting
 			continue
 		}
@@ -221,13 +230,22 @@ func (fm *FileMonitor) reconcileDirectory(dir string, work *reconcileDirectory, 
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		if !fm.isInteresting(path) {
+		if !work.placements && !fm.isInteresting(path) {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
 				work.failed = true
+			}
+			continue
+		}
+		if work.placements {
+			if info.Mode().IsRegular() {
+				st := info.Sys().(*syscall.Stat_t)
+				if !fm.reconcilePlacedFile(path, uint64(st.Dev), st.Ino) {
+					work.failed = true
+				}
 			}
 			continue
 		}

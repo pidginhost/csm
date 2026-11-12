@@ -1026,7 +1026,7 @@ func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time
 		if n%100 == 0 {
 			fmt.Fprintf(os.Stderr, "[%s] fanotify: %d events dropped (analyzer queue full)\n", ts(), n)
 		}
-		fm.recordDroppedDir(path)
+		fm.recordDroppedEvent(event)
 		fm.maybeTriggerEagerReconcile(n)
 		_ = unix.Close(fd)
 	}
