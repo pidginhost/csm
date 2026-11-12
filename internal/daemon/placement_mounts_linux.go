@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -24,6 +25,15 @@ type mountEntry struct {
 	Dev        uint64
 	Root       string
 	MountPoint string
+}
+
+func readMountinfo() ([]mountEntry, error) {
+	f, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return parseMountinfo(f)
 }
 
 func parseMountinfo(r io.Reader) ([]mountEntry, error) {

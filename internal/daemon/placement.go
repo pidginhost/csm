@@ -68,7 +68,7 @@ func (fm *FileMonitor) handlePlacement(ev placementEvent) {
 // handlePlacedFile takes ownership of fd, a regular file whose identity the
 // caller already verified.
 func (fm *FileMonitor) handlePlacedFile(fd int, pid int32, at time.Time) {
-	path, ok := eventFDPath(fd)
+	path, _, ok := eventFDPath(fd)
 	if !ok {
 		fm.rejectUnresolved(fd)
 		return

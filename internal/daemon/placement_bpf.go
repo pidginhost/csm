@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -18,11 +16,6 @@ import (
 	bpfprog "github.com/pidginhost/csm/internal/daemon/placement_bpfprog"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
-
-// placementWorkers bounds the goroutines blocked in handlePlacement, which
-// waits up to its retry budget for a pending rename. The ring reader never
-// waits on them: a full output queue drops and counts the event.
-const placementWorkers = 4
 
 // placementSource is the part of bpf.Reader that Run consumes.
 type placementSource interface {
@@ -83,15 +76,6 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 	return p, nil
 }
 
-func readMountinfo() ([]mountEntry, error) {
-	f, err := os.Open("/proc/self/mountinfo")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	return parseMountinfo(f)
-}
-
 // attach fills the device filter before the hooks can fire.
 func (p *placementBPF) attach() error {
 	one := uint8(1)
@@ -134,21 +118,14 @@ func (p *placementBPF) QueueStatuses(now time.Time) map[string]queuehealth.Statu
 
 func (p *placementBPF) Run(ctx context.Context) {
 	stopReader := p.source.Start(ctx)
-	var workers sync.WaitGroup
-	for range placementWorkers {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			p.consume(ctx)
-		}()
-	}
+	waitWorkers := startPlacementWorkers(ctx, p.fm, p.source.Events(), p.resolve, p.handle)
 	// The reader closes its error channel once ctx ends and it has stopped.
 	for err := range p.source.Errors() {
 		emitBPFReaderError(p.fm.alertCh, "placement", err)
 	}
 	// Consumers stop before the hooks detach, and both before the reader
 	// discards what is left.
-	workers.Wait()
+	waitWorkers()
 	for _, l := range p.links {
 		_ = l.Close()
 	}
@@ -156,38 +133,11 @@ func (p *placementBPF) Run(ctx context.Context) {
 	_ = p.objs.Close()
 }
 
-func (p *placementBPF) consume(ctx context.Context) {
-	events := p.source.Events()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case work, ok := <-events:
-			if !ok {
-				return
-			}
-			p.process(work)
-		}
+func (p *placementBPF) resolve(raw PlacementRawEvent) (placementEvent, bool) {
+	p.count.Add(1)
+	ev, ok := p.fm.placementFromRaw(raw, p.mounts, time.Now())
+	if !ok {
+		p.unresolved.Lose(time.Now(), 1)
 	}
-}
-
-// process contains a panic the way analyzeFileSafe does: one placement must
-// not take the monitor down with it.
-func (p *placementBPF) process(work queuehealth.Work[PlacementRawEvent]) {
-	var path string
-	defer func() {
-		if r := recover(); r != nil {
-			p.fm.reportScannerPanic(path, r)
-		}
-	}()
-	work.Process(func(raw PlacementRawEvent) {
-		p.count.Add(1)
-		ev, ok := p.fm.placementFromRaw(raw, p.mounts, time.Now())
-		if !ok {
-			p.unresolved.Lose(time.Now(), 1)
-			return
-		}
-		path = ev.Path
-		p.handle(ev)
-	})
+	return ev, ok
 }

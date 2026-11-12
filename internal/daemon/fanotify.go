@@ -317,6 +317,9 @@ type FileMonitor struct {
 	placementUnverified atomic.Int64
 	placementSkipped    atomic.Int64
 	recent              *recentAnalyses
+	// placementCreates holds the running fanotify placement backend's
+	// creates until their own close-write settles them; nil otherwise.
+	placementCreates atomic.Pointer[createSettler]
 
 	// queueOverflows counts FAN_Q_OVERFLOW events: the kernel notification
 	// queue filled and events were dropped before userspace ever saw them.
@@ -1020,7 +1023,7 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 }
 
 func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time.Time) {
-	path, ok := eventFDPath(fd)
+	path, unlinked, ok := eventFDPath(fd)
 	if !ok {
 		fm.rejectUnresolved(fd)
 		return
@@ -1031,19 +1034,27 @@ func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time
 		var st unix.Stat_t
 		if unix.Fstat(fd, &st) == nil {
 			fm.recent.Invalidate(uint64(st.Dev), st.Ino)
+			// A descriptor whose name is gone (O_TMPFILE, an unlinked link
+			// source) is analysed under that name, not the one the inode
+			// was linked to, so it cannot stand in for the create.
+			if !unlinked {
+				fm.noteClosedWrite(uint64(st.Dev), st.Ino)
+			}
 		}
 	}
 	event, admit := fm.classifyEvent(path, fd)
 	fm.admitEvent(fd, event, admit, pid, mask, readAt)
 }
 
-// eventFDPath resolves the path an event descriptor was opened at.
-func eventFDPath(fd int) (string, bool) {
-	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+// eventFDPath resolves the path an event descriptor was opened at. unlinked
+// reports that the name no longer exists.
+func eventFDPath(fd int) (path string, unlinked, ok bool) {
+	raw, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
-	return normalizeFanotifyEventPath(path), true
+	path = normalizeFanotifyEventPath(raw)
+	return path, path != raw, true
 }
 
 // rejectUnresolved closes an event descriptor whose path could not be read.
