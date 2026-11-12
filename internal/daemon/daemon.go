@@ -1731,6 +1731,17 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// findings; nothing else hands this dispatcher a Critical auto_block.
 	d.observeBlocks(slices.Concat(findings, blockActions))
 
+	// Realtime only alerts on PHP it cannot confirm. The scheduled analysis
+	// of the same file runs now, and a Critical verdict joins this batch so
+	// the scheduled response acts at once instead of at the next scan.
+	if escalated := d.store.FilterNew(checks.EscalateRealtimePHP(cfg, newFindings)); len(escalated) > 0 {
+		findings = append(findings, escalated...)
+		responseFindings = append(responseFindings, escalated...)
+		escalated = filterUnsuppressedFindings(d.store, escalated, suppressions)
+		d.store.AppendHistory(escalated)
+		newFindings = append(newFindings, escalated...)
+	}
+
 	// Kill and quarantine only run on new, unsuppressed findings. The
 	// companion sweep is queued first so a file quarantined below is
 	// anchored from its live stat.
