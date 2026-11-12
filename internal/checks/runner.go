@@ -513,10 +513,10 @@ func criticalChecks() []namedCheck {
 }
 
 // deepChecks also runs in full while the realtime file monitor is attached.
-// The monitor sees close-after-write only: a file renamed into place (no
-// FAN_MOVED_TO, and no FAN_CREATE on EL8), a setuid bit set by chmod, and a
-// write outside the mount mark raise no event, and probe-based checks have no
-// file event at all.
+// Close after write is the only fanotify event. A file renamed into place is
+// reported only by the placement backend where one runs; a setuid bit set by
+// chmod and a write outside the mark raise no event, and probe-based checks
+// have no file event at all.
 func deepChecks() []namedCheck {
 	return []namedCheck{
 		{"filesystem", CheckFilesystem},

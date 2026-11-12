@@ -65,7 +65,7 @@ func (r *wpInstallRun) observe(t *testing.T, path string, beforeObserve func()) 
 		beforeObserve()
 	}
 	c := r.fm.observeDropperCandidate(fileEvent{
-		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE,
 	}, "pid=4242 cmd=lsphp uid=1000")
 	if c == nil {
 		t.Fatalf("staged PHP %s was not admitted", path)
@@ -343,7 +343,7 @@ func TestDropperWPRewriteCannotErasePayload(t *testing.T) {
 	assertSingleCriticalDropper(t, *r.alerts, staged)
 }
 
-func TestDropperWPCreateThenCloseKeepsDataProof(t *testing.T) {
+func TestDropperWPEmptyCloseThenDataKeepsDataProof(t *testing.T) {
 	docroot := t.TempDir()
 	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
 	installed := filepath.Join(docroot, "wp-content", "languages", "example-ro_RO.l10n.php")
@@ -354,9 +354,6 @@ func TestDropperWPCreateThenCloseKeepsDataProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE}, ""); c == nil {
-		t.Fatal("create was not admitted")
-	}
 	// Some writers close the empty file before reopening it for the data.
 	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, ""); c == nil {
 		t.Fatal("empty close was not admitted")
@@ -371,11 +368,11 @@ func TestDropperWPCreateThenCloseKeepsDataProof(t *testing.T) {
 	}
 	r.probeAndFlush()
 	if len(*r.alerts) != 0 {
-		t.Fatalf("create/close translation raised %+v", *r.alerts)
+		t.Fatalf("empty then data translation raised %+v", *r.alerts)
 	}
 }
 
-func TestDropperWPCreatePayloadCannotBeClearedByClose(t *testing.T) {
+func TestDropperWPPayloadCannotBeClearedByLaterClose(t *testing.T) {
 	docroot := t.TempDir()
 	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
 	installed := filepath.Join(docroot, "wp-content", "languages", "example-ro_RO.l10n.php")
@@ -386,8 +383,8 @@ func TestDropperWPCreatePayloadCannotBeClearedByClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE}, ""); c == nil {
-		t.Fatal("create was not admitted")
+	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, ""); c == nil {
+		t.Fatal("payload close was not admitted")
 	}
 	writeWPInstallFile(t, staged, testL10nCache)
 	if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, ""); c == nil {
@@ -399,32 +396,6 @@ func TestDropperWPCreatePayloadCannotBeClearedByClose(t *testing.T) {
 	}
 	r.probeAndFlush()
 	assertSingleCriticalDropper(t, *r.alerts, staged)
-}
-
-func TestDropperWPLateCreateKeepsDataProof(t *testing.T) {
-	docroot := t.TempDir()
-	staged := filepath.Join(docroot, "wp-content", "upgrade", "stage", "example-ro_RO.l10n.php")
-	installed := filepath.Join(docroot, "wp-content", "languages", "example-ro_RO.l10n.php")
-	writeWPInstallFile(t, staged, testL10nCache)
-	r := newWPInstallRun(t, docroot)
-	f, err := os.Open(staged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	for _, mask := range []uint64{FAN_CLOSE_WRITE, FAN_CREATE} {
-		if c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: mask}, ""); c == nil {
-			t.Fatal("update was not admitted")
-		}
-	}
-	writeWPInstallFile(t, installed, testL10nCache)
-	if err := os.Remove(staged); err != nil {
-		t.Fatal(err)
-	}
-	r.probeAndFlush()
-	if len(*r.alerts) != 0 {
-		t.Fatalf("late CREATE turned an installed data file into %+v", *r.alerts)
-	}
 }
 
 func TestDropperInstallDestinationDisappearsDuringDigest(t *testing.T) {
@@ -468,45 +439,6 @@ func TestDropperUploadExecutionProbeCopy(t *testing.T) {
 		if len(*r.alerts) != 0 {
 			t.Fatalf("upload execution test script raised %+v, want no finding", *r.alerts)
 		}
-	}
-}
-
-func TestDropperUploadExecutionProbeEventOrdering(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		masks []uint64
-	}{
-		{"create then close", []uint64{FAN_CREATE, FAN_CLOSE_WRITE}},
-		{"close then late create", []uint64{FAN_CLOSE_WRITE, FAN_CREATE}},
-		{"create then combined close", []uint64{FAN_CREATE, FAN_CREATE | FAN_CLOSE_WRITE}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, body := range rssslProbeBodies {
-				docroot := t.TempDir()
-				path := filepath.Join(docroot, "wp-content", "uploads", "code-execution.php")
-				writeWPInstallFile(t, path, body)
-				f, err := os.Open(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer func() { _ = f.Close() }()
-				r := newWPInstallRun(t, docroot)
-				for _, mask := range tc.masks {
-					if c := r.fm.observeDropperCandidate(fileEvent{
-						path: path, fd: int(f.Fd()), pid: 4242, mask: mask,
-					}, ""); c == nil {
-						t.Fatal("probe event was not observed")
-					}
-				}
-				if err := os.Remove(path); err != nil {
-					t.Fatal(err)
-				}
-				r.probeAndFlush()
-				if len(*r.alerts) != 0 {
-					t.Fatalf("completed upload execution probe raised %+v", *r.alerts)
-				}
-			}
-		})
 	}
 }
 
@@ -800,18 +732,18 @@ func TestDropperCorePackageSnapshotHistory(t *testing.T) {
 		mask uint64
 	}
 	for _, tc := range []struct {
-		name         string
-		writes       []observation
-		resendCreate bool
-		installed    bool
-		wantAlert    bool
+		name        string
+		writes      []observation
+		resendFirst bool
+		installed   bool
+		wantAlert   bool
 	}{
-		{name: "rewritten file has an installed copy", writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, installed: true, wantAlert: true},
-		{name: "create payload then official close", writes: []observation{{testDropperPHP, FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, wantAlert: true},
-		{name: "payload empty official", writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {"", FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, wantAlert: true},
-		{name: "empty create then official close", writes: []observation{{"", FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}},
-		{name: "official create then close", writes: []observation{{testCoreThemeFile, FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}},
-		{name: "resend create then close", writes: []observation{{testCoreThemeFile, FAN_CREATE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, resendCreate: true},
+		{name: "rewritten file has an installed copy", writes: []observation{{testDropperPHP, FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, installed: true, wantAlert: true},
+		{name: "payload then official close", writes: []observation{{testDropperPHP, FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, wantAlert: true},
+		{name: "payload empty official", writes: []observation{{testDropperPHP, FAN_CLOSE_WRITE}, {"", FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, wantAlert: true},
+		{name: "empty then official close", writes: []observation{{"", FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}},
+		{name: "official bytes closed twice", writes: []observation{{testCoreThemeFile, FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}},
+		{name: "resend first snapshot", writes: []observation{{testCoreThemeFile, FAN_CLOSE_WRITE}, {testCoreThemeFile, FAN_CLOSE_WRITE}}, resendFirst: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -836,7 +768,7 @@ func TestDropperCorePackageSnapshotHistory(t *testing.T) {
 				}
 				snapshots = append(snapshots, c)
 			}
-			if tc.resendCreate {
+			if tc.resendFirst {
 				// Analyzer verdicts resend the original snapshot; they must not invent
 				// a content rewrite or discard history accumulated by another worker.
 				snapshots[0].ContentSuspicious = true
@@ -864,7 +796,7 @@ func TestDropperCorePackageSnapshotHistory(t *testing.T) {
 	}
 }
 
-func TestDropperCorePackageCreateSnapshotIsComplete(t *testing.T) {
+func TestDropperCorePackageSnapshotIsComplete(t *testing.T) {
 	root := t.TempDir()
 	staged := filepath.Join(root, "wp-content/upgrade/update/wordpress/wp-content/themes/example/functions.php")
 	body := testCoreThemeFile + strings.Repeat("// official content\n", 100)
@@ -875,11 +807,11 @@ func TestDropperCorePackageCreateSnapshotIsComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE}, "")
+	c := r.fm.observeDropperCandidate(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "")
 	// #nosec G401 -- mirrors the official checksum format
 	want := md5.Sum([]byte(body))
 	if c == nil || !c.CoreMD5Known || c.CoreMD5 != want || string(c.Head) != body[:dropperTrackedHeadMax] {
-		t.Fatalf("create snapshot lacks a complete, bound digest: %+v", c)
+		t.Fatalf("snapshot lacks a complete, bound digest: %+v", c)
 	}
 }
 
@@ -902,7 +834,7 @@ func TestDropperStagedOversizedExecutableKeepsContentSignal(t *testing.T) {
 	defer func() { _ = f.Close() }()
 	r := newWPInstallRun(t, root)
 	r.fm.analyzeFile(fileEvent{path: staged, fd: int(f.Fd()), pid: 4242,
-		mask: FAN_CREATE | FAN_CLOSE_WRITE, dropperOnly: true})
+		mask: FAN_CLOSE_WRITE, dropperOnly: true})
 	if err := os.Remove(staged); err != nil {
 		t.Fatal(err)
 	}
@@ -962,23 +894,21 @@ func TestDropperStagedPackageSnapshotHistory(t *testing.T) {
 		wantAlert bool
 	}{
 		{name: "payload overwritten with installed bytes", kind: "plugins", install: copyInstall, wantAlert: true,
-			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+			writes: []observation{{testDropperPHP, FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
 		{name: "payload overwritten then renamed into place", kind: "plugins", install: renameInstall, wantAlert: true,
-			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
-		{name: "create payload then close", kind: "plugins", install: copyInstall, wantAlert: true,
-			writes: []observation{{testDropperPHP, FAN_CREATE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+			writes: []observation{{testDropperPHP, FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
 		{name: "payload emptied then rewritten", kind: "plugins", install: renameInstall, wantAlert: true,
-			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {"", FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+			writes: []observation{{testDropperPHP, FAN_CLOSE_WRITE}, {"", FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
 		{name: "theme payload overwritten with installed bytes", kind: "themes", install: copyInstall, wantAlert: true,
-			writes: []observation{{testDropperPHP, FAN_CREATE | FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+			writes: []observation{{testDropperPHP, FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
 		{name: "single write copied into place", kind: "plugins", install: copyInstall,
-			writes: []observation{{testPluginFile, FAN_CREATE | FAN_CLOSE_WRITE}}},
+			writes: []observation{{testPluginFile, FAN_CLOSE_WRITE}}},
 		{name: "single write renamed into place", kind: "plugins", install: renameInstall,
-			writes: []observation{{testPluginFile, FAN_CREATE | FAN_CLOSE_WRITE}}},
-		{name: "empty create then close", kind: "plugins", install: renameInstall,
-			writes: []observation{{"", FAN_CREATE}, {testPluginFile, FAN_CLOSE_WRITE}}},
-		{name: "create and close of the same bytes", kind: "themes", install: copyInstall,
-			writes: []observation{{testPluginFile, FAN_CREATE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+			writes: []observation{{testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "empty write then close", kind: "plugins", install: renameInstall,
+			writes: []observation{{"", FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
+		{name: "same bytes closed twice", kind: "themes", install: copyInstall,
+			writes: []observation{{testPluginFile, FAN_CLOSE_WRITE}, {testPluginFile, FAN_CLOSE_WRITE}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()

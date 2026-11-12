@@ -77,7 +77,6 @@ func TestDropperUploadExecutionProbeLookalikesStillReported(t *testing.T) {
 			c.Size = int64(len(c.Head))
 		}},
 		{"executable mode", func(c *dropperCandidate) { c.Mode = 0o100755 }},
-		{"write not closed", func(c *dropperCandidate) { c.WritePending = true }},
 		{"raced read", func(c *dropperCandidate) { c.ContentUnsettled = true }},
 		{"earlier code", func(c *dropperCandidate) { c.ContentMayExecute = true }},
 		{"content verdict", func(c *dropperCandidate) { c.ContentSuspicious = true }},

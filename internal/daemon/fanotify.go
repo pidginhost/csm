@@ -43,7 +43,6 @@ const (
 	FAN_MARK_MOUNT      = 0x00000010
 	FAN_MARK_FILESYSTEM = 0x00000100
 	FAN_CLOSE_WRITE     = 0x00000008
-	FAN_CREATE          = 0x00000100
 	FAN_CLASS_NOTIF     = 0x00000000
 	FAN_CLOEXEC         = 0x00000001
 	FAN_NONBLOCK        = 0x00000002
@@ -82,9 +81,9 @@ func (s markScope) String() string {
 // blind for precisely the accounts most likely to be compromised. Marking the
 // superblock covers every mount of it.
 //
-// The ladder degrades in two independent directions: kernels without
-// FAN_MARK_FILESYSTEM fall back to the mount mark, and kernels without
-// FAN_CREATE (EL8 among them) keep their scope and drop that event bit.
+// Kernels without FAN_MARK_FILESYSTEM fall back to the mount mark. Close
+// after write is the only event: FAN_CREATE needs an FID-reporting group,
+// which this one is not, so a mask carrying it is always rejected.
 func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
 	var lastErr error
 	for _, attempt := range []struct {
@@ -94,13 +93,11 @@ func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
 		{markScopeFilesystem, FAN_MARK_ADD | FAN_MARK_FILESYSTEM},
 		{markScopeMount, FAN_MARK_ADD | FAN_MARK_MOUNT},
 	} {
-		for _, mask := range []uint64{FAN_CLOSE_WRITE | FAN_CREATE, FAN_CLOSE_WRITE} {
-			if err := mark(fd, attempt.flags, mask, -1, path); err != nil {
-				lastErr = err
-				continue
-			}
-			return attempt.scope, nil
+		if err := mark(fd, attempt.flags, FAN_CLOSE_WRITE, -1, path); err != nil {
+			lastErr = err
+			continue
 		}
+		return attempt.scope, nil
 	}
 	return markScopeNone, lastErr
 }
@@ -616,9 +613,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	// the next scheduled scan. Mask matches spoolwatch.go (the proven
 	// production pattern for directory-scoped marks): FAN_CLOSE_WRITE
 	// alone catches both new and modified crontabs, since the close
-	// after O_CREAT|O_WRONLY|... fires the close-write event. FAN_CREATE
-	// is omitted because it has stricter kernel requirements with
-	// directory-scoped (non-MOUNT) marks and adds no coverage here.
+	// after O_CREAT|O_WRONLY|... fires the close-write event.
 	if _, statErr := os.Stat(cronSpoolDir()); statErr == nil {
 		if err := unix.FanotifyMark(fd, FAN_MARK_ADD,
 			FAN_CLOSE_WRITE|FAN_EVENT_ON_CHILD, -1, cronSpoolDir()); err != nil {

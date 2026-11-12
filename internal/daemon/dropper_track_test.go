@@ -67,10 +67,6 @@ func TestShouldTrackDropper(t *testing.T) {
 			c.Birth = now.Add(time.Second)
 		}, false},
 		{"birth time unavailable", func(c *dropperCandidate) { c.BirthKnown = false }, false},
-		{"create event with unavailable birth time", func(c *dropperCandidate) {
-			c.BirthKnown = false
-			c.Created = true
-		}, true},
 		{"nonstandard php handler extension", func(c *dropperCandidate) {
 			c.Path = "/home/alice/public_html/uploads/image.jpg"
 			c.PHPExecutable = true
@@ -201,76 +197,10 @@ func TestDropperTrackerReobserveKeepsFirstSeen(t *testing.T) {
 	}
 }
 
-func TestDropperTrackerCreateThenCloseWithoutBirthTime(t *testing.T) {
-	now := time.Unix(1_770_000_000, 0)
-	tr := newDropperTracker(time.Minute)
-	created := freshDropperCandidate(now)
-	created.BirthKnown = false
-	created.Created = true
-	created.Size = 0
-	created.Head = nil
-	created.DigestKnown = false
-	if !shouldTrackDropper(created, 999, 5*time.Minute) {
-		t.Fatal("FAN_CREATE candidate without birth time was not admitted")
-	}
-	tr.Observe(created)
-
-	closed := freshDropperCandidate(now.Add(2 * time.Second))
-	closed.BirthKnown = false
-	closed.Created = false
-	closed.ContentSuspicious = true
-	if shouldTrackDropper(closed, 999, 5*time.Minute) {
-		t.Fatal("standalone close without create or birth evidence must not be admitted")
-	}
-	if !tr.Refresh(closed) {
-		t.Fatal("close event did not refresh its prior create candidate")
-	}
-
-	due := tr.Due(now.Add(time.Minute))
-	if len(due) != 1 {
-		t.Fatalf("got %d due entries, want 1", len(due))
-	}
-	if !due[0].Observed.Equal(now) || due[0].Size != closed.Size ||
-		string(due[0].Head) != string(closed.Head) || !due[0].Created || !due[0].ContentSuspicious {
-		t.Fatalf("create/close candidate was not merged correctly: %+v", due[0])
-	}
-}
-
-func TestDropperMergeLateCreateRetainsCloseEvidence(t *testing.T) {
-	closed := freshDropperCandidate(time.Now())
-	created := closed
-	created.Observed = closed.Observed.Add(time.Second)
-	created.WritePending = true
-	if mergeDropperCandidate(closed, created).WritePending {
-		t.Fatal("a delayed CREATE erased the already observed CLOSE_WRITE")
-	}
-}
-
 func TestDropperTrackerRefreshDoesNotAdmitUnknownFile(t *testing.T) {
 	tr := newDropperTracker(time.Minute)
 	if tr.Refresh(freshDropperCandidate(time.Unix(1_770_000_000, 0))) {
-		t.Fatal("Refresh admitted a file without a prior create candidate")
-	}
-}
-
-func TestDropperTrackerRefreshUpgradesBirthIdentity(t *testing.T) {
-	now := time.Unix(1_770_000_000, 0)
-	tr := newDropperTracker(time.Minute)
-	created := freshDropperCandidate(now)
-	created.BirthKnown = false
-	created.Created = true
-	tr.Observe(created)
-
-	closed := created
-	closed.Observed = now.Add(time.Second)
-	closed.Birth = now
-	closed.BirthKnown = true
-	if !tr.Refresh(closed) {
-		t.Fatal("close event with newly available birth time did not refresh create candidate")
-	}
-	due := tr.Due(now.Add(time.Minute))
-	if len(due) != 1 || !due[0].BirthKnown || !due[0].Birth.Equal(now) {
-		t.Fatalf("refreshed candidate did not retain stronger birth identity: %+v", due)
+		t.Fatal("Refresh admitted a file without a prior entry")
 	}
 }
 
@@ -1079,7 +1009,6 @@ func TestDropperOfficialVersionProbeScope(t *testing.T) {
 		{"not data", func(c *dropperCandidate, _ *dropperProbe) { c.WPInstallData = false }},
 		{"earlier unsafe snapshot", func(c *dropperCandidate, _ *dropperProbe) { c.WPInstallUnsafe = true }},
 		{"no digest", func(c *dropperCandidate, _ *dropperProbe) { c.DigestKnown = false }},
-		{"write pending", func(c *dropperCandidate, _ *dropperProbe) { c.WritePending = true }},
 		{"content verdict", func(c *dropperCandidate, _ *dropperProbe) { c.ContentSuspicious = true }},
 		{"executable", func(c *dropperCandidate, _ *dropperProbe) { c.Mode = 0o100755 }},
 	} {
@@ -1097,13 +1026,11 @@ func TestDropperCoreHistorySurvivesReordering(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	payload := freshDropperCandidate(now)
 	payload.Path = payload.Docroot + "/wp-content/upgrade/update/wordpress/wp-content/themes/example/functions.php"
-	payload.Created, payload.WritePending = true, true
 	empty := payload
 	empty.Observed, empty.Size, empty.Head = now.Add(time.Second), 0, nil
 	empty.Digest, empty.DigestKnown = sha256.Sum256(nil), true
-	empty.WritePending = false
 	official := payload
-	official.Observed, official.WritePending = now.Add(2*time.Second), false
+	official.Observed = now.Add(2 * time.Second)
 	official.Head = []byte("<?php function theme_setup() { add_theme_support('wp-block-styles'); }")
 	official.Size, official.Digest = int64(len(official.Head)), sha256.Sum256(official.Head)
 	official.CoreMD5Known = true
@@ -1220,7 +1147,7 @@ func TestDropperStagedSingleUnreadableSnapshotIsNotRewrite(t *testing.T) {
 	}
 }
 
-// Analyzer verdicts and probe retries reuse snapshots. Empty CREATE/CLOSE_WRITE
+// Analyzer verdicts and probe retries reuse snapshots. Empty close-write
 // observations can arrive in either order without adding another nonempty write.
 func TestDropperStagedHistoryReplay(t *testing.T) {
 	for _, pkg := range []string{"example", "wordpress"} {
@@ -1232,9 +1159,8 @@ func TestDropperStagedHistoryReplay(t *testing.T) {
 				written.DigestKnown = known
 				empty := written
 				empty.Observed, empty.Size, empty.Head = now, 0, nil
-				empty.Created, empty.WritePending = true, true
 				truncated := empty
-				truncated.Observed, truncated.WritePending = now.Add(2*time.Second), false
+				truncated.Observed = now.Add(2 * time.Second)
 				snapshots := []dropperCandidate{empty, written, truncated}
 				tr := newDropperTracker(time.Minute)
 				for _, i := range order {
@@ -1246,7 +1172,7 @@ func TestDropperStagedHistoryReplay(t *testing.T) {
 				}
 				due := tr.Due(now.Add(time.Minute))
 				if len(due) != 1 || due[0].ContentRewritten || !due[0].ContentSuspicious ||
-					due[0].Size != 0 || due[0].WritePending || !due[0].Observed.Equal(now) {
+					due[0].Size != 0 || !due[0].Observed.Equal(now) {
 					t.Fatalf("package=%s known=%v order=%v: replay changed history or metadata: %+v", pkg, known, order, due)
 				}
 				// A detached probe can collide with a replay of that same snapshot.

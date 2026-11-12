@@ -18,10 +18,10 @@ func deepCheckNames() map[string]bool {
 	return names
 }
 
-// The deep tier also runs while the realtime file monitor is attached, and the
-// fanotify mask carries no FAN_MOVED_TO on any kernel and loses FAN_CREATE on
-// EL8. A file renamed into place - an unpacked archive, a staged install, most
-// droppers - raises no event, so the periodic content scans are the only thing
+// The deep tier also runs while the realtime file monitor is attached, and
+// close after write is the only fanotify event. A file renamed into place - an
+// unpacked archive, a staged install, most droppers - raises no fanotify event,
+// so without a placement backend the periodic content scans are the only thing
 // that ever meets it.
 func TestDeepTierKeepsRenameBlindContentScans(t *testing.T) {
 	names := deepCheckNames()

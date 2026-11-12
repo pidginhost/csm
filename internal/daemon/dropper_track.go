@@ -26,7 +26,6 @@ type dropperCandidate struct {
 	Observed   time.Time
 	Birth      time.Time
 	BirthKnown bool
-	Created    bool
 	Device     uint64
 	Inode      uint64
 	Size       int64
@@ -40,9 +39,6 @@ type dropperCandidate struct {
 	// ContentSuspicious prevents FP heuristics from demoting a file whose
 	// realtime content/signature pass already found malicious structure.
 	ContentSuspicious bool
-	// A create event can precede the writer's first bytes. Retain its
-	// freshness evidence until a close-write supplies the payload.
-	WritePending bool
 	// Sticky across refreshes: truncating a previously executable snapshot
 	// must not turn its later deletion into a harmless empty guard.
 	ContentMayExecute bool
@@ -139,11 +135,9 @@ func dropperParentChanged(observed, current dropperParentIdentity) bool {
 
 // shouldTrackDropper reports whether a close-write event is a freshly
 // created PHP or executable file inside a web document root, i.e. a
-// candidate for self-deleting-dropper tracking. Modifications of
-// pre-existing files are excluded via either a FAN_CREATE observation or a
-// recent statx birth time. The explicit create bit keeps the detector useful
-// on filesystems that do not expose STATX_BTIME; the Linux event path must
-// preserve FAN_CREATE rather than throwing the event mask away.
+// candidate for self-deleting-dropper tracking. A recent statx birth time is
+// the only freshness proof, so modifications of pre-existing files and files
+// on filesystems without STATX_BTIME are not tracked.
 func shouldTrackDropper(c dropperCandidate, selfPID int32, freshFor time.Duration) bool {
 	if c.Docroot == "" {
 		return false
@@ -158,13 +152,8 @@ func shouldTrackDropper(c dropperCandidate, selfPID int32, freshFor time.Duratio
 	if !contenttype.IsExecutablePHPName(name) && !c.PHPExecutable && c.Mode&0o111 == 0 {
 		return false
 	}
-	if !c.Created {
-		age := c.Observed.Sub(c.Birth)
-		if !c.BirthKnown || age < 0 || age > freshFor {
-			return false
-		}
-	}
-	return true
+	age := c.Observed.Sub(c.Birth)
+	return c.BirthKnown && age >= 0 && age <= freshFor
 }
 
 // S_IFMT constants mirrored from the unix package so this file stays free
@@ -268,7 +257,6 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	if next.Observed.Before(prev.Observed) {
 		merged.Observed = next.Observed
 	}
-	merged.Created = prev.Created || next.Created
 	merged.PHPExecutable = prev.PHPExecutable || next.PHPExecutable
 	merged.ContentSuspicious = prev.ContentSuspicious || next.ContentSuspicious
 	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
@@ -282,19 +270,7 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.historySet = history.historySet
 	merged.historyKnown, merged.historyDigest = history.historyKnown, history.historyDigest
 	merged.historyObserved = history.historyObserved
-	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
-	merged.WritePending = prev.WritePending && next.WritePending
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
-	if !merged.BirthKnown {
-		switch {
-		case prev.BirthKnown:
-			merged.Birth = prev.Birth
-			merged.BirthKnown = true
-		case next.BirthKnown:
-			merged.Birth = next.Birth
-			merged.BirthKnown = true
-		}
-	}
 	merged.ticket = prev.ticket
 	return merged
 }
@@ -389,12 +365,9 @@ func (t *dropperTracker) Retry(c dropperCandidate) (queuehealth.Ticket, bool) {
 }
 
 // Refresh updates a previously admitted candidate without creating a new
-// entry. The Linux wiring uses this for a CLOSE_WRITE that follows a separate
-// FAN_CREATE event: the create proves freshness, while the close supplies the
-// final size, digest, head, and content verdict. CLOSE_WRITE handlers should
-// call Refresh first, then use shouldTrackDropper plus Observe only when no
-// prior create entry matched. A birth-time availability change between the
-// two events is allowed only when path, device, and inode still match.
+// entry. A later close-write of a tracked file, or a content verdict on its
+// snapshot, must reach the entry even when admission would now refuse the
+// snapshot as inert.
 func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 	c = ownDropperCandidate(c)
 	key := candidateKey(c)
@@ -403,26 +376,6 @@ func (t *dropperTracker) Refresh(c dropperCandidate) bool {
 	if prev, ok := t.entries[key]; ok {
 		t.entries[key] = mergeDropperCandidate(prev, c)
 		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
-		return true
-	}
-	if c.Inode == 0 {
-		return false
-	}
-	for prevKey, prev := range t.entries {
-		if prev.Path != c.Path || prev.Device != c.Device || prev.Inode != c.Inode {
-			continue
-		}
-		// Exact known/known and unknown/unknown identities were handled by
-		// the direct key lookup. Only strengthen unknown -> known here;
-		// weakening a known identity could merge an inode-reuse generation.
-		if prev.BirthKnown || !c.BirthKnown {
-			continue
-		}
-		merged := mergeDropperCandidate(prev, c)
-		prev.ticket.RetainQueuedAt(c.Observed.Add(t.ttl))
-		delete(t.entries, prevKey)
-		mergedKey := candidateKey(merged)
-		t.entries[mergedKey] = merged
 		return true
 	}
 	return false
@@ -620,7 +573,7 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 				return dropperDemotedPluginCopy
 			}
 		}
-		if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
+		if !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
 			return dropperBenign
 		}
 		return dropperSuspect
@@ -642,7 +595,7 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if dropperOfficialCorePackageFile(c, p) {
 		return dropperBenign
 	}
-	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
+	if !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
 		return dropperBenign
 	}
 	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
@@ -761,9 +714,10 @@ func wpUpgradeStagedPath(path, configuredDocroot string) (wpRoot, rest string, o
 // wpUpgradeRenameCandidates maps a path inside a WordPress upgrade staging
 // dir (wp-content/upgrade/<staging>/<package>/<rest>) to the destinations
 // WordPress moves it to on success: the plugin and theme dirs, or the
-// docroot itself for core packages. The fanotify mask has no FAN_MOVED_TO,
-// so a successful rename-based install makes the staged path vanish; the
-// probe checks these destinations before calling it a self-deleting drop.
+// docroot itself for core packages. Close after write is the only fanotify
+// event, and placement is reported only by the placement backend where one
+// runs, so a successful rename-based install makes the staged path vanish;
+// the probe checks these destinations before calling it a self-deleting drop.
 func wpUpgradeRenameCandidates(path, configuredDocroot string) []string {
 	wpRoot, rest, ok := wpUpgradeStagedPath(path, configuredDocroot)
 	if !ok {
@@ -871,7 +825,7 @@ func dropperRenameTargetAllowed(c dropperCandidate, target string) bool {
 // dropperWPCopyDataEligible reports whether every snapshot of c was complete
 // translation or version data with nothing that could have run.
 func dropperWPCopyDataEligible(c dropperCandidate) bool {
-	return c.WPInstallData && !c.WPInstallUnsafe && c.DigestKnown && !c.WritePending &&
+	return c.WPInstallData && !c.WPInstallUnsafe && c.DigestKnown &&
 		!c.ContentSuspicious && c.Mode&0o111 == 0
 }
 
@@ -893,7 +847,7 @@ func dropperOfficialVersionProbe(c dropperCandidate, p dropperProbe) bool {
 // them loses no evidence.
 func dropperOfficialCorePackageFile(c dropperCandidate, p dropperProbe) bool {
 	return p.OfficialWPCorePackageFile && c.CoreMD5Known && !c.ContentRewritten &&
-		!c.WritePending && !c.ContentUnsettled && c.Mode&0o111 == 0
+		!c.ContentUnsettled && c.Mode&0o111 == 0
 }
 
 // dropperPluginCopy names a file that a plugin copies out of its own package
@@ -940,7 +894,7 @@ func dropperPluginCopySource(path, docroot string) (string, dropperPluginCopy, b
 // accounts for everything the copy could have run.
 func dropperPluginCopyEligible(c dropperCandidate) bool {
 	_, _, ok := dropperPluginCopySource(c.Path, c.Docroot)
-	return ok && c.DigestKnown && !c.ContentRewritten && !c.WritePending && !c.ContentUnsettled &&
+	return ok && c.DigestKnown && !c.ContentRewritten && !c.ContentUnsettled &&
 		c.Mode&0o111 == 0
 }
 
@@ -958,7 +912,7 @@ func dropperRenameMatch(c dropperCandidate, dest dropperFileState) bool {
 	if dropperSameIdentity(c, dest) {
 		return true
 	}
-	if staged && (c.ContentUnsettled || c.WritePending) {
+	if staged && c.ContentUnsettled {
 		return false
 	}
 	return c.DigestKnown && dest.DigestKnown && c.Size == dest.Size && c.Digest == dest.Digest

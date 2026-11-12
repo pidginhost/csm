@@ -675,7 +675,7 @@ func TestFanotifyMetadataSize(t *testing.T) {
 // --- constants distinct, non-zero ----------------------------------------
 
 func TestFanotifyConstantsAreDistinct(t *testing.T) {
-	vals := []uint32{FAN_MARK_ADD, FAN_MARK_MOUNT, FAN_CLOSE_WRITE, FAN_CREATE, FAN_CLOEXEC, FAN_NONBLOCK}
+	vals := []uint32{FAN_MARK_ADD, FAN_MARK_MOUNT, FAN_CLOSE_WRITE, FAN_CLOEXEC, FAN_NONBLOCK}
 	// At least: none zero
 	for i, v := range vals {
 		if v == 0 {

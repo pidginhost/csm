@@ -96,7 +96,6 @@ func newDropperCandidate(now time.Time, path string) dropperCandidate {
 		Observed:   now,
 		Birth:      now,
 		BirthKnown: true,
-		Created:    true,
 		Device:     41,
 		Inode:      uint64(len(path)),
 		Mode:       0o100644,

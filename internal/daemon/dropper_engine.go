@@ -72,12 +72,10 @@ func (e *dropperEngine) admit(c dropperCandidate) bool {
 	if !shouldTrackDropper(c, e.selfPID, e.ttl) {
 		return false
 	}
-	// Retain known executable probes until assessment: a late CREATE must
-	// merge with their completed CLOSE_WRITE instead of becoming a new pending
-	// write. Inert files still avoid consuming tracker capacity.
-	// ContentSuspicious wins: a realtime content or signature hit already
-	// found structure, and no later heuristic may demote that.
-	if !c.WritePending && !c.ContentSuspicious && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
+	// Inert files avoid consuming tracker capacity. ContentSuspicious wins: a
+	// realtime content or signature hit already found structure, and no later
+	// heuristic may demote that.
+	if !c.ContentSuspicious && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
 		return false
 	}
 	return e.tr.Observe(c)
@@ -89,8 +87,7 @@ func (e *dropperEngine) admit(c dropperCandidate) bool {
 // the grace window independently of the TTL.
 func (e *dropperEngine) probeStep(probeNow time.Time, prober dropperFSProber, flushNow time.Time) {
 	for _, c := range e.tr.Due(probeNow) {
-		// A close-write can strengthen the filesystem identity while queued.
-		// The work ticket survives that change and owns its attempt budget.
+		// The work ticket owns the attempt budget across retries.
 		key := c.ticket
 		if e.ignorePath != nil && e.ignorePath(c.Path) {
 			delete(e.attempts, key)

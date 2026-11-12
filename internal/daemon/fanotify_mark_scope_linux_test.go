@@ -39,33 +39,8 @@ func TestMarkWatchRoot_PrefersFilesystemScope(t *testing.T) {
 	if calls[0].flags&FAN_MARK_FILESYSTEM == 0 {
 		t.Errorf("flags = %#x, want FAN_MARK_FILESYSTEM", calls[0].flags)
 	}
-}
-
-// EL8 backported FAN_MARK_FILESYSTEM but not FAN_CREATE. The filesystem scope
-// must survive that: dropping to a mount mark there would give up cage coverage
-// for an event type the kernel never had.
-func TestMarkWatchRoot_KeepsFilesystemScopeWithoutCreate(t *testing.T) {
-	var calls []markCall
-	mark := func(fd int, flags uint, mask uint64, dirFd int, path string) error {
-		calls = append(calls, markCall{flags: flags, mask: mask, path: path})
-		if mask&FAN_CREATE != 0 {
-			return unix.EINVAL
-		}
-		return nil
-	}
-
-	scope, err := markWatchRoot(3, "/home", mark)
-	if err != nil {
-		t.Fatalf("markWatchRoot: %v", err)
-	}
-	if scope != markScopeFilesystem {
-		t.Errorf("scope = %v, want filesystem", scope)
-	}
-	if len(calls) != 2 {
-		t.Fatalf("calls = %d, want the create attempt then the close-write retry", len(calls))
-	}
-	if calls[1].mask&FAN_CREATE != 0 {
-		t.Errorf("retry mask = %#x, still carries FAN_CREATE", calls[1].mask)
+	if calls[0].mask != FAN_CLOSE_WRITE {
+		t.Errorf("mask = %#x, want FAN_CLOSE_WRITE only", calls[0].mask)
 	}
 }
 
@@ -87,9 +62,17 @@ func TestMarkWatchRoot_FallsBackToMountScope(t *testing.T) {
 	if scope != markScopeMount {
 		t.Errorf("scope = %v, want mount", scope)
 	}
-	last := calls[len(calls)-1]
-	if last.flags&FAN_MARK_MOUNT == 0 {
-		t.Errorf("final flags = %#x, want FAN_MARK_MOUNT", last.flags)
+	want := []markCall{
+		{flags: FAN_MARK_ADD | FAN_MARK_FILESYSTEM, mask: FAN_CLOSE_WRITE, path: "/home"},
+		{flags: FAN_MARK_ADD | FAN_MARK_MOUNT, mask: FAN_CLOSE_WRITE, path: "/home"},
+	}
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %+v, want %+v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Errorf("call %d = %+v, want %+v", i, calls[i], want[i])
+		}
 	}
 }
 

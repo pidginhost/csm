@@ -112,39 +112,6 @@ func TestDropperSnapshotBindsCompleteReadToOpeningStat(t *testing.T) {
 	}
 }
 
-func TestDropperInertCreatePreservesFreshness(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "payload.php")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	fm := newDropperWiringTestMonitor(dir, time.Minute)
-	created := fm.observeDropperCandidate(fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE}, "")
-	if created == nil || fm.dropper.tr.trackedCount() != 1 {
-		t.Fatal("empty create discarded the freshness evidence for a later write")
-	}
-	// Emulate a filesystem without STATX_BTIME. Only the create can prove
-	// freshness when the following close carries executable content.
-	created.BirthKnown = false
-	fm.dropper.tr = newDropperTracker(time.Minute)
-	fm.dropper.tr.Observe(*created)
-	closed := *created
-	closed.Created = false
-	closed.WritePending = false
-	closed.Observed = created.Observed.Add(time.Second)
-	closed.Head = []byte("<?php echo 1;")
-	closed.Size = int64(len(closed.Head))
-	if !fm.dropper.tr.Refresh(closed) {
-		t.Fatal("close could not find the prior create")
-	}
-	due := fm.dropper.tr.Due(closed.Observed.Add(2 * time.Minute))
-	if len(due) != 1 || !due[0].Created || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
-		t.Fatalf("completed payload lost: %+v", due)
-	}
-}
-
 func TestDropperInertContentSignatureOverridesAdmission(t *testing.T) {
 	useRealtimeRules(t, strings.Replace(realtimeHighRule, "EVIL_MARKER_A", "    ", 1))
 	dir := t.TempDir()
@@ -158,7 +125,7 @@ func TestDropperInertContentSignatureOverridesAdmission(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 	fm := newDropperWiringTestMonitor(dir, time.Minute)
-	event := fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE}
+	event := fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}
 	cand := fm.observeDropperCandidate(event, "")
 	if cand == nil || !dropperCandidateIsInert(*cand) || fm.dropper.tr.trackedCount() != 0 {
 		t.Fatal("test must start with a snapshot rejected by the inert gate")
@@ -176,7 +143,6 @@ func TestDropperInertContentSignatureOverridesAdmission(t *testing.T) {
 func TestDropperInertRefreshDoesNotForgetCode(t *testing.T) {
 	for _, initiallyActive := range []bool{false, true} {
 		c := inertTestCandidate()
-		c.WritePending = true
 		if initiallyActive {
 			c.Head = []byte("<?php echo 1;")
 			c.Size = int64(len(c.Head))
@@ -184,12 +150,10 @@ func TestDropperInertRefreshDoesNotForgetCode(t *testing.T) {
 		tr := newDropperTracker(time.Minute)
 		tr.Observe(c)
 		closed := c
-		closed.Created = false
-		closed.WritePending = false
 		closed.Observed = c.Observed.Add(time.Second)
 		closed.Head, closed.Size = nil, 0
 		if !tr.Refresh(closed) {
-			t.Fatal("close did not refresh create")
+			t.Fatal("close did not refresh the tracked entry")
 		}
 		due := tr.Due(c.Observed.Add(2 * time.Minute))
 		if len(due) != 1 {
@@ -350,7 +314,7 @@ func TestDropperInertCloseWriteFamilies(t *testing.T) {
 			defer func() { _ = f.Close() }()
 			fm := newDropperWiringTestMonitor(dir, time.Minute)
 			c := fm.observeDropperCandidate(fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "")
-			if c == nil || !c.BirthKnown || c.Created || c.WritePending {
+			if c == nil || !c.BirthKnown {
 				t.Fatalf("test did not exercise birth-time admission on close-write: %+v", c)
 			}
 			if c.ContentMayExecute || c.Size != int64(len(tc.body)) {
