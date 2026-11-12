@@ -41,7 +41,7 @@ func (m *webProcTable) Glob(pattern string) ([]string, error) {
 	if strings.HasPrefix(pattern, "/proc/") && strings.HasSuffix(pattern, "/fd/*") {
 		pid, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(pattern, "/proc/"), "/fd/*"))
 		if err != nil {
-			return nil, nil
+			return nil, err
 		}
 		var out []string
 		for i := range m.fds[pid] {
