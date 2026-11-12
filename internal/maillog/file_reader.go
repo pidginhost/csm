@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -77,7 +78,10 @@ func NewResolvedFileReader(resolve func() (string, error), queue *Queue) (*FileR
 
 // switchTarget names the newer file a resolved reader moves to. Only a read
 // that stopped, at the end of the current file or on an error, may move: the
-// minute ticker can fire while the old file still holds unread lines.
+// minute ticker can fire while the old file still holds unread lines. The
+// reader moves only forward, to a name that sorts after the current one: if
+// the current file is removed, an older one must not be replayed from its
+// start.
 func (r *FileReader) switchTarget(atEOF bool) (string, error) {
 	if r.resolve == nil || !atEOF {
 		return "", nil
@@ -86,7 +90,7 @@ func (r *FileReader) switchTarget(atEOF bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if next == r.path {
+	if filepath.Base(next) <= filepath.Base(r.path) {
 		return "", nil
 	}
 	return next, nil

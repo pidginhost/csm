@@ -199,3 +199,22 @@ func TestPlainFileReaderNeverSwitches(t *testing.T) {
 		t.Fatal("a fixed-path reader has no resolver")
 	}
 }
+
+// Removing the current file must not send the reader back to an older day,
+// which it would read from its start and replay.
+func TestResolvedFileReaderNeverMovesBackward(t *testing.T) {
+	dir := t.TempDir()
+	writeLog(t, filepath.Join(dir, "stalwart.log.2026-11-10"), "")
+	current := filepath.Join(dir, "stalwart.log.2026-11-11")
+	writeLog(t, current, "")
+	r, err := NewResolvedFileReader(newestDated(dir), NewQueue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(current); err != nil {
+		t.Fatal(err)
+	}
+	if path, err := r.switchTarget(true); path != "" || err != nil {
+		t.Fatalf("switchTarget after removing the current file = %q, %v; want no move", path, err)
+	}
+}
