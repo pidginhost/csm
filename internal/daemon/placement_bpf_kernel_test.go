@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
+
+	bpfprog "github.com/pidginhost/csm/internal/daemon/placement_bpfprog"
 )
 
 // mountScratchTmpfs mounts a private tmpfs so the watched device holds only
@@ -221,5 +224,51 @@ func TestKernelPlacementReportsRenameLinkExchange(t *testing.T) {
 	}
 	if counts.Lost != 0 || counts.Submitted != uint64(len(want)+1) {
 		t.Errorf("kernel counters %+v, want submitted=%d lost=0", counts, len(want)+1)
+	}
+
+	// A hook that finds its CPU's slot mid-build counts a loss and leaves the
+	// slot to its owner. Marking every slot busy stands in for that overlap.
+	setPlacementSlotsBusy(t, p, 1)
+	overlapped := filepath.Join(root, "staging", "overlap.txt")
+	writeScratch(t, overlapped)
+	if err = os.Rename(overlapped, filepath.Join(root, "site", "overlap.php")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case work := <-p.source.Events():
+		t.Errorf("overlapping hook emitted %+v", work.Value)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err = p.objs.QueueStats.Lookup(uint32(0), &counts); err != nil {
+		t.Fatal(err)
+	}
+	if counts.Lost != 1 || counts.Submitted != uint64(len(want)+1) {
+		t.Errorf("overlap counters %+v, want submitted=%d lost=1", counts, len(want)+1)
+	}
+	slots := placementSlots(t, p)
+	for cpu, slot := range slots {
+		if slot.Busy != 1 {
+			t.Errorf("cpu %d: overlapping hook released the owner's slot (busy=%d)", cpu, slot.Busy)
+		}
+	}
+}
+
+func placementSlots(t *testing.T, p *placementBPF) []bpfprog.PlacementPlacementSlot {
+	t.Helper()
+	var slots []bpfprog.PlacementPlacementSlot
+	if err := p.objs.Scratch.Lookup(uint32(0), &slots); err != nil {
+		t.Fatal(err)
+	}
+	return slots
+}
+
+func setPlacementSlotsBusy(t *testing.T, p *placementBPF, busy uint32) {
+	t.Helper()
+	slots := placementSlots(t, p)
+	for i := range slots {
+		slots[i].Busy = busy
+	}
+	if err := p.objs.Scratch.Update(uint32(0), slots, ebpf.UpdateExist); err != nil {
+		t.Fatal(err)
 	}
 }

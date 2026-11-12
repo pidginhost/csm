@@ -51,13 +51,22 @@ struct {
 
 // Events are built here and copied out at their used length, so the ring
 // holds a typical placement in about a hundred bytes, not the full 4 KiB.
-// The program runs with migration disabled. Only a fully preemptible kernel
-// could let another hook on this CPU reuse the slot mid-build; userspace's
-// identity check rejects such a mixed record.
+// From 5.11, a kernel built with full, lazy or RT preemption runs this
+// program with migration disabled but preemption enabled, and LSM programs
+// have no recursion guard: a second rename or link on this CPU can start
+// while a placement is mid-build. busy makes that second hook count itself
+// lost instead of overwriting the first. The claim is add-then-check because
+// exchange atomics need 5.12; a race can make both hooks count a loss, never
+// both build.
+struct placement_slot {
+    __u32 busy;
+    struct placement_event ev;
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
-    __type(value, struct placement_event);
+    __type(value, struct placement_slot);
     __uint(max_entries, 1);
 } scratch SEC(".maps");
 
@@ -85,10 +94,17 @@ static __always_inline void report(struct dentry *source, struct dentry *target,
     }
 
     __u32 zero = 0;
-    struct placement_event *e = bpf_map_lookup_elem(&scratch, &zero);
-    if (!e) {
+    struct placement_slot *slot = bpf_map_lookup_elem(&scratch, &zero);
+    if (!slot) {
         return;
     }
+    __sync_fetch_and_add(&slot->busy, 1);
+    if (*(volatile __u32 *)&slot->busy != 1) {
+        __sync_fetch_and_add(&slot->busy, -1);
+        csm_count_ring_event(0);
+        return;
+    }
+    struct placement_event *e = &slot->ev;
     e->kind   = kind;
     e->is_dir = fmt == S_IFDIR;
     e->pid    = (__u32)(bpf_get_current_pid_tgid() >> 32);
@@ -127,6 +143,7 @@ static __always_inline void report(struct dentry *source, struct dentry *target,
         size = sizeof(*e);
     }
     csm_ringbuf_output(&events, e, size);
+    __sync_fetch_and_add(&slot->busy, -1);
 }
 
 // For RENAME_EXCHANGE the core calls this hook once per direction with the

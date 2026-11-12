@@ -31,6 +31,13 @@ type PlacementPlacementEvent struct {
 	Path      [4096]int8
 }
 
+type PlacementPlacementSlot struct {
+	_    structs.HostLayout
+	Busy uint32
+	_    [4]byte
+	Ev   PlacementPlacementEvent
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
