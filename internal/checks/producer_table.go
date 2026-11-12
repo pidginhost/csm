@@ -81,7 +81,7 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerStalwartLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		// SMTP, IMAP, POP3 and ManageSieve listeners log the TCP peer.
 		// HTTP listener events never carry an attribution.
-		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray", "email_cloud_relay_abuse"},
+		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray", "email_cloud_relay_abuse", "stalwart_ban"},
 		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "stalwart", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerAccessLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,

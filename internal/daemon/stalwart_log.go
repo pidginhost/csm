@@ -109,6 +109,12 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 			return nil
 		}
 		return d.stalwartAuth(ev, session, obs, cfg)
+	case "security.authentication-ban", "security.abuse-ban", "security.scan-ban":
+		session, ok := ev.Session()
+		if !ok {
+			return nil
+		}
+		return d.stalwartBan(ev, session, cfg)
 	}
 	return nil
 }

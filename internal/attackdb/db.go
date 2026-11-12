@@ -83,6 +83,7 @@ var checkToAttack = map[string]AttackType{
 	"mail_bruteforce":           AttackBruteForce,
 	"mail_subnet_spray":         AttackBruteForce,
 	"mail_account_compromised":  AttackBruteForce,
+	"stalwart_ban":              AttackBruteForce,
 	"admin_panel_bruteforce":    AttackBruteForce,
 
 	// File, process, outbound-connection and mail-volume findings carry no

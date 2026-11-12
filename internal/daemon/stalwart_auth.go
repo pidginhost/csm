@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/stalwartlog"
@@ -149,4 +150,44 @@ func (t *stalwartWebmailTracker) evictFor(maxTracked int) {
 	for _, s := range all[:min(drop, len(all))] {
 		delete(t.ips, s.ip)
 	}
+}
+
+// stalwartBanReasons names the Stalwart bans CSM follows. A loiter ban is
+// left out because slow legitimate mail servers trigger it.
+var stalwartBanReasons = map[string]string{
+	"security.authentication-ban": "repeated failed logins",
+	"security.abuse-ban":          "abuse",
+	"security.scan-ban":           "scanning",
+}
+
+// stalwartBan turns a Stalwart ban on a mail listener into a finding that
+// blocks the address at CSM's firewall. A ban on the HTTP listener or an
+// unmapped port may name a forwarded address and is not followed.
+func (d *Daemon) stalwartBan(ev stalwartlog.Event, s stalwartlog.Session, cfg *config.Config) []alert.Finding {
+	what, ok := stalwartBanReasons[ev.Name]
+	if !ok {
+		return nil
+	}
+	proto := d.stalwart.ports.Of(s.LocalPort)
+	switch proto {
+	case stalwartlog.ProtoSMTP, stalwartlog.ProtoIMAP, stalwartlog.ProtoPOP3, stalwartlog.ProtoSieve:
+	default:
+		return nil
+	}
+	ip := s.RemoteIP.String()
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+		return nil
+	}
+	if reason := ev.Fields["reason"]; reason != "" {
+		what += ": " + reason
+	}
+	return []alert.Finding{{
+		Severity:    alert.High,
+		Check:       "stalwart_ban",
+		Message:     fmt.Sprintf("Stalwart banned %s on its %s listener (port %d) for %s", ip, proto, s.LocalPort, what),
+		Details:     "CSM blocks the address at its firewall for the auto-response block length. Stalwart's own ban stays in place.",
+		Timestamp:   ev.Time,
+		SourceIP:    ip,
+		Attribution: admission.AttributionPeer,
+	}}
 }

@@ -21,7 +21,7 @@ var (
 		"http_ua_spoof", "ip_reputation",
 		"mail_account_compromised", "mail_bruteforce", "modsec_block_escalation",
 		"modsec_csm_block_escalation", "pam_bruteforce", "smtp_bruteforce",
-		"smtp_probe_abuse", "ssh_login_unknown_ip", "waf_attack_blocked",
+		"smtp_probe_abuse", "ssh_login_unknown_ip", "stalwart_ban", "waf_attack_blocked",
 		"wp_login_bruteforce", "xmlrpc_abuse",
 	)
 	goldenCpanelFailure = setOf(
@@ -42,7 +42,7 @@ var (
 		"email_spam_outbreak", "exfiltration_paste_site", "fake_kernel_thread",
 		"ftp_auth_failure_realtime", "htaccess_handler_abuse", "htaccess_injection",
 		"js_keylogger_dataflow", "kernel_module", "mail_account_compromised",
-		"mail_bruteforce", "mail_subnet_spray", "modsec_csm_block_escalation",
+		"mail_bruteforce", "mail_subnet_spray", "modsec_csm_block_escalation", "stalwart_ban",
 		"pam_bruteforce", "password_hijack_confirmed", "phishing_credential_log",
 		"phishing_directory", "phishing_iframe", "phishing_kit_archive",
 		"phishing_page", "phishing_php", "phishing_redirector",
