@@ -618,6 +618,17 @@
       "queue": "findings.ingest"
     },
     {
+      "id": "internal/daemon/daemon.go::New::d.phpEscalations::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "New",
+      "target": "d.phpEscalations",
+      "kind": "channel",
+      "source": "make(chan alert.Finding, cap(d.alertCh))",
+      "capacity": "cap(d.alertCh)",
+      "class": "maintenance",
+      "rationale": "Hands unconfirmed realtime PHP findings to the one escalation worker. A full queue drops only the early scheduled analysis, which is logged and counted: the original alert stays, and the scheduled content scan still reads the file."
+    },
+    {
       "id": "internal/daemon/daemon.go::New::forwardGuardWake::channel::1",
       "path": "internal/daemon/daemon.go",
       "owner": "New",
