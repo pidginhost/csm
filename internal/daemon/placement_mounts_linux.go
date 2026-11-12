@@ -86,6 +86,31 @@ func unescapeMountinfo(s string) string {
 	return b.String()
 }
 
+// bpfPlacementMounts returns the mounts the BPF backend joins kernel paths
+// under, and the watch roots spelled as those joined paths spell them.
+func bpfPlacementMounts(all []mountEntry, roots []watchRootMark) ([]mountEntry, []watchRootMark, error) {
+	roots, err := resolveWatchRootLinks(roots)
+	if err != nil {
+		return nil, nil, err
+	}
+	return placementMounts(all, roots), roots, nil
+}
+
+// resolveWatchRootLinks returns a copy of roots with symlinks resolved.
+// statDevice and fanotify_mark follow watch-root symlinks, but mountinfo
+// and the paths placement events resolve to never contain those aliases.
+func resolveWatchRootLinks(roots []watchRootMark) ([]watchRootMark, error) {
+	resolved := slices.Clone(roots)
+	for i := range resolved {
+		path, err := filepath.EvalSymlinks(resolved[i].path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve watch root %s: %w", resolved[i].path, err)
+		}
+		resolved[i].path = path
+	}
+	return resolved, nil
+}
+
 // placementMounts picks, for each watch root's device, the whole-superblock
 // mount that holds that root. A placement path joined under it is the path
 // the admission rules and the close-write events use.
@@ -215,11 +240,10 @@ func (fm *FileMonitor) reportUnresolvedOnDevice(dev uint64, details func() strin
 }
 
 // reportUncoveredPlacementRoots names roots that the running backend's
-// mounts, through which it turns events into paths, do not show. Sharing a
-// device does not imply sharing that path.
+// mounts, through which it turns events into paths, do not show.
 func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry, roots []watchRootMark) {
 	for _, r := range roots {
-		if i := visibleMount(all, r.path); i >= 0 && slices.Contains(mounts, all[i]) {
+		if i := visibleMount(all, r.path); i >= 0 && placementMountsShow(mounts, all[i]) {
 			continue
 		}
 		csmlog.Warn("placement: watch root is not visible through the placement mounts", "root", r.path, "device", deviceName(r.device))
@@ -227,6 +251,15 @@ func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry, r
 			fmt.Sprintf("Realtime protection cannot see files moved or linked into %s (device %s)", r.path, deviceName(r.device)),
 			"Realtime protection resolves placements on this filesystem through a mount that does not show this watch root, so it cannot match them to this location. The deep scan covers them.")
 	}
+}
+
+// placementMountsShow reports whether mounts show the tree of visible. Two
+// whole-filesystem mounts of one device show the same tree; a subdirectory
+// bind shares the device but not its paths.
+func placementMountsShow(mounts []mountEntry, visible mountEntry) bool {
+	return slices.Contains(mounts, visible) || visible.Root == "/" && slices.ContainsFunc(mounts, func(m mountEntry) bool {
+		return m.Dev == visible.Dev && m.Root == "/"
+	})
 }
 
 // reportUnmarkablePlacementRoots raises one Warning per start for the roots

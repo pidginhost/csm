@@ -325,15 +325,11 @@ func fidInitError(err error) error {
 // ENODEV or EOPNOTSUPP; some btrfs subvolumes give EXDEV) is skipped and
 // returned; any other failure, or skipping every root, fails the group.
 func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) ([]mountEntry, error) {
-	// statDevice and fanotify_mark follow watch-root symlinks. Mountinfo
-	// does not contain those aliases, and resolved event fds do not use them.
-	for i := range p.roots {
-		path, err := filepath.EvalSymlinks(p.roots[i].path)
-		if err != nil {
-			return nil, fmt.Errorf("resolve watch root %s: %w", p.roots[i].path, err)
-		}
-		p.roots[i].path = path
+	roots, err := resolveWatchRootLinks(p.roots)
+	if err != nil {
+		return nil, err
 	}
+	p.roots = roots
 	var skipped []mountEntry
 	var skipErr error
 	seen := make(map[mountEntry]bool)

@@ -52,7 +52,10 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 	if err != nil {
 		return nil, fmt.Errorf("read mountinfo: %w", err)
 	}
-	mounts := placementMounts(all, fm.watchRoots)
+	mounts, roots, err := bpfPlacementMounts(all, fm.watchRoots)
+	if err != nil {
+		return nil, err
+	}
 	if len(mounts) == 0 {
 		return nil, errors.New("no watch root is on a whole-filesystem mount")
 	}
@@ -74,7 +77,7 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 	p.source = reader
 	// Only the backend that runs reports roots it cannot see; a failed
 	// start falls back to one that may see them.
-	fm.reportUncoveredPlacementRoots(all, mounts, fm.watchRoots)
+	fm.reportUncoveredPlacementRoots(all, mounts, roots)
 	return p, nil
 }
 

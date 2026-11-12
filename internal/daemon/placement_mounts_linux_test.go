@@ -3,6 +3,9 @@
 package daemon
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -255,5 +258,69 @@ func TestUncoveredPlacementRootBesideSubtreeAnchor(t *testing.T) {
 	found := unresolvedPlacementFindings(t, alerts)
 	if len(found) != 1 || !strings.Contains(found[0].Message, "/srv/b") {
 		t.Fatalf("findings %+v, want one for the root outside the anchor mount", found)
+	}
+}
+
+// cPanel's securetmp binds /tmp onto /var/tmp: two whole-filesystem mounts of
+// one device. Placements on it resolve under the first, which shows both roots.
+func TestPlacementSecureTmpBindIsCovered(t *testing.T) {
+	alerts := make(chan alert.Finding, 8)
+	fm := placementTestMonitor(alerts)
+	root, tmp := unix.Mkdev(8, 2), unix.Mkdev(7, 0)
+	fm.watchRoots = []watchRootMark{{path: "/tmp", device: tmp}, {path: "/var/tmp", device: tmp}}
+	all := []mountEntry{
+		{Dev: root, Root: "/", MountPoint: "/"},
+		{Dev: tmp, Root: "/", MountPoint: "/tmp"},
+		{Dev: tmp, Root: "/", MountPoint: "/var/tmp"},
+	}
+	mounts, roots, err := bpfPlacementMounts(all, fm.watchRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := all[1:2]; !slices.Equal(mounts, want) {
+		t.Fatalf("placement mounts %+v, want %+v", mounts, want)
+	}
+	fm.reportUncoveredPlacementRoots(all, mounts, roots)
+	if found := unresolvedPlacementFindings(t, alerts); len(found) != 0 {
+		t.Fatalf("second whole mount of the device reported uncovered: %+v", found)
+	}
+}
+
+// Kernel paths never contain a watch root's symlink alias, so the BPF
+// backend matches roots by their resolved names, as the fanotify one does.
+func TestBPFPlacementMountsFollowSymlinkWatchRoot(t *testing.T) {
+	parent, target := t.TempDir(), t.TempDir()
+	alias := filepath.Join(parent, "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	dev, err := statDevice(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alerts := make(chan alert.Finding, 8)
+	fm := placementTestMonitor(alerts)
+	fm.watchRoots = []watchRootMark{{path: alias, device: dev}}
+	all := []mountEntry{
+		{Dev: dev + 1, Root: "/", MountPoint: parent},
+		{Dev: dev, Root: "/", MountPoint: target},
+	}
+	mounts, roots, err := bpfPlacementMounts(all, fm.watchRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := all[1:]; !slices.Equal(mounts, want) {
+		t.Fatalf("placement mounts %+v, want %+v", mounts, want)
+	}
+	fm.reportUncoveredPlacementRoots(all, mounts, roots)
+	if found := unresolvedPlacementFindings(t, alerts); len(found) != 0 {
+		t.Fatalf("symlinked watch root reported uncovered: %+v", found)
+	}
+	if fm.watchRoots[0].path != alias {
+		t.Fatalf("close-write roots changed to %+v", fm.watchRoots)
+	}
+	missing := []watchRootMark{{path: filepath.Join(parent, "missing")}}
+	if _, _, err := bpfPlacementMounts(all, missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unresolvable watch root error = %v, want not-exist", err)
 	}
 }
