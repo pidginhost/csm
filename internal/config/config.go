@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -3058,9 +3059,21 @@ func validateStalwartField(cfg *Config) (string, error) {
 		case u.User != nil:
 			// The admin login comes from the environment, never from config.
 			return field, fmt.Errorf("%s: must not contain a login", field)
+		case u.Scheme == "http" && !loopbackHost(u.Hostname()):
+			// Basic auth over plain http is readable on the way to another host.
+			return field, fmt.Errorf("%s: %q must use https unless it is on this host", field, raw)
 		}
 	}
 	return "", nil
+}
+
+// loopbackHost reports whether host names this machine's loopback.
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && a.Unmap().IsLoopback()
 }
 
 func validateMailLogs(cfg *Config) error {
