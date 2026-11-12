@@ -180,11 +180,8 @@ again. The daemon keeps this memory across restarts. A file cleaned with
 UI quarantine page, CSM's own writes and official WordPress release files are
 never treated as the file coming back.
 
-The saved removal history must be a private, daemon-owned regular file. CSM
-ignores unsafe, oversized or damaged history and logs the read failure. Invalid
-or future-dated entries are ignored. Normal content scanning still runs when
-removal history cannot be loaded. Filenames with non-UTF-8 bytes remain
-recognizable across restarts.
+The saved history is read only from a private file the daemon owns. A damaged
+or unsafe one is logged and ignored, and detection carries on without it.
 
 Before repeating the response, CSM checks that the file still holds the
 removed bytes, so a later replacement or a restore from the web UI is never
