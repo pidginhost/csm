@@ -56,6 +56,7 @@ func rollingContentPass(ctx context.Context, cfg *config.Config, scan *phpConten
 	rollingContentCursors.retain(db, homeDirs)
 	accounts := rollingAccountOrder(db, homeDirs)
 	budget := accountScanMaxFiles(ctx, cfg)
+	budget -= rollingChangedPass(ctx, cfg, scan, db, accounts, budget, findings)
 	wrapped := 0
 	for _, account := range accounts {
 		if ctx.Err() != nil || budget <= 0 {
@@ -173,6 +174,10 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 		if ctx.Err() != nil {
 			break
 		}
+		// The fixed walk or the changed pass already read it this cycle.
+		if _, done := scan.attempted[file]; done {
+			continue
+		}
 		// Opening FIFOs or device nodes can block the scan; rolling only needs
 		// regular PHP files (including symlinks that resolve to regular files).
 		if !rollingRegularCandidate(file) {
@@ -212,6 +217,156 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 		fmt.Fprintf(os.Stderr, "php_content rolling: cursor write for %s: %v\n", account, err)
 	}
 	return windowComplete, read
+}
+
+// rollingChangedMargin is taken off a pass's start time before it becomes an
+// account's watermark, so a clock stepped back by less than this cannot hide
+// a file changed right after the pass. Var, not const, so tests can zero it.
+var rollingChangedMargin = 2 * time.Minute
+
+// rollingChangedPass reads, before any rolling window, the files changed since
+// each account's watermark: written, replaced or modified after it. Accounts
+// are listed each cycle until the budget runs out, so a file planted outside
+// the fixed directories is read within a cycle instead of when a window
+// reaches it. Accounts served longest ago go first, and an account the budget
+// cuts short resumes after the last file read. It returns how many files it
+// read.
+func rollingChangedPass(ctx context.Context, cfg *config.Config, scan *phpContentScan, db *store.DB, accounts []rollingAccount, budget int, findings *[]alert.Finding) int {
+	start := phpContentNow()
+	read := 0
+	for _, account := range rollingChangedOrder(db, accounts) {
+		if ctx.Err() != nil || read >= budget {
+			break
+		}
+		read += rollingChangedAccount(ctx, cfg, scan, db, account, start, budget-read, findings)
+	}
+	return read
+}
+
+func rollingChangedOrder(db *store.DB, accounts []rollingAccount) []rollingAccount {
+	type ordered struct {
+		rollingAccount
+		served time.Time
+	}
+	all := make([]ordered, 0, len(accounts))
+	for _, account := range accounts {
+		cur, _ := rollingContentCursors.load(db, account.name)
+		all = append(all, ordered{rollingAccount: account, served: cur.ChangedServedAt})
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		if !all[i].served.Equal(all[j].served) {
+			return all[i].served.Before(all[j].served)
+		}
+		return all[i].name < all[j].name
+	})
+	out := make([]rollingAccount, 0, len(all))
+	for _, a := range all {
+		out = append(out, a.rollingAccount)
+	}
+	return out
+}
+
+func rollingChangedAccount(ctx context.Context, cfg *config.Config, scan *phpContentScan, db *store.DB, account rollingAccount, start time.Time, limit int, findings *[]alert.Finding) int {
+	cur, curErr := rollingContentCursors.load(db, account.name)
+	if curErr != nil {
+		fmt.Fprintf(os.Stderr, "php_content changed pass: cursor read for %s: %v\n", account.name, curErr)
+	}
+	cur.Account, cur.Check = account.name, rollingScanCheck
+	if cur.ChangedThrough.IsZero() {
+		// First sight: files already here are the rolling windows' job.
+		cur.ChangedThrough = start.Add(-rollingChangedMargin)
+		saveRollingCursor(db, cur)
+		return 0
+	}
+	roots := accountDocRoots(account.home)
+	files := enumeratePHPFiles(ctx, cfg, roots)
+	if ctx.Err() != nil {
+		return 0
+	}
+	changed := scan.changedSince(files, cur.ChangedThrough)
+	lapStart := cur.ChangedLapStart
+	if lapStart.IsZero() {
+		lapStart = start
+	}
+	if len(changed) == 0 {
+		if cur.ChangedFrom != "" {
+			// What the cut-short lap had left is gone.
+			cur.ChangedThrough = lapStart.Add(-rollingChangedMargin)
+			cur.ChangedFrom, cur.ChangedLapStart = "", time.Time{}
+			saveRollingCursor(db, cur)
+		}
+		return 0
+	}
+	ordered := rotateAfter(changed, cur.ChangedFrom)
+	overlays := make(map[string]phpHandlerOverlay)
+	read, next := 0, 0
+	for ; next < len(ordered) && read < limit; next++ {
+		if ctx.Err() != nil {
+			// Leave the cursor: the next cycle reads this lap again.
+			return read
+		}
+		file := ordered[next]
+		if !rollingRegularCandidate(file) {
+			delete(scan.prev, file)
+			delete(scan.next, file)
+			continue
+		}
+		read++
+		dir := filepath.Dir(file)
+		overlay, ok := overlays[dir]
+		if !ok {
+			overlay = reconstructOverlay(rollingDocRootFor(file, roots), dir)
+			overlays[dir] = overlay
+		}
+		scan.scanFile(ctx, file, overlay, findings)
+	}
+	if next == len(ordered) {
+		cur.ChangedThrough = lapStart.Add(-rollingChangedMargin)
+		cur.ChangedFrom, cur.ChangedLapStart = "", time.Time{}
+	} else {
+		cur.ChangedFrom, cur.ChangedLapStart = ordered[next-1], lapStart
+	}
+	cur.ChangedServedAt = start
+	saveRollingCursor(db, cur)
+	return read
+}
+
+// changedSince returns the files this run has not read whose change time is
+// after through. A file's owner cannot set its change time back. A file
+// without one counts as changed.
+func (s *phpContentScan) changedSince(files []string, through time.Time) []string {
+	var out []string
+	for _, file := range files {
+		if _, done := s.attempted[file]; done {
+			continue
+		}
+		info, err := osFS.Stat(file)
+		if err != nil {
+			continue
+		}
+		if ctime := phpFileStampOf(info).Ctime; ctime == 0 || time.Unix(0, ctime).After(through) {
+			out = append(out, file)
+		}
+	}
+	return out
+}
+
+// rotateAfter returns the path-sorted files starting after from, wrapping.
+func rotateAfter(files []string, from string) []string {
+	if from == "" {
+		return files
+	}
+	i := sort.SearchStrings(files, from)
+	if i < len(files) && files[i] == from {
+		i++
+	}
+	return append(append([]string(nil), files[i:]...), files[:i]...)
+}
+
+func saveRollingCursor(db *store.DB, cur store.ScanCursorRecord) {
+	if err := rollingContentCursors.save(db, cur); err != nil {
+		fmt.Fprintf(os.Stderr, "php_content changed pass: cursor write for %s: %v\n", cur.Account, err)
+	}
 }
 
 func rollingRegularCandidate(file string) bool {

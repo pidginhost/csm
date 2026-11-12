@@ -27,6 +27,15 @@ type ScanCursorRecord struct {
 	RulesFrom       string `json:"rules_from,omitempty"`
 	RulesWrapped    bool   `json:"rules_wrapped,omitempty"`
 	RulesRootsHash  string `json:"rules_roots_hash,omitempty"`
+
+	// Changed-file progress (PHP content cursor only). Every file whose change
+	// time is at or before ChangedThrough has been read. ChangedFrom and
+	// ChangedLapStart resume a pass the budget cut short, and ChangedServedAt
+	// puts the accounts served longest ago first when the budget runs out.
+	ChangedThrough  time.Time `json:"changed_through,omitempty"`
+	ChangedFrom     string    `json:"changed_from,omitempty"`
+	ChangedLapStart time.Time `json:"changed_lap_start,omitempty"`
+	ChangedServedAt time.Time `json:"changed_served_at,omitempty"`
 }
 
 // scanCursorKey builds the bucket key for a (account, check) pair.

@@ -2057,6 +2057,8 @@ type phpContentScan struct {
 	// prior stamps are authoritative-by-absence: a cached file the walk did
 	// not see again is gone. Everything else is simply unreached.
 	visited map[string]bool
+	// attempted holds files this run already read or tried to read.
+	attempted map[string]struct{}
 }
 
 func newPHPContentScan(cfg *config.Config, prev phpContentCache, forceFull bool) *phpContentScan {
@@ -2069,6 +2071,7 @@ func newPHPContentScan(cfg *config.Config, prev phpContentCache, forceFull bool)
 		next:      phpContentCache{},
 		forceFull: forceFull,
 		visited:   map[string]bool{},
+		attempted: map[string]struct{}{},
 	}
 }
 
@@ -2275,6 +2278,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 	// Once attempted, only a fresh clean result may retain a stamp. Rolling
 	// and interrupted directory walks cannot rely on directory completion to
 	// invalidate a finding, read failure, or an earlier read in the same run.
+	s.attempted[fullPath] = struct{}{}
 	previous, cached := s.prev[fullPath]
 	delete(s.next, fullPath)
 	defer func() {
