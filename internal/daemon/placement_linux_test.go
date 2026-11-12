@@ -30,7 +30,7 @@ func TestPlacementRetriesOldSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	ev := placementOf(t, staged, 0)
 	fd, _, retry, err := openPlacedOnce(path, ev.Dev, ev.Ino)
 	if fd >= 0 {
@@ -62,8 +62,8 @@ func TestPlacementDoesNotReadOpenSpecialFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Close(watch)
-	if _, err := unix.InotifyAddWatch(watch, path, unix.IN_OPEN); err != nil {
+	defer func() { _ = unix.Close(watch) }()
+	if _, err = unix.InotifyAddWatch(watch, path, unix.IN_OPEN); err != nil {
 		t.Fatal(err)
 	}
 	fd, _, retry, err := openPlacedOnce(path, ev.Dev, ev.Ino)
