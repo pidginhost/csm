@@ -17,6 +17,23 @@ import (
 )
 
 func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	findings, sockets := scanOutboundConnections(cfg, store)
+	for inode, process := range socketProcesses(ctx, sockets) {
+		for _, i := range sockets[inode] {
+			findings[i].Details += ", " + process
+		}
+	}
+	return findings
+}
+
+// A socket snapshot and its first-seen update must stay ordered across scans.
+// Process lookup happens after saving so it cannot delay another snapshot.
+var c2ScanMu sync.Mutex
+
+func scanOutboundConnections(cfg *config.Config, store *state.Store) ([]alert.Finding, map[string][]int) {
+	c2ScanMu.Lock()
+	defer c2ScanMu.Unlock()
+
 	var findings []alert.Finding
 
 	// Parse /proc/net/tcp for established connections
@@ -25,7 +42,7 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *st
 	// rem_address = IP:port of the remote end
 	data, err := osFS.ReadFile("/proc/net/tcp")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	lines := strings.Split(string(data), "\n")
 	listeners := collectListenSockets(lines, false)
@@ -105,7 +122,7 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *st
 					Details:  details,
 					SourceIP: remoteIP,
 				}
-				if outbound && stream != "" && inode != "" {
+				if stream != "" && inode != "" {
 					// A later scan of the same socket rereads the same
 					// observation: it keeps the time first seen.
 					at, known := firstSeen[inode]
@@ -113,8 +130,10 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *st
 						at = now.UnixNano()
 					}
 					seen[inode] = at
-					f.Observation = alert.Observation{Producer: string(ProducerConnectionScan), Stream: stream, Cursor: inode, ObservedAt: time.Unix(0, at).UTC()}
-					f.Attribution = admission.AttributionSocketDestination
+					if outbound {
+						f.Observation = alert.Observation{Producer: string(ProducerConnectionScan), Stream: stream, Cursor: inode, ObservedAt: time.Unix(0, at).UTC()}
+						f.Attribution = admission.AttributionSocketDestination
+					}
 				}
 				if inode != "" {
 					sockets[inode] = append(sockets[inode], len(findings))
@@ -168,14 +187,9 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *st
 			}
 		}
 	}
-	for inode, process := range socketProcesses(ctx, sockets) {
-		for _, i := range sockets[inode] {
-			findings[i].Details += ", " + process
-		}
-	}
 	saveC2SocketsSeen(store, boot, seen)
 
-	return findings
+	return findings, sockets
 }
 
 // c2SocketsSeenKey keeps when the C2 scan first saw each matched socket of

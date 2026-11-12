@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,5 +233,92 @@ func TestC2MemoryCardinalityAndOwnership(t *testing.T) {
 	}
 	if sentinel, ok := st.GetRaw("_c2_memory_test_sentinel"); !ok || sentinel != "unchanged" {
 		t.Fatal("C2 scan changed another owner's housekeeping value")
+	}
+}
+
+// Listener changes do not create a new lifetime for a socket still present.
+func TestC2MemoryKeepsTimeAcrossListenerChanges(t *testing.T) {
+	cfg := &config.Config{C2Blocklist: []string{"203.0.113.9"}}
+	for _, seeded := range []bool{false, true} {
+		t.Run(strconv.FormatBool(seeded), func(t *testing.T) {
+			dir := t.TempDir()
+			st, err := state.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().Add(-time.Hour).Round(0).UTC()
+			if seeded {
+				c2MemorySeed(t, st, at)
+			}
+			sock := outboundOS(t, c2Row+"2: 00000000:C350 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1001 0 100\n", testBootID)
+			before := time.Now()
+			got := c2Findings(CheckOutboundConnections(context.Background(), cfg, st))
+			after := time.Now()
+			if len(got) != 1 || got[0].Observation != (alert.Observation{}) || got[0].Attribution.Valid() {
+				t.Fatalf("listening socket findings = %+v, want one unstamped alert", got)
+			}
+			raw, ok := st.GetRaw("_c2_sockets_seen")
+			var saved c2SocketsSeen
+			if !ok || json.Unmarshal([]byte(raw), &saved) != nil || saved.Boot != testBootID || len(saved.Seen) != 1 {
+				t.Fatalf("listening socket memory = %q, want this boot and one socket", raw)
+			}
+			first := time.Unix(0, saved.Seen["12345"]).UTC()
+			if seeded && !first.Equal(at) || !seeded && (first.Before(before) || first.After(after)) {
+				t.Fatalf("first seen = %v, want the original sighting", first)
+			}
+			if err = st.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			st, err = state.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sock.table = c2Row
+			if f := c2MemoryScan(t, st); !f.Observation.ObservedAt.Equal(first) {
+				t.Fatalf("listener disappearance refreshed %v to %v", first, f.Observation.ObservedAt)
+			}
+		})
+	}
+}
+
+// A slow process lookup must not let an older scan overwrite newer memory.
+func TestC2MemoryOverlappingProcessLookups(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{C2Blocklist: []string{"203.0.113.9"}}
+	lookupStarted := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	var calls atomic.Int32
+	withMockOS(t, &mockOS{
+		readFile: func(path string) ([]byte, error) {
+			if path == "/proc/net/tcp" {
+				return []byte(procTCPHeader + c2Row), nil
+			}
+			if path == "/proc/sys/kernel/random/boot_id" {
+				return []byte(testBootID), nil
+			}
+			return nil, errors.New("not found")
+		},
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/proc/*/fd/*" && calls.Add(1) == 1 {
+				close(lookupStarted)
+				<-releaseLookup
+			}
+			return nil, nil
+		},
+	})
+	firstDone := make(chan []alert.Finding, 1)
+	go func() { firstDone <- CheckOutboundConnections(context.Background(), cfg, st) }()
+	<-lookupStarted
+	second := c2Findings(CheckOutboundConnections(context.Background(), cfg, st))
+	close(releaseLookup)
+	first := c2Findings(<-firstDone)
+	if len(first) != 1 || len(second) != 1 || first[0].Observation != second[0].Observation {
+		t.Fatalf("overlapping scans disagree: first %+v, second %+v", first, second)
+	}
+	if last := c2MemoryScan(t, st); last.Observation != first[0].Observation {
+		t.Fatal("overlapping scans changed the saved observation")
 	}
 }
