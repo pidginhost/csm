@@ -224,7 +224,7 @@ func apacheFormatLogsClientValue(format string, splitlogs bool) (value, ok bool)
 		case c == ' ':
 			// splitlogs strips one field; the realtime reader then skips
 			// leading whitespace before choosing its first token.
-			if field < read || !start {
+			if !start {
 				field++
 			}
 			start, guarded = true, false
@@ -235,6 +235,57 @@ func apacheFormatLogsClientValue(format string, splitlogs bool) (value, ok bool)
 		}
 	}
 	return value, true
+}
+
+// LiteSpeed shares the common Apache format, but not its whole grammar.
+// Unknown escapes lose their backslash, unsupported items can disappear,
+// and brace arguments can select request variables even on server items.
+// Only reuse Apache's field analysis where both dialects agree.
+func liteSpeedFormatLogsClientValue(format string, splitlogs bool) (value, ok bool) {
+	for i := 0; i < len(format); {
+		switch format[i] {
+		case '\\':
+			if i+1 == len(format) || !strings.ContainsRune(`\rnt"'`, rune(format[i+1])) {
+				return false, false
+			}
+			i += 2
+		case '%':
+			if i+1 < len(format) && format[i+1] == '%' {
+				i += 2
+				continue
+			}
+			item, next, parsed := apacheLogItemAt(format, i, false)
+			if !parsed || len(item.handler) != 1 || strings.IndexByte("aABbCDefhHilmnopPqrstTuUvVXIOSx", item.handler[0]) < 0 {
+				return false, false
+			}
+			modifiers := format[i+1 : next-1]
+			if modifiers != "" && modifiers != "<" && modifiers != ">" && (item.arg == "" || modifiers != "{"+item.arg+"}") {
+				return false, false
+			}
+			if !apacheAccessArgumentKnown(item) {
+				return false, false
+			}
+			if item.arg != "" {
+				switch item.handler {
+				case "t":
+					if !strings.Contains(item.arg, "%") && item.arg != "sec" && item.arg != "msec" && item.arg != "usec" && item.arg != "msec_frac" && item.arg != "usec_frac" {
+						return false, false
+					}
+				case "a", "h":
+					if item.arg != "c" {
+						return false, false
+					}
+				case "p", "P", "T", "C", "e", "i", "n", "o", "x":
+				default:
+					return false, false
+				}
+			}
+			i = next
+		default:
+			i++
+		}
+	}
+	return apacheFormatLogsClientValue(format, splitlogs)
 }
 
 // apacheErrorLogSafe reports whether an ErrorLogFormat placeholder writes
@@ -380,11 +431,29 @@ type apacheLogFormat struct {
 	format    string
 	directive string
 	file      string
+	scope     string
+	condition string
+}
+
+func (f apacheLogFormat) availableIn(scope string, conditions ...string) bool {
+	if f.scope != "" && f.scope != scope {
+		return false
+	}
+	if f.condition == "" {
+		return true
+	}
+	for _, condition := range conditions {
+		// A log inside the same condition or a nested one cannot run
+		// without the definition in the enclosing condition.
+		if condition == f.condition || strings.HasPrefix(condition, f.condition+"\x1e") {
+			return true
+		}
+	}
+	return false
 }
 
 // apacheLogUse is a log that writes a named, inline or default format.
 type apacheLogUse struct {
-	format    string
 	transfer  bool
 	splitlogs bool
 	inline    apacheLogFormat
@@ -398,11 +467,19 @@ type apacheLogFormats struct {
 	uses      []apacheLogUse
 	rewrite   *apacheLogFormat
 	malformed bool
+	liteSpeed bool
+}
+
+func (l *apacheLogFormats) parse(format string, splitlogs bool) (bool, bool) {
+	if l.liteSpeed {
+		return liteSpeedFormatLogsClientValue(format, splitlogs)
+	}
+	return apacheFormatLogsClientValue(format, splitlogs)
 }
 
 // add reads one directive. Apache refuses a format it cannot parse even
 // when no log uses it, so such a format leaves the tree unknown.
-func (l *apacheLogFormats) add(line apacheConfigLine, fields []string) {
+func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apacheLineContext) {
 	switch name := strings.ToLower(fields[0]); name {
 	case "logformat", "customlog", "globallog", "transferlog", "errorlogformat", "servername":
 		for i, arg := range fields[1:] {
@@ -417,9 +494,12 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string) {
 			}
 		}
 	}
-	def := apacheLogFormat{directive: strings.Join(fields, " "), file: line.File}
+	def := apacheLogFormat{
+		directive: strings.Join(fields, " "), file: line.File,
+		scope: strings.Join(ctx.ScopeKey, "\x1e"), condition: ctx.Condition,
+	}
 	check := func(format string) bool {
-		if _, ok := apacheFormatLogsClientValue(format, false); !ok {
+		if _, ok := l.parse(format, false); !ok {
 			l.malformed = true
 			return false
 		}
@@ -450,7 +530,19 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string) {
 			return
 		}
 		def.format = fields[2]
-		l.uses = append(l.uses, apacheLogUse{format: fields[2], splitlogs: apacheSplitlogsPipe(fields[1]), inline: def})
+		// Apache parses this as a format before resolving its nickname.
+		if !check(def.format) {
+			return
+		}
+		if len(fields) == 4 {
+			condition := fields[3]
+			// Expressions need Apache's expression parser. An unparsed
+			// or invalid condition cannot prove which configuration runs.
+			if len(condition) < 5 || !strings.EqualFold(condition[:4], "env=") || condition[4:] == "!" {
+				l.malformed = true
+			}
+		}
+		l.uses = append(l.uses, apacheLogUse{splitlogs: apacheSplitlogsPipe(fields[1]), inline: def})
 	case strings.EqualFold(fields[0], "TransferLog"):
 		if len(fields) != 2 {
 			l.malformed = true
@@ -505,6 +597,19 @@ func (l *apacheLogFormats) withBuiltin(formats []apacheLogFormat, name string, s
 	return append(append([]apacheLogFormat(nil), formats...), source)
 }
 
+func (l *apacheLogFormats) resolve(source, use apacheLogFormat) []apacheLogFormat {
+	named := l.named[strings.ToLower(source.format)]
+	formats := l.withBuiltin(named, source.format, source)
+	for _, def := range formats {
+		if def.availableIn(use.scope, use.condition, source.condition) {
+			return formats
+		}
+	}
+	// A nickname in another scope may not exist for this log. Apache then
+	// uses the argument itself as an inline format.
+	return append(append([]apacheLogFormat(nil), formats...), source)
+}
+
 // clientValue returns the first format a log uses that writes a value the
 // request chooses where CSM reads the client. A nickname no LogFormat
 // defines is an inline format, as Apache reads it; TransferLog writes the
@@ -515,29 +620,28 @@ func (l *apacheLogFormats) clientValue() *apacheLogFormat {
 		return l.rewrite
 	}
 	for _, use := range l.uses {
-		formats := l.named[strings.ToLower(use.format)]
-		formats = l.withBuiltin(formats, use.format, use.inline)
+		var formats []apacheLogFormat
 		switch {
 		case use.transfer:
-			formats = nil
-			if len(l.defaults) == 0 {
+			defaultKnown := false
+			for _, def := range l.defaults {
+				defaultKnown = defaultKnown || def.availableIn(use.inline.scope, use.inline.condition)
+			}
+			// A default in another scope cannot replace this server's CLF.
+			if !defaultKnown {
 				def := use.inline
 				def.format = apacheCommonLogFormat
 				formats = append(formats, def)
 			}
 			for _, def := range l.defaults {
 				// A one-argument LogFormat may name a format instead.
-				if named := l.withBuiltin(l.named[strings.ToLower(def.format)], def.format, def); len(named) > 0 {
-					formats = append(formats, named...)
-				} else {
-					formats = append(formats, def)
-				}
+				formats = append(formats, l.resolve(def, use.inline)...)
 			}
-		case len(formats) == 0:
-			formats = []apacheLogFormat{use.inline}
+		default:
+			formats = l.resolve(use.inline, use.inline)
 		}
 		for i := range formats {
-			value, ok := apacheFormatLogsClientValue(formats[i].format, use.splitlogs)
+			value, ok := l.parse(formats[i].format, use.splitlogs)
 			if !ok {
 				l.malformed = true
 				continue

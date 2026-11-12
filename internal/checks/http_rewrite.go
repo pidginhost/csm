@@ -121,7 +121,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 		}
 	}
 	if src.apacheConfig != "" {
-		directive, file, complete := apacheClientAddressRewrite(src.apacheConfig)
+		directive, file, complete := apacheClientAddressRewrite(src.apacheConfig, src.server == platform.WSLiteSpeed)
 		if directive != "" {
 			r.State, r.Directive, r.File = RewriteActive, directive, file
 			return r
@@ -157,15 +157,15 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 // those, a log format that writes a request value where CSM reads the
 // client. A rewrite or format directive Apache would refuse leaves the
 // tree unknown.
-func apacheClientAddressRewrite(path string) (directive, file string, complete bool) {
+func apacheClientAddressRewrite(path string, liteSpeed bool) (directive, file string, complete bool) {
 	lines, complete := assembleApacheConfigWithStatus(path)
 	malformed := false
-	var logs apacheLogFormats
-	valid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, _ apacheLineContext) {
+	logs := apacheLogFormats{liteSpeed: liteSpeed}
+	valid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, ctx apacheLineContext) {
 		if directive != "" {
 			return
 		}
-		logs.add(line, fields)
+		logs.add(line, fields, ctx)
 		is := func(names ...string) bool {
 			for _, n := range names {
 				if strings.EqualFold(fields[0], n) {
@@ -469,7 +469,7 @@ func lswsClientAddressRewrite(path string) (string, error) {
 			}
 			if inFormat {
 				v := strings.TrimSpace(format.String())
-				logged, ok := apacheFormatLogsClientValue(v, false)
+				logged, ok := liteSpeedFormatLogsClientValue(v, false)
 				if !ok {
 					return invalid("has a logFormat it cannot read")
 				}
