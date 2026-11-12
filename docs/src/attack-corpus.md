@@ -97,7 +97,9 @@ from a checkout.
     cleaned bytes in `cleaned_sha256`. The deep tier and the full scan clean a
     WordPress core, plugin or theme file in place, instead of moving it, when
     a Critical quarantine-eligible finding names it. A plugin or theme file
-    with a known web shell name is quarantined instead. Such a sample expects
+    with a known web shell name is quarantined instead, and so is a file that
+    is malware throughout or that its core or plugin release does not ship.
+    Such a sample expects
     `cleaned` on those paths, or `untouched` when the cleaner finds nothing
     to remove.
 

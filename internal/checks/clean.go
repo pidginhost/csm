@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -31,6 +32,9 @@ type CleanResult struct {
 	// Refused marks a safety refusal without changing the customer file.
 	// It consumes attempt capacity but does not indicate a broken action.
 	Refused bool
+	// WholeFile marks a refusal because removing the matched code would
+	// leave nothing of the file: it is malware whole and must be quarantined.
+	WholeFile bool
 }
 
 var (
@@ -161,6 +165,13 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 		audit.rec.Result = actionlog.Refused
 		result.Refused = true
 		result.Error = "no known injection patterns found - file may need manual review"
+		return result
+	}
+	if cleanLeavesNothing(content) {
+		audit.rec.Result = actionlog.Refused
+		result.Refused = true
+		result.WholeFile = true
+		result.Error = "the whole file is malicious code - quarantine it instead of cleaning"
 		return result
 	}
 
@@ -396,14 +407,45 @@ func cleanReplacementMode(mode os.FileMode) os.FileMode {
 	return mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 }
 
+// packageListingFunc reports whether the official WordPress core or plugin
+// release that path belongs to ships it; known is false without that
+// release's file list.
+type packageListingFunc func(path string) (listed, known bool)
+
+// packageListing is unset until the daemon provides its checksum cache.
+var packageListing atomic.Pointer[packageListingFunc]
+
+// SetPackageListing supplies the official file lists of WordPress releases.
+func SetPackageListing(fn func(path string) (listed, known bool)) {
+	if fn == nil {
+		packageListing.Store(nil)
+		return
+	}
+	listing := packageListingFunc(fn)
+	packageListing.Store(&listing)
+}
+
+// notShippedByRelease reports a file planted at a package path: its release
+// is known and does not contain it, so nothing of the site lives in it.
+func notShippedByRelease(path string) bool {
+	listing := packageListing.Load()
+	if listing == nil {
+		return false
+	}
+	listed, known := (*listing)(path)
+	return known && !listed
+}
+
 // ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned
 // (surgical removal) instead of quarantined (full removal).
 // WP core files and plugin files are better cleaned - removing them breaks the site.
-// Unknown standalone files (droppers, webshells) should be quarantined.
+// Unknown standalone files (droppers, webshells) should be quarantined, and so
+// are files planted at core or plugin paths that the official release does
+// not ship.
 func ShouldCleanInsteadOfQuarantine(path string) bool {
-	// WP core files - always clean, never quarantine
+	// WP core files - clean the files the release ships
 	if strings.Contains(path, "/wp-includes/") || strings.Contains(path, "/wp-admin/") {
-		return true
+		return !notShippedByRelease(path)
 	}
 	// Plugin/theme main files - clean to preserve functionality
 	if strings.Contains(path, "/wp-content/plugins/") || strings.Contains(path, "/wp-content/themes/") {
@@ -412,10 +454,31 @@ func ShouldCleanInsteadOfQuarantine(path string) bool {
 		if isWebshellName(name) {
 			return false // quarantine this - it's a standalone webshell
 		}
-		return true
+		return !notShippedByRelease(path)
 	}
 	// Everything else - quarantine
 	return false
+}
+
+// cleanLeavesNothing reports whether cleaned content keeps nothing of the
+// file: no PHP code and no page output, only PHP tags, comments, statement
+// separators and whitespace.
+func cleanLeavesNothing(content string) bool {
+	regions := phpCodeRegions(content)
+	if len(regions) != len(content) {
+		return false
+	}
+	// The mask keeps PHP code and blanks everything else: what it blanked is
+	// PHP tags or output the site serves.
+	outside := []byte(content)
+	for i := range outside {
+		if regions[i] == content[i] {
+			outside[i] = ' '
+		}
+	}
+	output := strings.NewReplacer("<?php", "", "<?=", "", "<?", "", "?>", "").Replace(strings.ToLower(string(outside)))
+	code := strings.ReplaceAll(PHPExecutableCode(content), ";", "")
+	return strings.TrimSpace(output) == "" && strings.TrimSpace(code) == ""
 }
 
 // removeIncludeInjections removes @include lines that load malicious files.

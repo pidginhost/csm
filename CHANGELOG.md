@@ -30,6 +30,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Realtime protection now quarantines PHP shells that run commands sent in the raw request body, instead of only alerting.
 - Realtime protection now also quarantines confirmed PHP shells placed after a shell command in backticks.
 - Scheduled and on-demand scans now report PHP shells that run commands sent in the raw request body, and realtime catches more of their variants.
+- A malware file with no site code, or one the WordPress release does not ship, is now quarantined instead of cleaned to an empty stub.
 
 ### Added
 

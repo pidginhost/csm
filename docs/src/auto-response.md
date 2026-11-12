@@ -155,6 +155,13 @@ Manual full scans leave cleaner refusals for review instead of reporting a
 failed remediation. `csm clean` also distinguishes a refusal from an action
 failure; both return a nonzero exit status when the file was not cleaned.
 
+WordPress core, plugin and theme files are cleaned in place, except in two
+cases where they are quarantined whole: when removing the matched code would
+leave no code or page output, and when the official release of that core or
+wordpress.org plugin version does not ship the file. The release check uses the
+checksums the realtime file monitor has cached; without them, cleaning decides.
+`csm clean` refuses a file that is malicious throughout.
+
 Automatic permission fixes dismiss the original finding after a successful fix
 or after confirming its unsafe permission is already gone. A confirmation alone
 does not report a permission change.

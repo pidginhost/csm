@@ -53,6 +53,9 @@ func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
 	if ShouldCleanInsteadOfQuarantine(f.FilePath) {
 		clean := CleanInfectedFile(f.FilePath)
 		switch {
+		case clean.WholeFile:
+			// Nothing of the file is the site's; a clean would leave a stub.
+			return fixQuarantine(f.FilePath), true
 		case clean.Cleaned:
 			return RemediationResult{
 				Success:           true,

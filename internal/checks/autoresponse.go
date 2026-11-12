@@ -253,22 +253,26 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 					return nil
 				}
 				result := cleanInfectedFileIdentified(path, info)
-				if result.Error != "" {
-					outcome := "failed"
-					if result.Refused {
-						outcome = "refused"
+				// Malware that is the whole file is quarantined below: a
+				// clean would leave an empty stub in its place.
+				if !result.WholeFile {
+					if result.Error != "" {
+						outcome := "failed"
+						if result.Refused {
+							outcome = "refused"
+						}
+						actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
+						// Safety refusals consume capacity without charging a failure.
+						if result.Refused {
+							return nil
+						}
+						return errors.New(result.Error)
 					}
-					actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
-					// Safety refusals consume capacity without charging a failure.
-					if result.Refused {
-						return nil
+					if result.Cleaned {
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
 					}
-					return errors.New(result.Error)
+					return nil
 				}
-				if result.Cleaned {
-					actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
-				}
-				return nil
 			}
 			qPath := newQuarantinePath(quarantineDir, path)
 			meta := quarantineMetadata(path, info, f.Message)

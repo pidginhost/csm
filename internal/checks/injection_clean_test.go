@@ -330,7 +330,7 @@ func TestCleanInfectedFileRemovesSplitChrChainStatement(t *testing.T) {
 func TestCleanInfectedFileBackupHasMetaSidecar(t *testing.T) {
 	qdir := t.TempDir()
 	withQuarantineDirT(t, qdir)
-	path := writeTempPHP(t, "<?php\n@include(\"/tmp/x\");\n")
+	path := writeTempPHP(t, "<?php\n@include(\"/tmp/x\");\necho 'site';\n")
 
 	res := CleanInfectedFile(path)
 	if !res.Cleaned {
