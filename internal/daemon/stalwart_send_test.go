@@ -131,7 +131,10 @@ func TestStalwartCloudRelayUsesPTR(t *testing.T) {
 	}
 }
 
-func TestStalwartBareAccountCorrelatesFromDomain(t *testing.T) {
+// A bare account name has no domain of its own, and the envelope sender is
+// whatever the sender typed: marking that domain would only quiet other
+// mailboxes' rate alerts, so a bare account marks no domain.
+func TestStalwartBareAccountMarksNoDomain(t *testing.T) {
 	resetStalwartSendState(t)
 	stubStalwartPTR(t, "mail.example.net")
 	stubGeo(t, map[string]string{"203.0.113.44": "DE", "203.0.113.45": "FR", "203.0.113.46": "BR"})
@@ -139,7 +142,7 @@ func TestStalwartBareAccountCorrelatesFromDomain(t *testing.T) {
 	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
 	var got []alert.Finding
 	for _, ip := range []string{"203.0.113.44", "203.0.113.45", "203.0.113.46"} {
-		got = append(got, feedStalwart(d, stalwartLoginAndSend(587, ip, "john", "john@example.com", "a@example.org")...)...)
+		got = append(got, feedStalwart(d, stalwartLoginAndSend(587, ip, "john", "victim@example.org", "a@example.org")...)...)
 	}
 	sender := findingsOf(got, "email_compromised_account")
 	if len(sender) != 1 || sender[0].Severity != alert.Critical {
@@ -148,11 +151,26 @@ func TestStalwartBareAccountCorrelatesFromDomain(t *testing.T) {
 	if sender[0].Context != stalwartNoSuspendContext {
 		t.Fatalf("context = %q", sender[0].Context)
 	}
-	if !hasRecentCompromisedFinding("example.com") {
-		t.Fatal("the sender address's domain must be marked for correlation")
+	if hasRecentCompromisedFinding("example.org") {
+		t.Fatal("the envelope sender's domain was marked: a sender can name any domain")
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("suspension attempted: %v", *calls)
+	}
+}
+
+// An account with its own domain marks that domain.
+func TestStalwartAddressAccountMarksItsDomain(t *testing.T) {
+	resetStalwartSendState(t)
+	stubStalwartPTR(t, "mail.example.net")
+	stubGeo(t, map[string]string{"203.0.113.44": "DE", "203.0.113.45": "FR", "203.0.113.46": "BR"})
+	stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
+	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
+	for _, ip := range []string{"203.0.113.44", "203.0.113.45", "203.0.113.46"} {
+		feedStalwart(d, stalwartLoginAndSend(587, ip, "user@example.com", "victim@example.org", "a@example.org")...)
+	}
+	if !hasRecentCompromisedFinding("example.com") || hasRecentCompromisedFinding("example.org") {
+		t.Fatal("want the account's own domain marked, not the envelope sender's")
 	}
 }
 

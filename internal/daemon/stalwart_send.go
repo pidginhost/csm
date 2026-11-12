@@ -122,19 +122,18 @@ func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *
 	if ip := s.RemoteIP.String(); st.ports.Of(s.LocalPort) == stalwartlog.ProtoSMTP && !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
 		signalIP = ip
 	}
-	from := ev.Fields["from"]
 	now := time.Now()
 	findings := checkEmailRate(account, cfg)
 	for _, f := range senderProfileObserve(cfg, account, signalIP, ev.Lists["to"], now) {
 		if f.Severity == alert.Critical {
-			respondToStalwartCompromise(cfg, account, from, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
+			respondToStalwartCompromise(cfg, account, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
 		}
 		f.Context = stalwartNoSuspendContext
 		findings = append(findings, f)
 	}
 	if signalIP != "" {
 		for _, f := range cloudRelayObserve(cfg, account, signalIP, stalwartPTR(signalIP), now) {
-			respondToStalwartCompromise(cfg, account, from, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses", f.Timestamp)
+			respondToStalwartCompromise(cfg, account, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses", f.Timestamp)
 			f.Context = stalwartNoSuspendContext
 			findings = append(findings, f)
 		}
@@ -143,14 +142,11 @@ func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *
 }
 
 // respondToStalwartCompromise responds to a compromised Stalwart account. A
-// bare account name has no domain, so the sender address's domain marks the
-// compromise for rate correlation.
-func respondToStalwartCompromise(cfg *config.Config, account, from, check, reason string, at time.Time) {
+// bare account name has no domain to mark, and the envelope sender is the
+// sender's own choice: marking its domain would only quiet other mailboxes'
+// rate alerts. The finding stands either way.
+func respondToStalwartCompromise(cfg *config.Config, account, check, reason string, at time.Time) {
 	if extractDomainFromEmail(account) != "" {
 		respondToMailboxCompromise(cfg, account, check, reason, at)
-		return
-	}
-	if domain := extractDomainFromEmail(from); domain != "" {
-		RecordCompromisedDomain(domain)
 	}
 }
