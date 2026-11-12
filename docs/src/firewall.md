@@ -10,6 +10,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Rate limiting** - SYN flood, UDP flood, and per-IP connection rate are dual-stack (IPv6 metered per /64); per-port flood meters are dual-stack per source address; the concurrent connection limit is IPv4-only
 - **Country blocking** via MaxMind GeoIP CIDR ranges
 - **Outbound SMTP restriction** by UID (prevent spam from compromised accounts)
+- **Local port locks** - only listed users and root may open new connections to a port on this host
 - **Subnet/CIDR blocking** with auto-escalation from individual IPs and safety guards for infra, local, and allowed addresses
 - **Permanent block escalation** after repeated temp blocks
 - **Dynamic DNS** hostname resolution (updated every 5 min) with grace-period guard against transient resolver failures
@@ -582,6 +583,25 @@ address-mismatched incident ID does not prevent the firewall block, but does
 not change the incident. Refreshing an existing temporary block does not
 advance the escalation rung. Blocks recorded on closed incidents remain audit
 actions without restarting the ladder.
+
+## Local port locks
+
+`firewall.local_port_locks` limits which local users may open new TCP
+connections to a port on this host. Each entry is `PORT:user,user`; root is
+always allowed. Other users get a connection reset. Connections to other hosts
+on the same port and connections already open are not affected.
+
+```yaml
+firewall:
+  local_port_locks:
+    - "8080:www-data,stalwart"
+```
+
+Use it for a service that trusts what local clients tell it, such as a mail
+server that takes the webmail client's address from a forwarded header. A user
+name that does not exist is reported at startup and skipped; the port stays
+locked to the others. The status page and `csm doctor` read the locked ports
+from the running daemon, so a change takes effect after a restart.
 
 ## Infrastructure IP DNS guard
 

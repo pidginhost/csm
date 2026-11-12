@@ -1513,6 +1513,7 @@ func (e *Engine) createOutputChain() error {
 			Priority: nftables.ChainPriorityFilter,
 			Policy:   &policy,
 		})
+		e.addLocalPortLockRules()
 		return nil
 	}
 
@@ -1544,6 +1545,9 @@ func (e *Engine) createOutputChain() error {
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
+
+	// Port locks decide new loopback connections before loopback is accepted.
+	e.addLocalPortLockRules()
 
 	// Allow loopback outbound
 	e.conn.AddRule(&nftables.Rule{

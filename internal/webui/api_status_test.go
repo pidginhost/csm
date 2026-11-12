@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -64,7 +65,7 @@ func (statusFakeProvider) ConfigHash() string             { return "cfg" }
 func (statusFakeProvider) BinaryHash() string             { return "bin" }
 func (statusFakeProvider) DryRunBlocksCount() int         { return 3 }
 func (f statusFakeProvider) AutomationStatus() health.AutomationStatus {
-	if f.automation == (health.AutomationStatus{}) {
+	if reflect.DeepEqual(f.automation, health.AutomationStatus{}) {
 		return health.AutomationStatus{AutoResponseDryRun: true, DryRunBlocks: 3}
 	}
 	return f.automation

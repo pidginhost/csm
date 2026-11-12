@@ -573,6 +573,7 @@ firewall:
     - 25
     - 465
     - 587
+  local_port_locks: []          # "PORT:user,user": only these users and root may open new connections to the port on this host
   # dyndns_hosts:               # resolve hostnames to IPs, update allowed set every 5 min
   #   - "myhost.dyndns.org"
   log_dropped: true

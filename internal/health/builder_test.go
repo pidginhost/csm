@@ -1,6 +1,7 @@
 package health
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func (f *fakeProvider) ConfigHash() string               { return "abc" }
 func (f *fakeProvider) BinaryHash() string               { return "def" }
 func (f *fakeProvider) DryRunBlocksCount() int           { return f.dryRunBlocks }
 func (f *fakeProvider) AutomationStatus() AutomationStatus {
-	if f.automation == (AutomationStatus{}) {
+	if reflect.DeepEqual(f.automation, AutomationStatus{}) {
 		return AutomationStatus{DryRunBlocks: f.dryRunBlocks}
 	}
 	return f.automation

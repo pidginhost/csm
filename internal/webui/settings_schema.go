@@ -551,6 +551,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "smtp_block", Type: "bool", Label: "Block outbound SMTP", Help: "When enabled, only smtp_allow_users may originate outbound mail. Verify allow list first.", FieldGroup: FieldGroupSMTPControls},
 			{YAMLPath: "smtp_allow_users", Type: "[]string", Label: "SMTP allow users", Help: "root is always allowed.", FieldGroup: FieldGroupSMTPControls},
 			{YAMLPath: "smtp_ports", Type: "[]int", Label: "SMTP ports", FieldGroup: FieldGroupSMTPControls},
+			{YAMLPath: "local_port_locks", Type: "[]string", Label: "Local port locks", Help: "PORT:user,user. Only these users and root may open new connections to the port on this host.", FieldGroup: FieldGroupSMTPControls},
 
 			{YAMLPath: "log_dropped", Type: "bool", Label: "Log dropped packets", FieldGroup: FieldGroupLogging},
 			{YAMLPath: "log_rate", Type: "int", Label: "Log entries per minute", Min: int64p(0), Max: int64p(10000), FieldGroup: FieldGroupLogging},

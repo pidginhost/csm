@@ -93,15 +93,18 @@ type AutomationStatus struct {
 	// not read; the firewall then runs without the entries that file held.
 	// FirewallLedgerError says why startup could not read the ledger: rows
 	// its attempts wrote were restored without proof of their outcome.
-	FirewallEnabled               bool   `json:"firewall_enabled"`
-	FirewallManaged               bool   `json:"firewall_managed"`
-	FirewallStartupError          string `json:"firewall_startup_error,omitempty"`
-	FirewallStateSetAside         string `json:"firewall_state_set_aside,omitempty"`
-	FirewallLedgerError           string `json:"firewall_ledger_error,omitempty"`
-	FirewallBlockedIPs            int    `json:"firewall_blocked_ips"`
-	FirewallBlockedSubnets        int    `json:"firewall_blocked_subnets"`
-	FirewallRollbackPending       bool   `json:"firewall_rollback_pending"`
-	FirewallRollbackSecondsRemain int64  `json:"firewall_rollback_remaining_seconds,omitempty"`
+	FirewallEnabled        bool   `json:"firewall_enabled"`
+	FirewallManaged        bool   `json:"firewall_managed"`
+	FirewallStartupError   string `json:"firewall_startup_error,omitempty"`
+	FirewallStateSetAside  string `json:"firewall_state_set_aside,omitempty"`
+	FirewallLedgerError    string `json:"firewall_ledger_error,omitempty"`
+	FirewallBlockedIPs     int    `json:"firewall_blocked_ips"`
+	FirewallBlockedSubnets int    `json:"firewall_blocked_subnets"`
+	// FirewallLocalPortLocks are the ports the live engine lets only listed
+	// users open new local connections to; empty without a live engine.
+	FirewallLocalPortLocks        []int `json:"firewall_local_port_locks,omitempty"`
+	FirewallRollbackPending       bool  `json:"firewall_rollback_pending"`
+	FirewallRollbackSecondsRemain int64 `json:"firewall_rollback_remaining_seconds,omitempty"`
 	// FirewallConfirmation is a pending `csm firewall apply-confirmed`
 	// window; nil when none is.
 	FirewallConfirmation *FirewallConfirmation `json:"firewall_confirmation,omitempty"`

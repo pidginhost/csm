@@ -917,6 +917,10 @@ firewall:
   smtp_allow_users: [cpanel, mailman]   # extra outbound SMTP users, also exempt from direct SMTP egress detection and BPF enforcement; root and mailnull are always allowed
   smtp_ports: [25,465,587]
 
+  # Local port locks: "PORT:user,user"; only these users and root may open
+  # new connections to the port on this host
+  local_port_locks: []
+
   # Dynamic DNS
   dyndns_hosts: []                      # hostnames to resolve and whitelist periodically
 

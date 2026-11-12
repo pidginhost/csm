@@ -2177,3 +2177,17 @@ func TestValidateRspamdTokenWarnsOnlyForRemoteController(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateLocalPortLocks(t *testing.T) {
+	if _, err := LoadBytes([]byte("firewall:\n  local_port_locks:\n    - \"8080:www-data,stalwart\"\n")); err != nil {
+		t.Fatalf("a valid lock was refused: %v", err)
+	}
+	_, err := LoadBytes([]byte("firewall:\n  local_port_locks:\n    - \"8080\"\n"))
+	if err == nil || !strings.Contains(err.Error(), "firewall.local_port_locks") {
+		t.Fatalf("load err = %v, want a firewall.local_port_locks error", err)
+	}
+	cfg := &Config{Firewall: &firewall.FirewallConfig{LocalPortLocks: []string{"x:www-data"}}}
+	if !hasResult(Validate(cfg), "error", "firewall.local_port_locks") {
+		t.Fatal("an invalid lock must be a validation error")
+	}
+}

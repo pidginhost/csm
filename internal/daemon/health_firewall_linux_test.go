@@ -59,3 +59,23 @@ func writeAutomationFirewallState(t *testing.T, stateRoot string, state firewall
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
+
+// TestAutomationStatusLocalPortLocks verifies the snapshot reports the ports
+// the live engine locks, and none when no engine is wired.
+func TestAutomationStatusLocalPortLocks(t *testing.T) {
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true, LocalPortLocks: []string{"8080:www-data,stalwart"}}}
+	prev := config.Active()
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	eng, err := firewall.NewEngine(cfg.Firewall, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	if got := (&Daemon{cfg: cfg, fwEngine: eng}).AutomationStatus().FirewallLocalPortLocks; len(got) != 1 || got[0] != 8080 {
+		t.Fatalf("FirewallLocalPortLocks = %v, want [8080]", got)
+	}
+	if got := (&Daemon{cfg: cfg}).AutomationStatus().FirewallLocalPortLocks; got != nil {
+		t.Fatalf("without an engine FirewallLocalPortLocks = %v, want none", got)
+	}
+}
