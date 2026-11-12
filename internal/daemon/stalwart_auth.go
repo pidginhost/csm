@@ -190,10 +190,13 @@ func (d *Daemon) stalwartBan(ev stalwartlog.Event, s stalwartlog.Session, cfg *c
 		SourceIP:    ip,
 		Attribution: admission.AttributionPeer,
 	}
-	// A customer logged in from here recently: an office network with one
-	// stale password, or failures another listener attributed to it. Only
-	// Critical bans block, so this one is reported and not blocked.
-	if _, known := d.knownCustomers.Lookup(ip); known {
+	// A failed-login ban of an address a customer logged in from recently is
+	// most likely an office network with one stale password, or failures
+	// another listener attributed to it. Only Critical bans block, so this
+	// one is reported and not blocked. Scanning and abuse are never a
+	// customer's own mistake. On a Stalwart host the customer logins come
+	// from Stalwart's log, which only stalwart and root can write.
+	if _, known := d.knownCustomers.Lookup(ip); known && ev.Name == "security.authentication-ban" {
 		f.Severity = alert.High
 		f.Message += "; not blocked, a customer logged in from this address recently"
 		f.Details = "A customer logged in successfully from this address within the last 30 days, so CSM reports " +

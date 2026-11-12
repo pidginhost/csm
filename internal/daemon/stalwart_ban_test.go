@@ -98,3 +98,18 @@ func TestStalwartBanOfKnownCustomerAlertsOnly(t *testing.T) {
 		t.Fatalf("message = %q, want it to say the address is not blocked", got[0].Message)
 	}
 }
+
+// Only a failed-login ban can come from a customer's own stale password.
+// Scanning and abuse bans block even an address a customer logged in from.
+func TestStalwartScanAndAbuseBansIgnoreKnownCustomer(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.BlockIPs = true, true
+	d, _ := newStalwartAuthDaemon(t, cfg)
+	d.knownCustomers.Note("203.0.113.35", knownCustomerSMTP, "user@example.com", time.Now(), serviceLog)
+	for _, event := range []string{"security.scan-ban", "security.abuse-ban"} {
+		got := feedStalwart(d, stalwartLine(stalwartTestStart, event, 25, "203.0.113.35", ""))
+		if len(got) != 1 || got[0].Severity != alert.Critical || !checks.BlockableFinding(cfg, got[0]) {
+			t.Fatalf("%s from a known customer: findings = %+v, want a blocking Critical", event, got)
+		}
+	}
+}
