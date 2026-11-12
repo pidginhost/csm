@@ -80,7 +80,7 @@ func seedExamples(t *testing.T, db *DB, rows map[string]string) {
 	}
 }
 
-// Spec 3.6: a record keeps the legacy ip, reason and timeout_sec and adds
+// A record keeps the legacy ip, reason and timeout_sec and adds
 // candidate_id, session_id, kind and expires_at. Its key is a fixed-width
 // UTC time with nanoseconds, the canonical address and the candidate, so
 // two decisions for one target at one instant never overwrite each other,

@@ -11,7 +11,7 @@ import (
 
 // The ledger binds an arrival to the address its evidence attributes, as
 // the ingress does: a range entry may name a prefix holding it; any other
-// target is an attribution refusal (spec 5.8, 5.13).
+// target is an attribution refusal.
 func TestAdmissionLedgerBindsTheArrivalTarget(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()

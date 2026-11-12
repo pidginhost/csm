@@ -23,8 +23,7 @@ func (f *ledgerFixture) reopen() {
 
 // After an overload that deferred every scope's work and a restart, each
 // refilled unit serves the next scope, continuing the unfinished rotation:
-// every surviving scope is served once before any is served twice (spec 7.1,
-// recovery after overload).
+// every surviving scope is served once before any is served twice.
 func TestAdmissionLedgerRecoveryAfterOverloadServesEveryScope(t *testing.T) {
 	f := newLedgerFixture(t)
 	if err := f.l.SetCeiling(100); err != nil {
@@ -86,7 +85,7 @@ func TestAdmissionLedgerRecoveryAfterOverloadServesEveryScope(t *testing.T) {
 
 // A lowered ceiling keeps the charges already in its window, across a
 // restart: general usage above the whole new ceiling stops both lanes until
-// those charges age out (spec 7.1, decreased limits).
+// those charges age out (decreased limits).
 func TestAdmissionLedgerLoweredCeilingKeepsRetainedCharges(t *testing.T) {
 	f := newLedgerFixture(t)
 	if err := f.l.SetCeiling(10); err != nil {

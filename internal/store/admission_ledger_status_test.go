@@ -204,7 +204,7 @@ func TestAdmissionLedgerStatusIsolatesDamage(t *testing.T) {
 					t.Errorf("damaged %s: section %s error %q", section, name, err)
 				}
 			}
-			// R10: a damaged ledger warns while admission previews.
+			// A damaged ledger warns while admission previews.
 			rows := admission.DoctorChecks(&s, nil, f.wall, false)
 			if rows[0].Name != "admission ledger" || rows[0].Status != admission.DoctorWarn || !strings.Contains(rows[0].Message, section) || !strings.HasSuffix(rows[0].Message, admission.PreviewUnaffected) || rows[0].Fix == "" {
 				t.Fatalf("doctor = %+v", rows[0])

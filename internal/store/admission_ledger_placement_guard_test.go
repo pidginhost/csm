@@ -25,7 +25,7 @@ func (f *ledgerFixture) strayNextGeneration(cursor string) admission.CandidateID
 	return stray
 }
 
-// R12: an arrival that lands on an ended or in-flight candidate is a
+// An arrival that lands on an ended or in-flight candidate is a
 // counted refusal, never dropped uncounted. Placement never chooses one,
 // so the count reads as invalid.
 func TestAdmissionLedgerCountsAPlacementOnAnEndedOrBusyCandidate(t *testing.T) {
@@ -62,7 +62,7 @@ func TestAdmissionLedgerCountsAPlacementOnAnEndedOrBusyCandidate(t *testing.T) {
 	}
 }
 
-// R12 (M1): a row placement chose but cannot store is damage, not a
+// A row placement chose but cannot store is damage, not a
 // refused arrival that would commit a candidate without its row.
 func TestEpisodeRowThatCannotBeStoredIsDamage(t *testing.T) {
 	f := newLedgerFixture(t)

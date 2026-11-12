@@ -50,7 +50,7 @@ func goneArrival(t *testing.T) (*ledgerFixture, admission.AttemptRecord, time.Ti
 }
 
 // A fresh attack on a block that left before its episode's end is the
-// same episode (spec 5.2): a charged new generation of the same kind,
+// same episode: a charged new generation of the same kind,
 // queued, while the episode keeps its boundary and earns no rotation.
 func TestAdmissionLedgerReadmitsAGoneBlockInItsEpisode(t *testing.T) {
 	f, a, _ := goneArrival(t)
@@ -101,7 +101,7 @@ func TestAdmissionLedgerAnswersUntilTheGoneMark(t *testing.T) {
 	wantLedgerReason(t, "after one miss", f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0].Err, admission.ReasonExistingEffect)
 }
 
-// Only evidence observed after the removal can re-admit (T4, spec 5.13):
+// Only evidence observed after the removal can re-admit:
 // an observation from before it is answered, and a fresh observation
 // supported by a root from before it is stale. Neither queues anything.
 func TestAdmissionLedgerReadmissionNeedsEvidenceAfterTheRemoval(t *testing.T) {
@@ -145,7 +145,7 @@ func TestAdmissionLedgerReadmitsAnEvictedBlock(t *testing.T) {
 	}
 }
 
-// Re-admission never outlives the block's original expiry (spec 5.4):
+// Re-admission never outlives the block's original expiry:
 // after a reboot leaves the episode open on elapsed time past that end,
 // a return is answered until the episode ends on both clocks, even while
 // the block's record, which a lease lead keeps past the end, says gone.

@@ -193,7 +193,7 @@ func TestAdmissionLedgerRecoveryIncludesOutstandingAttempts(t *testing.T) {
 	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
 		t.Fatal(err)
 	}
-	// Unacknowledged rows keep their slots (ruling 2): the consumer
+	// Unacknowledged rows keep their slots: the consumer
 	// delivers them first.
 	f.ackAll()
 	if _, _, granted, err = f.l.Reserve(ids[1], admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {

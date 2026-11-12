@@ -72,7 +72,7 @@ func (l *AdmissionLedger) HeldEffects(limit int) ([]HeldEffect, error) {
 // held[i] says whether the block asked[i] names is still held. A block
 // missed by two consecutive answers left the kernel before its expiry (an
 // operator unblock, undo or flush, or a lost element), which needs no
-// trusted clock (spec 5.2): its record is gone from the first miss's
+// trusted clock: its record is gone from the first miss's
 // reading and frees its slot. A record that changed in between is left to
 // what changed it. It returns the blocks it marked, whose rows the owner
 // retires; an error marks none and keeps all previous misses, accepting

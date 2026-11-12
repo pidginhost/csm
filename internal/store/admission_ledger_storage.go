@@ -56,8 +56,7 @@ func historyCostOf(tx *bolt.Tx, c admission.Candidate) (uint32, error) {
 }
 
 // putHistoryEntry stores an entry with its retirement keys. An ended
-// entry gets them only once its candidate's audit rows are acknowledged
-// (spec 5.4).
+// entry gets them only once its candidate's audit rows are acknowledged.
 func putHistoryEntry(tx *bolt.Tx, id admission.CandidateID, h admission.HistoryEntry) error {
 	data, err := h.MarshalBinary()
 	if err != nil {

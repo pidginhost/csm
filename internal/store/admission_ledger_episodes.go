@@ -210,7 +210,7 @@ func (q *queueTx) takeEpisode() (admission.EpisodeID, error) {
 }
 
 // placeTx assigns an arrival its episode and generation from the target's
-// episode row and queues or coalesces it (spec 5.2). The row changes only
+// episode row and queues or coalesces it. The row changes only
 // when the arrival is queued or coalesced, or when it is refused because
 // its kind's line already had an attempt: that observation still extends
 // the episode. The engine, never the caller, chooses the episode.
@@ -365,7 +365,7 @@ func retainedVerifiedGeneration(tx *bolt.Tx, episode admission.EpisodeID, line a
 // VerifiedEnd is the original verified end, in admission time, of the
 // episode candidate c belongs to when that episode is its target's
 // current row and a verified block closed it: what a same-episode
-// re-admission may last until (spec 5.2, 5.4). current distinguishes an
+// re-admission may last until. current distinguishes an
 // unverified current row from a lost or replaced row, which cannot grant
 // an older queued return a new lifetime.
 func (l *AdmissionLedger) VerifiedEnd(c admission.Candidate) (end time.Time, current bool, err error) {
@@ -382,8 +382,8 @@ func (l *AdmissionLedger) VerifiedEnd(c admission.Candidate) (end time.Time, cur
 // readmit applies the evidence gate to the line of the arriving kind. A
 // verified block that left before its episode's original end no longer
 // answers a later attack of its kind: the attack is a charged re-admission
-// of the same episode (spec 5.2), never past that end (spec 5.4) and only
-// on evidence observed after the latest removal (spec 5.13), which gone
+// of the same episode, never past that end and only
+// on evidence observed after the latest removal, which gone
 // returns. verified says the line answers through a verified block, its
 // own or a forgotten return's. Queued and ended returns keep the gate; a
 // line without proof keeps answering. Only a live ledger has effect
@@ -484,8 +484,8 @@ func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) er
 }
 
 // closeEpisode ends the episode of a verified block when its kernel element
-// expires (spec 5.2): its original expiry, less the lead of the engine's
-// lease clock over admission time when it ran (design C6), on both admission
+// expires: its original expiry, less the lead of the engine's
+// lease clock over admission time when it ran, on both admission
 // and the ceiling's elapsed time, read on clock: the reading the block ran
 // at. Other kinds, and
 // a candidate of another episode than its target's row, change nothing. An

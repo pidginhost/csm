@@ -38,7 +38,7 @@ func chargedUndoBatch(t *testing.T, db *DB, k *observedKernel) firewall.Firewall
 // stays; after it the undo is verified and only that row is gone. The
 // batch's other member and unrelated rows are untouched, nothing is
 // charged, nothing stays pending, and a verified member cannot be undone
-// twice (spec 7.1, durable batch/undo).
+// twice (durable batch/undo).
 func TestFirewallMemberUndoCrashAfterEachStep(t *testing.T) {
 	for _, step := range []string{"admit", "executing", "observe", "apply", "applied", "verify", "verified", "audit", "ack"} {
 		t.Run(step, func(t *testing.T) {

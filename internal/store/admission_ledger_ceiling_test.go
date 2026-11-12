@@ -1024,7 +1024,7 @@ func (f *ledgerFixture) newUnlimitedLedger() {
 	f.db = db
 }
 
-// Spec 5.4 migration: a new ledger takes its first limit and the legacy
+// Upgrade from the legacy counter: a new ledger takes its first limit and the legacy
 // hour's spend in one transaction. The spend counts until its own hour has
 // left the window and an hour of elapsed time has passed; it is subtracted
 // from the first fill, and neither a second import nor a later limit tops

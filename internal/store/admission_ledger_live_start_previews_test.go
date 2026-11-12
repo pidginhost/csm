@@ -10,7 +10,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Design C7 and admission-gates section 8, row 4: after the live start no
+// After the live start no
 // observe preview from before it answers an episode. A target whose rows
 // only a block preview anchored starts a new episode; one another kind's
 // candidate keeps queues its block's next generation, whether the line
@@ -99,7 +99,7 @@ func TestAdmissionLedgerLiveStartEndsPreviewAnswers(t *testing.T) {
 	wantLedgerReason(t, "a preview after the live start", f.arrive(f.arrival(evidenceSpec{target: "192.0.2.40", cursor: "offset=2"}))[0].Err, admission.ReasonExistingEffect)
 }
 
-// 2a-2 plan ruling 7: notice records raised before the live start describe
+// Notice records raised before the live start describe
 // gaps legacy blocking covered. The live start clears them, delivered or
 // not, so none is sent as a live alert and none delays the first live
 // notice of its key; the fixed records stay, empty.

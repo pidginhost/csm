@@ -122,7 +122,7 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 			if errors.Is(arriveErr, admission.ErrCandidateTerminal) || errors.Is(arriveErr, admission.ErrTransitionConflict) {
 				// Placement never lands on an ended or in-flight
 				// candidate; one that does is counted as an invalid
-				// refusal, never dropped (R12).
+				// refusal, never dropped.
 				reason, refused = admission.ReasonInvalid, true
 			}
 			switch {

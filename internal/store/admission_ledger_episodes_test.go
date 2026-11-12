@@ -432,7 +432,7 @@ func (f *ledgerFixture) refusals(reason admission.Reason) uint64 {
 }
 
 // The ledger, not the caller, assigns each arrival its episode and
-// generation (spec 5.2): a target's first observation opens an episode,
+// generation: a target's first observation opens an episode,
 // later ones coalesce into its queued candidate, and another target has
 // its own. Arrivals for one target in one group share the candidate.
 func TestAdmissionLedgerAssignsEpisodesToArrivals(t *testing.T) {
@@ -485,7 +485,7 @@ func TestAdmissionLedgerRefusesArrivalsNamingAnEpisode(t *testing.T) {
 		"episode":    func(r *admission.CandidateRequest) { r.Episode[15] = 1 },
 		"generation": func(r *admission.CandidateRequest) { r.Generation = 1 },
 		// A scan root never widens to the prefix that covers it: only a
-		// range entry may act on one (spec 5.13).
+		// range entry may act on one.
 		"prefix": func(r *admission.CandidateRequest) { r.Kind, r.Target = admission.KindBlockSubnet, prefix },
 	} {
 		a := f.arrival(evidenceSpec{cursor: name})
@@ -1030,7 +1030,7 @@ func (f *ledgerFixture) finishArrival(id admission.CandidateID, expires time.Tim
 }
 
 // A verified block ends its episode at its original expiry, not an hour
-// after the last observation (spec 5.2): an observation before then is
+// after the last observation: an observation before then is
 // refused as an existing effect, and one at the expiry opens the next
 // episode.
 func TestAdmissionLedgerVerifiedBlockEndsItsEpisodeAtItsExpiry(t *testing.T) {
@@ -1141,7 +1141,7 @@ func TestAdmissionLedgerNextEpisodeRefusesEarlierSupport(t *testing.T) {
 }
 
 // Only a verified block of the row's episode bounds it by its expiry: an
-// unknown outcome cannot (spec 5.2), a verified promotion leaves the
+// unknown outcome cannot, a verified promotion leaves the
 // episode to its quiet hour, and so does a block queued outside it.
 func TestAdmissionLedgerOnlyAVerifiedBlockEndsItsEpisode(t *testing.T) {
 	f := newLedgerFixture(t)
@@ -1166,7 +1166,7 @@ func TestAdmissionLedgerOnlyAVerifiedBlockEndsItsEpisode(t *testing.T) {
 
 // An attempt whose expiry was set on the engine's lease clock, lead ahead
 // of admission time, ends its verified episode when its kernel element
-// expires in admission time: the expiry less the lead (design C6). The
+// expires in admission time: the expiry less the lead. The
 // block keeps its engine expiry. A lead at or below zero ends the episode
 // at the expiry itself, never later. A lead longer than the block's life
 // ends the episode at once: the next observation opens a new one.

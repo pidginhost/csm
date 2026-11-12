@@ -176,7 +176,7 @@ func (l *AdmissionLedger) PendingAudit(limit int) ([]admission.AuditRow, error) 
 // transaction. A row already acknowledged, or one written at another time
 // than its acknowledgement names, is skipped. Once an ended candidate's
 // last row is acknowledged, its history may be retired: the same
-// transaction writes its retirement keys (spec 5.4).
+// transaction writes its retirement keys.
 func (l *AdmissionLedger) AckAudit(acks []admission.AuditAck) error {
 	for _, ack := range acks {
 		if _, err := admission.ParseActionID(string(ack.ID.Action)); err != nil || ack.ID.Transition == 0 {

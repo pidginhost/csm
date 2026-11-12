@@ -81,8 +81,7 @@ func (q *queueTx) notify(key admission.NoticeKey, add func(admission.NoticeRecor
 			return admission.ErrCorruptRecord
 		}
 		// A damaged storage record cannot pay for a new record, but the
-		// transition may still be one allowed over it (1.3b-4 decision
-		// 10): the event then counts in the fixed overflow record.
+		// transition may still be one allowed over it: the event then counts in the fixed overflow record.
 		allocated, allocErr := q.allocateNotice()
 		if allocErr != nil && !errors.Is(allocErr, admission.ErrCorruptRecord) {
 			return allocErr
@@ -143,8 +142,8 @@ func noticeCheck(tx *bolt.Tx, c admission.Candidate) (string, error) {
 	return check, nil
 }
 
-// gap raises the notice an event of candidate c raises, if any (spec
-// 5.17). transitions is c's count after the event.
+// gap raises the notice an event of candidate c raises, if any.
+// transitions is c's count after the event.
 func (q *queueTx) gap(event admission.GapEvent, reason admission.Reason, outcome admission.Disposition, entry admission.QueueEntry, id admission.CandidateID, c admission.Candidate, transitions uint32) error {
 	kind := admission.GapNotice(event, reason, outcome, entry.Tier, q.started)
 	if kind == 0 {

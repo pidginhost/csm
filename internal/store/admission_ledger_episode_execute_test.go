@@ -9,7 +9,7 @@ import (
 
 // A verified episode ends when its block's element does, on both clocks,
 // from the reading the block ran at: a forward wall step between Execute
-// and Finish cannot shorten it (spec 5.4). The reading is kept only until
+// and Finish cannot shorten it. The reading is kept only until
 // the outcome.
 func TestAdmissionLedgerVerifiedEpisodeEndsFromTheExecuteReading(t *testing.T) {
 	f := newLedgerFixture(t)

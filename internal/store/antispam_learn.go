@@ -10,7 +10,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Learning ledger buckets (antispam learning, spec 7.4). Only the learning
+// Learning ledger buckets for antispam learning. Only the learning
 // engine writes them, through LearnUpdate.
 const (
 	LearnMetaBucket     = "antispam:learn:meta"
@@ -29,7 +29,7 @@ var LearnBuckets = []string{
 	LearnIntentsBucket, LearnOpsBucket, LearnUsageBucket, LearnCursorBucket,
 }
 
-// Spam folder watcher buckets (spec 7.2): folder identities, baselines,
+// Spam folder watcher buckets: folder identities, baselines,
 // scheduler cursors and seen message identities. They share LearnTx and
 // leave exports with the ledger.
 const (

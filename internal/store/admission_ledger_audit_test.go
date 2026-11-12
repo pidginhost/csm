@@ -126,7 +126,7 @@ func TestAdmissionLedgerFinishWithoutExecuteReleasesASlot(t *testing.T) {
 }
 
 // A reservation needs room in the reserve for its attempt's rows and intent
-// as well as for its history (ruling 2), and so does a schedule's pick.
+// as well as for its history, and so does a schedule's pick.
 func TestAdmissionLedgerReserveNeedsRoomForItsAuditRows(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
@@ -185,7 +185,7 @@ func TestAdmissionLedgerAckAuditIsIdempotent(t *testing.T) {
 	}
 }
 
-// Spec 5.4: ended history is retired only after its audit rows are
+// Ended history is retired only after its audit rows are
 // acknowledged. Until then it has no retirement key, so neither its target
 // nor pressure retires it; the last acknowledgement writes the keys. A
 // pinned outcome gets none either way.
@@ -271,7 +271,7 @@ func TestAdmissionLedgerRetiredActionLeavesNoRows(t *testing.T) {
 	}
 }
 
-// Ruling R1: an acknowledgement names its row's time as well as its ID. An
+// An acknowledgement names its row's time as well as its ID. An
 // acknowledgement held past its row's retirement, as a retrying consumer
 // holds it, skips the row a re-minted attempt later writes under the same
 // ID, so that row stays pending until its own delivery.

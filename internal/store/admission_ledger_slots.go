@@ -17,8 +17,8 @@ const setRecheck = time.Minute
 // records, as the firewall last showed it: the configured limit, the
 // entries admission never evicts (Unclaimed) and the known automatic
 // imports (General). Schedules, reservations and wakes then budget block
-// work by the free slots it leaves once the ledger's own records are added
-// (spec 5.6). nil leaves block work without a slot budget, as an owner
+// work by the free slots it leaves once the ledger's own records are added.
+// nil leaves block work without a slot budget, as an owner
 // without a firewall engine runs it.
 func (l *AdmissionLedger) SetOccupants(base *admission.SetOccupancy) {
 	l.mu.Lock()
@@ -30,8 +30,8 @@ func (l *AdmissionLedger) SetOccupants(base *admission.SetOccupancy) {
 	l.set = base
 }
 
-// SetImports records the known automatic imports the firewall last listed
-// (spec 6): (C2, High) victims in the general partition with no record of
+// SetImports records the known automatic imports the firewall last listed:
+// (C2, High) victims in the general partition with no record of
 // their own, which SetOccupants counts as General. Entries that are not
 // such an import are dropped. A block that claims one names it in its own
 // record until its outcome.
@@ -76,8 +76,7 @@ func (l *AdmissionLedger) HasChargedWork() (bool, error) {
 // verified records and imports strictly higher work may evict once the
 // general partition is full (no work evicts while it has a free slot). A
 // live ledger on a trusted clock also shares each partition among its
-// scopes, so fresh work may rotate an equal-tier record whose hold passed
-// (spec 5.6).
+// scopes, so fresh work may rotate an equal-tier record whose hold passed.
 func (q *queueTx) slots() (*admission.SlotLimits, error) {
 	if q.set == nil {
 		return nil, nil
@@ -118,7 +117,7 @@ func (q *queueTx) slots() (*admission.SlotLimits, error) {
 // waitingScopes are the scopes of queued work that would hold a set
 // slot, by the partitions it may occupy: general, and reserved too for
 // work eligible for a reserved lane. Such work shares the set with the
-// scopes holding it (spec 5.6: active scopes include eligible waiting
+// scopes holding it (active scopes include eligible waiting
 // work); a retry's wait does not end its claim.
 func waitingScopes(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate) map[admission.Partition][]string {
 	out := map[admission.Partition][]string{}
@@ -139,8 +138,8 @@ func waitingScopes(items []admission.ScheduleItem, byID map[admission.CandidateI
 }
 
 // holdTest reports whether a record's rotation hold passed: nil, so no
-// record rotates, before the live start or on a degraded reading (spec
-// 5.4: wall time alone proves nothing then).
+// record rotates, before the live start or on a degraded reading
+// (wall time alone proves nothing then).
 func (q *queueTx) holdTest() (func(admission.EffectRecord) bool, error) {
 	if !q.started || q.degraded {
 		return nil, nil
@@ -153,7 +152,7 @@ func (q *queueTx) holdTest() (func(admission.EffectRecord) bool, error) {
 }
 
 // victimPool is what strictly higher work may evict and fresh equal-tier
-// work may rotate (spec 5.6): records verified, holding their slot and
+// work may rotate: records verified, holding their slot and
 // claimed by no pending block, each with its scope and application and
 // rotatable when rotates passes it, and the unexpired imports no block's
 // record names. holding counts the slots each scope's unexpired,
@@ -198,7 +197,7 @@ func victimPool(tx *bolt.Tx, now time.Time, rotates func(admission.EffectRecord)
 }
 
 // fresh reports whether c's episode has had no verified response, the
-// only work that may rotate an equal-tier block (spec 5.2). Work whose
+// only work that may rotate an equal-tier block. Work whose
 // episode row is missing or names another episode is not fresh: an
 // unknown history never proves a new episode.
 func (q *queueTx) fresh(c admission.Candidate) (bool, error) {
@@ -219,7 +218,7 @@ func freshEpisode(tx *bolt.Tx, c admission.Candidate) (bool, error) {
 }
 
 // Fresh reports whether c's episode row lets it rotate an equal-tier
-// block as a live ledger decides it (spec 5.2), on any ledger: a dry-run
+// block as a live ledger decides it, on any ledger: a dry-run
 // forecast asks it for its picks.
 func (l *AdmissionLedger) Fresh(c admission.Candidate) (bool, error) {
 	var fresh bool

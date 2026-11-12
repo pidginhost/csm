@@ -489,7 +489,7 @@ func ReadAdmissionClock(db *DB) (admission.Clock, error) {
 }
 
 // RetireUnproven retires the uncertainty of an unknown attempt once nothing
-// it may have applied can remain (spec 5.4). The owner calls it when the
+// it may have applied can remain. The owner calls it when the
 // attempt's absolute expiry has passed and it found no element of the
 // attempt in a consistent snapshot; the ledger checks the expiry on a
 // current, trusted clock, and waits until the outcome's rows are delivered

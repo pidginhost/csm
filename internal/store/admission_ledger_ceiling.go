@@ -128,7 +128,7 @@ func (l *AdmissionLedger) SetCeiling(limit uint32) error {
 }
 
 // ImportLegacySpend takes a new ledger's first limit together with the
-// legacy hourly counter's spend, in one transaction (spec 5.4 migration).
+// legacy hourly counter's spend, in one transaction.
 // A ledger that already has a limit refuses: its import is done, and a
 // restart or rerun cannot create fresh credit.
 func (l *AdmissionLedger) ImportLegacySpend(limit uint32, spend admission.LegacySpend) error {
@@ -205,7 +205,7 @@ func (l *AdmissionLedger) CeilingSnapshot() (admission.CeilingState, []admission
 }
 
 // ForecastSeed is the ceiling and the retained charges a forecast session
-// starts from (spec 3.4): the committed state without the charges of
+// starts from: the committed state without the charges of
 // observe previews, which are comparison work, not responses (section 8,
 // row 3). Their units leave the window and their credit returns, up to the
 // bucket's cap. Charges of the imported legacy hour and of genuine attempts

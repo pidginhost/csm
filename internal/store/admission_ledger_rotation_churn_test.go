@@ -12,7 +12,7 @@ import (
 // A requester over its share rotates only its own blocks: while they are
 // younger than the hold it waits, though another scope's block is older,
 // and nothing is charged or claimed. Once its own hold passes, its own
-// oldest block goes (spec 7.1, equal-tier sets and rotation).
+// oldest block goes (equal-tier sets and rotation).
 func TestAdmissionLedgerYoungOwnBlocksWaitForTheirHold(t *testing.T) {
 	f := liveLedgerFixture(t)
 	f.fillGeneral(3)
@@ -74,7 +74,7 @@ func TestAdmissionLedgerFreeSlotKeepsAnOldBlock(t *testing.T) {
 // A block rotated out returns in its episode as a charged re-admission
 // with no rotation privilege: not fresh, so it waits for a free slot even
 // once the block that replaced it is past its hold, and its episode keeps
-// its boundary (spec 5.6, 7.1 rotation liveness and churn).
+// its boundary.
 func TestAdmissionLedgerRotatedBlockReturnsWithoutRotating(t *testing.T) {
 	f, victim := rotationFixture(t)
 	f.tickAt(f.wall.Add(admission.RotationHold))
@@ -116,7 +116,7 @@ func TestAdmissionLedgerRotatedBlockReturnsWithoutRotating(t *testing.T) {
 
 // Rotations are charged reservations, so a flood of fresh claimants
 // rotates no more blocks than the general lane's credit and refill allow:
-// floor(B + G*d/3600) over d seconds (spec 7.1, quantitative victim bound).
+// floor(B + G*d/3600) over d seconds (quantitative victim bound).
 func TestAdmissionLedgerRotationsStayWithinTheCeiling(t *testing.T) {
 	for _, d := range []int{440, 450} {
 		t.Run(fmt.Sprint(d), func(t *testing.T) {
@@ -178,8 +178,7 @@ func TestAdmissionLedgerRotationsStayWithinTheCeiling(t *testing.T) {
 }
 
 // A set filled by operator entries leaves Critical direct work queued and
-// visible: no charge, no effect record, one capacity notice (spec 7.1,
-// operator occupancy).
+// visible: no charge, no effect record, one capacity notice.
 func TestAdmissionLedgerOperatorFilledSetLeavesCriticalWorkVisible(t *testing.T) {
 	f := liveLedgerFixture(t)
 	f.l.SetOccupants(&admission.SetOccupancy{Limit: 5, Unclaimed: 5})
@@ -202,7 +201,7 @@ func TestAdmissionLedgerOperatorFilledSetLeavesCriticalWorkVisible(t *testing.T)
 
 // A lowered limit that leaves the general partition overfull admits no
 // rotation, though its blocks are past their hold; a raised one gives fresh
-// work the free slot first (spec 5.6: an overfull partition admits nothing
+// work the free slot first (an overfull partition admits nothing
 // until the proposed state fits).
 func TestAdmissionLedgerOverfullPartitionNeverRotates(t *testing.T) {
 	f := liveLedgerFixture(t)
@@ -246,7 +245,7 @@ func TestAdmissionLedgerOverfullPartitionNeverRotates(t *testing.T) {
 	}
 }
 
-// Spec 5.6 moves the remainder cursor on every cycle under pressure,
+// The remainder cursor moves on every cycle under pressure,
 // including cycles where every victim is still held: a zero-share
 // claimant's turn alternates with the holder's while it waits, and it
 // reclaims on the first cycle after the hold that gives it the remainder.

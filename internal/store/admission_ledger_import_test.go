@@ -42,8 +42,8 @@ func (f *ledgerFixture) pool(imports []admission.EvictionVictim) []admission.Evi
 	return pool
 }
 
-// An import fills a general slot and yields to strictly higher work (spec
-// 6: known automatic imports are (C2, High) victims). The reservation
+// An import fills a general slot and yields to strictly higher work (known
+// automatic imports are (C2, High) victims). The reservation
 // names it in the block's record, which takes its general slot, and no
 // other block can claim it while that record does. Work at or below its
 // tier waits, and the ledger reopens with the claim.

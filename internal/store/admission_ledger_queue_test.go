@@ -406,7 +406,7 @@ func TestAdmissionLedgerInventoryRefreshEndsStaleOwners(t *testing.T) {
 
 // An account deleted and created again between two refreshes keeps its
 // name but not its incarnation: the refresh gives it a new generation and
-// ends the queued work that named the old one (handoff O47). The token
+// ends the queued work that named the old one. The token
 // persists, so a reopened ledger detects the same replacement.
 func TestAdmissionLedgerInventoryRefreshTracksIncarnations(t *testing.T) {
 	f := newLedgerFixture(t)
