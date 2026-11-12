@@ -259,12 +259,11 @@ func recordedPlacement(t *testing.T, fm *FileMonitor, dir, name, body string) (s
 	return staged, path
 }
 
-// The deletion probe looks at the path a candidate was tracked at. A skipped
-// placement is still a new path for a file that may delete itself there.
-func TestPlacementSkippedFileTrackedAsDropper(t *testing.T) {
-	const ttl = time.Minute
-	dir := t.TempDir()
-	fm := placementTestMonitor(make(chan alert.Finding, 16))
+// placementDropperMonitor is a placement test monitor that also tracks
+// self-deleting droppers under dir, capturing their findings.
+func placementDropperMonitor(t *testing.T, dir string, ttl time.Duration, alerts chan alert.Finding) (*FileMonitor, *[]capturedAlert) {
+	t.Helper()
+	fm := placementTestMonitor(alerts)
 	fm.dropper = newDropperEngine(dropperEngineConfig{ttl: ttl, selfPID: 99999})
 	fm.dropperQuarantines = newDropperQuarantineLedger(ttl + time.Minute)
 	fm.setDropperDocroots([]string{dir})
@@ -272,20 +271,36 @@ func TestPlacementSkippedFileTrackedAsDropper(t *testing.T) {
 	fm.dropper.emit = func(sev alert.Severity, check, msg, details, path, _ string) {
 		got = append(got, capturedAlert{sev: sev, check: check, msg: msg, details: details, path: path})
 	}
+	return fm, &got
+}
+
+// analyzeWriteBy runs path through close-write admission from pid and a
+// completed analysis.
+func analyzeWriteBy(t *testing.T, fm *FileMonitor, path string, pid int32) {
+	t.Helper()
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm.handleEvent(fd, pid, unix.FAN_CLOSE_WRITE)
+	events := queuedPlacements(t, fm)
+	if len(events) != 1 {
+		t.Fatalf("close-write of %s queued %d events, want 1", path, len(events))
+	}
+	fm.analyzeFileSafe(events[0])
+}
+
+// The deletion probe looks at the path a candidate was tracked at. A skipped
+// placement is still a new path for a file that may delete itself there.
+func TestPlacementSkippedFileTrackedAsDropper(t *testing.T) {
+	const ttl = time.Minute
+	dir := t.TempDir()
+	fm, got := placementDropperMonitor(t, dir, ttl, make(chan alert.Finding, 16))
 	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
 	if err := os.WriteFile(staged, []byte("<?php echo 1;"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fd, err := unix.Open(staged, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fm.handleEvent(fd, writerPID, unix.FAN_CLOSE_WRITE)
-	events := queuedPlacements(t, fm)
-	if len(events) != 1 {
-		t.Fatalf("close-write queued %d events, want 1", len(events))
-	}
-	fm.analyzeFileSafe(events[0])
+	analyzeWriteBy(t, fm, staged, writerPID)
 
 	if n := placeAndAnalyze(t, fm, staged, path, writerPID); n != 0 {
 		t.Fatalf("unchanged rename queued %d events, want the skip", n)
@@ -299,12 +314,44 @@ func TestPlacementSkippedFileTrackedAsDropper(t *testing.T) {
 	flushAt := probeAt.Add(dropperGraceWindow + time.Second)
 	fm.dropper.probeStep(flushAt, prober, flushAt)
 
-	for _, a := range got {
+	for _, a := range *got {
 		if a.check == dropperCheckName && a.path == path {
 			return
 		}
 	}
-	t.Fatalf("dropper findings %+v, want a self-delete of %s", got, path)
+	t.Fatalf("dropper findings %+v, want a self-delete of %s", *got, path)
+}
+
+// Suspicious content below the quarantine bar keeps its file under
+// watch. The placed path gets the full analysis, so its dropper candidate
+// carries the verdict the no-skip path gives it.
+func TestPlacementSuspiciousFileIsAnalyzed(t *testing.T) {
+	useRealtimeRules(t, realtimeHighRule)
+	const ttl = time.Minute
+	dir := t.TempDir()
+	alerts := make(chan alert.Finding, 16)
+	fm, _ := placementDropperMonitor(t, dir, ttl, alerts)
+	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte("<?php echo 'EVIL_MARKER_A';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analyzeWriteBy(t, fm, staged, writerPID)
+	if found := drainChecks(alerts); found["signature_match_realtime"] != alert.High {
+		t.Fatalf("staged write findings %v, want one High signature match", found)
+	}
+
+	if n := placeAndAnalyze(t, fm, staged, path, writerPID); n != 1 {
+		t.Fatalf("suspicious file's rename queued %d events, want 1", n)
+	}
+	for _, c := range fm.dropper.tr.Due(time.Now().Add(ttl + time.Second)) {
+		if c.Path == path {
+			if !c.ContentSuspicious {
+				t.Fatalf("candidate for %s lost the suspicious verdict", path)
+			}
+			return
+		}
+	}
+	t.Fatalf("no dropper candidate for %s", path)
 }
 
 // chmod raises no event and keeps mtime, but the analysis branches on mode.

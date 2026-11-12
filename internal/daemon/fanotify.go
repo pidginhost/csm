@@ -574,6 +574,9 @@ type fileEvent struct {
 	// to have existed under its PID.
 	at          time.Time
 	writerChain []int
+	// suspicious, when set, receives whether the analysis found suspicious
+	// content, the verdict a dropper candidate carries.
+	suspicious *bool
 }
 
 func (fm *FileMonitor) currentCfg() *config.Config {
@@ -1394,8 +1397,12 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 		// the newer version never matches what was recorded.
 		begun := fm.recent.Begin()
 		key, keyed := analysisKeyOf(queued.fd, fm.eventClass(queued))
+		var suspicious bool
+		queued.suspicious = &suspicious
 		fileAnalyzer(fm, queued)
-		if keyed {
+		// A skip would place the file without that verdict, so a suspicious
+		// file is analysed again wherever it lands.
+		if keyed && !suspicious {
 			fm.recent.Record(key, begun, time.Now())
 		}
 	})
@@ -1634,6 +1641,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Fstat/Statx) so they do not disturb the fd for later content checks.
 	cand := fm.observeDropperCandidate(event, procInfo)
 	markDropperContentSuspicious := func() {
+		if event.suspicious != nil {
+			*event.suspicious = true
+		}
 		if cand == nil {
 			return
 		}
