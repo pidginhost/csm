@@ -43,8 +43,8 @@ const (
 	// admissionSchemaDisabled is the schema of a ledger holding a candidate
 	// refused because the configuration turned its response off.
 	admissionSchemaDisabled = 10
-	// admissionSchemaLive is the schema of a ledger whose live start ran
-	// (design C7): its marker, and the state it carried over.
+	// admissionSchemaLive is the schema of a ledger whose live start ran:
+	// its marker, and the state it carried over.
 	admissionSchemaLive = 11
 )
 
@@ -75,7 +75,7 @@ var (
 // unknown schema, or data without a schema marker.
 var ErrAdmissionSchema = errors.New("admission ledger schema is not supported")
 
-// AdmissionLedger is the durable admission state of spec 5.4, kept in the
+// AdmissionLedger is the durable admission state, kept in the
 // daemon's state database. The engine is its only owner: mutating calls
 // serialize on one mutex and each runs in one write transaction, so an error
 // leaves the ledger unchanged. Nothing constructs it in production yet.
@@ -101,7 +101,7 @@ type AdmissionLedger struct {
 	// refuses, since it would end work this process still runs.
 	reserved bool
 
-	// live is set once the live start ran (design C7); guarded by mu.
+	// live is set once the live start ran; guarded by mu.
 	live bool
 
 	// set is the temporary set outside the ledger's effect records, as
@@ -141,7 +141,7 @@ type AdmissionLedger struct {
 	inv atomic.Pointer[ledgerInventory]
 
 	// previewsEnd is set while observe previews do not answer their
-	// episodes: a forecasting owner sets it (section 8, row 3).
+	// episodes: a forecasting owner sets it.
 	previewsEnd atomic.Bool
 
 	// held is the recovery hold: how many intents name each target key.

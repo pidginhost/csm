@@ -40,7 +40,7 @@ func (r resetReason) String() string {
 }
 
 // forecastError is why a forecast could not run or go on, a fixed code
-// status shows (spec 3.8).
+// status shows.
 type forecastError string
 
 const (
@@ -67,7 +67,7 @@ func newSessionID(r io.Reader) (string, error) {
 // shadowEntry is one forecast block: its kind, absolute lease expiry, the
 // partition of the set it occupies, its rank and its pick's scope, and
 // the admission time and session elapsed time it was decided at, from
-// which its rotation hold runs (spec 5.6).
+// which its rotation hold runs.
 type shadowEntry struct {
 	kind      admission.Kind
 	expires   time.Time
@@ -80,7 +80,7 @@ type shadowEntry struct {
 	elapsed   time.Duration
 }
 
-// shadowRank is what ranks a forecast block as a victim (spec 5.6): the
+// shadowRank is what ranks a forecast block as a victim: the
 // pick's tier, the action of its next attempt and its address. A block
 // without a valid tier is never a victim, and a pick without one replaces
 // nothing.
@@ -89,7 +89,7 @@ type shadowRank struct {
 	action admission.ActionID
 	target admission.Target
 	// scope is the pick's fairness scope; fresh is set when its episode
-	// may still rotate an equal-tier block (spec 5.2).
+	// may still rotate an equal-tier block.
 	scope string
 	fresh bool
 }
@@ -129,11 +129,11 @@ type shadow struct {
 	replaced map[admission.ActionID]time.Time
 	// answered is the addresses whose forecast block the session replaced
 	// or rotated out, until that block's expiry: their episode had its
-	// response, so no later generation rotates (spec 5.2).
+	// response, so no later generation rotates.
 	answered map[string]time.Time
 	// waiting is the scopes of the turn's block picks by the partitions
 	// they may occupy, and cursors the session's remainder cursors: how
-	// the turn shares the set (spec 5.6).
+	// the turn shares the set.
 	waiting map[admission.Partition][]string
 	cursors admission.QueueCursors
 }
@@ -275,7 +275,7 @@ func (s *shadow) replacedListed(adm firewall.BlockAdmission) int {
 // replaced. Then the set is also shared among the scopes holding its
 // forecast blocks and the turn's waiting scopes, from the session's
 // cursors, so fresh work may rotate an equal-tier forecast block whose
-// hold passed on the session's clocks (spec 5.6); shared says so.
+// hold passed on the session's clocks; shared says so.
 func (s *shadow) limits(adm firewall.BlockAdmission, now time.Time) (limits *admission.SlotLimits, shared bool) {
 	var holding map[admission.Partition]map[string]int
 	limits, _ = s.occupancy(adm).Limits(func() ([]admission.EvictionVictim, error) {
@@ -319,8 +319,7 @@ func (s *shadow) holding(adm firewall.BlockAdmission) map[admission.Partition]ma
 
 // share begins a turn's shares: the scopes of its block picks wait for
 // slots, and a turn that shares the set moves the session's remainder
-// cursors once, before any pick, as a live schedule cycle does (spec
-// 5.6).
+// cursors once, before any pick, as a live schedule cycle does.
 func (s *shadow) share(adm firewall.BlockAdmission, now time.Time, waiting map[admission.Partition][]string) {
 	s.waiting = waiting
 	if limits, shared := s.limits(adm, now); shared {

@@ -68,7 +68,7 @@ func TestLearnTxStaysInLearningBuckets(t *testing.T) {
 
 // CSM's state archive carries no learning ledger: without the anchor bodies
 // and hash keys it cannot restore learning, and an old ledger merged over a
-// live namespace would steer audits back to stale targets (spec 7.4).
+// live namespace would steer audits back to stale targets.
 func TestArchiveExportOmitsLearningLedger(t *testing.T) {
 	statePath := t.TempDir()
 	db, openErr := Open(statePath)

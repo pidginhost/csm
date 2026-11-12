@@ -9,7 +9,7 @@ import (
 )
 
 // readSet reads the temporary set for the turn's schedule and reservations
-// (spec 5.6) when queued work may take a slot: the firewall's entries
+// when queued work may take a slot: the firewall's entries
 // outside admission's records go to the ledger, which adds its own.
 // Without an engine the ledger has no set and block work has no slot
 // budget, as before; a failed read leaves it so and shows in status. The
@@ -39,7 +39,7 @@ func (o *Owner) readSet() error {
 
 // importVictims is the engine's import list as the ledger takes it: known
 // automatic imports, (C2, High) victims of the general partition named by
-// their effect (spec 6).
+// their effect.
 func importVictims(imports []firewall.BlockImport) []admission.EvictionVictim {
 	out := make([]admission.EvictionVictim, 0, len(imports))
 	for _, imp := range imports {

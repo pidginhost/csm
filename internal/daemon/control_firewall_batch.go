@@ -436,7 +436,7 @@ func setFirewallDeadmanOnRollback(fn func()) {
 }
 
 // firewallBatchHold holds or releases admission's block batches on the
-// engine (design C9): a window holds them from before its snapshot until
+// engine: a window holds them from before its snapshot until
 // it is confirmed or rolled back, so a rollback cannot erase a row the
 // owner wrote inside it. Guarded by firewallDeadmanMu.
 var firewallBatchHold func(bool)
@@ -659,7 +659,7 @@ func restoreFirewallRollback(confirmFile, rollbackFile string, expectedMarker []
 		return err
 	}
 	if firewallDeadmanConfigErr != nil {
-		// Restore once (operator ruling 6): a later restart keeps what
+		// Restore once: a later restart keeps what
 		// changed since instead of restoring the window's start again.
 		if err := recordFirewallRestore(rollbackFile, raw); err != nil {
 			return fmt.Errorf("restoring firewall configuration: %w; recording the restored ruleset: %v", firewallDeadmanConfigErr, err)

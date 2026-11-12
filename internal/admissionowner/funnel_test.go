@@ -80,8 +80,8 @@ func TestFunnelHandsTheOwnerCanonicalAddressEvidence(t *testing.T) {
 	}
 }
 
-// A victim named only in the message never becomes an admission target
-// (spec 7.1 Attribution row): the legacy path still reads the message, but
+// A victim named only in the message never becomes an admission target:
+// the legacy path still reads the message, but
 // admission refuses the finding its parser vouched for no address in.
 func TestFunnelNeverAimsAdmissionAtMessageText(t *testing.T) {
 	fixture := newOwnerFixture(t)
@@ -120,7 +120,7 @@ func TestFunnelNeverAimsAdmissionAtMessageText(t *testing.T) {
 
 // A spray's roots are the addresses it counted, as its tracker read them;
 // its candidate is the prefix that holds them, through the mail subnet
-// range entry (spec 5.8, 5.13).
+// range entry.
 func TestFunnelSprayQueuesItsPrefixOnAddressRoots(t *testing.T) {
 	fixture := newOwnerFixture(t)
 	opts := respondOptions(fixture)

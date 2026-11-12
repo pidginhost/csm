@@ -46,7 +46,7 @@ type DynDNSResolver struct {
 	// with a stub.
 	lookupFn func(ctx context.Context, host string) ([]string, error)
 
-	// Guard fields for the DNS re-resolve guard (Task 3).
+	// Guard fields for the DNS re-resolve guard.
 	muGuard      sync.RWMutex
 	hostHealth   map[string]*hostHealth
 	gracePeriod  time.Duration

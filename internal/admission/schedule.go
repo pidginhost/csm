@@ -7,11 +7,11 @@ import (
 )
 
 // MaxMemberCost bounds one candidate's cost in block units: one member
-// spans at most 64 set elements (spec 5.5).
+// spans at most 64 set elements.
 const MaxMemberCost = 64
 
 // MaxBatchMembers bounds the candidates one schedule picks and the members
-// of one execution batch (spec 5.5).
+// of one execution batch.
 const MaxBatchMembers = 64
 
 const scheduleStateVersion = 1
@@ -132,7 +132,7 @@ type Pick struct {
 	// or corroborated, whichever lane served it; zero for general-only work.
 	Reserved Lane
 	// Tier is the item's (class, severity), which decides what work it may
-	// replace in a full set (spec 5.6).
+	// replace in a full set.
 	Tier Tier
 }
 

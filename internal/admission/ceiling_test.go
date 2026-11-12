@@ -418,7 +418,7 @@ func TestCeilingUntilBudget(t *testing.T) {
 	}
 }
 
-// Spec 5.4 and 5.6 migration: the legacy hour's count becomes charges dated
+// Upgrade from the legacy counter: the legacy hour's count becomes charges dated
 // at the end of that hour, on the general lane up to its size and the rest
 // on the reserved lane, and the first limit fills each bucket less the
 // units its lane already spent.
@@ -470,7 +470,7 @@ func TestCeilingImportChargesLegacySpend(t *testing.T) {
 }
 
 // Unknown legacy spend is not an empty ledger: the first limit grants no
-// credit, as missing pacing history starts at zero (spec 5.6). An upgraded
+// credit, as missing pacing history starts at zero. An upgraded
 // ledger keeps starting without credit, and a ledger that already has a
 // limit imports nothing.
 func TestCeilingImportRefusesFreshCredit(t *testing.T) {

@@ -150,7 +150,7 @@ func (l *Lifecycle) Recover(kernel ActionKernel) error {
 }
 
 // retire settles an unknown action as expired_unproven when the kernel
-// proves the state it retires to (spec 5.4, design D7). It never writes the
+// proves the state it retires to. It never writes the
 // kernel; a kernel that cannot prove it leaves the action pending.
 func (l *Lifecycle) retire(a FirewallAction, kernel ActionKernel) (bool, error) {
 	prover, ok := kernel.(interface {

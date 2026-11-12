@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Operator ruling 2 (1.5c-3b): an executed admission block writes no
+// An executed admission block writes no
 // tracker entry, so alert suppression counts it from the firewall state.
 func TestLoadBlockedIPsCountsAnAdmissionBlock(t *testing.T) {
 	prev := BlockedIPsFunc

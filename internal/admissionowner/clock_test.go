@@ -9,7 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 )
 
-// Spec 5.4: a reading carries wall time, the boot's identity and the time
+// A reading carries wall time, the boot's identity and the time
 // since that boot, which a same-boot restart keeps counting.
 func TestReadClockNamesTheBoot(t *testing.T) {
 	dir := t.TempDir()

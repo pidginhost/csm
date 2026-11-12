@@ -9,7 +9,7 @@ import (
 
 const (
 	// admissionEffectsBucket holds one record per automatic block that
-	// holds a temporary set slot, keyed by expiry (spec 5.6).
+	// holds a temporary set slot, keyed by expiry.
 	admissionEffectsBucket = "adm:effects"
 	// admissionSchemaEffects is the schema of a ledger holding effect
 	// records: their bucket and their tally. The first record writes it;
@@ -78,7 +78,7 @@ func effectKey(a admission.AttemptRecord) ([]byte, error) {
 
 // holdSlot records that reserved attempt a of block c holds a temporary
 // set slot in the partition of its lane or, when it evicts, of its victim,
-// which it claims in the same transaction (spec 5.6: the slot keeps its
+// which it claims in the same transaction (the slot keeps its
 // partition). The first record creates the bucket and raises the schema.
 func (q *queueTx) holdSlot(c admission.Candidate, a admission.AttemptRecord, e admission.QueueEntry, victim admission.EvictionVictim) error {
 	rec := admission.EffectRecord{
@@ -449,7 +449,7 @@ func evictionsAgree(tx *bolt.Tx, records map[admission.ActionID]admission.Effect
 
 // evicts reports whether block may take victim's slot: a strictly lower
 // victim, or an equal-tier one rotation took in the partition of the
-// block's own lane (spec 5.6: rotation never crosses partitions).
+// block's own lane (rotation never crosses partitions).
 func evicts(block, victim admission.EffectRecord) bool {
 	return victim.Tier.Less(block.Tier) || (victim.Tier == block.Tier && admission.PartitionOf(block.Lane) == victim.Partition)
 }

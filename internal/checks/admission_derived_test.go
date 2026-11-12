@@ -20,7 +20,7 @@ func wpBruteForce(ip string) alert.Finding {
 	}
 }
 
-// Rulings R7: a block a derived path applies is handed to admission with
+// A block a derived path applies is handed to admission with
 // the root it carries and through its own entry, after the same switches
 // the legacy block honours; a derived block without a root, or a permanent
 // one, is handed over without a root and refused there.

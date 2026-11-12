@@ -35,7 +35,7 @@ func respondOptions(f *ownerFixture) Options {
 
 // A funnel hands the owner a finding and the target it acts on: the owner
 // mints the evidence the finding's observation supports with the producer
-// that stamped it and hands the response to its ingress (spec 5.1, 5.5).
+// that stamped it and hands the response to its ingress.
 func TestOwnerMintsAndAnswersAFinding(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -162,7 +162,7 @@ func TestOwnerCountsADerivedRemintAfterAnInventoryChangeAsAStaleIdentity(t *test
 	}
 }
 
-// Handoff O30 and review M4: a stop closes the ingress before its final
+// A stop closes the ingress before its final
 // drains, so it ends even while a producer that was not stopped keeps
 // submitting; later submissions are refused.
 func TestOwnerStopIsBoundedWhileAProducerSubmits(t *testing.T) {
@@ -311,7 +311,7 @@ func TestOwnerPreviewsAnIPv6ChallengeWithoutFirewallIPv6(t *testing.T) {
 	}
 }
 
-// R7: a derived path that kept no root (a netblock, a permanent block, an
+// A derived path that kept no root (a netblock, a permanent block, an
 // incident's last rung) hands over no evidence and is refused as policy, a
 // designed refusal, never as invalid input.
 func TestOwnerRefusesARootlessDerivedResponseAsPolicy(t *testing.T) {
@@ -446,9 +446,9 @@ func TestOwnerHandoffDoesNotWaitForTheOwner(t *testing.T) {
 	}
 }
 
-// A response acts on the address its evidence attributes (spec 5.8); a
-// scan root never widens to a prefix (5.13). Another target is refused and
-// the hourly row names the mismatch.
+// A response acts on the address its evidence attributes; a scan root
+// never widens to a prefix. Another target is refused and the hourly row
+// names the mismatch.
 func TestOwnerRefusesATargetItsEvidenceDoesNotName(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)

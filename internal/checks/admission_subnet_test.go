@@ -9,7 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// Ruling R8: the registry, not a check name, says which checks feed a
+// The registry, not a check name, says which checks feed a
 // subnet response and through which entry; a subnet summary never
 // authorizes a single-address block and always carries evidence.
 func TestSubnetResponsesComeFromTheRegistry(t *testing.T) {
@@ -166,7 +166,7 @@ func TestCrawlAsksAdmissionPerSubnet(t *testing.T) {
 
 // A netblock escalation rests on past blocks, not on a root admission could
 // answer: it is handed to admission without one and refused there until
-// range corroboration exists (plan 2).
+// range corroboration exists.
 func TestNetblockAsksAdmissionWithoutARoot(t *testing.T) {
 	a := withAdmission(t)
 	cfg := netblockWindowConfig(t)

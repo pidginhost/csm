@@ -1,5 +1,5 @@
-// Package admissionowner is the daemon's owner of the admission ledger
-// (spec 5.4): the one handle on the state database's ledger, and the one
+// Package admissionowner is the daemon's owner of the admission ledger:
+// the one handle on the state database's ledger, and the one
 // goroutine that changes it.
 package admissionowner
 

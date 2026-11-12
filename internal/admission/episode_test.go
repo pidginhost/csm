@@ -168,7 +168,7 @@ func place(t *testing.T, cur *Episode, states []LineState, kind Kind, at time.Ti
 }
 
 // An episode lasts while observations keep coming, ends an hour after the
-// last one, and the next observation after that starts a new one (spec 5.2).
+// last one, and the next observation after that starts a new one.
 func TestPlaceOpensJoinsAndEndsEpisodes(t *testing.T) {
 	first := place(t, nil, nil, KindBlockIP, t0, false)
 	if first.Generation != 1 || first.Answered || first.Episode.ID.IsZero() || !first.Episode.Last.Equal(t0) || !first.Episode.Previous.IsZero() {

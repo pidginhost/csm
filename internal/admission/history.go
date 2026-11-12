@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Record bounds for storage accounting (spec 5.4). The invariants keep every
+// Record bounds for storage accounting. The invariants keep every
 // valid record inside its bound; tests pin each bound with the largest
 // record the invariants allow.
 const (
@@ -25,7 +25,7 @@ const (
 )
 
 // HistoryRetention is the review window: an admitted candidate's details
-// are kept at least this long after it ends (spec 5.4).
+// are kept at least this long after it ends.
 const HistoryRetention = 7 * 24 * time.Hour
 
 // HistoryTarget is how long an ended candidate's details are kept when no
@@ -90,7 +90,7 @@ type HistoryEntry struct {
 	// reserve, and it is not retired until recovery settles it.
 	Pinned bool
 	// Released: the live start made an observe preview's history eligible
-	// before its review window ended (design C7). A preview carries no
+	// before its review window ended. A preview carries no
 	// review or undo.
 	Released bool
 }

@@ -98,7 +98,7 @@ func liveUsed(t *testing.T, o *Owner) uint32 {
 	return c.General.Used + c.Reserved.Used
 }
 
-// D1, spec 3.3: under a dry-run policy each block pick ends as a dry run
+// Under a dry-run policy each block pick ends as a dry run
 // with a prediction and no attempt, charge, link or engine change. One
 // read-only snapshot answers the turn. With real occupancy 8 of 11, of
 // which the reserve keeps one slot, two
@@ -148,7 +148,7 @@ func TestOwnerEndsDryRunPicksAsForecasts(t *testing.T) {
 	}
 }
 
-// Spec 3.4, 6.2: a forecast starts from the real ceiling, spent credit
+// A forecast starts from the real ceiling, spent credit
 // included, when the mode changes, and then lives apart from it. With L=5
 // a live block spends the one general unit; the forecast of the next pick
 // waits for the ceiling, fifteen minutes later one fits, and another at
@@ -193,7 +193,7 @@ func TestOwnerForecastStartsFromTheRealCeiling(t *testing.T) {
 	}
 }
 
-// Spec 3.3, 3.4: a real block that already covers the address ends the pick
+// A real block that already covers the address ends the pick
 // as existing_actual, unlinked, without answering the episode. A forecast
 // block that lasts as long answers a later generation as existing_shadow,
 // a shorter one holds it as pending_recovery, neither renews it, and a
@@ -232,7 +232,7 @@ func TestOwnerForecastsExistingAndCoveringBlocks(t *testing.T) {
 	longer := dryPolicy(3)
 	longer.Expiry = func(admission.Candidate) time.Duration { return 48 * time.Hour }
 	// The block expiry bounds every lifetime, so a longer response needs a
-	// longer block expiry (spec 5.6).
+	// longer block expiry.
 	longer.BlockExpiry = 48 * time.Hour
 	r.publish(longer)
 	f.host.advance(time.Second)
@@ -257,7 +257,7 @@ func TestOwnerForecastsExistingAndCoveringBlocks(t *testing.T) {
 	}
 }
 
-// Spec 3.1: kinds without a capacity model end as not_modelled dry runs
+// Kinds without a capacity model end as not_modelled dry runs
 // without a snapshot, forecast block or charge; a challenge keeps its
 // comparison preview. No kind reaches a mutating engine method or the
 // live ceiling.
@@ -293,7 +293,7 @@ func TestOwnerForecastsEveryKindWithoutEffects(t *testing.T) {
 	}
 }
 
-// Spec 3.3 step 1, 3.4: without an engine, with a degraded clock, or with
+// Without an engine, with a degraded clock, or with
 // a snapshot that fails or answers other members, block picks wait as an
 // unavailable engine with no forecast change; nothing repairs or probes
 // the engine. Unmodelled kinds need no engine, but a degraded clock
@@ -355,7 +355,7 @@ func TestOwnerForecastWaitsForTheEngineAndClock(t *testing.T) {
 	}
 }
 
-// Spec 3.5, 6.1: a decision is installed only after its ending commits. A
+// A decision is installed only after its ending commits. A
 // failed ending stops the turn with its pick and the rest queued; only
 // the picks already ended changed the forecast. The retry charges each
 // remaining pick once.
@@ -402,7 +402,7 @@ func TestOwnerForecastInstallsOnlyCommittedEndings(t *testing.T) {
 	}
 }
 
-// Spec 3.7: a restart starts a new session from the real ceiling, without
+// A restart starts a new session from the real ceiling, without
 // the forecast blocks or counts of the old one; the durable outcomes stay.
 func TestOwnerRestartStartsANewForecast(t *testing.T) {
 	p := withTestRegistry(t)
@@ -432,7 +432,7 @@ func TestOwnerRestartStartsANewForecast(t *testing.T) {
 	}
 }
 
-// Spec 3.2, 6.2: spent live ceiling and history budgets do not stop
+// Spent live ceiling and history budgets do not stop
 // forecast selection, and nothing waits on them: picks reach the model,
 // no ceiling deferral is recorded, and work left over by the member
 // bound wakes the next turn without new input.
@@ -478,7 +478,7 @@ func TestOwnerForecastIgnoresLiveBudgets(t *testing.T) {
 	}
 }
 
-// Spec 3.4: the snapshot counts forecast addresses the real sets already
+// The snapshot counts forecast addresses the real sets already
 // hold. A manual timed block of a forecast address is not counted twice,
 // an untimed one leaves the temporary set, and neither refunds the
 // forecast's charge.
@@ -512,7 +512,7 @@ func dryVerdictPolicy(epoch uint64, panel *fakePanel) ExecutionPolicy {
 	return p
 }
 
-// D8, spec 3.3 step 6: a dry run asks the panel about each pick the model
+// A dry run asks the panel about each pick the model
 // would otherwise judge, and the pick waits for its answer with no
 // forecast change. Block, an empty verdict or a failed exchange continues
 // the forecast, which consumes the answer.
@@ -557,7 +557,7 @@ func TestOwnerForecastAsksThePanel(t *testing.T) {
 	}
 }
 
-// Spec 5.6: the forecast keeps the reserve for direct or corroborated
+// The forecast keeps the reserve for direct or corroborated
 // work. With one automatic slot left, which the reserve holds, a general
 // pick ends set_full and a direct-compromise pick is forecast into the
 // reserved partition on its reserved lane.
@@ -586,7 +586,7 @@ func TestOwnerForecastKeepsTheReserve(t *testing.T) {
 	}
 }
 
-// D5, spec 3.3 step 3, 4.1: a ready allow ends its pick as verdict_allow
+// A ready allow ends its pick as verdict_allow
 // before any modelled capacity is judged, so it takes no forecast slot or
 // charge, even once the set is full. Ready block answers then meet the
 // model in order: a decision committed earlier in the turn fills the set
@@ -637,7 +637,7 @@ func TestOwnerForecastEndsPanelAllowsFirst(t *testing.T) {
 	}
 }
 
-// Spec 3.2, 3.3: a pick waiting for its answer is passed over and takes no
+// A pick waiting for its answer is passed over and takes no
 // forecast slot, so later picks with answers fit before it.
 func TestOwnerForecastPendingPicksTakeNoSlot(t *testing.T) {
 	p := withTestRegistry(t)
@@ -680,7 +680,7 @@ func TestOwnerForecastPendingPicksTakeNoSlot(t *testing.T) {
 	}
 }
 
-// Spec 3.3 steps 1-5: a real block that covers the address, a forecast
+// A real block that covers the address, a forecast
 // block that holds it, a full modelled set and a kind without a model end
 // without a call.
 func TestOwnerForecastAsksNothingItNeedNotAsk(t *testing.T) {
@@ -717,7 +717,7 @@ func TestOwnerForecastAsksNothingItNeedNotAsk(t *testing.T) {
 	}
 }
 
-// Spec 3.7: no answer from a dry run authorizes a live attempt. A live
+// No answer from a dry run authorizes a live attempt. A live
 // epoch drops it, and the pick asks again before it runs.
 func TestOwnerForecastAnswersDoNotCarryIntoLive(t *testing.T) {
 	p := withTestRegistry(t)
@@ -750,7 +750,7 @@ func TestOwnerForecastAnswersDoNotCarryIntoLive(t *testing.T) {
 	}
 }
 
-// Spec 3.7, 6.4: a flip to dry run first finishes the live outcome a
+// A flip to dry run first finishes the live outcome a
 // failed write left pending, without a refund or a second dispatch, and
 // the forecast then starts from the ceiling that includes its charge. An
 // unknown attempt from live work is still retired once its expiry passes,
@@ -808,7 +808,7 @@ func TestOwnerFinishesLiveWorkAfterAFlipToDryRun(t *testing.T) {
 	}
 }
 
-// Spec 1.2, 3.7: a forecast neither probes nor repairs an engine a live
+// A forecast neither probes nor repairs an engine a live
 // hold names, so the hold's probe deadline does not run a turn every
 // second while the dry run lasts; the hold stays for the next live turn.
 func TestOwnerForecastLeavesALiveHoldAlone(t *testing.T) {
@@ -846,7 +846,7 @@ func TestOwnerForecastLeavesALiveHoldAlone(t *testing.T) {
 	}
 }
 
-// Spec 2: work a refused policy holds is served once a valid epoch is
+// Work a refused policy holds is served once a valid epoch is
 // published, even without a reload: the schedule checks for a newer epoch
 // while a refusal holds work.
 func TestOwnerServesHeldWorkOnANewerEpochWithoutAReload(t *testing.T) {
@@ -927,7 +927,7 @@ func TestOwnerForecastSurvivesARefusal(t *testing.T) {
 	}
 }
 
-// Spec 3.3 steps 2-4: a real covering block comes before a ready allow, and
+// A real covering block comes before a ready allow, and
 // a ready allow before a forecast block that covers the address. The
 // forecast block here appears while the call runs.
 func TestOwnerForecastOrdersAllowsBetweenRealAndForecastBlocks(t *testing.T) {

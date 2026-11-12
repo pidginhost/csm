@@ -102,7 +102,7 @@ func TestDoctorWarnsFirewallLedgerUnreadable(t *testing.T) {
 	}
 }
 
-// Operator ruling 6: doctor shows a pending CLI confirmation window. One
+// Doctor shows a pending CLI confirmation window. One
 // whose rollback is scheduled warns with its deadline; one that cannot
 // settle by itself fails and names why, and confirmation is the fix.
 func TestDoctorReportsAPendingFirewallConfirmation(t *testing.T) {

@@ -15,11 +15,11 @@ import (
 
 // dryRunBlocksBucket holds examples of responses a dry run would have run:
 // the legacy firewall writer's or, while an admission owner runs on the
-// firewall engine, only the owner's forecast examples (spec 3.6). Its count is a count of the
+// firewall engine, only the owner's forecast examples. Its count is a count of the
 // retained examples, not of addresses or predictions.
 const dryRunBlocksBucket = "dry_run_blocks"
 
-// Bounds of the forecast examples (spec 3.6).
+// Bounds of the forecast examples.
 const (
 	maxDryRunBlocks = 20000
 	// maxDryRunBatch bounds one write: one turn's examples.

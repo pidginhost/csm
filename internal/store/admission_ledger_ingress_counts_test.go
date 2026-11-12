@@ -11,7 +11,7 @@ import (
 
 // Every queue drop is counted once in the lifetime counters, as in the
 // windowed outcomes: arrivals the ingress refused for want of a position
-// as well as those a drain refused (spec 7.1: exact counters for normal
+// as well as those a drain refused (exact counters for normal
 // drops). Status shows the lifetime rows.
 func TestIngressRefusalsReachTheLifetimeCounters(t *testing.T) {
 	f := newLedgerFixture(t)

@@ -141,7 +141,7 @@ func withChallengeList(t *testing.T, list ChallengeIPList) {
 	t.Cleanup(func() { SetChallengeIPList(prev) })
 }
 
-// Rulings R1 and R4: a block the legacy funnel selects is also handed to
+// A block the legacy funnel selects is also handed to
 // admission for the address the finding names, whatever the legacy state
 // decides next (already blocked, out of hourly budget). Policy gates still
 // apply: an ineligible check or an infra address asks for nothing.

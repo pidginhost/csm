@@ -36,7 +36,7 @@ func writeAdmissionBlock(t *testing.T, dir, ip string, expires time.Time) {
 	}
 }
 
-// Operator ruling 2 (1.5c-3b): an executed admission block writes no
+// An executed admission block writes no
 // tracker entry, so reputation must count it from the firewall state.
 func TestLoadAllBlockedIPsCountsAnAdmissionBlock(t *testing.T) {
 	dir := t.TempDir()

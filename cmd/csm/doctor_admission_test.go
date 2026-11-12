@@ -19,7 +19,7 @@ func admissionSnapshot(a *health.AdmissionStatus) *health.Snapshot {
 	}
 }
 
-// Doctor renders the pure admission rules (ruling 10) when the snapshot
+// Doctor renders the pure admission rules when the snapshot
 // carries an admission view, judged at the view's own time, and prints no
 // admission rows without one.
 func TestBuildDoctorReportRendersAdmissionRows(t *testing.T) {
@@ -46,7 +46,7 @@ func TestBuildDoctorReportRendersAdmissionRows(t *testing.T) {
 	if gaps, _ := doctorCheckNamed(report, "admission response gaps"); gaps.Status != "warn" {
 		t.Fatalf("a gap a minute before the view: %+v", gaps)
 	}
-	// R10: legacy blocking enforces while admission previews.
+	// Legacy blocking enforces while admission previews.
 	if report.OverallStatus != "warn" {
 		t.Fatalf("overall = %q", report.OverallStatus)
 	}
@@ -54,7 +54,7 @@ func TestBuildDoctorReportRendersAdmissionRows(t *testing.T) {
 
 // The owner's own view reaches doctor: a ledger that is not running, a
 // refused clock reading and ledger damage warn that existing blocking is
-// unaffected while admission previews (R10), a degraded clock, a clamped ceiling, a ceiling
+// unaffected while admission previews, a degraded clock, a clamped ceiling, a ceiling
 // of one, an unreadable legacy count and a failed inventory read warn, and
 // a healthy owner shows its ceiling and import.
 func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
@@ -144,7 +144,7 @@ func TestDoctorOwnerFixesKeepTheStateDatabaseWhileAdmissionPreviews(t *testing.T
 	}
 }
 
-// Held execution has its own row naming the cause (P8). It fails once
+// Held execution has its own row naming the cause. It fails once
 // admission executes and warns while existing blocking still decides
 // every block; without a hold there is no row.
 func TestDoctorReportsHeldExecution(t *testing.T) {
@@ -171,7 +171,7 @@ func TestDoctorReportsHeldExecution(t *testing.T) {
 }
 
 // The execution row's fix follows its cause: a refused policy is repaired
-// in the configuration, an engine hold in the firewall (C4).
+// in the configuration, an engine hold in the firewall.
 func TestDoctorNamesWhatHoldsExecution(t *testing.T) {
 	at := time.Now().UTC()
 	for by, want := range map[string]string{
@@ -206,7 +206,7 @@ func dryRunView(at time.Time) *health.AdmissionStatus {
 	}}
 }
 
-// Spec 3.8: a dry run alone is not a failure. Doctor names the forecast's
+// A dry run alone is not a failure. Doctor names the forecast's
 // session and coverage, actual against predicted capacity, the modelled
 // partitions of the automatic slots with the entries admission never
 // evicts and when they drain, and the modelled ceiling, and says a
@@ -245,7 +245,7 @@ func TestDoctorRendersAHealthyDryRun(t *testing.T) {
 	}
 }
 
-// Spec 3.8: model limits, modelled waits, a held forecast and lost or
+// Model limits, modelled waits, a held forecast and lost or
 // stale examples warn; they never hide held execution, which keeps its own
 // row. Existing blocking still decides while admission forecasts, so that
 // row warns too.
@@ -522,7 +522,7 @@ func TestDoctorReplacementsPreserveCapacityWarnings(t *testing.T) {
 
 // Forecast rotations of the last hour warn that the set is too small for
 // the attack, equal-tier waits join the waits, and the capacity row names
-// how many scopes share each partition (spec 5.17).
+// how many scopes share each partition.
 func TestDoctorWarnsOnRotationsAndEqualTierWaits(t *testing.T) {
 	at := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	view := dryRunView(at)

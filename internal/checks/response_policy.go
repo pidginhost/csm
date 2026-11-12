@@ -96,8 +96,8 @@ type ResponsePolicy struct {
 	// Basis is the priority class the check's own evidence supports.
 	// BasisCompromise is reserved for the reviewed compromise checks.
 	Basis admission.Basis
-	// Attribution is the set of kinds the check accepts its address from
-	// (spec 5.8): only kinds its evidence family can be read by. Every check
+	// Attribution is the set of kinds the check accepts its address from:
+	// only kinds its evidence family can be read by. Every check
 	// with an evidence family names at least one.
 	Attribution admission.AttributionSet
 	// Subnet names the subnet response the check feeds: the mail subnet

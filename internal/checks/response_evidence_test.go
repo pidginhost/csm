@@ -20,7 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/sourcewalk"
 )
 
-// The attribution kinds each evidence family is read by (spec 5.8).
+// The attribution kinds each evidence family is read by.
 var (
 	peerKind        = admission.Attributions(admission.AttributionPeer)
 	httpKinds       = admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)
@@ -374,7 +374,7 @@ func TestAddressProducersAreClassified(t *testing.T) {
 		}
 	}
 	// The database malware response reports session addresses instead of
-	// emitting an address-bearing finding (ruling R9).
+	// emitting an address-bearing finding.
 	if len(producers) != 71 {
 		t.Fatalf("scan found %d address producers; review the change from the pinned 71 producers", len(producers))
 	}

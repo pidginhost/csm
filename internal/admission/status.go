@@ -11,8 +11,7 @@ import (
 // rows and its intent.
 const MaxRecoveryNeed = MaxHistoryBytes + AttemptRecoveryBytes
 
-// LedgerStatus is a read-only view of the admission ledger (spec 5.17,
-// ruling 8). Each section is read on its own and carries its own error,
+// LedgerStatus is a read-only view of the admission ledger. Each section is read on its own and carries its own error,
 // so one damaged record never hides the others. Times are the ledger's
 // stored admission time, never a current reading.
 type LedgerStatus struct {
@@ -249,7 +248,7 @@ func NoticeRow(r NoticeRecord) NoticeStatusRow {
 	return row
 }
 
-// IngressHealth is the in-memory ingress's admission state (ruling 9).
+// IngressHealth is the in-memory ingress's admission state.
 // It is process-local: the ledger may be the damaged part.
 type IngressHealth struct {
 	Admitting bool `json:"admitting"`
@@ -277,16 +276,16 @@ type DoctorRow struct {
 
 // PreviewUnaffected labels preview rows: legacy blocking enforces
 // while admission previews, so a healthy row says so and an outage only
-// warns (R10).
+// warns.
 const PreviewUnaffected = "existing blocking is unaffected while admission previews"
 
 // ExecutionAffected ends every admission row once admission runs automatic
 // blocks: an admission outage is then an outage of automatic blocking, so
-// an unavailable ledger, ingress, owner or clock fails (spec 5.17).
+// an unavailable ledger, ingress, owner or clock fails.
 const ExecutionAffected = "admission decides automatic blocks"
 
 // DoctorImpact is how admission rows close and how badly an outage rates:
-// a preview only warns, since legacy blocking enforces (R10); execution
+// a preview only warns, since legacy blocking enforces; execution
 // fails.
 func DoctorImpact(executing bool) (closing, outage string) {
 	if executing {
@@ -296,7 +295,7 @@ func DoctorImpact(executing bool) (closing, outage string) {
 }
 
 // DoctorChecks turns a ledger status and the ingress health into fixed
-// doctor rows (ruling 10). Either may be nil: then its rows are left out,
+// doctor rows. Either may be nil: then its rows are left out,
 // so a daemon without an admission owner prints none. now is the time the
 // Critical-gap rule looks back from; executing says whether admission runs
 // automatic blocks (DoctorImpact).

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// A verified episode keeps its scheduled boundary (spec 5.2): closing it
+// A verified episode keeps its scheduled boundary: closing it
 // again, as a same-episode re-admission's verified block does, moves
 // neither end, whether the new block ends sooner or later. An unusable
 // reading or expiry is still refused.

@@ -641,7 +641,7 @@ func putScheduleState(tx *bolt.Tx, s admission.ScheduleState) error {
 }
 
 // unitCost is the fair cost of one queued address, prefix or service tuple.
-// Ceiling demand comes from the candidate kind (spec 5.6).
+// Ceiling demand comes from the candidate kind.
 const unitCost = 1
 
 // Schedule picks the next candidates to serve under lim and records the
@@ -1147,7 +1147,7 @@ func (q *queueTx) challengeWake(history *liveHistory, lc liveCandidate, earliest
 // deferUnserved records why ready work the schedule left queued waits: its
 // lanes ran out of ceiling budget, of free set slots in the partitions
 // they occupy or of history budget, or its details do not fit the recovery
-// reserve (spec 5.17). Work passed over for the member bound or another
+// reserve. Work passed over for the member bound or another
 // scope's fair turn waits without a reason, and so does a retry in its
 // backoff. A changed reason is one transition, counted and announced once,
 // as Defer records it. Pending work keeps its reason, and so does set_full

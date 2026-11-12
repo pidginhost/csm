@@ -149,7 +149,7 @@ func queueMany(t *testing.T, o *Owner, p *admission.Producer, f *ownerFixture, n
 	return ids
 }
 
-// Spec 3.8, 6.4: 200 committed predictions in one interval give one
+// 200 committed predictions in one interval give one
 // history-only auto_block Warning a minute after the first: the capacity
 // admissions in its message, every other prediction counted, and exactly
 // 20 distinct examples, the first in committed order, each naming its
@@ -307,7 +307,7 @@ func TestOwnerSummaryRetriesAndCoalesces(t *testing.T) {
 	}
 }
 
-// Spec 3.8: a mode change never flushes a summary early or relabels it;
+// A mode change never flushes a summary early or relabels it;
 // it is delivered as a dry-run summary at its time, and live work adds
 // nothing to it.
 func TestOwnerSummaryOutlivesAFlipToLive(t *testing.T) {
@@ -334,7 +334,7 @@ func TestOwnerSummaryOutlivesAFlipToLive(t *testing.T) {
 	}
 }
 
-// Spec 3.8: Stop sends a summary its minute allows and otherwise counts it
+// Stop sends a summary its minute allows and otherwise counts it
 // discarded; it never sends one early.
 func TestOwnerStopDiscardsAnEarlySummary(t *testing.T) {
 	for _, due := range []bool{false, true} {

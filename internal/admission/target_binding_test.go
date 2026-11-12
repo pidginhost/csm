@@ -4,7 +4,7 @@ import "testing"
 
 // A response may act on the address its evidence attributes; a range entry
 // may act on a prefix containing it. Any other target is an attribution
-// refusal (spec 5.8, 5.13).
+// refusal.
 func TestBindTarget(t *testing.T) {
 	tp := newTestProducers(t)
 	in := sshInput(t)
@@ -66,7 +66,7 @@ func TestMintRefusesAPrefixTarget(t *testing.T) {
 }
 
 // A scan root never widens to a prefix at the ingress: only a range entry
-// may act on one (spec 5.13).
+// may act on one.
 func TestIngressRefusesAPrefixFromAnAddressRoot(t *testing.T) {
 	f := &ingressFixture{t: t, tp: newTestProducers(t)}
 	// Register the entries so an unrelated policy refusal cannot mask binding.

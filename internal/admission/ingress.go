@@ -115,7 +115,7 @@ type Ingress struct {
 	published time.Time
 	// stoppedAt is when admission last closed, zero while a usable
 	// snapshot is published; criticalRefused counts the Critical arrivals
-	// refused since (ruling 9).
+	// refused since.
 	stoppedAt       time.Time
 	criticalRefused uint64
 	// These observers are set before any submission or drain.

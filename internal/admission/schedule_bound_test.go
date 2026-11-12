@@ -58,7 +58,7 @@ func boundRun(t *testing.T, items []ScheduleItem, target CandidateID, lim Schedu
 	return 0
 }
 
-// A continuously eligible new member is served within the spec 7.1 bound
+// A continuously eligible new member is served within the fairness bound
 // whatever floods the other scopes and tiers send: 7*7*S*M*(W+Q+1) general
 // turns, or 2*7*S*M*(W+Q+1) reserved ones, with M = 1 and Q = 0.
 func TestScheduleServesANewMemberWithinTheBound(t *testing.T) {
@@ -120,8 +120,8 @@ func TestScheduleServesANewMemberWithinTheBound(t *testing.T) {
 }
 
 // Each of S scopes flooding one tier is served once in every S
-// consecutive single-member calls (spec 7.1: a turn within S scope-rotation
-// turns), across checkpoints as after a ledger reopen.
+// consecutive single-member calls (a turn within S scope-rotation turns),
+// across checkpoints as after a ledger reopen.
 func TestScheduleServesEveryScopeOncePerRotation(t *testing.T) {
 	for _, s := range []int{2, 3, 7, 40} {
 		t.Run(fmt.Sprint(s), func(t *testing.T) {

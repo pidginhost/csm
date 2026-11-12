@@ -66,7 +66,7 @@ func ParseBatchID(s string) (BatchID, error) {
 }
 
 // Intent is what one attempt may apply, recorded before the attempt
-// dispatches any host change (spec 5.4): the batch it runs in, its kind,
+// dispatches any host change: the batch it runs in, its kind,
 // its target and the absolute expiry of the effect. Every member adds its
 // target until that expiry; a member that evicts also removes its victim.
 // The ledger keeps it while the attempt runs and, after an unknown
@@ -80,7 +80,7 @@ type Intent struct {
 	ExpiresAt time.Time
 	// Victim is the automatic block the member evicts; zero when it takes
 	// a free slot. Only a block_ip member evicts, one victim for its one
-	// unit (spec 5.6).
+	// unit.
 	Victim Victim
 }
 

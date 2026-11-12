@@ -50,7 +50,7 @@ func TestAPIStatusCopiesAdmission(t *testing.T) {
 	}
 }
 
-// Spec 3.8, 6.4: HTTP preserves the provider's admission object and its
+// HTTP preserves the provider's admission object and its
 // required wire fields, including nulls and zeros. The daemon socket test
 // checks the real control transport against the same provider contract.
 func TestAPIStatusAdmissionMatchesTheProvider(t *testing.T) {

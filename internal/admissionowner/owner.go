@@ -28,11 +28,10 @@ const (
 	defaultDeliverEvery   = time.Second
 	defaultNoticeEvery    = 5 * time.Second
 	defaultDrainEvery     = time.Second
-	// defaultScheduleEvery bounds the owner to one batch start a second
-	// (spec 5.5).
+	// defaultScheduleEvery bounds the owner to one batch start a second.
 	defaultScheduleEvery = time.Second
 	// turnEvery spaces an executable owner's selection, check and forecast
-	// turns, including those that dispatch nothing (spec 3.2).
+	// turns, including those that dispatch nothing.
 	turnEvery = time.Second
 )
 
@@ -110,8 +109,8 @@ type Options struct {
 	WriteAudit func([]actionlog.Record) error
 	// Applied receives the applied block_ip rows of each delivered batch
 	// after their action log write and before their acknowledgement, so the
-	// consumers of a verified block see each one at least once (spec 5.5,
-	// P14). A failed call acknowledges nothing and the rows come again with
+	// consumers of a verified block see each one at least once. A
+	// failed call acknowledges nothing and the rows come again with
 	// the same identity: consumers must be idempotent by action and
 	// transition. Nil hands them to no one.
 	Applied func([]admission.AuditRow) error
@@ -119,7 +118,7 @@ type Options struct {
 	// as protection_queue_degraded is sent: history and direct dispatch,
 	// never the finding channel, suppressions or the routine rate limit.
 	// A preview is recorded in history only: legacy blocking enforces, so
-	// the gap it describes is not an outage (R10).
+	// the gap it describes is not an outage.
 	Deliver func(findings []alert.Finding, preview bool) error
 	// DeliverSummary records a dry-run summary in history only. It must
 	// return promptly when ctx is cancelled, and an error must mean the
@@ -136,10 +135,11 @@ type Options struct {
 	// Caps are the firewall's containment capabilities block targets fit.
 	Caps func() admission.Caps
 	// Blocks returns the firewall engine that runs block_ip picks, or nil
-	// while none runs. Without Blocks every pick is a preview: production
-	// passes none until cutover (P2).
+	// while none runs. Without a provider every pick is a preview. With
+	// one, the policy and liveExecution guard decide whether block picks
+	// forecast, preview or execute.
 	Blocks func() BlockEngine
-	// Policy reads the published execution policy (D11). An owner with
+	// Policy reads the published execution policy. An owner with
 	// Blocks binds to it at every turn and reload, and does not start
 	// without a valid one; a comparison-only owner never reads it.
 	Policy func() ExecutionPolicy
@@ -156,7 +156,7 @@ type request struct {
 
 // Owner is the daemon's one handle on the admission ledger. One goroutine
 // makes every call that changes the ledger, so sequences such as a tick
-// followed by a new limit never interleave with another change (spec 5.4).
+// followed by a new limit never interleave with another change.
 // It serves its queue as observe previews unless an engine runs its block
 // picks (Options.Blocks).
 type Owner struct {
@@ -215,12 +215,12 @@ type Owner struct {
 	// damaged, so the cause is kept for the owner's life.
 	damageErr error
 	// isolated holds the candidates whose last batch the kernel rejected,
-	// with their absolute expiry: each runs alone (P9).
+	// with their absolute expiry: each runs alone.
 	isolated map[admission.CandidateID]time.Time
 	// finishes retains known outcomes until their writes commit. A turn
 	// retries these before selecting more work, bounding this to one batch.
 	finishes []pendingFinish
-	// execHold is why automatic execution is held (P8), or nil. probeAt is
+	// execHold is why automatic execution is held, or nil. probeAt is
 	// when the next probe may run, on the monotonic clock, after probeWait.
 	execHold  error
 	probeAt   time.Time
@@ -239,7 +239,7 @@ type Owner struct {
 	policyErr error
 	verdicts  verdicts
 	// shadow is the forecast session while a dry-run policy is installed,
-	// and forecastReset why the next session starts (spec 3.4, 3.7).
+	// and forecastReset why the next session starts.
 	// forecastErr is why forecasting last failed, cleared once a session
 	// starts or a forecast turn succeeds; forecastErrAt is when, kept until
 	// the next session starts.
@@ -294,7 +294,7 @@ type Owner struct {
 	// An engine check fault has no single attempt to key a fault by.
 	retireCheckFault bool
 	// retireErr is the last retirement fault reported while one stands.
-	// Retirement never fails a turn (C4).
+	// Retirement never fails a turn.
 	retireErr error
 	// Resume after the last checked action even if its retry is already due.
 	retireAfter admission.ActionID
@@ -446,8 +446,8 @@ var (
 	settleLedger  = (*store.AdmissionLedger).Settle
 )
 
-// start runs the startup sequence (spec 5.4, handoffs O19-O24). A retry
-// keeps the handle it opened: one database has one ledger handle (O1).
+// start runs the startup sequence. A retry
+// keeps the handle it opened: one database has one ledger handle.
 func (o *Owner) start() error {
 	// An executable owner never starts on settings it cannot bind to.
 	if o.executable() {
@@ -468,7 +468,7 @@ func (o *Owner) start() error {
 	}
 	o.syncPreviews()
 	// An existing ledger records elapsed time under its saved limit before
-	// a new limit applies (O13).
+	// a new limit applies.
 	reading, err := o.readTick()
 	if err != nil {
 		return err
@@ -547,7 +547,7 @@ func (o *Owner) applyCeiling(now time.Time) error {
 // startLiveLedger runs the ledger's live start; tests make it fail.
 var startLiveLedger = (*store.AdmissionLedger).StartLive
 
-// startLive runs the live start (design C7) once per ledger, as soon as the
+// startLive runs the live start once per ledger, as soon as the
 // installed policy executes. Every drain and turn reads the clock through
 // tick first, so nothing is placed or served under that policy before it:
 // legacy blocking's hour and pending queue are carried over, and earlier
@@ -593,7 +593,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 }
 
 // tick records a reading. A refused reading or live start stops admission:
-// the ingress cannot use the unfinished tick's snapshot (O6). The next
+// the ingress cannot use the unfinished tick's snapshot. The next
 // good tick publishes a fresh snapshot.
 func (o *Owner) tick() error {
 	defer o.writeComparison(false)
@@ -653,7 +653,7 @@ func (o *Owner) publish() error {
 }
 
 // refreshInventory folds one complete inventory read into the ledger. A
-// failed read keeps the committed inventory (O46).
+// failed read keeps the committed inventory.
 func (o *Owner) refreshInventory() {
 	obs, err := o.opts.Inventory()
 	if err == nil {
@@ -673,7 +673,7 @@ func (o *Owner) refreshInventory() {
 }
 
 // Reload records a reading under the saved limit, then applies the
-// configured one and revalidates the queue against it (O3, O13).
+// configured one and revalidates the queue against it.
 // A failed reload is retried on ticks before admission can resume. An
 // executable owner first installs the published policy: Reload returns
 // once it is installed, or with the ErrPolicy that holds execution.
@@ -715,7 +715,7 @@ func (o *Owner) reloadCeiling() error {
 
 // Stop commits a final checkpoint, closes the ingress generation and stops
 // the owner, after any notice delivery in flight. A failure leaves the
-// generation open, so the next start counts it as interrupted (O30).
+// generation open, so the next start counts it as interrupted.
 func (o *Owner) Stop() { o.halt(true) }
 
 // halt stops the owner goroutine, after the clean shutdown when clean is
@@ -747,7 +747,7 @@ func (o *Owner) shutdown() {
 		return
 	}
 	// No snapshot published during the stop reopens admission, so the
-	// drains below end even if a producer was not stopped first (O30).
+	// drains below end even if a producer was not stopped first.
 	o.ingress.Close()
 	// An outcome still unwritten stays running for the next start to
 	// settle; the held arrivals are drained regardless.
@@ -798,7 +798,7 @@ func (o *Owner) writeComparison(final bool) {
 
 // drain persists what detectors handed the ingress since the last drain,
 // after a fresh clock reading, so the ledger judges the arrivals at the
-// current time (O8). With no new ingress decision and no failed drain to
+// current time. With no new ingress decision and no failed drain to
 // retry it reads and writes nothing.
 func (o *Owner) drain() error {
 	seq := o.ingress.Checkpoint().Sequence
@@ -814,7 +814,7 @@ func (o *Owner) drain() error {
 
 // drainTick drains the ingress on its timer. With an engine, work the
 // drain queued is served at once rather than on the next schedule tick:
-// the first ready batch starts immediately (spec 5.5) and batchEvery
+// the first ready batch starts immediately and batchEvery
 // spaces the rest. Without one, previews keep the schedule timer.
 func (o *Owner) drainTick() {
 	o.arrived = false
@@ -874,7 +874,7 @@ func (o *Owner) drainHeld() (err error) {
 // schedule runs a turn when work was drained or the ledger's wake time has
 // come, and keeps the cause of a failed turn for status until one
 // succeeds. A turn that keeps failing is backed off from the default
-// schedule period to a minute, as a held probe is (spec 5.16): the turn
+// schedule period to a minute, as a held probe is: the turn
 // also picks up policy changes and runs the probes.
 func (o *Owner) schedule() {
 	o.expireVerdicts()
@@ -897,7 +897,7 @@ func (o *Owner) schedule() {
 	}
 	o.scheduleDue, o.wakeAt = false, time.Time{}
 	// An executable owner selects, checks and forecasts once a second at
-	// most, whatever made the turn due (spec 3.2). Retirement of earlier
+	// most, whatever made the turn due. Retirement of earlier
 	// work keeps its own waits.
 	selecting := !o.executable() || !monoNow().Before(o.nextTurn)
 	err := o.runTurn(selecting)
@@ -914,12 +914,12 @@ func (o *Owner) schedule() {
 	o.scheduleErr = err
 }
 
-// turn serves the queue's picks after a fresh reading (O9). With an engine
+// turn serves the queue's picks after a fresh reading. With an engine
 // (Options.Blocks) the policy installed when the turn starts decides how:
 // a dry-run policy forecasts its picks (forecast); otherwise block_ip picks
 // run as one batch (execute). Every other pick is an observe preview. The
 // ledger's wake time, converted by the admission clock's elapsed time,
-// sets the next turn (O16); a forecast wakes whatever the live budgets.
+// sets the next turn; a forecast wakes whatever the live budgets.
 func (o *Owner) turn() error { return o.runTurn(true) }
 
 // runTurn is a turn that selects work only when selecting is set; otherwise
@@ -944,7 +944,7 @@ func (o *Owner) runTurn(selecting bool) error {
 		return err
 	}
 	// Retirement first: it can release the holds pending_recovery waits on.
-	// Its faults are reported apart and never fail the turn (C4).
+	// Its faults are reported apart and never fail the turn.
 	o.reportRetirement(o.retire())
 	_ = o.retireEvicted()
 	if o.executable() {
@@ -1125,7 +1125,7 @@ func (o *Owner) holdForPolicy(p execPick) error {
 }
 
 // preview is an observe preview of p: reserved and charged as live work
-// would be and ended in the same transaction without running (O14). A
+// would be and ended in the same transaction without running. A
 // terminal refusal ends only that pick, so an invalid selected lifetime
 // cannot starve the queue; any other failure is returned.
 func (o *Owner) preview(p execPick) error {
@@ -1165,7 +1165,7 @@ func (o *Owner) preview(p execPick) error {
 // its first attempt's; a first attempt lasts the selected legacy lifetime,
 // or the configured response's, from now, and never longer than the block
 // expiry: a longer request, such as an incident's second block or a
-// central block, is cut to it, and a shorter one stays short (spec 5.6).
+// central block, is cut to it, and a shorter one stays short.
 func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 	if c.Attempts > 0 {
 		return c.ExpiresAt
@@ -1181,8 +1181,8 @@ func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 }
 
 // cappedExpiry is expiryOf for a pick, capped for a same-episode
-// re-admission of a block at its episode's original verified end (spec
-// 5.2, 5.4): a block that returns after the first one left early lasts no
+// re-admission of a block at its episode's original verified end:
+// a block that returns after the first one left early lasts no
 // longer than the first would have. The time left is admission time, so on
 // the lease clock now the cap ends the lead later, as the first block's
 // expiry did. A retry keeps its first attempt's expiry. A lost or
@@ -1228,15 +1228,15 @@ func (o *Owner) countArrivalAt(a admission.DrainedArrival, at time.Time) {
 }
 
 // arrivalRequest asks for the response a submission names. The ledger
-// assigns its episode and generation when it persists the arrival (spec
-// 5.2); a caller never chooses them.
+// assigns its episode and generation when it persists the arrival;
+// a caller never chooses them.
 func arrivalRequest(s admission.Submission) (admission.CandidateRequest, error) {
 	return admission.CandidateRequest{Kind: s.Kind, Target: s.Target, Primary: s.Evidence.ID(), Entry: s.Via, PreviewTTL: s.PreviewTTL}, nil
 }
 
 // Mint mints the evidence f's own observation supports, aimed at the
-// address its parser read, with the producer that stamped it (spec 5.1,
-// 5.8). It counts nothing: a path may mint a root before it knows it will
+// address its parser read, with the producer that stamped it.
+// It counts nothing: a path may mint a root before it knows it will
 // answer it. Mint takes no owner lock: funnels call it on their own
 // goroutines.
 func (o *Owner) Mint(f alert.Finding) (admission.Evidence, error) {
@@ -1301,7 +1301,7 @@ func entryOf(e admission.Evidence, via admission.Entry) admission.Entry {
 
 // Respond hands the ingress a response of kind to target with e as its
 // root, through the derived entry via when it is set. The ingress refuses a
-// target e does not attribute (spec 5.8). It acknowledges memory acceptance
+// target e does not attribute. It acknowledges memory acceptance
 // only and never waits for the ledger.
 func (o *Owner) Respond(kind admission.Kind, target string, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
 	if o.ingress == nil {

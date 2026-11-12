@@ -15,7 +15,7 @@ const CeilingWindow = time.Hour
 
 // CeilingLanes splits the hourly ceiling L into the general allowance
 // G = L-R and the reserved allowance R = ceil(L/5), which only direct
-// compromise and independently corroborated work may spend (spec 5.6). For
+// compromise and independently corroborated work may spend. For
 // L=1 only the reserved lane exists.
 func CeilingLanes(limit uint32) (general, reserved uint32) {
 	reserved = limit / 5
@@ -37,7 +37,7 @@ func BucketCap(size uint32) uint32 {
 
 // CeilingCost is what one attempt of kind k charges the ceiling. Each new
 // address, prefix, promotion or service tuple costs one unit. Challenge
-// work has its own bound (spec 5.12) and is never charged: it cannot
+// work has its own bound and is never charged: it cannot
 // create a block.
 func (k Kind) CeilingCost() uint32 {
 	if k == KindChallenge {
@@ -64,7 +64,7 @@ type Meter struct {
 // Units is the whole units of saved credit.
 func (m Meter) Units() uint32 { return uint32(min(m.Credit/unitTicks, MaxCeiling)) }
 
-// CeilingState is the ledger's record of the emergency ceiling (spec 5.6):
+// CeilingState is the ledger's record of the emergency ceiling:
 // the effective limit, each lane's token bucket and its usage inside the
 // rolling window. The zero value is an upgraded ledger's first state.
 type CeilingState struct {
@@ -145,7 +145,7 @@ func (s CeilingState) SetLimit(limit uint32) (CeilingState, error) {
 }
 
 // LegacySpend is what the legacy hourly counter recorded before a new
-// ledger takes its first limit (spec 5.4 migration).
+// ledger takes its first limit.
 type LegacySpend struct {
 	// Units were spent no later than At, the end of the legacy hour that
 	// counted them.
@@ -350,7 +350,7 @@ const chargeVersion = 1
 const chargeKeyLen = 8 + len("act_") + 32
 
 // Charge is one spend of the ceiling, kept while it counts in the rolling
-// window (spec 5.4). At is the admission time of the reservation that spent
+// window. At is the admission time of the reservation that spent
 // it, and Elapsed the ceiling's elapsed time then.
 type Charge struct {
 	At      time.Time

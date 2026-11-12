@@ -62,7 +62,7 @@ func deferredKey(reason admission.Reason, tier admission.Tier) admission.CountKe
 	return admission.CountKey{Event: admission.EventDeferred, Reason: reason, Class: tier.Class, Severity: tier.Severity}
 }
 
-// Spec 5.6 and 5.17: ready work a schedule cannot serve because its lane
+// Ready work a schedule cannot serve because its lane
 // has no ceiling budget is deferred for the ceiling in that transaction,
 // counted once and announced as capacity exhaustion when it is Critical.
 // Scheduling again under the same shortage changes nothing.
@@ -286,7 +286,7 @@ func TestAdmissionLedgerScheduleLeavesWorkPastTheMemberBound(t *testing.T) {
 
 // Ready work with ceiling budget but no history budget waits on its storage
 // share; work whose details do not fit the recovery reserve waits for
-// recovery (spec 5.4).
+// recovery.
 func TestAdmissionLedgerScheduleDefersWorkStorageCannotTake(t *testing.T) {
 	for name, tc := range map[string]struct {
 		adjust func(f *ledgerFixture, id admission.CandidateID) func(*admission.StorageState)

@@ -68,7 +68,7 @@ func (f *ledgerFixture) exhausted() admission.CandidateID {
 	return a.Attempt.Candidate
 }
 
-// A dry-run ending (D1) takes queued work to dry_run with no attempt,
+// A dry-run ending takes queued work to dry_run with no attempt,
 // ceiling charge, history allocation, audit row or notice, even for
 // Critical work. It counts one dry-run outcome and no queue event, takes
 // an ended position and moves the ledger to schema 9. The same ending again
@@ -342,7 +342,7 @@ func TestAdmissionLedgerEndDryRunRollsBackARetry(t *testing.T) {
 	}
 }
 
-// Spec 6.4: a comparison-only owner previews and refuses its picks; neither
+// A comparison-only owner previews and refuses its picks; neither
 // needs the dry-run vocabulary, so a schema 7 ledger stays at 7.
 func TestAdmissionLedgerPreviewsKeepSchemaSeven(t *testing.T) {
 	f := newLedgerFixture(t)

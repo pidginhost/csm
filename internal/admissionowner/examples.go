@@ -7,7 +7,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// dryRunRetention is how long a forecast example is kept (spec 3.6).
+// dryRunRetention is how long a forecast example is kept.
 const dryRunRetention = 7 * 24 * time.Hour
 
 // maintainEvery spaces the maintenance steps over the example bucket.
@@ -21,7 +21,7 @@ var (
 )
 
 // dryRunOutput is what an executable owner's dry runs leave outside their
-// session (spec 3.6, 3.8): the turn's examples, the maintenance pass over
+// session: the turn's examples, the maintenance pass over
 // the example bucket, the purge the last change to live asked for, and
 // process counters a mode change never resets. Only the owner goroutine
 // uses it.
@@ -119,7 +119,7 @@ func (o *Owner) maintainExamples() {
 }
 
 // OwnsDryRunExamples reports whether the owner alone writes, prunes and
-// purges its forecast examples: an owner that runs blocks does (spec 3.6).
+// purges its forecast examples: an owner that runs blocks does.
 func (o *Owner) OwnsDryRunExamples() bool { return o.executable() }
 
 func saturatingAdd(n *uint64, d uint64) {

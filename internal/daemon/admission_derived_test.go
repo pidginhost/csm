@@ -125,7 +125,7 @@ func observedBruteForce(ip string) alert.Finding {
 }
 
 // A challenge's timeout answers the root it was routed with through the
-// challenge timeout entry (spec 5.12: a timeout is a linked child of the
+// challenge timeout entry (a timeout is a linked child of the
 // original candidate); one routed without a root is handed over without one.
 func TestChallengeEscalationAnswersItsRoot(t *testing.T) {
 	cfg, _ := applyWiringSetup(t)
@@ -143,7 +143,7 @@ func TestChallengeEscalationAnswersItsRoot(t *testing.T) {
 
 // Central intel answers the local finding's root through the central
 // entry: a block when it blocks and a challenge when it challenges; central
-// data never mints a root of its own (spec 5.3).
+// data never mints a root of its own.
 func TestCentralActionAnswersTheLocalRoot(t *testing.T) {
 	cfg, _ := applyWiringSetup(t)
 	a := withRecordingAdmission(t)

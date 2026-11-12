@@ -12,8 +12,7 @@ import (
 // A sustained attack outlives a candidate that spent its three proven
 // failures: repeated reports never reset its retries or age, a report after
 // exhaustion queues nothing, and a new observation once the dependency
-// recovers is a charged later generation of the same episode (spec 7.1,
-// sustained episode after loss).
+// recovers is a charged later generation of the same episode.
 func TestOwnerSustainedEpisodeAfterExhaustion(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -109,7 +108,7 @@ func TestOwnerSustainedEpisodeAfterExhaustion(t *testing.T) {
 
 // One turn's picks mixing members the engine refuses with valid ones
 // apply only the valid ones: the refused take no attempt and no charge,
-// and the valid ones are charged once each (spec 7.1, batch poisoning).
+// and the valid ones are charged once each (batch poisoning).
 func TestOwnerMixedRefusalsStayUncharged(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)

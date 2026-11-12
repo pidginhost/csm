@@ -11,8 +11,8 @@ import (
 
 // Claims a detector read from attacker-controlled text cannot mint scopes:
 // a flood naming accounts the server does not own, across checks, lands in
-// the one host scope, so a real account's work keeps its turn (spec 7.1,
-// queue overflow: ownership cannot be forged; other scopes keep shares).
+// the one host scope, so a real account's work keeps its turn:
+// ownership cannot be forged, and other scopes keep their shares.
 func TestAdmissionLedgerForgedClaimsShareOneScope(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.refresh([]string{"alice", "bob", "zoe"}, nil)

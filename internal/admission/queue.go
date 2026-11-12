@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// Queue bounds of spec 5.6. Ingress, queued and in-flight candidates share
+// Queue bounds. Ingress, queued and in-flight candidates share
 // them. Every candidate record is at most MaxCandidateBytes, so the 4 MiB
-// payload bound of the spec cannot bind before the count does.
+// payload bound cannot bind before the count does.
 const (
 	// QueueCapacity bounds ingress, queued and in-flight candidates together.
 	QueueCapacity = 1000
@@ -20,8 +20,8 @@ const (
 )
 
 // Partition is the part of the queue a candidate holds its position in,
-// and the part of the temporary set an automatic entry occupies (spec
-// 5.6). Values are persisted: append, never renumber.
+// and the part of the temporary set an automatic entry occupies. Values
+// are persisted: append, never renumber.
 type Partition uint8
 
 const (
@@ -117,7 +117,7 @@ type partitionQueue struct {
 }
 
 // QueueView is the occupancy of the queue by partition and scope. Admit
-// applies the overflow rules of spec 5.6 to it. It is not safe for
+// applies the queue's overflow rules to it. It is not safe for
 // concurrent use.
 type QueueView struct {
 	limits [partitionEnd]int

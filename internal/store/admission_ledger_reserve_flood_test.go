@@ -12,7 +12,7 @@ import (
 // A C1 flood of one scope exhausts only the general lane. Another scope's
 // direct and corroborated work takes the reserved lane one refilled unit
 // at a time, direct first, and the flood can never reserve there. Only a
-// verified outcome marks a block applied (spec 7.1, general ceiling and
+// verified outcome marks a block applied (general ceiling and
 // reserve).
 func TestAdmissionLedgerFloodLeavesTheReserveToOtherScopes(t *testing.T) {
 	f := liveLedgerFixture(t)

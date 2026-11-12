@@ -12,7 +12,7 @@ import (
 
 // freshWith queues a block of target, severity and owner's scope through
 // ingress, as production arrivals are: its episode row makes it fresh
-// until the episode's first verified response (spec 5.2).
+// until the episode's first verified response.
 func (f *ledgerFixture) freshWith(target string, severity admission.Severity, owner admission.Owner) admission.CandidateID {
 	f.t.Helper()
 	r := f.arrive(f.arrival(evidenceSpec{target: target, cursor: "fresh-" + target, severity: severity, owner: owner}))[0]
@@ -56,7 +56,7 @@ func rotationFixture(t *testing.T) (*ledgerFixture, admission.AttemptRecord) {
 // Fresh work of the victim's tier rotates it out only once its 30-minute
 // hold passed on both clocks: the reservation claims it as an eviction
 // does, raises the capacity notice once, and the ledger reopens with the
-// claim and with the eviction (spec 5.6).
+// claim and with the eviction.
 func TestAdmissionLedgerRotatesAfterTheHold(t *testing.T) {
 	f, victim := rotationFixture(t)
 	f.tickAt(f.wall.Add(admission.RotationHold - time.Second))
@@ -169,7 +169,7 @@ func TestAdmissionLedgerRotationNoticeKeepsRecoveryRoom(t *testing.T) {
 
 // Downtime and a degraded reading never complete a hold: a reboot grants
 // no elapsed time, and a degraded reading allows no rotation even once
-// both clocks passed the hold (spec 5.4).
+// both clocks passed the hold.
 func TestAdmissionLedgerRotationNeedsTrustedElapsedTime(t *testing.T) {
 	f, _ := rotationFixture(t)
 	const otherBoot = "7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d"
@@ -202,7 +202,7 @@ func TestAdmissionLedgerRotationNeedsTrustedElapsedTime(t *testing.T) {
 }
 
 // Only a new episode rotates: work queued without an episode row, or
-// whose episode already had a verified response, waits (spec 5.2).
+// whose episode already had a verified response, waits.
 func TestAdmissionLedgerOnlyFreshWorkRotates(t *testing.T) {
 	f, _ := rotationFixture(t)
 	f.tickAt(f.wall.Add(admission.RotationHold))
@@ -239,7 +239,7 @@ func TestAdmissionLedgerOnlyFreshWorkRotates(t *testing.T) {
 
 // Fresh answers as a live schedule decides fresh work, on a ledger that
 // never started too: only block_ip work whose episode row names its
-// episode and records no verified response (spec 5.2).
+// episode and records no verified response.
 func TestAdmissionLedgerFreshReadsTheEpisodeRow(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()

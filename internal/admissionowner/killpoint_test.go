@@ -114,7 +114,7 @@ func killResultFinish(effect firewall.BlockEffect, n int) func(*testing.T, *Owne
 	}
 }
 
-// Kill points of the owner's turn (spec 5.4, 5.5; design P6, P7): a batch
+// Kill points of the owner's turn: a batch
 // of two block picks is stopped at each step and the owner restarted on
 // the same ledger. The restart settles what was left reserved as failed
 // and what was left running as unknown. It sends nothing to the engine
@@ -396,7 +396,7 @@ func TestOwnerConvergesAfterAKillInTheTurn(t *testing.T) {
 	}
 }
 
-// Kill points of audit delivery (spec 5.5, design P14): a kill after the
+// Kill points of audit delivery: a kill after the
 // action log write, or after the consumers saw a verified block's row,
 // acknowledges nothing. Restart redelivers the same identity until its
 // acknowledgement. A kill after acknowledgement redelivers nothing.

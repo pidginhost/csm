@@ -6,7 +6,7 @@ import (
 )
 
 // EvictionVictim is a verified automatic block that strictly higher work
-// may evict when the set has no free slot for it (spec 5.6): an effect
+// may evict when the set has no free slot for it: an effect
 // record or an import, whose Action is its effect name. Fresh work of the
 // same tier may rotate a record out once its hold passed.
 type EvictionVictim struct {
@@ -25,13 +25,13 @@ type EvictionVictim struct {
 }
 
 // ImportTier is the tier of an import, a known automatic block an older
-// producer wrote with explicit provenance (spec 6): (C2, High).
+// producer wrote with explicit provenance: class C2, severity High.
 var ImportTier = Tier{Class: ClassC2, Severity: SeverityHigh}
 
 // Imported reports whether v is an import as the engine's list hands it
 // over: an import name, an address, the import tier, the general
 // partition it is counted in and an expiry after the epoch, with no scope,
-// application or rotation: an import never rotates (spec 6).
+// application or rotation: an import never rotates.
 func (v EvictionVictim) Imported() bool {
 	ends, ok := unixNano(v.ExpiresAt)
 	return ImportedVictim(v.Action) && ValidateKindTarget(KindBlockIP, v.Target) == nil && v.Tier == ImportTier &&
@@ -65,7 +65,7 @@ type SlotDemand struct {
 	// Cost is the set slots it takes: its ceiling cost.
 	Cost uint32
 	// Evicts is set for one-unit block_ip work, the only work that may
-	// evict (spec 5.6, one victim per charged unit).
+	// evict (one victim per charged unit).
 	Evicts bool
 	// Reserved is set for work eligible for a reserved lane.
 	Reserved bool
@@ -74,7 +74,7 @@ type SlotDemand struct {
 	Target Target
 	// Scope is the work's fairness scope; Fresh is set while its episode
 	// has had no verified response, the only work that may rotate an
-	// equal-tier block (spec 5.2, 5.6).
+	// equal-tier block.
 	Scope string
 	Fresh bool
 }
@@ -103,7 +103,7 @@ func NewSlotLimits(freeGeneral, freeReserved uint32, victims []EvictionVictim) *
 }
 
 // Limits is the slot budget of o, the one rule admission and its forecast
-// share (spec 5.6): each partition's free slots and size and, once the
+// share: each partition's free slots and size and, once the
 // general partition is full and the set is not overfull, the victims pool
 // returns, less those of an overfull partition. pool is read only then.
 func (o SetOccupancy) Limits(pool func() ([]EvictionVictim, error)) (*SlotLimits, error) {

@@ -40,7 +40,7 @@ func testAdmissionOptions(d *Daemon, db *store.DB) admissionowner.Options {
 	return opts
 }
 
-// Handoffs O54-O55: the daemon owns the ledger, status reads it through the
+// The daemon owns the ledger, status reads it through the
 // admission provider with the capability that announces it, and the owner's
 // deliveries report through queue health.
 func TestDaemonOwnsTheAdmissionLedger(t *testing.T) {
@@ -124,7 +124,7 @@ func TestDaemonDeliversAdmissionNoticesOutsideTheFindingChannel(t *testing.T) {
 	}
 }
 
-// R10: a preview notice is recorded in history and never reaches an alert
+// A preview notice is recorded in history and never reaches an alert
 // channel, since legacy blocking still enforces.
 func TestDaemonRecordsAdmissionPreviewsWithoutDispatch(t *testing.T) {
 	dir := t.TempDir()
@@ -256,7 +256,7 @@ func TestAdmissionNoticesBypassTheRoutineAlertBudget(t *testing.T) {
 	}
 }
 
-// O12-O13: a reload that changes max_blocks_per_hour reaches the ledger.
+// A reload that changes max_blocks_per_hour reaches the ledger.
 func TestReloadAppliesTheAdmissionCeiling(t *testing.T) {
 	dir := t.TempDir()
 	db, restore := openTestBoltStore(t, dir)
@@ -282,7 +282,7 @@ func TestReloadAppliesTheAdmissionCeiling(t *testing.T) {
 	}
 }
 
-// O19 and O30: the daemon opens the ledger after publishing its config and
+// The daemon opens the ledger after publishing its config and
 // before the firewall, dispatcher, watchers and status servers start, and
 // stops it after every producer and the incident loops have stopped and
 // before the state store closes.
@@ -361,7 +361,7 @@ func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 	if at("wg.Wait") > stop || at("store.Close") < stop {
 		t.Errorf("stopAdmission runs at %d, outside wg.Wait (%d) and store.Close (%d)", stop, at("wg.Wait"), at("store.Close"))
 	}
-	// R12: the incident loops stop before the owner's final drain.
+	// The incident loops stop before the owner's final drain.
 	if at("StopIncidentBackgroundLoops") > stop {
 		t.Errorf("StopIncidentBackgroundLoops runs after stopAdmission")
 	}
@@ -439,7 +439,7 @@ func TestAdmissionPreviewExpiryFollowsTheConfiguredResponse(t *testing.T) {
 	}
 }
 
-// R1: every automatic response the legacy funnels select reaches the owner
+// Every automatic response the legacy funnels select reaches the owner
 // while it runs, and none reaches it once it stops.
 func TestDaemonWiresTheResponseFunnelsToItsOwner(t *testing.T) {
 	dir := t.TempDir()

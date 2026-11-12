@@ -9,7 +9,7 @@ import (
 // compose it; only Linux runs it.
 
 // MaxBlockBatchMembers bounds one block batch, as the admission ledger
-// bounds an execution batch (spec 5.5).
+// bounds an execution batch.
 const MaxBlockBatchMembers = 64
 
 // MaxBlockReasonBytes bounds the reason a batch member writes on its row.
@@ -28,8 +28,8 @@ type BlockMember struct {
 	Victim    BlockVictim
 }
 
-// BlockVictim is an admission block a member removes to take its slot
-// (spec 5.6): its action, its canonical address and the absolute expiry
+// BlockVictim is an admission block a member removes to take its slot:
+// its action, its canonical address and the absolute expiry
 // it was applied with.
 type BlockVictim struct {
 	Action    string
@@ -60,7 +60,7 @@ const (
 	// BlockRefusedExisting: a verified row and its kernel element already
 	// block the address for at least the member's lifetime: an untimed
 	// element for a permanent row, or one with the time a timed row has
-	// left when that row ends no earlier than the member (spec 5.16).
+	// left when that row ends no earlier than the member.
 	BlockRefusedExisting BlockRefusal = "existing_effect"
 	// BlockRefusedPending: a row or a kernel element names the address
 	// without proving an enforced block that covers the member: the row is
@@ -113,7 +113,7 @@ type BlockResult struct {
 }
 
 // ExistingBlock names the block that already holds an address, so a member
-// refused as an existing effect can link to it (spec 5.17): the admission
+// refused as an existing effect can link to it: the admission
 // action that wrote its row, or "eff_" and a digest of an operator or
 // earlier row's identity, and when it ends (zero: permanent). The same row
 // gets the same ID on every check and after a restart.
@@ -138,7 +138,7 @@ type BlockCheck struct {
 // ErrBlockBatchRejected marks a member that failed because the kernel
 // rejected the whole transaction; a failure before the send does not carry
 // it. A failed state restore carries ErrBlockBatchState instead. The owner
-// retries rejected members one at a time (P9).
+// retries rejected members one at a time.
 var ErrBlockBatchRejected = errors.New("kernel rejected the block batch")
 
 // ErrBlockBatchState requires the owner to hold automatic execution while
@@ -184,7 +184,7 @@ type BlockAdmission struct {
 	// address families together; Limit is the configured temporary limit,
 	// zero for none.
 	Temporary, Limit int
-	// The timed occupants by recorded ownership (spec 5.6): Admission
+	// The timed occupants by recorded ownership: Admission
 	// counts the elements of rows admission actions wrote, Imported those
 	// of rows legacy automatic blocks marked, and Unclaimed every other
 	// timed element plus two elements per timed subnet row, which
@@ -207,7 +207,7 @@ type BlockAdmission struct {
 // expire, which admission evicts first among imports.
 const MaxBlockImports = 256
 
-// BlockImport is a known automatic block admission may evict (spec 6): a
+// BlockImport is a known automatic block admission may evict: a
 // timed, verified row a legacy automatic block stamped, alone at its
 // canonical address, whose element the snapshot proves live. ID is its
 // effect name, which stays the same while the row does.

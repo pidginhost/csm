@@ -59,8 +59,8 @@ func (e *Engine) RemoveBlockActionRows(actions []string) (int, error) {
 }
 
 // RetireBlockActions reports, for each expired unknown attempt or evicted
-// import, whether nothing it may have applied can remain in the kernel
-// (spec 5.4): its address has no element, or the element belongs to a
+// import, whether nothing it may have applied can remain in the kernel:
+// its address has no element, or the element belongs to a
 // verified row of another action. An import stays held while its own row
 // proves the live element, even if an alias does too. Each clear row
 // (same action ID or import name and address) goes in one state write, under the same

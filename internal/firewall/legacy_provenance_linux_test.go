@@ -13,7 +13,7 @@ import (
 )
 
 // A timed row a legacy automatic block writes says so in its own field,
-// never in its reason text (spec 6): the field, not a user-editable reason,
+// never in its reason text: the field, not a user-editable reason,
 // is what later lets admission treat the row as a known automatic import.
 // Permanent rows, operator rows and a row an operator block replaces carry
 // no mark.
@@ -89,8 +89,8 @@ func TestSameBlockedEntryComparesTheMark(t *testing.T) {
 	}
 }
 
-// An operator block never removes a block an admission action owns (spec
-// 5.6: a manual addition deletes no occupant admission accounts for). At
+// An operator block never removes a block an admission action owns
+// (a manual addition deletes no occupant admission accounts for). At
 // the temporary limit it counts only the other rows: while admission rows
 // make up the difference it is added above the limit, and otherwise it
 // evicts the soonest other row even when an admission row ends sooner. An

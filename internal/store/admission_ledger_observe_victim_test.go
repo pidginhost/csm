@@ -10,7 +10,7 @@ import (
 
 // A preview reports the block whose slot it would take, here an import,
 // and still claims nothing; a preview into a free slot and a readback of
-// a reservation report none (spec 5.6, operator ruling T1).
+// a reservation report none.
 func TestAdmissionLedgerObserveReportsItsVictim(t *testing.T) {
 	f := liveLedgerFixture(t)
 	imp := f.importAt(1, "192.0.2.60", time.Hour)

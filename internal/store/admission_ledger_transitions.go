@@ -154,7 +154,7 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 }
 
 // TerminateExisting ends a queued candidate refused as an existing effect,
-// linked to the block that enforces it (spec 5.17). The same ending again
+// linked to the block that enforces it. The same ending again
 // is a no-op; any other ending refuses like every call on an ended
 // candidate. An admitted candidate's history pays for the link.
 func (l *AdmissionLedger) TerminateExisting(id admission.CandidateID, link admission.EffectLink) (admission.Candidate, error) {
@@ -205,7 +205,7 @@ func (q *queueTx) terminate(id admission.CandidateID, c *admission.Candidate, st
 	return q.ended(id, *c)
 }
 
-// EndDryRun ends a queued candidate as a dry run (D1): dry-run mode
+// EndDryRun ends a queued candidate as a dry run: dry-run mode
 // forecast it instead of running it. Nothing is reserved, charged or
 // allocated; a retry keeps its failed attempts, their charges and the
 // history they paid for, which ends. The ending counts one dry-run
@@ -384,7 +384,7 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	// The slots are rechecked under the lock, before anything is charged:
 	// a free slot of the lane's partition, or under pressure a victim the
 	// block strictly outranks or, for fresh work, the equal-tier block
-	// rotation gives it (spec 5.6).
+	// rotation gives it.
 	if cost := c.Key.Kind.CeilingCost(); cost > 0 {
 		slots, slotErr := q.slots()
 		if slotErr != nil {
@@ -443,7 +443,7 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 		if err := q.holdSlot(c, a, entry, *victim); err != nil {
 			return c, a, false, err
 		}
-		// A rotation means the set is too small for the attack (spec 5.17).
+		// A rotation means the set is too small for the attack.
 		if *victim != (admission.EvictionVictim{}) && victim.Tier == entry.Tier {
 			check, checkErr := noticeCheck(tx, c)
 			if checkErr != nil {
@@ -581,7 +581,7 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 // FinishOnLease is Finish for an attempt whose expiry was set on the
 // engine's lease clock, lead ahead of admission time when it ran. A
 // verified block's episode ends when its kernel element expires in
-// admission time, its expiry less the lead (design C6); the block keeps
+// admission time, its expiry less the lead; the block keeps
 // its expiry. A lead at or below zero ends the episode at the expiry
 // itself, never later.
 func (l *AdmissionLedger) FinishOnLease(id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
@@ -615,7 +615,7 @@ func (l *AdmissionLedger) FinishEviction(id admission.ActionID, d admission.Disp
 }
 
 // FinishExisting records that the current attempt found its effect already
-// enforced (spec 5.16): the attempt fails, keeping its charge, and with
+// enforced: the attempt fails, keeping its charge, and with
 // attempts left the pick ends refused as an existing effect, linked to the
 // block, in the same transaction, so it is never retried against that
 // block. On the last attempt the pick fails as with Finish. The same

@@ -15,7 +15,7 @@ import (
 const retireRecheck = time.Minute
 
 // retire retires unknown attempts whose expiry has passed and of which the
-// engine finds nothing left (spec 5.4, design P7). The engine removes each
+// engine finds nothing left. The engine removes each
 // clear attempt's own row first, then the ledger retires it: a stop between
 // the two leaves an unknown attempt without a row, which the next pass
 // finds clear again. Running attempts are never sent. A degraded clock or a
@@ -140,7 +140,7 @@ func (o *Owner) retire() error {
 
 // Reads and writes share the same retry policy: a fault must not fail any
 // turn or keep unrelated attempts from reaching the engine. Each faulted
-// attempt is retried on its own and reported once (C4).
+// attempt is retried on its own and reported once.
 func (o *Owner) retirementResult(id admission.ActionID, err error) error {
 	switch _, refused := admission.ReasonOf(err); {
 	case err == nil:

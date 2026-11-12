@@ -15,7 +15,7 @@ type leaseReading struct {
 }
 
 // leaseNowLocked is the time absolute expiries are turned into kernel
-// timeouts against (spec 5.4 and 5.5: a clock step must not lengthen a
+// timeouts against (a clock step must not lengthen a
 // lease). It never runs backward: it is the later of the wall clock and
 // the last reading advanced by the elapsed time since. A forward step is
 // kept, which only shortens leases.

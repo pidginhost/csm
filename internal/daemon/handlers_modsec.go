@@ -334,7 +334,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	// Classify attack confidence from the rule ID, file, and registry metadata.
 	// This decides whether a deny may auto-escalate to a firewall ban
 	// (high/unknown) or only feeds the low-confidence visibility/backstop path
-	// (low). See docs/superpowers/specs/2026-06-27-modsec-escalation-fp-options.md.
+	// (low).
 	conf := classifyModSecRuleConfidence(ruleNum, rule.File)
 
 	// Feed the per-IP window with every blocking deny, plus high/unknown

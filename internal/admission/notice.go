@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Notice bounds of spec 5.17. Response notices coalesce into one record per
+// Notice bounds. Response notices coalesce into one record per
 // key in the outbox; each record is charged a fixed slot.
 const (
 	// MaxNoticeExamples bounds the example candidates one record keeps.
@@ -129,13 +129,13 @@ const (
 	GapOutcome
 )
 
-// GapNotice is the notice an event raises (spec 5.17), or zero. tier is
+// GapNotice is the notice an event raises, or zero. tier is
 // the last assessment, zero for unassessed work, which raises none. C3 is
 // exactly the work the reserved lane serves, so a lost C3 candidate is
 // lost reserved work. Capacity reasons raise only the capacity notice. Only a
 // failure that ends the candidate or an unknown outcome is a gap; an
 // existing verified effect is not. Once the ledger runs live, work a full
-// set defers raises the capacity notice at any tier (spec 5.6); a preview
+// set defers raises the capacity notice at any tier; a preview
 // raises it for Critical work only.
 func GapNotice(event GapEvent, reason Reason, outcome Disposition, tier Tier, live bool) NoticeKind {
 	critical, c3 := tier.Severity == SeverityCritical, tier.Class == ClassC3
@@ -179,7 +179,7 @@ func GapNotice(event GapEvent, reason Reason, outcome Disposition, tier Tier, li
 }
 
 // NoticeKey coalesces notice events: one record per fixed reason,
-// registered check and action family (spec 5.17). An attempt that failed
+// registered check and action family. An attempt that failed
 // for good or ended unknown has no reason; its outcome takes the reason's
 // place. Check and Effect are empty for an arrival lost before admission,
 // which names no candidate. A keyed kind with neither reason nor outcome

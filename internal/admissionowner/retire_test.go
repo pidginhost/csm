@@ -31,7 +31,7 @@ func unknownBlock(t *testing.T, o *Owner, p *admission.Producer, f *ownerFixture
 }
 
 // An unknown attempt is retired once its expiry has passed and the engine
-// finds nothing of it (spec 5.4, design P7): the engine removes its row,
+// finds nothing of it: the engine removes its row,
 // then the ledger retires it. The turn wakes for that expiry; nothing is
 // asked of the engine before it.
 func TestOwnerRetiresAnUnknownOnceTheEngineFindsNothing(t *testing.T) {
@@ -73,7 +73,7 @@ func TestOwnerRetiresAnUnknownOnceTheEngineFindsNothing(t *testing.T) {
 	}
 }
 
-// Forward-step acceptance (1.5a gate c): a wall step makes the expiry look
+// Forward-step acceptance: a wall step makes the expiry look
 // past; the step itself is a degraded reading and retires nothing, and on
 // the next clean reading the engine still finds the element, so nothing is
 // retired. Once the element is gone a later pass retires it.
@@ -634,7 +634,7 @@ func TestOwnerRetirementRetryUsesElapsedTime(t *testing.T) {
 
 // A prolonged rollback cannot turn the degraded retry into a wake that
 // disappears: it backs off from one second, doubling, and recovery is
-// found on the next wake without a new arrival (M2).
+// found on the next wake without a new arrival.
 func TestOwnerRetirementKeepsDegradedWakes(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)

@@ -12,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// Operator ruling 2 (1.5c-3b): the blocked list shows an executed
+// The blocked list shows an executed
 // admission block from the firewall state, though the tracker never named
 // the address.
 func TestAPIBlockedIPsListsAnAdmissionBlock(t *testing.T) {

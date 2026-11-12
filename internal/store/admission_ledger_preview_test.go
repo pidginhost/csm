@@ -401,7 +401,7 @@ func TestAdmissionLedgerPreviewBoundsTheReservedLane(t *testing.T) {
 	}
 }
 
-// Spec 3.2 amendment: a challenge's comparison preview spends live history,
+// A challenge's comparison preview spends live history,
 // so a selection skips one the live history budget cannot serve, the check
 // a live schedule makes. Without that the forecast reselects it every
 // second: the wake says now, the selection picks it and its preview fails

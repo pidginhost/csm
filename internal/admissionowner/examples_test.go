@@ -66,7 +66,7 @@ func maintain(t *testing.T, o *Owner, mono *fakeMono) {
 	}
 }
 
-// Spec 3.6: each committed capacity admission leaves one example, written
+// Each committed capacity admission leaves one example, written
 // in one batch per turn after its endings, with the session, candidate,
 // address, registered check and expiry; other predictions leave none.
 // Examples already committed are written even when a later ending fails
@@ -173,7 +173,7 @@ func TestOwnerCountsLostExamples(t *testing.T) {
 	}
 }
 
-// Spec 3.6, 6.4: a change to live discards the forecast and asks for a
+// A change to live discards the forecast and asks for a
 // purge at the same boundary. Until a purge pass completes the examples
 // are stale; a failed step is counted and retried on a later maintenance
 // turn, at most once a second, and nothing of the old session is written
@@ -228,7 +228,7 @@ func TestOwnerPurgesExamplesAfterAFlipToLive(t *testing.T) {
 	}
 }
 
-// Spec 3.6, 6.4: a purge still pending when a new dry run starts keeps
+// A purge still pending when a new dry run starts keeps
 // that session's examples, whatever their key times, and removes the
 // ended session's. Its pass starts over once the kept session changes.
 func TestOwnerPurgeKeepsTheNewSession(t *testing.T) {

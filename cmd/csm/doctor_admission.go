@@ -142,7 +142,7 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 }
 
 // setDoctorCheck shows the temporary set the owner's last turn budgeted
-// block work by (spec 5.6): the partitions of the automatic slots, the
+// block work by: the partitions of the automatic slots, the
 // entries admission never evicts with their drain time and the previews
 // of the last hour that took a lower-priority block's slot. It warns as
 // the forecast's model does, when the turn could not read the set and
@@ -199,7 +199,7 @@ func rotatedNote(n uint64, what string) string {
 
 // rotatedWarning says that n of what in the last hour would have rotated
 // an equal-priority automatic block out: the set is too small for the
-// attack (spec 5.17).
+// attack.
 func rotatedWarning(n uint64, what string) string {
 	return fmt.Sprintf("in the last hour %d %s would have rotated out an equal-priority automatic block held for at least 30 minutes; the set is too small for the attack", n, what)
 }
@@ -259,7 +259,7 @@ func setWarnings(unlimited bool, capacity int, drainSeconds int64, general, rese
 }
 
 // dryRunDoctorChecks renders the dry-run forecast of an owner that runs
-// blocks (spec 3.8). A dry run alone is not a failure, and a prediction is
+// blocks. A dry run alone is not a failure, and a prediction is
 // never a block: a held forecast, model limits, modelled waits and lost or
 // stale examples warn. Real safety state keeps its own rows.
 func dryRunDoctorChecks(d *health.AdmissionDryRun) []DoctorCheck {

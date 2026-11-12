@@ -126,7 +126,7 @@ func TestGenerationsNeverReuseAndTrackRecreation(t *testing.T) {
 	}
 }
 
-// Spec 5.3 and handoff O47: an account deleted and created again between
+// An account deleted and created again between
 // two observations, a restart included, keeps its name but not its
 // server-owned incarnation token, so it gets a new generation and never
 // inherits the old account's scope. An account observed without a token

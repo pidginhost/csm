@@ -69,7 +69,7 @@ func (k *killLedger) runMember(a admission.AttemptRecord, addr string) firewall.
 	return m
 }
 
-// Kill points around an eviction (spec 5.4, 5.5): a verified Warning
+// Kill points around an eviction: a verified Warning
 // block fills the general partition, and a Critical block of another
 // address claims it and runs in a batch that deletes the victim and adds
 // the block. The process stops at each step. Until the ledger records the

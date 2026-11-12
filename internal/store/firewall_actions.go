@@ -1088,7 +1088,7 @@ func commitFirewallTransition(tx *bolt.Tx, index firewallJournalIndex, a firewal
 }
 
 // RetireFirewallAction retires the uncertainty of an unknown block action
-// once nothing it may have applied can remain (spec 5.4, design D7). The
+// once nothing it may have applied can remain. The
 // caller has proved that the kernel holds the retired state at at; the store
 // checks that every effect has expired by then and that the unknown
 // outcome's audit was delivered, so the event follows the outcome. In one

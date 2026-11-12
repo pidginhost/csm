@@ -8,8 +8,8 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 )
 
-// AdmissionStatus is the admission ledger's status and the ingress health
-// (spec 5.17). CheckedAt is when the daemon read them; doctor judges the
+// AdmissionStatus is the admission ledger's status and the ingress health.
+// CheckedAt is when the daemon read them; doctor judges the
 // Critical-gap rule from it.
 type AdmissionStatus struct {
 	CheckedAt time.Time                `json:"checked_at"`
@@ -44,7 +44,7 @@ type AdmissionOwner struct {
 	// Nothing is admitted until both succeed.
 	TickError string `json:"tick_error,omitempty"`
 	// ClockDegraded is set while the wall clock is behind the ledger's
-	// high-water mark or disagrees with the time since boot (spec 5.4).
+	// high-water mark or disagrees with the time since boot.
 	ClockDegraded bool      `json:"clock_degraded"`
 	LastTick      time.Time `json:"last_tick,omitempty"`
 	// CeilingSource says whether the ceiling is max_blocks_per_hour, its
@@ -90,7 +90,7 @@ type AdmissionOwner struct {
 }
 
 // AdmissionSet is the temporary block set as automatic admission divides
-// it (spec 5.6): the firewall's entries and the ledger's automatic blocks,
+// it: the firewall's entries and the ledger's automatic blocks,
 // pending and verified. Capacity is the limit, or 10000 for an unlimited
 // set; Unclaimed counts the entries admission never evicts (operator
 // blocks, blocks of unknown origin and two per timed subnet) and Imported
@@ -108,7 +108,7 @@ type AdmissionSet struct {
 	Reserved     AdmissionDryRunPartition `json:"reserved"`
 }
 
-// AdmissionDryRun is an executing owner's dry-run forecast (spec 3.8): a
+// AdmissionDryRun is an executing owner's dry-run forecast: a
 // model of the hourly ceiling and the temporary block capacity, never a
 // record of applied blocks. The session fields and counts are the current
 // forecast session's; a session starts at startup, on entry into dry run
@@ -181,7 +181,7 @@ type AdmissionDryRunOccupancy struct {
 }
 
 // AdmissionDryRunShares is how the forecast shares each partition among
-// its scopes for equal-tier rotation (spec 5.6).
+// its scopes for equal-tier rotation.
 type AdmissionDryRunShares struct {
 	General  AdmissionDryRunShare `json:"general"`
 	Reserved AdmissionDryRunShare `json:"reserved"`
@@ -235,7 +235,7 @@ func clonePtr[T any](p *T) *T {
 	return &v
 }
 
-// AdmissionVerdict is the verdict callback stage (spec 4.4). The gauges
+// AdmissionVerdict is the verdict callback stage. The gauges
 // are its current state. The counters and the failure window count this
 // process's calls and start from zero at a restart; committed refusals
 // stay in the ledger. Errors are fixed classes, never response text.

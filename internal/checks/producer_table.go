@@ -106,7 +106,7 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerPHPRelaySpool, Entry: admission.EntryScan, Observation: admission.ObservationEventSeq,
 		// The client address is PHP's REMOTE_ADDR as written into a mail
 		// header any local account can forge: no socket CSM observed, so no
-		// attribution kind (spec 5.8), and its findings mint nothing.
+		// attribution kind, and its findings mint nothing.
 		Checks: []string{"email_php_form_relay"}},
 		admission.ParserRef{Name: "exim_spool", Version: 1}},
 }
@@ -124,7 +124,7 @@ func ProducerTable() []ProducerEntry {
 
 // derivedEntries bind each derived entry to the root checks it may answer
 // again. A derived response never mints evidence of its own: it carries a
-// root a producer of the table minted (spec 5.2).
+// root a producer of the table minted.
 var derivedEntries = []admission.ProducerSpec{
 	{ID: "mail_subnet", Entry: admission.EntryMailSubnet, Observation: admission.ObservationLogCursor,
 		Checks: []string{"mail_subnet_spray", "smtp_subnet_spray"}},

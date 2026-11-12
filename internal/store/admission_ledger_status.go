@@ -9,7 +9,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Status reads the ledger for status and doctor (ruling 8): one read
+// Status reads the ledger for status and doctor: one read
 // transaction, without the mutex or a current clock, so it answers while
 // another call runs and while the ledger cannot be written. Each section
 // is read on its own; a damaged record fails only its own section.

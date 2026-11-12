@@ -148,13 +148,8 @@ type Engine struct {
 	// subsequent calls return a deep copy from the in-memory cache as
 	// long as the on-disk metadata key is unchanged.
 	//
-	// Before this cache existed, every single mutator (BlockIP,
-	// AllowIP, saveBlockedEntry, etc.) reloaded and re-parsed the full
-	// 325 KiB state.json from disk, and every IsBlocked / IsAllowed
-	// call did a linear scan over the parsed slices. On a busy
-	// production host that meant ~72 state.json opens per second
-	// steady state, which showed up as the dominant CPU hot spot in
-	// roadmap audit 7.1.
+	// Caching avoids repeated disk reads and linear scans on frequent
+	// block and allow checks.
 	//
 	// All four fields are written only while e.mu is held. The index
 	// maps are rebuilt every time stateCache is repopulated so
@@ -268,7 +263,7 @@ type BlockedEntry struct {
 	// and not restored into the kernel.
 	Unverified bool `json:"unverified,omitempty"`
 	// Automatic marks a timed row a legacy automatic block wrote: explicit
-	// provenance, where Source is read from the reason text (spec 6).
+	// provenance, where Source is read from the reason text.
 	// Admission rows carry ActionID instead. Older builds ignore it.
 	Automatic bool `json:"automatic,omitempty"`
 	// LoginSpray marks an automatic row a mail spray block wrote. These rows
@@ -3032,7 +3027,7 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 	if skipExisting && firewallStateHasBlocked(st, ip) {
 		// An automatic block never replaces a row an admission action
 		// wrote, even one whose element is gone or unproven: the owner
-		// retires it (design C8).
+		// retires it.
 		if row, _ := blockedStateEntry(st, ip); row.ActionID != "" {
 			return targetSet, key, true, "", nil
 		}

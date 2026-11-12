@@ -96,8 +96,8 @@ func TestBlockAdmissionSnapshotIgnoresSubnetCoverage(t *testing.T) {
 	}
 }
 
-// The snapshot sorts the set's timed occupants by recorded ownership
-// (spec 5.6). Elements of admission rows are admission's own. Elements of
+// The snapshot sorts the set's timed occupants by recorded ownership.
+// Elements of admission rows are admission's own. Elements of
 // rows a legacy automatic block marked are known automatic imports. Every
 // other timed element, an operator's or one with no row, and two elements
 // for each timed subnet row, are unclaimed: admission never evicts them.

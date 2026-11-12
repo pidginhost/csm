@@ -27,8 +27,8 @@ const (
 // its action.
 const effectKeyLen = 8 + actionIDLen
 
-// EffectRecord is an automatic block's hold on a temporary set slot (spec
-// 5.6). The ledger writes it when the block's attempt is reserved, so
+// EffectRecord is an automatic block's hold on a temporary set slot. The
+// ledger writes it when the block's attempt is reserved, so
 // pending and live reservations count together; the verified outcome
 // records the first application, and the record leaves when the attempt
 // fails, its uncertainty is retired or its expiry passes. The occupancy
@@ -51,8 +51,8 @@ type EffectRecord struct {
 	// charge's window does.
 	Applied time.Time
 	Elapsed time.Duration
-	// Victim is the verified record a pending block claimed to evict
-	// (spec 5.6); zero when the block took a free slot, and cleared when
+	// Victim is the verified record a pending block claimed to evict;
+	// zero when the block took a free slot, and cleared when
 	// its application is verified.
 	Victim EffectRef
 	// EvictedBy is the pending block that claimed this verified record as

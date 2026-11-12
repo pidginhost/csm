@@ -25,8 +25,8 @@ type AttackEvent struct {
 }
 
 // MailEvidence is what CSM learned about an address as a mail sender:
-// mail login attacks and the spam verdicts of its scanned messages (feeds
-// spec 7.3). Masses are decayed to MassAt.
+// mail login attacks and the spam verdicts of its scanned messages.
+// Masses are decayed to MassAt.
 type MailEvidence struct {
 	AuthAttacks    int       `json:"auth_attacks,omitempty"`
 	LastAuthAttack time.Time `json:"last_auth_attack,omitzero"`

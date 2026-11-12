@@ -678,7 +678,7 @@ func TestIngressRefusesMalformedSnapshots(t *testing.T) {
 	}
 }
 
-// Ruling 9: the ingress reports when it stopped admitting and how many
+// The ingress reports when it stopped admitting and how many
 // Critical arrivals it refused since, so a failed snapshot is loud. A
 // usable snapshot clears both.
 func TestIngressHealthReportsAStoppedIngress(t *testing.T) {

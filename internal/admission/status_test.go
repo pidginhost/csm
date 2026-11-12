@@ -40,7 +40,7 @@ func TestDoctorChecksPassAHealthyLedgerThatPreviews(t *testing.T) {
 	}
 }
 
-// R10: while admission previews, legacy blocking enforces, so a damaged
+// While admission previews, legacy blocking enforces, so a damaged
 // ledger, a stopped ingress and a recent gap warn, saying so.
 func TestDoctorChecksWarnOnDamagedSections(t *testing.T) {
 	for name, damage := range map[string]func(*LedgerStatus){

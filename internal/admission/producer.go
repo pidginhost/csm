@@ -198,7 +198,7 @@ func (spec ProducerSpec) publishes(check string) bool {
 
 // ValidateVia refuses a derived entry that no registered producer of that
 // entry wraps e's check under: the engine binds every entry to its
-// producers (spec 5.1).
+// producers.
 func (r *Registry) ValidateVia(via Entry, e Evidence) error {
 	if !via.Valid() {
 		return refuse(ReasonPolicy, "response entry is not valid")

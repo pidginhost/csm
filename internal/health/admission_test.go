@@ -93,7 +93,7 @@ func TestBuildCarriesAdmissionOnlyFromAnOwner(t *testing.T) {
 	}
 }
 
-// Spec 3.8, 6.4: the dry-run object is an immutable copy. Mutating the
+// The dry-run object is an immutable copy. Mutating the
 // provider's collections, pointers and counters after a build changes no
 // published snapshot.
 func TestBuildOwnsTheDryRunObject(t *testing.T) {

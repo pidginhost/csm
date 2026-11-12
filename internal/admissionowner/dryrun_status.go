@@ -7,10 +7,10 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 )
 
-// predictionScope names what the forecast models (spec 3.1).
+// predictionScope names what the forecast models.
 const predictionScope = "ceiling_and_temporary_capacity"
 
-// dryRunStatus reads the forecast for status (spec 3.8). While the owner
+// dryRunStatus reads the forecast for status. While the owner
 // forecasts it shows the session's model and counts, and no identity until
 // a session starts; otherwise only the last session's identity. Loss and
 // error counters cover the process.

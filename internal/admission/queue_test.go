@@ -28,7 +28,7 @@ func fill(t *testing.T, v *QueueView, prefix, scope string, tier Tier, eligible 
 }
 
 func TestQueueBoundsFitThePayloadBound(t *testing.T) {
-	// Spec 5.6 bounds the queue at 1000 candidates and 4 MiB of canonical
+	// The queue is bounded at 1000 candidates and 4 MiB of canonical
 	// payload; the count must bind first, so no byte accounting is needed.
 	if QueueCapacity*MaxCandidateBytes > 4<<20 || PartitionGeneral.Capacity()+PartitionReserved.Capacity() != QueueCapacity {
 		t.Fatal("queue bounds disagree with the spec")

@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// OutcomeKey is one fixed dimension of the windowed outcome counts (spec
-// 5.17, ruling 13): a queue event with its reason, or an attempt outcome,
+// OutcomeKey is one fixed dimension of the windowed outcome counts: a
+// queue event with its reason, or an attempt outcome,
 // by the candidate's last assessment. It never names an address, account
 // or check.
 type OutcomeKey struct {

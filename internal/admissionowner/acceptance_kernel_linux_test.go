@@ -296,7 +296,7 @@ func sameFirewall(t *testing.T, before, after firewallView) {
 	}
 }
 
-// Spec 6.5: a dry run against a healthy engine in an isolated network
+// A dry run against a healthy engine in an isolated network
 // namespace, with no pending recovery, asks the panel and forecasts, and
 // changes nothing it enforces. Its selections cover both address
 // families, a panel allow and a failed call, real covering blocks of both

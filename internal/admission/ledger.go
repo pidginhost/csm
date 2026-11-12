@@ -98,7 +98,7 @@ var (
 	ErrEvidenceOwnerChanged error = &Error{Reason: ReasonStaleIdentity, Detail: "evidence ID holds the observation under another owner"}
 )
 
-// Ledger is the durable admission state (spec 5.4). One engine owner
+// Ledger is the durable admission state. One engine owner
 // serializes every mutating call; detector goroutines never call it.
 // Each call is one transaction: an error leaves the ledger unchanged.
 type Ledger interface {
@@ -162,8 +162,8 @@ type Ledger interface {
 	// persisted everything the ingress held.
 	EndIngress() error
 	// EnqueueGroup publishes and queues up to MaxArrivalGroup arrivals in
-	// one transaction, assigning each its offense episode and generation
-	// (spec 5.2); an arrival that names either is refused. A refused
+	// one transaction, assigning each its offense episode and generation;
+	// an arrival that names either is refused. A refused
 	// arrival is counted and reported in its result; any other error
 	// leaves the ledger unchanged. The revision is the committed
 	// transaction's snapshot fence, or zero on failure.
@@ -186,7 +186,7 @@ type Ledger interface {
 	Reserve(CandidateID, Lane, time.Time) (Candidate, AttemptRecord, bool, error)
 	// ExecuteBatch marks the reserved attempts of one batch as running and
 	// records each member's intent in the same transaction, before the
-	// caller dispatches any host change (spec 5.4), and reports true. When
+	// caller dispatches any host change, and reports true. When
 	// every member already runs in this batch it returns their intents and
 	// false: a readback is not permission to dispatch an effect again. Any
 	// other member state refuses the whole batch.

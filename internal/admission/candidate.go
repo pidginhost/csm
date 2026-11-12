@@ -13,7 +13,7 @@ import (
 // extends that.
 const QueueAgeLimit = 2 * time.Hour
 
-// MaxCandidateBytes bounds one encoded candidate record (spec 5.4). Storage
+// MaxCandidateBytes bounds one encoded candidate record. Storage
 // accounting reserves it per candidate; the invariants keep every valid
 // record well inside it.
 const MaxCandidateBytes = 4096
@@ -93,8 +93,8 @@ type Candidate struct {
 }
 
 // EffectLink names the block that already enforces a refused candidate's
-// effect (spec 5.17: an existing exact effect with its verified action
-// link): the admission action that wrote it, or the firewall's "eff_" name
+// effect (an existing exact effect with its verified action link): the
+// admission action that wrote it, or the firewall's "eff_" name
 // of an operator or earlier block, and when it ends (zero: permanent).
 type EffectLink struct {
 	Effect    string

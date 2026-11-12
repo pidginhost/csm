@@ -47,7 +47,7 @@ func TestDoctorFailsAdmissionOutagesWhileExecuting(t *testing.T) {
 	}
 }
 
-// 1.5c-1 ruling 7: once admission executes, a ledger the firewall could
+// Once admission executes, a ledger the firewall could
 // not read at start fails, since the automatic blocks it restored carry no
 // proof and admission decides new ones.
 func TestDoctorFailsFirewallLedgerUnreadableWhileExecuting(t *testing.T) {

@@ -110,7 +110,7 @@ func answerError(string) (verdict.Response, error) {
 	return unconfiguredClient.Ask(context.Background(), verdict.Request{})
 }
 
-// Spec 4.5, 6.5: the legacy gate tests in internal/firewall and
+// The legacy gate tests in internal/firewall and
 // internal/checks pin how the panel callback and dry run meet the local
 // checks. Each case is named after its legacy fixture and runs the same
 // decision through the owner under a live and a dry-run policy. The owner
@@ -226,7 +226,7 @@ func TestOwnerKeepsTheLegacyGates(t *testing.T) {
 	}
 }
 
-// Spec 3.3, 4.1: legacy rechecks an allow added while the panel was asked
+// Legacy rechecks an allow added while the panel was asked
 // (TestBlockIPOutcome_RechecksAllowAfterVerdict). The owner revalidates
 // before it uses any answer, in both modes: the pick is refused as
 // protected and the panel's allow ends nothing.
@@ -253,9 +253,9 @@ func TestOwnerRechecksProtectionAfterTheCallback(t *testing.T) {
 	}
 }
 
-// Spec 4.5: the changes the design makes to legacy on purpose, each named
-// after the legacy fixture whose behaviour changes, with the owner's
-// expected behaviour. Concurrent calls, aggregated examples and notices,
+// These cases assert the owner's intentional differences from legacy
+// behaviour, each named after the corresponding legacy fixture.
+// Concurrent calls, aggregated examples and notices,
 // fresh requests for a retry and discarding old answers on reload are
 // pinned by TestOwnerBoundsVerdictCalls, TestOwnerSummarizesADryRunMinute,
 // TestOwnerAsksAgainForARetry and TestOwnerRetiresVerdictsOnANewEpoch.
@@ -329,7 +329,7 @@ func TestOwnerChangesLegacyGatesOnPurpose(t *testing.T) {
 	// Legacy promotes a repeat offender to a permanent block whatever the
 	// dry-run setting. A dry run suppresses the promotion: it ends as
 	// not_modelled without a call or an engine read. Live, the owner only
-	// previews it until promotions run (plan 1.6), and never asks.
+	// previews it until promotions run, and never asks.
 	t.Run("TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock", func(t *testing.T) {
 		for dry, want := range map[bool]string{false: "observed asked=0 applies=0 examples=0", true: "dry_run not_modelled=1 asked=0 applies=0 examples=0"} {
 			pt := newParity(t, dry, answerWith("allow"))
@@ -347,7 +347,7 @@ func TestOwnerChangesLegacyGatesOnPurpose(t *testing.T) {
 	})
 }
 
-// Spec 4.5: subnets honour dry run without the callback, as legacy does
+// Subnets honour dry run without the callback, as legacy does
 // (TestAutoBlockIPs_NetBlockDryRunSkipsBlockSubnet): the pick ends as a
 // not_modelled dry run with no call. Re-proof, startup settlement and the
 // retirement of an unknown attempt never ask either, and never execute

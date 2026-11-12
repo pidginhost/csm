@@ -39,7 +39,7 @@ type clockRecord struct {
 	CheckSince int64  `json:"check_since"`
 }
 
-// Clock is the persisted admission clock (spec 5.4). It is a value: Advance
+// Clock is the persisted admission clock. It is a value: Advance
 // returns the next clock, so a failed transaction leaves the stored one.
 // The zero value has seen no reading.
 type Clock struct {

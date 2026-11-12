@@ -87,7 +87,7 @@ func queuedCandidates(t testing.TB, o *Owner) []admission.Candidate {
 
 // The owner drains what detectors hand its ingress into the ledger, which
 // gives each target an episode: two observations of one address queue one
-// candidate of the episode's first generation (spec 5.2, handoff O16).
+// candidate of the episode's first generation.
 func TestOwnerDrainsSubmissionsIntoEpisodes(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -105,7 +105,7 @@ func TestOwnerDrainsSubmissionsIntoEpisodes(t *testing.T) {
 	}
 }
 
-// Handoff O8: a drain records a fresh clock reading first, so the ledger
+// A drain records a fresh clock reading first, so the ledger
 // judges arrivals at the current time. A drain with nothing new since the
 // last one reads no clock and writes nothing.
 func TestOwnerTicksBeforeEachDrain(t *testing.T) {
@@ -133,7 +133,7 @@ func TestOwnerTicksBeforeEachDrain(t *testing.T) {
 	}
 }
 
-// Handoff O30: a clean stop drains what the ingress still holds before it
+// A clean stop drains what the ingress still holds before it
 // closes the generation, so nothing a detector handed over is lost.
 func TestOwnerStopDrainsHeldWork(t *testing.T) {
 	p := withTestRegistry(t)
@@ -249,7 +249,7 @@ func TestOwnerDrainWithConcurrentSubmit(t *testing.T) {
 	eventually(t, "concurrent submissions to persist", func() bool {
 		return o.ingress.Len() == 0 && len(queuedCandidates(t, o)) == 32
 	})
-	// Producer goroutines are joined before the shutdown checkpoint (O30).
+	// Producer goroutines are joined before the shutdown checkpoint.
 	o.Stop()
 	o = f.start(f.options())
 	if got := queuedCandidates(t, o); len(got) != 32 || ledgerStatus(t, o).Ingress.Interrupted != 0 {

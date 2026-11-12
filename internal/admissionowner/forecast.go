@@ -21,7 +21,7 @@ func (o *Owner) forecasting() bool {
 	return o.executable() && o.policyErr == nil && o.policy.DryRun
 }
 
-// beginForecast starts a forecast session unless one runs (spec 3.4, 3.7).
+// beginForecast starts a forecast session unless one runs.
 // The turn has finished the live outcomes already returned and made a
 // reading, so the session copies the committed ceiling and its charges,
 // spent credit included; nothing is copied again while it runs. A failure
@@ -71,7 +71,7 @@ func (o *Owner) noteForecastError(e forecastError) {
 	o.forecastErr, o.forecastErrAt = e, time.Now().UTC()
 }
 
-// forecast serves the turn under a dry-run policy (spec 3.1-3.5). The
+// forecast serves the turn under a dry-run policy. The
 // selection ignores live budgets and defers nothing for capacity. A
 // block_ip pick is forecast against the session's model; another firewall
 // kind ends as not_modelled; a challenge keeps its comparison preview.
@@ -133,8 +133,8 @@ func (o *Owner) forecast() (err error) {
 	return o.forecastBlocks(blocks)
 }
 
-// forecastBlocks forecasts the turn's block_ip picks in scheduler order
-// (spec 3.3). One read-only snapshot answers their local checks and the
+// forecastBlocks forecasts the turn's block_ip picks in scheduler order.
+// One read-only snapshot answers their local checks and the
 // real temporary occupancy, with the real blocks of forecast addresses. A
 // refused target ends or waits as a live check has it. A real block that
 // already covers the address ends the pick as existing_actual, and a
@@ -144,7 +144,7 @@ func (o *Owner) forecast() (err error) {
 // lower-tier block it may replace nor an equal-tier block it may rotate
 // out, ends it without a call. The turn's picks share the modelled set
 // as a live schedule cycle's queued work does.
-// With the callback on, any other pick is asked about first (D8) and waits
+// With the callback on, any other pick is asked about first and waits
 // for its answer with no forecast change; then the forecast bound or the
 // modelled ceiling can still end it. Only a capacity
 // admission, with or without a replacement or rotation, changes the model. Without an engine, snapshot or sound clock
@@ -259,7 +259,7 @@ func rankOf(p execPick, m firewall.BlockMember, fresh bool) shadowRank {
 }
 
 // freshPick reports whether forecast pick p for ip may rotate an
-// equal-tier block (spec 5.2): its episode row says so, as a live
+// equal-tier block: its episode row says so, as a live
 // schedule reads it, and no forecast block of ip left the model before
 // that block's expiry, so its episode has had no forecast response.
 func (o *Owner) freshPick(p execPick, ip string) (bool, error) {
@@ -270,8 +270,8 @@ func (o *Owner) freshPick(p execPick, ip string) (bool, error) {
 }
 
 // waitingOf is the scopes of a turn's block picks by the partitions they
-// may occupy, as a live schedule cycle counts its queued block work
-// (spec 5.6): general, and reserved too for work with a reserved lane.
+// may occupy, as a live schedule cycle counts its queued block work:
+// general, and reserved too for work with a reserved lane.
 func waitingOf(picks []execPick) map[admission.Partition][]string {
 	out := map[admission.Partition][]string{}
 	for _, p := range picks {
@@ -302,7 +302,7 @@ func lanesOf(p admission.Pick) []admission.Lane {
 
 // endForecast ends p as a dry run with its prediction and installs the
 // decision in the forecast and the comparison once the ending commits, so
-// a retried ending never counts or charges twice (spec 3.5). A refusal the
+// a retried ending never counts or charges twice. A refusal the
 // ending meets defers or ends p as a reservation would. A failed write
 // stops the turn and leaves the forecast as it was.
 func (o *Owner) endForecast(p execPick, pred admission.Prediction, change *shadowChange) error {

@@ -353,8 +353,7 @@ func TestBlockStartupRestoresOnlyTheFinishedMember(t *testing.T) {
 	}
 }
 
-// Kill points inside the engine's batch (spec 5.4, 5.5, 7.1 "Legacy
-// crash"; design P9, P10): a batch of an IPv4 and an IPv6 address is
+// Kill points inside the engine's batch: a batch of an IPv4 and an IPv6 address is
 // stopped at each step of ApplyBlockBatch. After the atomic batch the
 // kernel keeps the first and loses the second before readback; a rejected
 // batch applies neither. The ledger and a new engine then start as a daemon

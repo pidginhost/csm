@@ -43,7 +43,7 @@ func admitRanked(t *testing.T, s *shadow, r shadowRank, lanes []admission.Lane, 
 
 // A forecast block takes the slot of a strictly lower-tier forecast block
 // when its partition is full: the lowest tier, then the earliest expiry,
-// then the lowest action (spec 5.6). The replaced block leaves the model,
+// then the lowest action. The replaced block leaves the model,
 // the new one keeps the replaced block's partition, and the charge is the
 // lane's. Work at the same tier waits as set_full.
 func TestShadowReplacesALowerTierForecastBlock(t *testing.T) {
@@ -76,7 +76,7 @@ func TestShadowReplacesALowerTierForecastBlock(t *testing.T) {
 // Reserved work takes a free reserved slot before it replaces anything.
 // With none, it may replace a strictly lower-tier block of either
 // partition, charged on its own lane, and the new block keeps the
-// replaced block's partition (spec 5.6).
+// replaced block's partition.
 func TestShadowReservedWorkReplacesInPlace(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
 	adm := firewall.BlockAdmission{Limit: 3}
@@ -106,7 +106,7 @@ func TestShadowNeverReplacesAnUnrankedBlock(t *testing.T) {
 	}
 }
 
-// A listed import is a (C2, High) victim (spec 6). Once replaced, the
+// A listed import is a (C2, High) victim. Once replaced, the
 // forecast remembers it until its own expiry: it neither counts it nor
 // offers it again while the engine still lists it, and counts it again if
 // the list no longer names it.
@@ -149,8 +149,8 @@ func TestShadowReplacesAListedImportUntilItExpires(t *testing.T) {
 }
 
 // The forecast replaces a listed import with strictly higher work, as
-// live admission would, without claiming it or touching the live ledger
-// (operator ruling T1). Returning to previews uses a fresh list.
+// live admission would, without claiming it or touching the live ledger.
+// Returning to previews uses a fresh list.
 func TestOwnerForecastReplacesListedImports(t *testing.T) {
 	withLiveExecution(t, false)
 	p := withTestRegistry(t)
@@ -197,8 +197,8 @@ func TestOwnerForecastReplacesListedImports(t *testing.T) {
 	}
 }
 
-// A pick only a replacement would fund is asked of the panel first (spec
-// 3.3): only a full set with nothing lower to replace ends without a call.
+// A pick only a replacement would fund is asked of the panel first:
+// only a full set with nothing lower to replace ends without a call.
 // Its answer then admits it with the replacement.
 func TestOwnerForecastAsksThePanelAboutAFundedPick(t *testing.T) {
 	for _, answer := range []string{"block", "allow"} {
@@ -239,7 +239,7 @@ func TestOwnerForecastAsksThePanelAboutAFundedPick(t *testing.T) {
 }
 
 // Two pending picks can ask about one victim, but answers must compete
-// against committed state and the current import list (spec 3.3).
+// against committed state and the current import list.
 func TestOwnerForecastPendingReplacementsRecheckCapacity(t *testing.T) {
 	for _, withdrawn := range []bool{false, true} {
 		t.Run(fmt.Sprintf("withdrawn=%t", withdrawn), func(t *testing.T) {
@@ -310,7 +310,7 @@ func TestOwnerForecastPendingReplacementsRecheckCapacity(t *testing.T) {
 }
 
 // An ending failure must leave the import available without publishing
-// replacement memory, counters, charges or examples (spec 3.5).
+// replacement memory, counters, charges or examples.
 func TestOwnerForecastReplacementEndingFailureKeepsVictim(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)

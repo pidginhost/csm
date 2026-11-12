@@ -10,7 +10,7 @@ import (
 // A fresh attack of the same tier, once the only general slot's block is
 // past its 30-minute hold, rotates that block out end to end: the engine
 // receives the claimed victim, the ledger charges the new block, and the
-// rotated block holds no slot (spec 5.6, 7.1 rotation liveness).
+// rotated block holds no slot.
 func TestOwnerRotatesAnEqualTierBlock(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)

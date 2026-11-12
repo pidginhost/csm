@@ -22,7 +22,7 @@ func observedSSHLogin() alert.Finding {
 // A finding asks admission for the evidence its own observation supports:
 // the producer that stamped it, the check, severity and finding identity,
 // the observation's stream, cursor and time, the producer's parser and the
-// finding's claims and intel (spec 5.1).
+// finding's claims and intel.
 func TestAdmissionEvidenceFromAFinding(t *testing.T) {
 	f := observedSSHLogin()
 	f.Intel = &admission.IntelRef{Source: "feed", Expires: f.Observation.ObservedAt.Add(time.Hour)}
@@ -43,7 +43,7 @@ func TestAdmissionEvidenceFromAFinding(t *testing.T) {
 	}
 }
 
-// Provenance is never reconstructed (spec 5.1): a finding without an
+// Provenance is never reconstructed: a finding without an
 // observation, or one naming a producer the table does not list, asks for
 // nothing.
 func TestAdmissionEvidenceRefusesAFindingWithoutProvenance(t *testing.T) {
@@ -122,8 +122,8 @@ func TestAdmissionRefusesAFindingWithoutAttribution(t *testing.T) {
 	}
 }
 
-// The target is the address the parser read, never one in the message
-// (spec 5.8): a victim named in log text cannot become an admission target.
+// The target is the address the parser read, never one in the message:
+// a victim named in log text cannot become an admission target.
 func TestAdmissionEvidenceTargetsOnlyTheAttributedAddress(t *testing.T) {
 	f := observedSSHLogin()
 	f.Message = "SSH login from 198.51.100.66"

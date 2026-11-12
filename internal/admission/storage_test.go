@@ -370,7 +370,7 @@ func TestStorageStateCodec(t *testing.T) {
 
 // A week of flood at the paced rate cannot fill the general allowance
 // faster than its rate or touch the reserved one, and history retired after
-// the review window keeps general work flowing (spec 5.4).
+// the review window keeps general work flowing.
 func TestStorageStateSurvivesAWeekOfFlood(t *testing.T) {
 	general, _ := HistoryLanes()
 	const cost = 2700
