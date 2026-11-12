@@ -905,6 +905,10 @@ func (d *Daemon) Run() error {
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh, d.stopCh)
 	d.staleSession401 = newStaleSession401s()
 
+	// Removals from before a restart keep a returning file recognisable.
+	// Loaded before anything can respond to or report a file.
+	checks.LoadRemovedFiles(d.cfg.StatePath)
+
 	// Start the alert dispatcher before any producer, held until the baseline
 	// scan below has published. Producers send non-blocking, so a dispatcher
 	// that started only after the baseline silently lost every realtime
