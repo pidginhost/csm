@@ -344,6 +344,7 @@ func phpTaintDeepFinding(path, contentSHA256 string, report phptaint.Report) ale
 		FilePath:      path,
 		ContentSHA256: contentSHA256,
 		DetectLogic:   ContentDetectionVersion(),
+		CoverageScope: deepFileCoverageScope(path),
 	}
 }
 

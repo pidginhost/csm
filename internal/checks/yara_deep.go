@@ -119,7 +119,14 @@ func scheduledYARAFinding(match yara.Match, path string, content []byte, content
 		FilePath:      path,
 		ContentSHA256: contentSHA256,
 		DetectLogic:   ContentDetectionVersion(),
+		CoverageScope: deepFileCoverageScope(path),
 	}
+}
+
+// deepFileCoverageScope names one file as the unit a partial deep-scan run
+// retires once its window has examined that path.
+func deepFileCoverageScope(path string) string {
+	return "file:" + path
 }
 
 type yaraDeepScanEntry struct {
@@ -128,6 +135,7 @@ type yaraDeepScanEntry struct {
 	info      os.FileInfo
 	err       error
 	inspected bool
+	directory bool
 }
 
 type yaraDeepScanHeap []yaraDeepScanEntry
@@ -291,6 +299,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		w.yaraConsumer.cur.RulesRootsHash = rootsHash
 	}
 
+	w.roots = roots
 	w.walk(roots)
 	if ctx.Err() != nil {
 		// The runner drops every finding a check returns after its budget
@@ -325,6 +334,7 @@ type yaraDeepWalk struct {
 	findings                              []alert.Finding
 
 	// Shared walk state. walkResume is the earliest dispatching resume point.
+	roots        []string
 	walkResume   string
 	softDeadline time.Time
 	stoppedEarly bool
@@ -460,32 +470,49 @@ func deepScanRoots(cfg *config.Config) ([]string, bool) {
 }
 
 func (w *yaraDeepWalk) walk(roots []string) {
-	for _, root := range roots {
+	// All roots share one frontier. Walking an outer root to completion
+	// first can pass a nested symlink root that only an explicit root visit
+	// follows, falsely placing its unread files inside the retirement window.
+	ordered := make(yaraDeepScanHeap, len(roots))
+	rootSet := make(map[string]bool, len(roots))
+	for i, root := range roots {
+		rootSet[root] = true
+		ordered[i] = yaraDeepScanEntry{path: root, sortKey: deepSubtreePrefix(root), inspected: true, directory: true}
+	}
+	heap.Init(&ordered)
+
+	for ordered.Len() > 0 {
 		if w.ctx.Err() != nil || w.stoppedEarly {
-			break
+			return
 		}
 		if w.outOfTime() {
 			w.stoppedEarly = true
-			break
+			return
 		}
-		if deepSubtreeCoveredAfter(w.walkResume, root) {
+		item := heap.Pop(&ordered).(yaraDeepScanEntry)
+		if !item.inspected {
+			item.info, item.err = osFS.Lstat(item.path)
+			item.inspected = true
+			if item.err == nil && item.info.Mode()&os.ModeSymlink == 0 && item.info.IsDir() {
+				// Bare names are lower bounds. Children of ab/ sort after
+				// ab.zz, so a discovered directory must be requeued.
+				item.directory = true
+				item.sortKey = deepSubtreePrefix(item.path)
+				heap.Push(&ordered, item)
+				continue
+			}
+		}
+		if item.directory {
+			if !deepSubtreeCoveredAfter(w.walkResume, item.path) {
+				w.enqueueDir(item.path, &ordered, rootSet)
+			}
 			continue
 		}
-		w.scanDir(root)
-		if w.ctx.Err() == nil && !w.stoppedEarly {
-			w.advanceAll(deepSubtreePrefix(root))
-		}
+		w.scanFile(item.path, item.info, item.err)
 	}
 }
 
-func (w *yaraDeepWalk) scanDir(dir string) {
-	if w.ctx.Err() != nil || w.stoppedEarly {
-		return
-	}
-	if w.outOfTime() {
-		w.stoppedEarly = true
-		return
-	}
+func (w *yaraDeepWalk) enqueueDir(dir string, ordered *yaraDeepScanHeap, roots map[string]bool) {
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		// The affected paths are unknowable, but a consumer that already
@@ -498,54 +525,17 @@ func (w *yaraDeepWalk) scanDir(dir string) {
 		w.advanceAll(deepSubtreePrefix(dir))
 		return
 	}
-	// A directory's candidate paths start at dir+separator, not at the
-	// bare directory name. Bare-name order visits ab/ before ab.zz even
-	// though every child under ab/ sorts after ab.zz. The heap starts
-	// with each bare path as a lower bound, then requeues directories
-	// under their path+separator key after Lstat reveals their type.
-	ordered := make(yaraDeepScanHeap, len(entries))
-	for i, entry := range entries {
-		ordered[i].path = filepath.Join(dir, entry.Name())
-		ordered[i].sortKey = ordered[i].path
+	if len(entries) == 0 {
+		// A prefix cursor covers the entire subtree, so it is safe before
+		// visiting children only when there are none. Nonempty directories
+		// advance through their children, whose paths exceed this prefix.
+		w.advanceAll(deepSubtreePrefix(dir))
 	}
-	heap.Init(&ordered)
-
-	for ordered.Len() > 0 {
-		if w.ctx.Err() != nil || w.stoppedEarly {
-			return
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if !roots[path] {
+			heap.Push(ordered, yaraDeepScanEntry{path: path, sortKey: path})
 		}
-		if w.outOfTime() {
-			w.stoppedEarly = true
-			return
-		}
-
-		item := heap.Pop(&ordered).(yaraDeepScanEntry)
-		if !item.inspected {
-			item.info, item.err = osFS.Lstat(item.path)
-			item.inspected = true
-		}
-		path := item.path
-
-		if item.err == nil && item.info.Mode()&os.ModeSymlink == 0 && item.info.IsDir() {
-			if item.sortKey == path {
-				item.sortKey = deepSubtreePrefix(path)
-				heap.Push(&ordered, item)
-				continue
-			}
-			if deepSubtreeCoveredAfter(w.walkResume, path) {
-				continue
-			}
-			if w.outOfTime() {
-				w.stoppedEarly = true
-				return
-			}
-			w.scanDir(path)
-			if w.ctx.Err() == nil && !w.stoppedEarly {
-				w.advanceAll(item.sortKey)
-			}
-			continue
-		}
-		w.scanFile(path, item.info, item.err)
 	}
 }
 
@@ -876,6 +866,10 @@ func (w *yaraDeepWalk) reportCoverage(st *state.Store) {
 		if !w.yaraGaps.empty() {
 			w.findings = append(w.findings, w.yaraGaps.finding())
 		}
+		if yaraPartial && !w.yaraGaps.pathsIncomplete() && st != nil {
+			recordCompletedCoverageScopes(w.ctx, "yara_deep",
+				w.examinedScopes(w.yaraConsumer, st.LatestFindings(), "yara_match_scheduled", w.yaraGaps.hasPath))
+		}
 		if !yaraPartial && st != nil {
 			// Keep the stable carried snapshots in-band so alert deduplication can
 			// retain its normal ongoing-finding re-alert cadence. Daemon callers
@@ -893,6 +887,10 @@ func (w *yaraDeepWalk) reportCoverage(st *state.Store) {
 		}
 		if !w.phpGaps.empty() {
 			w.findings = append(w.findings, w.phpGaps.findings()...)
+		}
+		if phpPartial && !w.phpGaps.pathsIncomplete() && st != nil {
+			recordCompletedCoverageScopes(w.ctx, logicalOwnerPHPTaintDeep,
+				w.examinedScopes(w.phpConsumer, st.LatestFindings(), "php_remote_taint", w.phpGaps.hasPath))
 		}
 		if !phpPartial && st != nil {
 			// Path-specific carry-forward: this run is eligible to replace the
@@ -913,6 +911,10 @@ func (w *yaraDeepWalk) reportCoverage(st *state.Store) {
 		if !w.jsGaps.empty() {
 			w.findings = append(w.findings, w.jsGaps.finding())
 		}
+		if jsPartial && !w.jsGaps.pathsIncomplete() && st != nil {
+			recordCompletedCoverageScopes(w.ctx, logicalOwnerJSTaintDeep,
+				w.examinedScopes(w.jsConsumer, st.LatestFindings(), "js_keylogger_dataflow", w.jsGaps.hasPath))
+		}
 		if !jsPartial && st != nil {
 			// Path-specific carry-forward: this run is eligible to replace
 			// the JS finding set, so a known-path coverage gap must re-emit
@@ -921,6 +923,48 @@ func (w *yaraDeepWalk) reportCoverage(st *state.Store) {
 			w.findings = append(w.findings, carryForwardJSTaintFindings(st.LatestFindings(), w.jsGaps)...)
 		}
 	}
+}
+
+// examinedScopes returns the coverage scopes of prior check findings whose
+// file this run's window for c examined: under a walked root, past the
+// consumer's resume point, and no further than where it stopped. A partial
+// run then retires exactly what a complete run would within that window. A
+// gap path was not examined, so it keeps its finding.
+func (w *yaraDeepWalk) examinedScopes(c *deepScanConsumer, prior []alert.Finding, check string, gap func(string) bool) map[string]bool {
+	scopes := make(map[string]bool)
+	for _, f := range prior {
+		if f.Check != check || f.FilePath == "" || f.CoverageScope != deepFileCoverageScope(f.FilePath) {
+			continue
+		}
+		if !w.underRoot(f.FilePath) || deepPathCoveredBy(c.resume, f.FilePath) ||
+			(w.stoppedEarly && !deepPathCoveredBy(c.lastScanned, f.FilePath)) || gap(f.FilePath) {
+			continue
+		}
+		scopes[f.CoverageScope] = true
+	}
+	return scopes
+}
+
+func (w *yaraDeepWalk) underRoot(path string) bool {
+	for _, root := range w.roots {
+		if strings.HasPrefix(path, deepSubtreePrefix(root)) {
+			return true
+		}
+	}
+	return false
+}
+
+// deepPathCoveredBy reports whether a cursor has already passed path in walk
+// order: a cursor ending in a separator covers that whole subtree, and any
+// other cursor covers every path up to and including itself.
+func deepPathCoveredBy(cursor, path string) bool {
+	if cursor == "" {
+		return false
+	}
+	if strings.HasSuffix(cursor, string(filepath.Separator)) && strings.HasPrefix(path, cursor) {
+		return true
+	}
+	return path <= cursor
 }
 
 func yaraMatchSeverity(value string) alert.Severity {

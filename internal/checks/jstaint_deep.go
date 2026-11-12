@@ -260,5 +260,6 @@ func jsTaintDeepFinding(path, contentSHA256 string, report jstaint.Report) alert
 		FilePath:      path,
 		ContentSHA256: contentSHA256,
 		DetectLogic:   ContentDetectionVersion(),
+		CoverageScope: deepFileCoverageScope(path),
 	}
 }

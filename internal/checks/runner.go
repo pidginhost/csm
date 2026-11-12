@@ -1137,6 +1137,11 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				// budget without a panic; a YARA-side failure must never purge
 				// JS findings the run did not re-emit, and vice versa.
 				for _, owner := range hostedOwners[c.name] {
+					if scopes := coveragePaths.completedScopes(owner); len(scopes) > 0 {
+						for _, name := range append([]string{owner}, logicalOwnerFindingNames[owner]...) {
+							completedScopeNames[name] = scopes
+						}
+					}
 					if !incompleteChecks.contains(owner) {
 						completedOwners = append(completedOwners, owner)
 						addCoverageGapPaths(owner)
