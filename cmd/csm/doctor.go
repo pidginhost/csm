@@ -198,7 +198,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 			})
 		}
 		if automation.FirewallLedgerError != "" {
-			// 1.5c-1 ruling 7: a warning while admission previews, a
+			// A warning while admission previews, a
 			// failure once it executes automatic blocks.
 			closing, outage := admission.DoctorImpact(admissionExecuting(sr.Snapshot.Admission))
 			report.Checks = append(report.Checks, DoctorCheck{

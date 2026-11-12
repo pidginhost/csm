@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// Operator ruling 2 (1.5c-3b): the loader the daemon injects into alert
+// The loader the daemon injects into alert
 // suppression reads the firewall state, so it counts an executed admission
 // block that has no tracker entry.
 func TestFirewallBlockedIPsCountsAnAdmissionBlock(t *testing.T) {
