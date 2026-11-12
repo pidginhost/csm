@@ -122,6 +122,7 @@ type Daemon struct {
 	alertReleaseOnce sync.Once
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
+	phpEscalations   chan alert.Finding
 	scanCtx          context.Context
 	scanCancel       context.CancelFunc // cancels in-flight periodic scans on shutdown
 	modsecReload     checks.ModSecReloadReconciler
@@ -323,6 +324,7 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		mailStats:    mailstats.New(time.Now),
 		mailStatsNow: time.Now,
 	}
+	d.phpEscalations = make(chan alert.Finding, cap(d.alertCh))
 	// Remediation records what it wrote here, so the sensitive-file detectors
 	// can tell CSM's own change from a third party's after a restart.
 	checks.SetSelfWriteStore(store)
@@ -912,6 +914,8 @@ func (d *Daemon) Run() error {
 	d.holdAlertDispatch()
 	d.wg.Add(1)
 	obs.Go("alert-dispatcher", d.alertDispatcher)
+	d.wg.Add(1)
+	obs.Go("php-escalation", d.phpEscalationWorker)
 
 	// Start inotify log watchers
 	d.startLogWatchers()
@@ -1652,10 +1656,21 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Reconcile every observation before deduplication can discard new content
 	// behind an unchanged, hashless or carried finding with the same key.
 	findings = d.store.ReconcileDismissedContent(findings)
+	preserveEscalationResponseProvenance(findings)
 	findings = alert.Deduplicate(findings)
 	d.noteFTPCustomers(findings)
 	suppressions := d.store.LoadSuppressions()
 	remediableFindings := filterUnsuppressedFindings(d.store, findings, suppressions)
+	// Suppressed checks do not promise a response, but an already evaluated
+	// response must survive suppression and deduplication of its finding.
+	escalationSources := append([]alert.Finding(nil), filterUnsuppressedFindings(d.store, auditSources, suppressions)...)
+	for _, f := range auditSources {
+		if f.AutoFileResponseEvaluated {
+			escalationSources = append(escalationSources, f)
+		}
+	}
+	escalationCandidates := checks.RealtimePHPEscalationCandidates(cfg, escalationSources)
+	d.queuePHPEscalations(filterUnsuppressedFindings(d.store, d.store.FilterNew(escalationCandidates), suppressions))
 
 	// Record ALL findings in attack database (before filtering -
 	// repeated attacks from the same IP must still be counted even if

@@ -213,6 +213,9 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
+		if f.FileResponseIdentity != "" && f.FileResponseIdentity != fileResponseIdentity(info) {
+			continue
+		}
 		clean := !realtime && ShouldCleanInsteadOfQuarantine(path)
 		restored := f.Check == RemovedFileRestoredCheck
 		var removed RemovedFile
