@@ -191,9 +191,13 @@ CSM also remembers, for seven days, the content each quarantine or clean took
 away. A process that writes the same bytes back to the same path raises
 `removed_file_restored_realtime` (Critical). With `quarantine_files` on, CSM
 then does what it did before: it quarantines the file again, or cleans it
-again. This memory does not survive a daemon restart. A restore from the web
+again. The daemon keeps this memory across restarts. A file cleaned with
+`csm clean` from the command line is not remembered. A restore from the web
 UI quarantine page, CSM's own writes and official WordPress release files are
 never treated as the file coming back.
+
+The saved history is read only from a private file the daemon owns. A damaged
+or unsafe one is logged and ignored, and detection carries on without it.
 
 Before repeating the response, CSM checks that the file still holds the
 removed bytes, so a later replacement or a restore from the web UI is never
