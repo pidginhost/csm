@@ -2096,6 +2096,42 @@ eval(gzinflate(base64_decode('S03OyFdIzs8rSc0rUVTyyM/LU0hKLM4pzs9RBAA=')));`,
 			sample: `<?php
 assert(base64_decode('ZWNobyAiaGVsbG8iOw==')); // ionCube encoded`,
 		},
+		{
+			name:   "request body assigned then run as a command",
+			rule:   "dropper_php_input_stream",
+			want:   true,
+			sample: "<?php\n$body = file_get_contents('php://input');\nsystem($body);\n",
+		},
+		{
+			name:   "request body passed straight to a command",
+			rule:   "dropper_php_input_stream",
+			want:   true,
+			sample: `<?php passthru(base64_decode(file_get_contents("php://input")));`,
+		},
+		{
+			name: "upper case request body command",
+			rule: "dropper_php_input_stream",
+			want: true,
+			sample: `<?php $C = @FILE_GET_CONTENTS('PHP://INPUT'); // run
+SHELL_EXEC($C);`,
+		},
+		{
+			name: "request body read for JSON with an unrelated command",
+			rule: "dropper_php_input_stream",
+			sample: `<?php
+class Api_Entry {
+    public function read() {
+        $raw = file_get_contents('php://input');
+        return json_decode($raw, true);
+    }
+}
+function api_diagnostics() {
+    $handle = popen('uname -a', 'r');
+    $out = fread($handle, 256);
+    pclose($handle);
+    return $out;
+}`,
+		},
 	}
 
 	for _, tc := range tests {

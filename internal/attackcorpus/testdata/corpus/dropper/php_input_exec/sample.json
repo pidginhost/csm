@@ -3,7 +3,7 @@
   "category": "dropper",
   "kind": "malicious",
   "source": "fixture",
-  "description": "Runs the raw request body as a shell command, in a .well-known validation directory. Realtime quarantines it; the scans miss it.",
+  "description": "Runs the raw request body as a shell command, in a .well-known validation directory. Realtime quarantines it. Scans leave it in place: yara_match_scheduled is on neither scan quarantine list.",
   "provenance": "internal/signatures/loader_test.go TestRepoDropperPHPInputRuleRequiresPHPInputPattern",
   "files": [
     {
@@ -25,10 +25,28 @@
       }
     },
     "tier": {
-      "gap": "YARA, PHP taint and content checks miss the raw request body passed to system"
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/.well-known/pki-validation/ok.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.well-known/pki-validation/ok.php": "untouched"
+      }
     },
     "fullscan": {
-      "gap": "YARA misses the raw request body passed to system"
+      "findings": [
+        {
+          "check": "yara_match_scheduled",
+          "file": "public_html/.well-known/pki-validation/ok.php",
+          "min_severity": "critical"
+        }
+      ],
+      "remediation": {
+        "public_html/.well-known/pki-validation/ok.php": "untouched"
+      }
     }
   }
 }
