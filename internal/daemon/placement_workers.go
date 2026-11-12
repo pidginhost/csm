@@ -18,10 +18,10 @@ import (
 const placementWorkers = 4
 
 // startPlacementWorkers drains events with placementWorkers goroutines until
-// ctx ends or events closes. resolve turns a queued item into the placement
-// handle receives; false means the item placed nothing to check. The
+// ctx ends or events closes. resolve returns the placements to check at
+// each watched location; an empty slice leaves nothing to check. The
 // returned function waits for every worker to stop.
-func startPlacementWorkers[T any](ctx context.Context, fm *FileMonitor, events <-chan queuehealth.Work[T], resolve func(T) (placementEvent, bool), handle func(placementEvent)) func() {
+func startPlacementWorkers[T any](ctx context.Context, fm *FileMonitor, events <-chan queuehealth.Work[T], resolve func(T) []placementEvent, handle func(placementEvent)) func() {
 	var workers sync.WaitGroup
 	for range placementWorkers {
 		workers.Go(func() {
@@ -43,7 +43,7 @@ func startPlacementWorkers[T any](ctx context.Context, fm *FileMonitor, events <
 
 // processPlacement contains a panic the way analyzeFileSafe does: one
 // placement must not take the monitor down with it.
-func processPlacement[T any](fm *FileMonitor, work queuehealth.Work[T], resolve func(T) (placementEvent, bool), handle func(placementEvent)) {
+func processPlacement[T any](fm *FileMonitor, work queuehealth.Work[T], resolve func(T) []placementEvent, handle func(placementEvent)) {
 	var path string
 	defer func() {
 		if r := recover(); r != nil {
@@ -51,12 +51,10 @@ func processPlacement[T any](fm *FileMonitor, work queuehealth.Work[T], resolve 
 		}
 	}()
 	work.Process(func(item T) {
-		ev, ok := resolve(item)
-		if !ok {
-			return
+		for _, ev := range resolve(item) {
+			path = ev.Path
+			handle(ev)
 		}
-		path = ev.Path
-		handle(ev)
 	})
 }
 

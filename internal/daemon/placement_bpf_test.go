@@ -92,6 +92,44 @@ func placedRaw(name string) PlacementRawEvent {
 	return PlacementRawEvent{Kind: 1, PID: 7, Dev: kernelDeviceID(unix.Mkdev(259, 3)), Ino: 11, Components: []string{name, "user"}}
 }
 
+// Two whole mounts of one device can have different admission rules and
+// different overmounts. Each location needs its own placement check.
+func TestPlacementBPFChecksEveryWholeMount(t *testing.T) {
+	handled := make(chan placementEvent, 2)
+	p, src, _ := startFakePlacementBackend(t, 4, func(ev placementEvent) { handled <- ev })
+	p.mounts = append(p.mounts, mountEntry{Dev: p.mounts[0].Dev, Root: "/", MountPoint: "/srv/sites"})
+	raw := placedRaw("x.php")
+	raw.At = time.Now()
+	src.q.TrySend(raw)
+	var paths []string
+	for range 2 {
+		select {
+		case ev := <-handled:
+			if ev.Ino != raw.Ino || ev.PID != int32(raw.PID) || ev.At != raw.At {
+				t.Fatalf("alias changed placement identity: %+v", ev)
+			}
+			paths = append(paths, ev.Path)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("handled %v, want both whole mounts", paths)
+		}
+	}
+	slices.Sort(paths)
+	if want := []string{"/home/user/x.php", "/srv/sites/user/x.php"}; !slices.Equal(paths, want) {
+		t.Fatalf("handled %v, want %v", paths, want)
+	}
+	if p.EventCount() != 1 {
+		t.Fatalf("one kernel event counted %d times", p.EventCount())
+	}
+	p.recoverDropped(raw)
+	p.fm.reconcileMu.Lock()
+	defer p.fm.reconcileMu.Unlock()
+	for _, dir := range []string{"/home/user", "/srv/sites/user"} {
+		if work, ok := p.fm.reconcileDirs[dir]; !ok || !work.placements {
+			t.Errorf("dropped placement has no recovery for %s", dir)
+		}
+	}
+}
+
 // A rename flood must not grow goroutines or stall the ring reader: at most
 // placementWorkers handlers run, the queue holds its capacity, and the rest
 // is dropped and counted.

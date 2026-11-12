@@ -266,10 +266,15 @@ for an unexpected reason, and a Warning when `auto` falls back to `legacy`. A
 kernel that supports neither backend under `auto`, or lacks the `legacy`
 backend when it is chosen explicitly, shows `none` without a finding.
 
-Placements that arrive faster than the monitor can check them are not lost.
-Those that do not fit its queue go to the same recovery as a full analyzer
-queue: CSM rescans the directory each file landed in, whatever the files'
-age, and queues a moved-in directory for its walk.
+Placements that do not fit the monitor's queue go to the same recovery as a
+full analyzer queue: CSM rescans the directory each file landed in, whatever
+the files' age, and queues a moved-in directory for its walk. BPF recovery allows the
+rename or link to finish before completing a rescan or starting a walk.
+Recovery queues remain bounded; evictions and unfinished work count as drops.
+
+When a watched filesystem has several whole-filesystem mounts, BPF checks
+each watched location separately. Admission uses that location's name, and a
+child mount hiding one view does not prevent checks through another view.
 
 A directory moved into a watched tree is walked, because its files raised no
 events of their own. Each file gets the same identity check and analysis as

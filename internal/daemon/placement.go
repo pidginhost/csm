@@ -74,7 +74,7 @@ func (fm *FileMonitor) verifyPlacement(ev placementEvent, retryDelays []time.Dur
 	}
 	if isDir {
 		_ = unix.Close(fd)
-		fm.queuePlacedDir(ev.Path, ev.Dev, ev.Ino, ev.PID, ev.At)
+		fm.queuePlacedDir(ev.Path, ev.Dev, ev.Ino, ev.PID, ev.At, time.Time{})
 		return
 	}
 	fm.handlePlacedFile(fd, ev.PID, ev.At)
@@ -84,11 +84,22 @@ func (fm *FileMonitor) verifyPlacement(ev placementEvent, retryDelays []time.Dur
 // overflow recovery: a rescan of a file's directory in placement mode, or the
 // walk of a moved-in directory, which the rescan does not descend into.
 func (fm *FileMonitor) recoverDroppedPlacement(ev placementEvent) {
+	// The ring reports intent before the syscall commits. Recovery has no
+	// descriptor to prove completion, so give it the same visibility window
+	// as the identity-checking workers without blocking the ring reader.
+	ready := time.Now()
+	for _, delay := range placementRetryDelays {
+		ready = ready.Add(delay)
+	}
+	fm.recoverPlacementAfter(ev, ready)
+}
+
+func (fm *FileMonitor) recoverPlacementAfter(ev placementEvent, ready time.Time) {
 	if ev.IsDir {
-		fm.queuePlacedDir(ev.Path, ev.Dev, ev.Ino, ev.PID, ev.At)
+		fm.queuePlacedDir(ev.Path, ev.Dev, ev.Ino, ev.PID, ev.At, ready)
 		return
 	}
-	fm.recordDroppedEvent(fileEvent{path: ev.Path, mask: eventPlacedIn})
+	fm.recordDroppedEventAfter(fileEvent{path: ev.Path, mask: eventPlacedIn}, ready)
 }
 
 // handlePlacedFile takes ownership of fd, a regular file whose identity the

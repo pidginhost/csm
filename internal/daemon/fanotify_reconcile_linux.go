@@ -25,6 +25,8 @@ type reconcileDirectory struct {
 	failed bool
 	// Renames and hard links preserve mtime, so their recovery has no age gate.
 	placements bool
+	// A BPF placement can still be waiting for the syscall to commit.
+	ready time.Time
 }
 
 // Repeated drops refresh eviction priority without postponing recovery age.
@@ -33,6 +35,10 @@ func (fm *FileMonitor) recordDroppedDir(path string) {
 }
 
 func (fm *FileMonitor) recordDroppedEvent(event fileEvent) {
+	fm.recordDroppedEventAfter(event, time.Time{})
+}
+
+func (fm *FileMonitor) recordDroppedEventAfter(event fileEvent, ready time.Time) {
 	fm.initQueueHealth()
 	dir := filepath.Dir(event.path)
 	fm.reconcileMu.Lock()
@@ -49,6 +55,9 @@ func (fm *FileMonitor) recordDroppedEvent(event fileEvent) {
 	// A new write may precede the saved cursor and must be examined again.
 	entry.after = ""
 	entry.placements = entry.placements || event.mask&eventPlacedIn != 0
+	if ready.After(entry.ready) {
+		entry.ready = ready
+	}
 	entry.lastDrop = now
 	fm.reconcileDirs[dir] = entry
 	fm.evictOverflowDirLocked(now)
@@ -146,9 +155,22 @@ func (fm *FileMonitor) reconcileDrops() {
 			return
 		}
 		if !fm.reconcileDirectory(dir, &entry, deadline) {
+			// A pending placement can sort before this pass's cursor.
+			if started.Before(entry.ready) {
+				entry.after = ""
+			}
 			dirs[dir] = entry
 			fm.deferReconcileDirs(dirs)
 			return
+		}
+		// A pre-commit placement may have landed after this pass listed
+		// the directory. Keep its obligation for another pass. Still scan
+		// now so continuous drops cannot postpone all recovery forever.
+		if started.Before(entry.ready) {
+			entry.after = ""
+			fm.deferReconcileDirs(map[string]reconcileDirectory{dir: entry})
+			delete(dirs, dir)
+			continue
 		}
 		// Write-only recovery cannot recover an obligation outside its scan window.
 		if !entry.failed && (entry.placements || !entry.firstDrop.Before(entry.cutoff)) {
@@ -197,6 +219,9 @@ func (fm *FileMonitor) deferReconcileDirs(dirs map[string]reconcileDirectory) {
 			waiting.after = ""
 			waiting.failed = waiting.failed || entry.failed
 			waiting.placements = waiting.placements || entry.placements
+			if entry.ready.After(waiting.ready) {
+				waiting.ready = entry.ready
+			}
 			fm.reconcileDirs[dir] = waiting
 			continue
 		}

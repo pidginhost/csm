@@ -415,7 +415,7 @@ func (p *placementFID) QueueStatuses(now time.Time) map[string]queuehealth.Statu
 // handler runs on the shared workers.
 func (p *placementFID) Run(ctx context.Context) {
 	p.fm.placementCreates.Store(p.creates)
-	waitWorkers := startPlacementWorkers(ctx, p.fm, p.out.Items(), func(ev placementEvent) (placementEvent, bool) { return ev, true }, p.handle)
+	waitWorkers := startPlacementWorkers(ctx, p.fm, p.out.Items(), func(ev placementEvent) []placementEvent { return []placementEvent{ev} }, p.handle)
 	p.read(ctx)
 	p.fm.placementCreates.CompareAndSwap(p.creates, nil)
 	waitWorkers()
@@ -579,7 +579,7 @@ func (p *placementFID) expire(now time.Time) {
 // to overflow recovery, as the BPF ring reader does.
 func (p *placementFID) send(ev placementEvent) {
 	if !p.out.TrySend(ev) {
-		p.fm.recoverDroppedPlacement(ev)
+		p.fm.recoverPlacementAfter(ev, time.Time{})
 	}
 }
 

@@ -61,6 +61,8 @@ type placedDir struct {
 	at       time.Time
 	procInfo string
 	ticket   queuehealth.Ticket
+	// Unverified BPF overflow events wait for the rename before walking.
+	ready time.Time
 	// cursor is the last entry visited, as components below path. Names
 	// are walked in sorted order, so a resumed pass skips up to it.
 	cursor  []string
@@ -76,7 +78,7 @@ type placedDir struct {
 
 // queuePlacedDir hands a placed-in directory to the walk worker. It never
 // walks on the caller's goroutine.
-func (fm *FileMonitor) queuePlacedDir(path string, dev, ino uint64, pid int32, at time.Time) {
+func (fm *FileMonitor) queuePlacedDir(path string, dev, ino uint64, pid int32, at, ready time.Time) {
 	fm.initQueueHealth()
 	// Resolved now: by the time a walk is cut the renamer may be gone.
 	procInfo := resolveProcessInfo(pid)
@@ -84,7 +86,7 @@ func (fm *FileMonitor) queuePlacedDir(path string, dev, ino uint64, pid int32, a
 	fm.placedDirMu.Lock()
 	fm.placedDirs = append(fm.placedDirs, placedDir{
 		path: path, dev: dev, ino: ino, pid: pid, at: at, procInfo: procInfo,
-		ticket: fm.placedDirHealth.Begin(now),
+		ticket: fm.placedDirHealth.Begin(now), ready: ready,
 	})
 	evicted := fm.evictPlacedDirsLocked(now)
 	fm.placedDirMu.Unlock()
@@ -156,6 +158,16 @@ func (fm *FileMonitor) walkNextPlacedDir() bool {
 	fm.placedDirMu.Unlock()
 
 	dir.ticket.Start(time.Now())
+	if wait := time.Until(dir.ready); wait > 0 {
+		timer := time.NewTimer(wait)
+		select {
+		case <-fm.stopCh:
+			timer.Stop()
+			dir.ticket.Reject(time.Now())
+			return false
+		case <-timer.C:
+		}
+	}
 	yield, reason := fm.walkPlacedDirSafe(&dir)
 	now := time.Now()
 	switch {

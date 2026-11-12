@@ -111,19 +111,15 @@ func resolveWatchRootLinks(roots []watchRootMark) ([]watchRootMark, error) {
 	return resolved, nil
 }
 
-// placementMounts picks, for each watch root's device, the whole-superblock
-// mount that holds that root. A placement path joined under it is the path
-// the admission rules and the close-write events use.
+// placementMounts picks every whole-superblock mount holding a watch root.
+// Even on one device, admission and child mounts depend on the mount path.
 func placementMounts(all []mountEntry, roots []watchRootMark) []mountEntry {
 	var picked []mountEntry
-	seen := make(map[uint64]bool)
+	seen := make(map[mountEntry]bool)
 	for _, r := range roots {
-		if seen[r.device] {
-			continue
-		}
 		best := placementRootMount(all, r)
-		if best >= 0 {
-			seen[r.device] = true
+		if best >= 0 && !seen[all[best]] {
+			seen[all[best]] = true
 			picked = append(picked, all[best])
 		}
 	}
@@ -243,7 +239,7 @@ func (fm *FileMonitor) reportUnresolvedOnDevice(dev uint64, details func() strin
 // mounts, through which it turns events into paths, do not show.
 func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry, roots []watchRootMark) {
 	for _, r := range roots {
-		if i := visibleMount(all, r.path); i >= 0 && placementMountsShow(mounts, all[i]) {
+		if i := visibleMount(all, r.path); i >= 0 && slices.Contains(mounts, all[i]) {
 			continue
 		}
 		csmlog.Warn("placement: watch root is not visible through the placement mounts", "root", r.path, "device", deviceName(r.device))
@@ -251,15 +247,6 @@ func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry, r
 			fmt.Sprintf("Realtime protection cannot see files moved or linked into %s (device %s)", r.path, deviceName(r.device)),
 			"Realtime protection resolves placements on this filesystem through a mount that does not show this watch root, so it cannot match them to this location. The deep scan covers them.")
 	}
-}
-
-// placementMountsShow reports whether mounts show the tree of visible. Two
-// whole-filesystem mounts of one device show the same tree; a subdirectory
-// bind shares the device but not its paths.
-func placementMountsShow(mounts []mountEntry, visible mountEntry) bool {
-	return slices.Contains(mounts, visible) || visible.Root == "/" && slices.ContainsFunc(mounts, func(m mountEntry) bool {
-		return m.Dev == visible.Dev && m.Root == "/"
-	})
 }
 
 // reportUnmarkablePlacementRoots raises one Warning per start for the roots

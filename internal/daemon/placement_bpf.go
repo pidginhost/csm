@@ -140,19 +140,30 @@ func (p *placementBPF) Run(ctx context.Context) {
 	_ = p.objs.Close()
 }
 
-func (p *placementBPF) resolve(raw PlacementRawEvent) (placementEvent, bool) {
+func (p *placementBPF) resolve(raw PlacementRawEvent) []placementEvent {
 	p.count.Add(1)
 	ev, ok := p.fm.placementFromRaw(raw, p.mounts, raw.At)
 	if !ok {
 		p.unresolved.Lose(time.Now(), 1)
+		return nil
 	}
-	return ev, ok
+	events := []placementEvent{ev}
+	for _, m := range p.mounts {
+		path, ok := resolvePlacementPath(ev.Dev, raw.Components, []mountEntry{m})
+		if !ok || path == ev.Path {
+			continue
+		}
+		alias := ev
+		alias.Path = path
+		events = append(events, alias)
+	}
+	return events
 }
 
 // recoverDropped runs on the reader goroutine for an event the full output
 // queue refused. Resolving a path is a join, cheap enough to do there.
 func (p *placementBPF) recoverDropped(raw PlacementRawEvent) {
-	if ev, ok := p.resolve(raw); ok {
+	for _, ev := range p.resolve(raw) {
 		p.fm.recoverDroppedPlacement(ev)
 	}
 }

@@ -262,7 +262,8 @@ func TestUncoveredPlacementRootBesideSubtreeAnchor(t *testing.T) {
 }
 
 // cPanel's securetmp binds /tmp onto /var/tmp: two whole-filesystem mounts of
-// one device. Placements on it resolve under the first, which shows both roots.
+// one device. Both names must reach admission: path-specific checks and
+// overmounts can make the two views differ.
 func TestPlacementSecureTmpBindIsCovered(t *testing.T) {
 	alerts := make(chan alert.Finding, 8)
 	fm := placementTestMonitor(alerts)
@@ -277,12 +278,29 @@ func TestPlacementSecureTmpBindIsCovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := all[1:2]; !slices.Equal(mounts, want) {
+	if want := all[1:]; !slices.Equal(mounts, want) {
 		t.Fatalf("placement mounts %+v, want %+v", mounts, want)
 	}
 	fm.reportUncoveredPlacementRoots(all, mounts, roots)
 	if found := unresolvedPlacementFindings(t, alerts); len(found) != 0 {
 		t.Fatalf("second whole mount of the device reported uncovered: %+v", found)
+	}
+}
+
+// A whole-filesystem alias alone does not prove coverage of a watched
+// location. Admission depends on the location and a child mount can hide it.
+func TestWholeMountAliasCannotStandInForWatchRoot(t *testing.T) {
+	alerts := make(chan alert.Finding, 8)
+	fm := placementTestMonitor(alerts)
+	dev := unix.Mkdev(8, 2)
+	all := []mountEntry{
+		{Dev: dev, Root: "/", MountPoint: "/mnt/view"},
+		{Dev: dev, Root: "/", MountPoint: "/home"},
+		{Dev: unix.Mkdev(8, 3), Root: "/", MountPoint: "/mnt/view/user"},
+	}
+	fm.reportUncoveredPlacementRoots(all, all[:1], []watchRootMark{{path: "/home/user", device: dev}})
+	if found := unresolvedPlacementFindings(t, alerts); len(found) != 1 || !strings.Contains(found[0].Message, "/home/user") {
+		t.Fatalf("uncovered alias findings = %+v, want the watched location", found)
 	}
 }
 
