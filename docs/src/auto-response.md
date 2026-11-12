@@ -6,7 +6,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 
 | Action | Description |
 |--------|-------------|
-| **Kill processes** | Fake kernel threads, reverse shells, GSocket, and loops that write back a file CSM removed. Never kills root or system processes. |
+| **Kill processes** | Fake kernel threads, reverse shells, GSocket, loops that write back a file CSM removed, and shell loops a web request left running in the background. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
 | **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
@@ -17,8 +17,6 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Suspend mailbox** | After confirmed credential abuse, attempts to suspend that mailbox's logins and outgoing mail through cPanel. Either success stops escalation; the account-wide outgoing mail hold is the fallback when both fail, no account owns the domain, or the target is a bare domain. A Critical `mail_account_compromised` (a login after brute force) also suspends the mailbox. When that login is the cPanel account's own username, the account's outgoing mail is held instead, because that password unlocks every mailbox. A stolen login never falls back to the account hold: a failed suspension raises a Critical `email_mailbox_response` finding, as does each suspension or hold it applies. All of these follow `auto_response.enabled` and dry-run, and each attempted suspension or hold is recorded in the action log with its quoted release command. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
-
-Detached processes holding a PHP handler socket receive a Warning for operator review. Socket inheritance alone never authorizes process killing, even with `kill_processes` enabled. Independent malware findings still use their existing response policies.
 
 Mailbox suspension runs `/usr/local/cpanel/bin/uapi` as a transient systemd service outside the daemon's filesystem sandbox; hosts without a usable systemd-run run it directly. Each call is bounded in time, the JSON result decides success, and mailbox names stay literal arguments on both paths.
 

@@ -70,7 +70,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 	for i, f := range findings {
 		// Only act on specific high-confidence critical checks
 		switch f.Check {
-		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution", RemovedFileRestoredCheck:
+		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution", RemovedFileRestoredCheck, DetachedWebProcessCheck:
 		default:
 			continue
 		}
@@ -81,13 +81,18 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		// signal the same process again.
 		findings[i].AutoProcessResponseEvaluated = true
 
-		if f.Check == RemovedFileRestoredCheck {
+		if f.Check == RemovedFileRestoredCheck || f.Check == DetachedWebProcessCheck {
 			// The parents go first so a loop cannot start another writer.
 			// Recheck origin and terminal inside the process handle too:
 			// a captured process can exec or acquire a terminal before this.
 			for j := len(f.WriterChain) - 1; j >= 0; j-- {
 				pid := f.WriterChain[j]
-				allow := func(string) bool {
+				detached := f.Check == DetachedWebProcessCheck && j == 0
+				allow := func(exe string) bool {
+					// Socket evidence makes only a shell stoppable.
+					if detached && !isShellExe(exe) {
+						return false
+					}
 					chain := restoreWriterChain(pid, f.WriterObservedAt, j == 0)
 					return len(chain) > 0 && chain[0] == pid
 				}

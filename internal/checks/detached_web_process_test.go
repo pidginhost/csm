@@ -130,42 +130,62 @@ func TestDetachedWebProcessesFindsLoopsAWebRequestLeftRunning(t *testing.T) {
 	got := detachedPIDs(CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil))
 
 	want := map[int][]int{
-		700: nil,
+		700: {700},
+		// A PHP command-line job may be a site's own background worker.
 		750: nil,
 		// A terminal means a person: reported, never stopped.
 		770: nil,
 		// The listener path names no PHP handler, but a PHP worker holds it.
-		780: nil,
+		780: {780},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("detached web processes = %v, want %v", got, want)
 	}
 }
 
-func TestDetachedWebProcessFindingIsAdvisoryAndNamesTheProcess(t *testing.T) {
-	withWebProcTable(t, map[int]fakeProc{
-		700: {ppid: 1, uid: "1001", exe: bashPath},
-	}, map[int][]string{700: {socketFD(5001)}})
+// A shell a web request left running is the loop shape: Critical, with the
+// processes that may be stopped. Anything else is a Warning to review, since
+// sites run their own PHP workers and image jobs in the background.
+func TestDetachedWebProcessSeverityFollowsWhatRuns(t *testing.T) {
+	for exe, critical := range map[string]bool{
+		bashPath:                  true,
+		"/bin/sh":                 true,
+		"/usr/bin/dash (deleted)": true,
+		phpCLIPath:                false,
+		"/usr/bin/convert":        false,
+		curlPath:                  false,
+	} {
+		withWebProcTable(t, map[int]fakeProc{
+			700: {ppid: 1, uid: "1001", exe: exe},
+		}, map[int][]string{700: {socketFD(5001)}})
 
-	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+		findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
 
-	if len(findings) != 1 {
-		t.Fatalf("findings = %+v, want one", findings)
-	}
-	f := findings[0]
-	if f.Severity != alert.Warning || f.PID != 700 || !f.WriterObservedAt.IsZero() || len(f.WriterChain) != 0 ||
-		!strings.Contains(f.Message, bashPath) || !strings.Contains(f.Details, "APVH_alice_Suea-php84.sock") {
-		t.Fatalf("finding = %+v", f)
+		if len(findings) != 1 {
+			t.Fatalf("%s: findings = %+v, want one", exe, findings)
+		}
+		f := findings[0]
+		if f.PID != 700 || !strings.Contains(f.Message, exe) || !strings.Contains(f.Details, "APVH_alice_Suea-php84.sock") {
+			t.Fatalf("%s: finding = %+v", exe, f)
+		}
+		if critical {
+			if f.Severity != alert.Critical || !reflect.DeepEqual(f.WriterChain, []int{700}) || f.WriterObservedAt.IsZero() {
+				t.Errorf("%s: finding = %+v, want Critical with a stop chain", exe, f)
+			}
+		} else if f.Severity != alert.Warning || len(f.WriterChain) != 0 {
+			t.Errorf("%s: finding = %+v, want a Warning with nothing to stop", exe, f)
+		}
 	}
 }
 
-// Inherited sockets also occur in legitimate background jobs. They are not
-// evidence of malicious behavior, even when process killing is enabled.
-func TestAutoKillLeavesDetachedWebProcesses(t *testing.T) {
+// With process killing on, a detached shell loop is stopped; a PHP job or a
+// downloader it runs is not stopped on socket evidence of its own.
+func TestAutoKillStopsDetachedShellsOnly(t *testing.T) {
 	withWebProcTable(t, map[int]fakeProc{
 		701: {ppid: 700, uid: "1001", exe: curlPath},
 		700: {ppid: 1, uid: "1001", exe: bashPath},
-	}, map[int][]string{701: {socketFD(5001)}, 700: {socketFD(5001)}})
+		750: {ppid: 1, uid: "1001", exe: phpCLIPath},
+	}, map[int][]string{701: {socketFD(5001)}, 700: {socketFD(5001)}, 750: {socketFD(5001)}})
 	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
 	var killed []int
 	prev := signalProcess
@@ -183,14 +203,14 @@ func TestAutoKillLeavesDetachedWebProcesses(t *testing.T) {
 
 	AutoKillProcesses(context.Background(), cfg, findings)
 
-	if len(findings) != 2 || len(killed) != 0 {
-		t.Fatalf("findings=%v killed=%v, want two advisory findings and no kills", findings, killed)
+	if !reflect.DeepEqual(killed, []int{700}) {
+		t.Fatalf("killed %v, want only the shell loop", killed)
 	}
-	// Even stale findings from the previous policy cannot authorize a kill.
-	legacy := []alert.Finding{{Check: DetachedWebProcessCheck, Severity: alert.Critical, PID: 701, Timestamp: time.Now(), WriterObservedAt: time.Now(), WriterChain: []int{701, 700}}}
-	AutoKillProcesses(context.Background(), cfg, legacy)
-	if len(killed) != 0 {
-		t.Fatalf("killed from legacy socket evidence: %v", killed)
+	// A stop chain on a finding cannot make a non-shell target stoppable.
+	forged := []alert.Finding{{Check: DetachedWebProcessCheck, Severity: alert.Critical, PID: 750, Timestamp: time.Now(), WriterObservedAt: time.Now(), WriterChain: []int{750}}}
+	AutoKillProcesses(context.Background(), cfg, forged)
+	if !reflect.DeepEqual(killed, []int{700}) {
+		t.Fatalf("killed %v after a forged chain, want only the shell loop", killed)
 	}
 }
 
@@ -293,5 +313,37 @@ func TestUnixListenersPreservePaths(t *testing.T) {
 				t.Fatalf("listeners=%q, want full path %q", got, path)
 			}
 		})
+	}
+}
+
+// A shell under a shell loop: one finding stops the tree, parents first, and
+// no process is signalled twice.
+func TestAutoKillStopsANestedShellTreeOnce(t *testing.T) {
+	withWebProcTable(t, map[int]fakeProc{
+		701: {ppid: 700, uid: "1001", exe: "/bin/sh"},
+		700: {ppid: 1, uid: "1001", exe: bashPath},
+	}, map[int][]string{701: {socketFD(5001)}, 700: {socketFD(5001)}})
+	findings := CheckDetachedWebProcesses(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].PID != 701 {
+		t.Fatalf("findings = %+v, want one for the innermost shell", findings)
+	}
+	var killed []int
+	prev := signalProcess
+	signalProcess = func(_ context.Context, pid int, _ syscall.Signal, verify func() error) error {
+		if err := verify(); err != nil {
+			return err
+		}
+		killed = append(killed, pid)
+		return nil
+	}
+	t.Cleanup(func() { signalProcess = prev })
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.KillProcesses = true
+
+	AutoKillProcesses(context.Background(), cfg, findings)
+
+	if !reflect.DeepEqual(killed, []int{700, 701}) {
+		t.Fatalf("killed %v, want the loop, then its child shell", killed)
 	}
 }

@@ -14,8 +14,9 @@ import (
 )
 
 // DetachedWebProcessCheck reports a process holding a PHP listener without a
-// live web worker in its ancestry. Legitimate background jobs also do this;
-// socket inheritance alone does not authorize termination.
+// live web worker in its ancestry. Legitimate background jobs also do this,
+// so only a shell, the loop shape a webshell leaves behind, is Critical and
+// may be stopped; anything else is a Warning to review.
 const DetachedWebProcessCheck = "detached_web_process"
 
 // detachedWebProcessMinAge keeps short jobs a request starts in the
@@ -110,7 +111,7 @@ func CheckDetachedWebProcesses(ctx context.Context, _ *config.Config, _ *state.S
 		if !h.current() {
 			continue
 		}
-		findings = append(findings, alert.Finding{
+		f := alert.Finding{
 			Severity:  alert.Warning,
 			Check:     DetachedWebProcessCheck,
 			Message:   fmt.Sprintf("Detached process holds a PHP handler socket: %s (PID %d)", h.exe, h.pid),
@@ -118,9 +119,49 @@ func CheckDetachedWebProcesses(ctx context.Context, _ *config.Config, _ *state.S
 			PID:       h.pid,
 			TenantID:  HostingAccountForUser(uidStringToUser(h.uid)),
 			Timestamp: now,
-		})
+		}
+		if isShellExe(h.exe) {
+			f.Severity = alert.Critical
+			f.Message = fmt.Sprintf("Shell left running by a web request: %s (PID %d)", h.exe, h.pid)
+			f.Details = fmt.Sprintf("PID: %d, UID: %s, parent PID: %d, exe: %s, cmdline: %s\nHolds PHP handler socket: %s", h.pid, h.uid, parent, h.exe, redactProcCommandLine(cmdline), strings.Join(sockets, ", "))
+			// The rules for a process that writes back a removed file decide
+			// what may be stopped: nil with a terminal or an SSH, cron or
+			// cPanel session in the ancestry.
+			f.WriterChain = restoreWriterChain(h.pid, now, false)
+			f.WriterObservedAt = now
+		}
+		findings = append(findings, f)
 	}
-	return findings
+	return dropCoveredDetachedProcesses(findings)
+}
+
+// isShellExe matches the command shells a webshell's loop runs in.
+func isShellExe(exe string) bool {
+	switch filepath.Base(strings.TrimSuffix(exe, " (deleted)")) {
+	case "sh", "bash", "dash", "ash", "zsh", "ksh", "mksh", "csh", "tcsh", "busybox":
+		return true
+	}
+	return false
+}
+
+// dropCoveredDetachedProcesses keeps one finding per process tree: a process
+// already in another finding's stop chain is stopped with it.
+func dropCoveredDetachedProcesses(findings []alert.Finding) []alert.Finding {
+	covered := make(map[int]bool)
+	for _, f := range findings {
+		for _, pid := range f.WriterChain {
+			if pid != f.PID {
+				covered[pid] = true
+			}
+		}
+	}
+	out := findings[:0]
+	for _, f := range findings {
+		if !covered[f.PID] {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func (h webSocketHolder) current() bool {
