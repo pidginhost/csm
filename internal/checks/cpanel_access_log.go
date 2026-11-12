@@ -173,6 +173,75 @@ func (r CpanelAccessRecord) MayHaveStatus(codes ...string) bool {
 	return false
 }
 
+// APIAuthFailure reports whether the record may be a failed cPanel or WHM
+// API authentication. A session prefix alone does not identify an API call.
+// Any target or status on the line counts, since a forged one can only count
+// against the client that wrote it. Suppression needs separate session evidence.
+func (r CpanelAccessRecord) APIAuthFailure() bool {
+	return r.MayHaveStatus("401", "403") && r.Any(cpanelAPIRequest)
+}
+
+func cpanelAPIRequest(q CpanelRequest) bool {
+	// cpsrvd also accepts API tokens on WHM DNS calls, transfer streams and
+	// plugin endpoints. Looking only for the three main API names lets a
+	// client choose another authenticated route to hide its failures.
+	dnsPath, dnsCall := false, false
+	for i := 0; i < len(q.Target); {
+		for _, endpoint := range [...]string{
+			"json-api", "xml-api", "/execute/", "/websocket/", "/cpxfer/",
+			"/wpt/", "/nova/",
+		} {
+			if cpanelTargetHasPrefix(q.Target, i, endpoint) {
+				return true
+			}
+		}
+		if !dnsPath {
+			dnsPath = cpanelTargetHasPrefix(q.Target, i, "/scripts2/")
+		}
+		if !dnsCall {
+			dnsCall = cpanelTargetHasPrefix(q.Target, i, "_local")
+		}
+		if dnsPath && dnsCall {
+			return true
+		}
+		_, i = cpanelTargetByte(q.Target, i)
+	}
+	return false
+}
+
+// Compare decoded bytes in place: a line can hold arbitrarily many candidate
+// requests, so decoding each target into a string would amplify allocations.
+func cpanelTargetHasPrefix(raw string, at int, prefix string) bool {
+	for i := range len(prefix) {
+		if at == len(raw) {
+			return false
+		}
+		var c byte
+		c, at = cpanelTargetByte(raw, at)
+		if cpanelASCIILower(c) != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// cpsrvd unescapes the URL once before routing. Decode only the target,
+// after record framing, so escaped delimiters cannot supply log metadata.
+// A malformed escape elsewhere must not erase an API endpoint.
+func cpanelTargetByte(raw string, at int) (byte, int) {
+	c, next := patternLogByte(raw, at)
+	if c == '%' && next < len(raw) {
+		hi, afterHi := patternLogByte(raw, next)
+		if patternIsHex(hi) && afterHi < len(raw) {
+			lo, afterLo := patternLogByte(raw, afterHi)
+			if patternIsHex(lo) {
+				return hexToByte(string([]byte{hi, lo})), afterLo
+			}
+		}
+	}
+	return c, next
+}
+
 // WebmailLogin reports whether the record is a login POST to webmail.
 func (r CpanelAccessRecord) WebmailLogin() bool {
 	if r.Port != "2095" && r.Port != "2096" {

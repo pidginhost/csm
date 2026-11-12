@@ -89,6 +89,23 @@ func TestCpanelAccessCandidateWorkIsLinear(t *testing.T) {
 	}
 }
 
+func TestCpanelAPIAuthFailureCandidateAllocations(t *testing.T) {
+	cost := func(n int) float64 {
+		line := `203.0.113.50 - x ` + strings.Repeat(`[bad] "GET /%69ndex.html HTTP/1.1" 200 0 `, n) +
+			`[04/12/2026:07:00:05 -0000] "GET /%65xecute/Email/list_pops HTTP/1.1" 401 0 "-" "agent" "-" "-" 2083`
+		return testing.AllocsPerRun(5, func() {
+			rec, ok := ParseCpanelAccessRecord(line)
+			if !ok || !rec.APIAuthFailure() {
+				t.Fatal("forged requests hid the encoded API failure")
+			}
+		})
+	}
+	small, large := cost(4), cost(512)
+	if large > small {
+		t.Fatalf("allocations grow with candidates: %g for 4, %g for 512", small, large)
+	}
+}
+
 func TestCpanelEscapedMethodClassification(t *testing.T) {
 	for _, tc := range []struct {
 		method string

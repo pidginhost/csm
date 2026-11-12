@@ -782,7 +782,8 @@ func TestCheckAPIAuthFailuresCpsessEndpoint(t *testing.T) {
 	forceCPanelPlatform(t)
 	var lines []string
 	for i := 0; i < 11; i++ {
-		lines = append(lines, `203.0.113.9 - - [12/Apr/2026:10:00:00 +0000] "GET /cpsess1234/something HTTP/1.1" 401 50`)
+		// An API call on a session URL; a page request there is not one.
+		lines = append(lines, `203.0.113.9 - - [12/Apr/2026:10:00:00 +0000] "GET /cpsess1234/execute/Email/list_pops HTTP/1.1" 401 50`)
 	}
 	logContent := strings.Join(lines, "\n") + "\n"
 
@@ -802,7 +803,7 @@ func TestCheckAPIAuthFailuresCpsessEndpoint(t *testing.T) {
 		}
 	}
 	if !hasAPI {
-		t.Error("expected api_auth_failure for cpsess endpoint")
+		t.Error("expected api_auth_failure for an API call on a session URL")
 	}
 }
 

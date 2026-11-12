@@ -23,11 +23,16 @@ func TestCpanelPurgeSuppressionRequiresUnambiguous401(t *testing.T) {
 		{"ambiguous request", "401", `agent [bad] "GET / HTTP/1.1`, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			line := `192.0.2.66 - alice [11/09/2026:12:00:00 -0000] "GET /execute/Themes/list HTTP/1.1" ` +
-				tc.status + ` 0 "-" "` + tc.agent + `" "-" "-" 2083`
-			got := parseAccessLogLineEnhanced(line, &config.Config{})
-			if len(got) != tc.want || len(got) == 1 && (got[0].Check != "api_auth_failure_realtime" || got[0].SourceIP != "192.0.2.66") {
-				t.Fatalf("got %+v, want %d API failures", got, tc.want)
+			for _, target := range []string{
+				"/execute/Themes/list", "/ex%65cute/Themes/list", "/xml-api/cpanel",
+				"/cpsess0123456789/scripts2/reloadbind_local", "/websocket/MysqlDump",
+			} {
+				line := `192.0.2.66 - alice [11/09/2026:12:00:00 -0000] "GET ` + target + ` HTTP/1.1" ` +
+					tc.status + ` 0 "-" "` + tc.agent + `" "-" "-" 2083`
+				got := parseAccessLogLineEnhanced(line, &config.Config{})
+				if len(got) != tc.want || len(got) == 1 && (got[0].Check != "api_auth_failure_realtime" || got[0].SourceIP != "192.0.2.66") {
+					t.Fatalf("target %s: got %+v, want %d API failures", target, got, tc.want)
+				}
 			}
 		})
 	}

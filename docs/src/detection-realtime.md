@@ -253,7 +253,11 @@ and a login that names its method twice counts as a direct login. A password
 change entry with an unreadable header or timestamp cannot suppress a
 shadow-file alert.
 
-A cPanel API authentication failure on a session URL (`/cpsess<token>/...`)
+A cPanel API authentication failure is a 401 or 403 answer to a UAPI, JSON
+API or XML API call, a WHM DNS cluster call, or another endpoint that accepts
+API tokens (WebSocket, account transfer, WP Toolkit, Nova), percent-encoded or
+not. Page requests on a session URL are not API calls and are not counted.
+A failure on a session URL (`/cpsess<token>/...`)
 waits a few seconds for the session log. A browser tab left open after the
 account logged in again elsewhere still sends its old URL token, and cPanel
 ends that session after a few token failures. When the session log records
