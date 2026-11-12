@@ -32,8 +32,8 @@ type CleanResult struct {
 	// Refused marks a safety refusal without changing the customer file.
 	// It consumes attempt capacity but does not indicate a broken action.
 	Refused bool
-	// WholeFile marks a refusal backed by a proof that the original bytes
-	// contain only recognized malicious statements, with no site content.
+	// WholeFile marks a refusal because cleaning would leave nothing of a file
+	// that sends no page output: it is quarantined whole instead.
 	WholeFile        bool
 	wholeFileInfo    os.FileInfo
 	wholeFileContent []byte
@@ -172,15 +172,17 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 	if cleanLeavesNothing(content) {
 		audit.rec.Result = actionlog.Refused
 		result.Refused = true
-		result.Error = "cleaning would leave no site code; manual review required"
-		// Line and block removals can swallow adjacent site code. Only a
-		// separate proof over the original bytes may authorize quarantine.
-		if cleanPHPContainsOnly(string(data), true) {
-			result.WholeFile = true
-			result.wholeFileInfo = target.Info
-			result.wholeFileContent = data
-			result.Error = "the whole file is malicious code - quarantine it instead of cleaning"
+		// Line and block removals can take site code with the injection; a
+		// stub would lose it as well, so the file goes to quarantine whole,
+		// where a restore can recover it. Page output stays for an operator.
+		if !phpWithoutOutput(string(data)) {
+			result.Error = "cleaning would erase the file's page output; manual review required"
+			return result
 		}
+		result.WholeFile = true
+		result.wholeFileInfo = target.Info
+		result.wholeFileContent = data
+		result.Error = "cleaning would leave nothing of the file - quarantine it whole instead"
 		return result
 	}
 
@@ -473,19 +475,7 @@ func ShouldCleanInsteadOfQuarantine(path string) bool {
 // file: no PHP code and no page output, only PHP tags, comments, statement
 // separators and whitespace.
 func cleanLeavesNothing(content string) bool {
-	return cleanPHPContainsOnly(content, false)
-}
-
-// These complete statements contain only a decoded literal payload or a
-// temporary-file include. Anything with variables, other expressions or
-// additional statements needs review if the cleaner would remove everything.
-var cleanWholeFileStatement = regexp.MustCompile(`(?i)^(?:@?eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(\s*(?:"[a-z0-9+/=]+"|'[a-z0-9+/=]+')\s*\)\s*\)|@include\s*\(\s*(?:"/(?:tmp|var/tmp|dev/shm)/[a-z0-9_./-]+"|'/(?:tmp|var/tmp|dev/shm)/[a-z0-9_./-]+')\s*\))\s*;`)
-
-// cleanPHPContainsOnly recognizes a deliberately narrow PHP grammar. A
-// detector's masked code is insufficient proof of no output: masking loses
-// tag positions, and short-tag execution depends on the site's PHP settings.
-func cleanPHPContainsOnly(content string, payloads bool) bool {
-	inPHP, matched := false, false
+	inPHP := false
 	for i := 0; i < len(content); {
 		if isPHPSpace(content[i]) {
 			i++
@@ -515,18 +505,42 @@ func cleanPHPContainsOnly(content string, payloads bool) bool {
 		case content[i] == ';':
 			i++
 		default:
-			if !payloads {
-				return false
-			}
-			span := cleanWholeFileStatement.FindStringIndex(content[i:])
-			if span == nil {
-				return false
-			}
-			matched = true
-			i += span[1]
+			return false
 		}
 	}
-	return !payloads || matched
+	return true
+}
+
+// phpWithoutOutput reports whether src sends nothing but whitespace to the
+// browser: every byte outside its PHP code is a <?php or ?> tag or ASCII
+// whitespace. Short and echo tags count as output, since short_open_tag
+// decides whether they run.
+func phpWithoutOutput(src string) bool {
+	regions := phpCodeRegions(src)
+	if len(regions) != len(src) {
+		return false
+	}
+	// The mask keeps PHP code bytes and blanks the rest: tags and output.
+	outside := []byte(src)
+	for i := range outside {
+		if regions[i] == src[i] {
+			outside[i] = ' '
+		}
+	}
+	asciiSpace := func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' }
+	for _, field := range strings.FieldsFunc(string(outside), asciiSpace) {
+		for field != "" {
+			switch {
+			case len(field) >= 5 && strings.EqualFold(field[:5], "<?php"):
+				field = field[5:]
+			case strings.HasPrefix(field, "?>"):
+				field = field[2:]
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // removeIncludeInjections removes @include lines that load malicious files.

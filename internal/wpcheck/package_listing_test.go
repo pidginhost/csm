@@ -1,6 +1,9 @@
 package wpcheck
 
 import (
+	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,12 +32,28 @@ func stoppedCache(t *testing.T) *Cache {
 	return c
 }
 
+func coreVersionFile(version string) string {
+	return "<?php\n$wp_version = '" + version + "';\n"
+}
+
+func md5Hex(s string) string {
+	sum := md5.Sum([]byte(s)) // #nosec G401 -- matches the published core digests
+	return hex.EncodeToString(sum[:])
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// coreInstall writes an install whose version.php is the release's own copy,
+// and caches that release's manifest when c is set.
 func coreInstall(t *testing.T, c *Cache, version string, files ...string) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "public_html")
-	writeListingFile(t, filepath.Join(root, "wp-includes", "version.php"), "<?php\n$wp_version = '"+version+"';\n")
+	writeListingFile(t, filepath.Join(root, "wp-includes", "version.php"), coreVersionFile(version))
 	if c != nil {
-		checksums := map[string]string{"wp-includes/version.php": "x"}
+		checksums := map[string]string{"wp-includes/version.php": md5Hex(coreVersionFile(version))}
 		for _, f := range files {
 			checksums[f] = "x"
 		}
@@ -54,8 +73,8 @@ func TestPackageListingCoreDirectories(t *testing.T) {
 	}{
 		{"wp-includes/load.php", true, true},
 		{"wp-admin/index.php", true, true},
-		{"wp-includes/Text/Diff/Renderer/index.php", false, false},
-		{"wp-admin/includes/x.php", false, false},
+		{"wp-includes/Text/Diff/Renderer/index.php", false, true},
+		{"wp-admin/includes/x.php", false, true},
 		// Core does not own the install's root or wp-content: users and
 		// plugins add files there.
 		{"custom.php", false, false},
@@ -86,21 +105,25 @@ func TestPackageListingUnknownWithoutCachedRelease(t *testing.T) {
 	}
 }
 
-// A core update rewrites version.php before the new files land. A file the
-// cached release does not list may belong to the release now declared.
-func TestPackageListingRereadsAChangedVersion(t *testing.T) {
+// A core update rewrites version.php before the new files land. A file is
+// judged against the release version.php names now, and only once that
+// release's own version.php is cached to vouch for it.
+func TestPackageListingFollowsAChangedVersion(t *testing.T) {
 	c := stoppedCache(t)
 	root := coreInstall(t, c, "6.9.4")
 	path := filepath.Join(root, "wp-includes", "new-in-7.php")
 	writeListingFile(t, path, "<?php")
-	if listed, known := c.PackageListing(path); listed || known {
-		t.Fatal("absent file must remain unknown")
+	if listed, known := c.PackageListing(path); listed || !known {
+		t.Fatalf("absent from an authentic release: listed=%t known=%t, want known absent", listed, known)
 	}
-	writeListingFile(t, filepath.Join(root, "wp-includes", "version.php"), "<?php\n$wp_version = '7.0';\n")
+	writeListingFile(t, filepath.Join(root, "wp-includes", "version.php"), coreVersionFile("7.0"))
 	if listed, known := c.PackageListing(path); listed || known {
 		t.Fatalf("after a version change: listed=%t known=%t, want unknown until 7.0 is cached", listed, known)
 	}
-	if err := c.PersistChecksums("7.0", "en_US", []byte(`{}`), map[string]string{"wp-includes/new-in-7.php": "x"}); err != nil {
+	if err := c.PersistChecksums("7.0", "en_US", []byte(`{}`), map[string]string{
+		"wp-includes/version.php":  md5Hex(coreVersionFile("7.0")),
+		"wp-includes/new-in-7.php": "x",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if listed, known := c.PackageListing(path); !listed || !known {
@@ -108,19 +131,43 @@ func TestPackageListingRereadsAChangedVersion(t *testing.T) {
 	}
 }
 
+// version.php and plugin headers are written by the account. A header that
+// is not the release's own copy cannot vouch for what the release ships.
+func TestPackageListingNeedsAnAuthenticHeader(t *testing.T) {
+	c := stoppedCache(t)
+	root := coreInstall(t, c, "6.9.4", "wp-includes/load.php")
+	writeListingFile(t, filepath.Join(root, "wp-includes", "version.php"), coreVersionFile("6.9.4")+"// edited\n")
+	path := filepath.Join(root, "wp-includes", "planted.php")
+	writeListingFile(t, path, "<?php")
+	if listed, known := c.PackageListing(path); listed || known {
+		t.Fatalf("edited version.php: listed=%t known=%t, want unknown", listed, known)
+	}
+
+	plugin := filepath.Join(t.TempDir(), "wp-content", "plugins", "test-plugin")
+	main := "<?php\n/*\nPlugin Name: Test\nVersion: 1.0.0\n*/\n"
+	writeListingFile(t, filepath.Join(plugin, "test-plugin.php"), main+"// edited\n")
+	c.setPluginChecksums("test-plugin", "1.0.0", map[string]string{"test-plugin.php": sha256Hex(main)})
+	planted := filepath.Join(plugin, "inc", "planted.php")
+	writeListingFile(t, planted, "<?php")
+	if listed, known := c.PackageListing(planted); listed || known {
+		t.Fatalf("edited plugin header: listed=%t known=%t, want unknown", listed, known)
+	}
+}
+
 func TestPackageListingPlugins(t *testing.T) {
 	c := stoppedCache(t)
 	root := filepath.Join(t.TempDir(), "wp-content", "plugins", "test-plugin")
-	writeListingFile(t, filepath.Join(root, "test-plugin.php"), "<?php\n/*\nPlugin Name: Test\nVersion: 1.0.0\n*/\n")
-	c.setPluginChecksums("test-plugin", "1.0.0", map[string]string{"test-plugin.php": "x", "inc/a.php": "x"})
+	main := "<?php\n/*\nPlugin Name: Test\nVersion: 1.0.0\n*/\n"
+	writeListingFile(t, filepath.Join(root, "test-plugin.php"), main)
+	c.setPluginChecksums("test-plugin", "1.0.0", map[string]string{"test-plugin.php": sha256Hex(main), "inc/a.php": "x"})
 
 	for rel, want := range map[string]bool{"test-plugin.php": true, "inc/a.php": true, "inc/planted.php": false} {
 		path := filepath.Join(root, rel)
 		if rel != "test-plugin.php" {
 			writeListingFile(t, path, "<?php")
 		}
-		if listed, known := c.PackageListing(path); listed != want || known != want {
-			t.Errorf("%s: listed=%t known=%t, want %t %t", rel, listed, known, want, want)
+		if listed, known := c.PackageListing(path); listed != want || !known {
+			t.Errorf("%s: listed=%t known=%t, want %t true", rel, listed, known, want)
 		}
 	}
 
@@ -144,14 +191,12 @@ func TestPackageListingThemesAreUnknown(t *testing.T) {
 	}
 }
 
-// A missing manifest entry is not evidence that a tenant file has no site
-// code: updates can copy files before replacing their version header, and
-// local extensions need not be present in the upstream archive.
-func TestPackageListingAbsenceIsUnknown(t *testing.T) {
+// Outside core's own directories and installed plugins, a manifest says
+// nothing about a file: sites add their own there.
+func TestPackageListingAbsenceOutsidePackagesIsUnknown(t *testing.T) {
 	c := stoppedCache(t)
 	root := coreInstall(t, c, "6.9.4")
 	for _, rel := range []string{
-		"wp-includes/new-release.php",
 		"wp-content/themes/site/wp-includes/template.php",
 		"wp-content/upgrade/core/wordpress/wp-includes/new-release.php",
 		"custom.php",
@@ -168,7 +213,7 @@ func TestPackageListingAbsenceIsUnknown(t *testing.T) {
 	path := filepath.Join(plugin, "extension.php")
 	writeListingFile(t, path, "<?php echo 'site';")
 	if listed, known := c.PackageListing(path); listed || known {
-		t.Fatalf("tenant-controlled plugin identity: listed=%t known=%t, want unknown", listed, known)
+		t.Fatalf("plugin header the release does not vouch for: listed=%t known=%t, want unknown", listed, known)
 	}
 }
 

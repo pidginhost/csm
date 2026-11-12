@@ -156,15 +156,18 @@ Manual full scans leave cleaner refusals for review instead of reporting a
 failed remediation. `csm clean` also distinguishes a refusal from an action
 failure; both return a nonzero exit status when the file was not cleaned.
 
-WordPress core, plugin and theme files are cleaned in place unless CSM can
-prove the original file consists entirely of recognized malicious statements.
-An empty cleaner result alone is not that proof: uncertain cases remain
-untouched for review. Whole-file quarantine rechecks the original content
-under the same protection used for other verified file responses; a changed
-file stays in place. Missing release entries remain unknown because local
-additions, mixed upgrade trees and writable version headers cannot establish
-that a file has no site code. `csm clean` refuses whole-file malware and
-uncertain empty results.
+WordPress core, plugin and theme files are cleaned in place, with three
+exceptions. When cleaning would leave nothing of a file that sends no page
+output, the file is quarantined whole: a stub would lose the same content,
+while quarantine keeps it for a restore. When cleaning would erase a file's
+page output, the file stays untouched for review. When the release of WordPress
+core or of a wordpress.org plugin that a site runs does not ship the file, it
+was planted and is quarantined. CSM trusts the release a site names only when
+its `version.php` or plugin main file is that release's own copy, and only from
+the checksums the realtime file monitor has cached. Whole-file quarantine
+rechecks the original content under the same protection used for other
+verified file responses; a changed file stays in place. `csm clean` refuses a
+file it would leave empty.
 
 Automatic permission fixes dismiss the original finding after a successful fix
 or after confirming its unsafe permission is already gone. A confirmation alone

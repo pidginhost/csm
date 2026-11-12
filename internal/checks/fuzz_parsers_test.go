@@ -1671,12 +1671,10 @@ func FuzzWholeFilePHPProof(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, content string) {
-		empty := cleanLeavesNothing(content)
-		payload := cleanPHPContainsOnly(content, true)
-		if empty && payload {
-			t.Fatal("empty content also proved to contain a payload")
+		if cleanLeavesNothing(content) && !phpWithoutOutput(content) {
+			t.Fatal("content judged empty although it sends output")
 		}
-		if cleanPHPContainsOnly("site output"+content, true) || cleanLeavesNothing("site output"+content) {
+		if cleanLeavesNothing("site output"+content) || phpWithoutOutput("site output"+content) {
 			t.Fatal("literal output was discarded")
 		}
 	})
