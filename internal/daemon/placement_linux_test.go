@@ -160,6 +160,40 @@ func TestPlacementWaitsForPendingRename(t *testing.T) {
 	}
 }
 
+// The entry being replaced is the attacker's choice. An old symlink at the
+// destination must not turn a pending rename into an immediate drop.
+func TestPlacementWaitsForRenameOverSymlink(t *testing.T) {
+	dir := t.TempDir()
+	staged, path := filepath.Join(dir, ".x.php.part"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte("<?php echo 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "elsewhere.php"), path); err != nil {
+		t.Fatal(err)
+	}
+	ev := placementOf(t, staged, 0)
+	ev.Path = path
+	fm := placementTestMonitor(make(chan alert.Finding, 4))
+	renamed := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		renamed <- os.Rename(staged, path)
+	}()
+
+	fm.handlePlacement(ev)
+
+	if err := <-renamed; err != nil {
+		t.Fatal(err)
+	}
+	events := queuedPlacements(t, fm)
+	if len(events) != 1 || events[0].path != path {
+		t.Fatalf("queued %+v, want %s once", events, path)
+	}
+	if stats := fm.EventStats(); stats.PlacementUnverified != 0 {
+		t.Fatalf("stats = %+v, want none unverified", stats)
+	}
+}
+
 func TestPlacementIdentityMismatchDropped(t *testing.T) {
 	dir := t.TempDir()
 	reported, path := filepath.Join(dir, "reported.php"), filepath.Join(dir, "x.php")

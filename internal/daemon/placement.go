@@ -95,6 +95,13 @@ func openPlacedFile(path string, dev, ino uint64) (fd int, isDir bool, err error
 // can leave behind: no entry yet, or the old inode still in place.
 func openPlacedOnce(path string, dev, ino uint64) (fd int, isDir, retry bool, err error) {
 	fd, err = unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ELOOP) {
+		// An old symlink about to be replaced is still the old inode. Only a
+		// placed symlink, which is never followed, is final.
+		var st unix.Stat_t
+		placed := unix.Lstat(path, &st) == nil && uint64(st.Dev) == dev && st.Ino == ino
+		return -1, false, !placed, err
+	}
 	if err != nil {
 		return -1, false, errors.Is(err, unix.ENOENT), err
 	}
