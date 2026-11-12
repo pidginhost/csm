@@ -188,6 +188,7 @@ thresholds:
   rolling_coverage: true               # tri-state; default on. Normal periodic cycles prioritize new and changed PHP source under discovered document roots, then scan a slice of dormant files. Both share the account_scan_max_files budget; unfinished work resumes across cycles and accounts take turns. Set false to disable
   # Cursor write failures keep progress in memory until storage recovers; a restart loses that unpersisted progress.
   # Changed scans retry incomplete reads and directory listings, preserving earlier findings until coverage succeeds. Clock corrections rewind their progress when needed.
+  # Rolling windows also preserve earlier findings when a content read fails. Reboots retain changed-scan progress instead of queuing all old files again.
   # Existing files on first discovery remain the rolling window's job. Coverage follows the same PHP extensions and depth limit as rolling scans.
   # Periodic forced rescans skip rolling coverage and expire old clean-file records without resetting changed-scan progress.
   dropper_detection: true              # tri-state; default on. Real-time flag for a PHP/executable created under a web docroot and unlinked before the TTL probe. Set false to disable

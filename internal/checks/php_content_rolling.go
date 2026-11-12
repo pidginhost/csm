@@ -197,7 +197,9 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 			overlay = reconstructOverlay(rollingDocRootFor(file, docRoots), dir)
 			overlayCache[dir] = overlay
 		}
-		scan.scanFile(ctx, file, overlay, findings)
+		if !scan.scanFile(ctx, file, overlay, findings) {
+			windowComplete = false
+		}
 	}
 
 	// Advance the cursor only on a complete, uncanceled run. A run cut short by

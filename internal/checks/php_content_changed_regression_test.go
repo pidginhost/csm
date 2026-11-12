@@ -556,3 +556,49 @@ func TestChangedPassAfterARebootWithTheClockBehindTheWatermark(t *testing.T) {
 		t.Fatal("a clock set back across a reboot hid a new file")
 	}
 }
+
+// Old files belong to the rolling window after the changed watermark moves
+// past them. A failed read there cannot authorize retiring their findings.
+func TestRollingOldFileReadFailureKeepsFindingsAfterReboot(t *testing.T) {
+	fx := newChangedFixture(t, 100, "alice")
+	path := "/home/alice/public_html/assets/lib/a02.php"
+	fx.write(t, path, rollingDormantPHP)
+	wall := time.Now().Add(time.Minute)
+	previous := phpContentNow
+	phpContentNow = func() time.Time { return wall }
+	t.Cleanup(func() { phpContentNow = previous })
+	withMockOS(t, rebootClockOS{openCountOS: fx.os, uptime: 10000, boot: "boot-a"})
+	if got := CheckPHPContent(context.Background(), fx.cfg, nil); !findsPath(got, path) {
+		t.Fatal("initial scan did not report the payload")
+	}
+	wall = wall.Add(10 * time.Minute)
+	withMockOS(t, rebootReadFaultOS{
+		rebootClockOS: rebootClockOS{openCountOS: fx.os, uptime: 60, boot: "boot-b"},
+		blocked:       path,
+	})
+	ctx, _ := withIncompleteCheckCollector(context.Background())
+	CheckPHPContent(ctx, fx.cfg, nil)
+	if !checkMarkedIncomplete(ctx, "php_content") {
+		t.Fatal("failed rolling read authorized retirement of earlier findings")
+	}
+	withMockOS(t, rebootClockOS{openCountOS: fx.os, uptime: 60, boot: "boot-b"})
+	ctx, _ = withIncompleteCheckCollector(context.Background())
+	if got := CheckPHPContent(ctx, fx.cfg, nil); !findsPath(got, path) {
+		t.Fatal("recovered rolling read did not report the payload")
+	}
+	if checkMarkedIncomplete(ctx, "php_content") {
+		t.Fatal("successful full window remained incomplete")
+	}
+}
+
+type rebootReadFaultOS struct {
+	rebootClockOS
+	blocked string
+}
+
+func (o rebootReadFaultOS) Open(path string) (*os.File, error) {
+	if path == o.blocked {
+		return nil, os.ErrPermission
+	}
+	return o.rebootClockOS.Open(path)
+}
