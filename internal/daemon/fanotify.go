@@ -186,6 +186,9 @@ type EventStats struct {
 	// never opened as the reported file or directory. They reach no
 	// admission decision.
 	PlacementUnverified int64
+	// PlacementSkipped counts placed files not analysed again because the
+	// same version was analysed recently under the same conditions.
+	PlacementSkipped int64
 }
 
 // Filtered counts events rejected before queue admission, including events
@@ -199,6 +202,7 @@ func (fm *FileMonitor) EventStats() EventStats {
 	defer fm.eventStatsMu.Unlock()
 	stats := fm.eventStats
 	stats.PlacementUnverified = fm.placementUnverified.Load()
+	stats.PlacementSkipped = fm.placementSkipped.Load()
 	return stats
 }
 
@@ -308,8 +312,10 @@ type FileMonitor struct {
 	eventStats    EventStats
 	droppedEvents int64
 	droppedAlerts int64
-	// placementUnverified is published through EventStats.
+	// placementUnverified and placementSkipped are published through
+	// EventStats.
 	placementUnverified atomic.Int64
+	placementSkipped    atomic.Int64
 	recent              *recentAnalyses
 
 	// queueOverflows counts FAN_Q_OVERFLOW events: the kernel notification
@@ -923,6 +929,8 @@ func (fm *FileMonitor) handleQueueOverflow() {
 	fm.initQueueHealth()
 	fm.kernelQueueHealth.Lose(time.Now(), 1)
 	atomic.AddInt64(&fm.queueOverflows, 1)
+	// Dropped writes name no inode, so any recorded analysis may be stale.
+	fm.recent.Purge()
 	if fanotifyKernelOverflowTotal != nil {
 		fanotifyKernelOverflowTotal.Inc()
 	}
@@ -991,17 +999,44 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 }
 
 func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time.Time) {
-	var admitted, dropped bool
-	defer func() { fm.recordEvent(admitted, dropped) }()
-	// Get the file path from the fd via /proc/self/fd/N
-	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
-	if err != nil {
-		_ = unix.Close(fd)
+	path, ok := eventFDPath(fd)
+	if !ok {
+		fm.rejectUnresolved(fd)
 		return
 	}
-	path = normalizeFanotifyEventPath(path)
-
+	// Before admission: a write under a name admission ignores still changes
+	// what a later rename back would place.
+	if mask&FAN_CLOSE_WRITE != 0 {
+		var st unix.Stat_t
+		if unix.Fstat(fd, &st) == nil {
+			fm.recent.Invalidate(uint64(st.Dev), st.Ino)
+		}
+	}
 	event, admit := fm.classifyEvent(path, fd)
+	fm.admitEvent(fd, event, admit, pid, mask, readAt)
+}
+
+// eventFDPath resolves the path an event descriptor was opened at.
+func eventFDPath(fd int) (string, bool) {
+	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		return "", false
+	}
+	return normalizeFanotifyEventPath(path), true
+}
+
+// rejectUnresolved closes an event descriptor whose path could not be read.
+// It still counts as received and filtered.
+func (fm *FileMonitor) rejectUnresolved(fd int) {
+	_ = unix.Close(fd)
+	fm.recordEvent(false, false)
+}
+
+// admitEvent queues the event classifyEvent built for fd and takes
+// ownership of fd. A rejected event carries no descriptor of its own.
+func (fm *FileMonitor) admitEvent(fd int, event fileEvent, admit bool, pid int32, mask uint64, readAt time.Time) {
+	var admitted, dropped bool
+	defer func() { fm.recordEvent(admitted, dropped) }()
 	if !admit {
 		_ = unix.Close(fd)
 		return
@@ -1357,31 +1392,25 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 	work.Process(func(queued fileEvent) {
 		// Keyed before the analysis: a write during it changes mtime, so
 		// the newer version never matches what was recorded.
+		begun := fm.recent.Begin()
 		key, keyed := analysisKeyOf(queued.fd, fm.eventClass(queued))
 		fileAnalyzer(fm, queued)
 		if keyed {
-			fm.recent.Record(key, time.Now())
+			fm.recent.Record(key, begun, time.Now())
 		}
 	})
 }
 
-// analysisClass is everything besides the file version that decides how a
-// file at path is analysed, or "" when admission rejects it. The content
-// path carries the location and name rules, so the class only matches when
-// those are unchanged: a cPanel .temp.<n>.<name> write renamed to <name>.
-func (fm *FileMonitor) analysisClass(path string, fd int) string {
-	ev, admit := fm.classifyEvent(path, fd)
-	if !admit {
-		return ""
-	}
-	return fm.eventClass(ev)
-}
-
-// eventClass hashes the class so each remembered analysis costs a fixed
-// size whatever the path length.
+// eventClass is everything besides the file version that decides how an
+// admitted event is analysed. The content path carries the location and name
+// rules, so the class only matches when those are unchanged: a cPanel
+// .temp.<n>.<name> write renamed to <name>. The generations retire it on any
+// config publication or rule load. Hashed so each remembered analysis costs a
+// fixed size whatever the path length.
 func (fm *FileMonitor) eventClass(ev fileEvent) string {
-	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%t\x00%t\x00%t",
-		atomicWriteContentPath(ev.path), ev.dropperOnly, ev.phpExecutable, fm.suppressedPath(ev.path)))
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%t\x00%t\x00%t\x00%d\x00%d\x00%d",
+		atomicWriteContentPath(ev.path), ev.dropperOnly, ev.phpExecutable, fm.suppressedPath(ev.path),
+		config.ActiveGeneration(), signatures.CacheGeneration(), yara.CacheGeneration()))
 	return string(sum[:])
 }
 
@@ -1392,7 +1421,8 @@ func analysisKeyOf(fd int, class string) (analysisKey, bool) {
 		return analysisKey{}, false
 	}
 	return analysisKey{
-		Dev: uint64(st.Dev), Ino: st.Ino, Size: st.Size, MtimeNs: st.Mtim.Nano(), Class: class,
+		Dev: uint64(st.Dev), Ino: st.Ino, Size: st.Size, MtimeNs: st.Mtim.Nano(),
+		Mode: st.Mode, Uid: st.Uid, Gid: st.Gid, Class: class,
 	}, true
 }
 

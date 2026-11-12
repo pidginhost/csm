@@ -38,6 +38,8 @@ var active atomic.Pointer[publication]
 type publication struct {
 	cfg   *Config
 	epoch uint64
+	// generation grows with every publication.
+	generation uint64
 }
 
 // publishMu orders publications, so each epoch is assigned against the
@@ -67,13 +69,23 @@ func ActiveEpoch() (*Config, uint64) {
 	return nil, 0
 }
 
+// ActiveGeneration changes with every publication, so a cache of verdicts
+// reached under one config can tell when any setting may have moved.
+func ActiveGeneration() uint64 {
+	if p := active.Load(); p != nil {
+		return p.generation
+	}
+	return 0
+}
+
 // SetActive installs cfg as the current live config.
 func SetActive(cfg *Config) {
 	publishMu.Lock()
 	defer publishMu.Unlock()
-	next := &publication{cfg: cfg, epoch: 1}
+	next := &publication{cfg: cfg, epoch: 1, generation: 1}
 	if prev := active.Load(); prev != nil {
 		next.epoch = prev.epoch
+		next.generation = prev.generation + 1
 		if responseChanged(prev.cfg, cfg) {
 			next.epoch++
 		}

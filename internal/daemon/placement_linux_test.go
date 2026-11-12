@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/signatures"
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 func TestPlacementRetriesOldSocket(t *testing.T) {
@@ -239,8 +242,139 @@ func TestPlacementSkipsUnchangedRenameWithinClass(t *testing.T) {
 	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 0 {
 		t.Fatalf("unchanged rename queued %d events, want none", n)
 	}
-	if after := fm.EventStats(); after.Received != before.Received {
-		t.Fatalf("stats %+v -> %+v, want the placement skipped before admission", before, after)
+	if after := fm.EventStats(); after.Received != before.Received || after.PlacementSkipped != before.PlacementSkipped+1 {
+		t.Fatalf("stats %+v -> %+v, want one skip and no admission decision", before, after)
+	}
+}
+
+// recordedPlacement analyses a cPanel staged write and returns the paths for
+// its rename. The skip test above shows the rename alone is not analysed.
+func recordedPlacement(t *testing.T, fm *FileMonitor, dir, name, body string) (staged, path string) {
+	t.Helper()
+	staged, path = filepath.Join(dir, ".temp.1731400000123."+name), filepath.Join(dir, name)
+	if err := os.WriteFile(staged, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analyzeClosedWrite(t, fm, staged)
+	return staged, path
+}
+
+// chmod raises no event and keeps mtime, but the analysis branches on mode.
+func TestPlacementModeChangeIsAnalyzed(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".config")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	staged, path := recordedPlacement(t, fm, dir, "m", "#!/bin/sh\n")
+	if found := drainFindings(alerts); len(found) != 0 {
+		t.Fatalf("non-executable staged file raised %+v", found)
+	}
+	if err := os.Chmod(staged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("rename after chmod +x queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "executable_in_config_realtime", path) {
+		t.Fatalf("findings %+v, want the executable finding on %s", found, path)
+	}
+}
+
+// A file analysed clean, rewritten under a name admission ignores with its
+// size and mtime put back, then renamed back, is a different file.
+func TestPlacementReplayThroughAliasIsAnalyzed(t *testing.T) {
+	dir := t.TempDir()
+	shell := `<?php system($_POST['c']);`
+	benign := "<?php echo 1;" + strings.Repeat(" ", len(shell)-len("<?php echo 1;"))
+	path, alias := filepath.Join(dir, "x.php"), filepath.Join(dir, "x.txt")
+	if err := os.WriteFile(path, []byte(benign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubInlineQuarantine(t)
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	analyzeClosedWrite(t, fm, path)
+	var analysed unix.Stat_t
+	if err := unix.Stat(path, &analysed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(alias, unix.O_WRONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unix.Pwrite(fd, []byte(shell), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.UtimesNanoAt(unix.AT_FDCWD, alias, []unix.Timespec{analysed.Atim, analysed.Mtim}, 0); err != nil {
+		t.Fatal(err)
+	}
+	// The close-write under the alias is rejected at admission.
+	fm.handleEvent(fd, 0, unix.FAN_CLOSE_WRITE)
+	if got := queuedPlacements(t, fm); len(got) != 0 {
+		t.Fatalf("alias close-write queued %d events, want admission to reject it", len(got))
+	}
+	var rewritten unix.Stat_t
+	if err := unix.Stat(alias, &rewritten); err != nil {
+		t.Fatal(err)
+	}
+	if rewritten.Size != analysed.Size || rewritten.Mtim != analysed.Mtim {
+		t.Fatal("fixture must restore size and mtime")
+	}
+	drainFindings(alerts)
+
+	if n := placeAndAnalyze(t, fm, alias, path, 0); n != 1 {
+		t.Fatalf("replayed rename queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "webshell_content_realtime", path) {
+		t.Fatalf("findings %+v, want the PHP scan on %s", found, path)
+	}
+}
+
+// Writes the kernel dropped carry no descriptor, so no inode can be
+// forgotten selectively.
+func TestPlacementAfterQueueOverflowIsAnalyzed(t *testing.T) {
+	fm := placementTestMonitor(make(chan alert.Finding, 16))
+	staged, path := recordedPlacement(t, fm, t.TempDir(), "x.php", "<?php echo 1;")
+	fm.handleQueueOverflow()
+
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("rename after a kernel overflow queued %d events, want 1", n)
+	}
+}
+
+// A file analysed clean under the old rules or settings says nothing about
+// the new ones.
+func TestPlacementAfterReloadIsAnalyzed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reload func(t *testing.T, fm *FileMonitor)
+	}{
+		{"config", func(t *testing.T, fm *FileMonitor) {
+			previous := config.Active()
+			t.Cleanup(func() { config.SetActive(previous) })
+			config.SetActive(fm.cfg)
+		}},
+		{"signatures", func(t *testing.T, _ *FileMonitor) {
+			previous := signatures.SetGlobal(signatures.NewScanner(t.TempDir()))
+			t.Cleanup(func() { signatures.SetGlobal(previous) })
+		}},
+		{"yara", func(*testing.T, *FileMonitor) { yara.InvalidateCaches() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fm := placementTestMonitor(make(chan alert.Finding, 16))
+			staged, path := recordedPlacement(t, fm, t.TempDir(), "x.php", "<?php echo 1;")
+			tc.reload(t, fm)
+
+			if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+				t.Fatalf("rename after a %s reload queued %d events, want 1", tc.name, n)
+			}
+		})
 	}
 }
 

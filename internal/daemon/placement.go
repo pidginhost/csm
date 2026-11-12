@@ -5,7 +5,6 @@ package daemon
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -69,27 +68,29 @@ func (fm *FileMonitor) handlePlacement(ev placementEvent) {
 // handlePlacedFile takes ownership of fd, a regular file whose identity the
 // caller already verified.
 func (fm *FileMonitor) handlePlacedFile(fd int, pid int32, at time.Time) {
-	if fm.analyzedUnchanged(fd) {
+	path, ok := eventFDPath(fd)
+	if !ok {
+		fm.rejectUnresolved(fd)
+		return
+	}
+	event, admit := fm.classifyEvent(path, fd)
+	if admit && fm.analyzedUnchanged(event) {
+		fm.placementSkipped.Add(1)
 		_ = unix.Close(fd)
 		return
 	}
-	fm.handleEventAt(fd, pid, eventPlacedIn, at)
+	fm.admitEvent(fd, event, admit, pid, eventPlacedIn, at)
 }
 
 // analyzedUnchanged reports whether this file version was analysed recently
-// with the same outcome-relevant class it would get at its new path.
-func (fm *FileMonitor) analyzedUnchanged(fd int) bool {
-	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
-	if err != nil {
-		return false
-	}
-	path = normalizeFanotifyEventPath(path)
+// with the same outcome-relevant class it gets at its new path.
+func (fm *FileMonitor) analyzedUnchanged(ev fileEvent) bool {
 	// Restore detection keys on the destination: a payload renamed back over
 	// the path it was removed from is the restore, whatever ran before.
-	if _, removed := removedFileAt(path); removed {
+	if _, removed := removedFileAt(ev.path); removed {
 		return false
 	}
-	key, ok := analysisKeyOf(fd, fm.analysisClass(path, fd))
+	key, ok := analysisKeyOf(ev.fd, fm.eventClass(ev))
 	return ok && fm.recent.Seen(key, time.Now())
 }
 

@@ -26,6 +26,19 @@ func TestActiveRoundTrip(t *testing.T) {
 	}
 }
 
+// Caches of verdicts reached under one config retire on any publication,
+// including one that leaves the response settings alone.
+func TestActiveGenerationChangesOnEveryPublication(t *testing.T) {
+	t.Cleanup(func() { SetActive(nil) })
+	cfg := &Config{Hostname: "a"}
+	SetActive(cfg)
+	first := ActiveGeneration()
+	SetActive(cfg)
+	if second := ActiveGeneration(); second == first {
+		t.Fatalf("republication kept generation %d", first)
+	}
+}
+
 // Each publication that changes auto_response or the mode gets a new
 // response epoch, assigned with the config it describes. An unrelated
 // change or the same settings again keep the epoch, and every step of a
