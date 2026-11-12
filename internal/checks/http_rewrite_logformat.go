@@ -445,12 +445,13 @@ func apacheLogTargetUnresolved(target string) bool {
 // since a parameter there names a host.
 func apacheMacroFields(fields []string, ctx apacheLineContext) (out []string, ok bool) {
 	var params []string
-	for _, label := range ctx.Scope {
-		if words := strings.Fields(label); len(words) > 2 && strings.EqualFold(words[0], "Macro") {
+	// Scope labels flatten quoted arguments; keys keep their boundaries.
+	for _, key := range ctx.ScopeKey {
+		if words := strings.Split(key, "\x1f"); len(words) > 2 && words[0] == "macro" {
 			params = append(params, words[2:]...)
 		}
 	}
-	if len(params) == 0 || strings.EqualFold(fields[0], "ServerName") {
+	if len(params) == 0 {
 		return fields, true
 	}
 	// The replacer tries names in order: longer first, so a name never
@@ -461,11 +462,17 @@ func apacheMacroFields(fields []string, ctx apacheLineContext) (out []string, ok
 		oldnew = append(oldnew, param, "${macro}")
 	}
 	replace := strings.NewReplacer(oldnew...)
+	if replace.Replace(fields[0]) != fields[0] {
+		return fields, false
+	}
+	if strings.EqualFold(fields[0], "ServerName") {
+		return fields, true
+	}
 	out = make([]string, len(fields))
 	for i, field := range fields {
 		out[i] = replace.Replace(field)
 	}
-	return out, out[0] == fields[0]
+	return out, true
 }
 
 // apacheLogFormat is a format a directive defines or uses inline.
@@ -586,7 +593,7 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apach
 			// either way. Apache refuses an empty variable or expression.
 			switch {
 			case len(condition) > 4 && strings.EqualFold(condition[:4], "env=") && condition[4:] != "!":
-			case len(condition) > 5 && strings.EqualFold(condition[:5], "expr="):
+			case len(condition) > 5 && strings.EqualFold(condition[:5], "expr=") && strings.TrimSpace(condition[5:]) != "":
 			default:
 				l.malformed = true
 			}
