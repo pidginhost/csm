@@ -108,10 +108,10 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	}
 	unknown := ""
 	if src.lswsConfig != "" {
-		value, err := lswsClientIPFromHeader(src.lswsConfig)
+		directive, err := lswsClientAddressRewrite(src.lswsConfig)
 		switch {
-		case value != "":
-			r.State, r.Directive, r.File = RewriteActive, "useIpInProxyHeader "+value, src.lswsConfig
+		case directive != "":
+			r.State, r.Directive, r.File = RewriteActive, directive, src.lswsConfig
 			return r
 		case err != nil:
 			unknown = err.Error()
@@ -150,15 +150,19 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 // apacheClientAddressRewrite returns the first directive that replaces the
 // client address, its file, and whether the whole tree was read: a
 // mod_remoteip header or PROXY protocol, a loaded or configured
-// mod_cloudflare, or an enabled mod_rpaf (0.6 or 0.8 names). A rewrite
-// directive Apache would refuse leaves the tree unknown.
+// mod_cloudflare, or an enabled mod_rpaf (0.6 or 0.8 names); failing
+// those, a log format that writes a request value where CSM reads the
+// client. A rewrite or format directive Apache would refuse leaves the
+// tree unknown.
 func apacheClientAddressRewrite(path string) (directive, file string, complete bool) {
 	lines, complete := assembleApacheConfigWithStatus(path)
 	malformed := false
+	var logs apacheLogFormats
 	valid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, _ apacheLineContext) {
 		if directive != "" {
 			return
 		}
+		logs.add(line, fields)
 		is := func(names ...string) bool {
 			for _, n := range names {
 				if strings.EqualFold(fields[0], n) {
@@ -199,7 +203,12 @@ func apacheClientAddressRewrite(path string) (directive, file string, complete b
 			}
 		}
 	})
-	return directive, file, complete && valid && !malformed
+	if directive == "" {
+		if f := logs.clientValue(); f != nil {
+			directive, file = f.directive, f.file
+		}
+	}
+	return directive, file, complete && valid && !malformed && !logs.malformed
 }
 
 // nginxRealIPRewrite returns the first set_real_ip_from, which turns on
@@ -215,11 +224,14 @@ func nginxRealIPRewrite(path string) (directive, file string, complete bool) {
 	return "", "", complete
 }
 
-// lswsClientIPFromHeader returns LiteSpeed's useIpInProxyHeader value when
-// it is on, "" when it is off or unset. Anything but one well-formed
-// httpServerConfig document with at most one plain setting is an error.
-// A completed active setting is returned even if later XML is unreadable.
-func lswsClientIPFromHeader(path string) (string, error) {
+// lswsClientAddressRewrite returns the first LiteSpeed setting that logs a
+// replaced or request-chosen client address: useIpInProxyHeader when it is
+// on, or a logFormat that writes a request value where CSM reads the
+// client; "" when there is none. Anything but one well-formed
+// httpServerConfig document with at most one useIpInProxyHeader and
+// readable formats is an error. A completed active setting is returned
+// even if later XML is unreadable.
+func lswsClientAddressRewrite(path string) (string, error) {
 	f, err := osFS.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("the LiteSpeed configuration %s could not be read: %w", path, err)
@@ -230,8 +242,9 @@ func lswsClientIPFromHeader(path string) (string, error) {
 		return active, fmt.Errorf("the LiteSpeed configuration %s %s", path, why)
 	}
 	dec := xml.NewDecoder(f)
-	var value strings.Builder
-	depth, roots, settings, inSetting := 0, 0, 0, false
+	var value, format strings.Builder
+	depth, roots, settings := 0, 0, 0
+	inSetting, inFormat := false, false
 	for {
 		tok, err := dec.Token()
 		if errors.Is(err, io.EOF) {
@@ -245,16 +258,23 @@ func lswsClientIPFromHeader(path string) (string, error) {
 			if inSetting {
 				return invalid("nests an element in useIpInProxyHeader")
 			}
+			if inFormat {
+				return invalid("nests an element in logFormat")
+			}
 			if depth == 0 {
 				if roots++; roots > 1 || t.Name.Local != "httpServerConfig" {
 					return invalid("is not one httpServerConfig document")
 				}
 			}
-			if t.Name.Local == "useIpInProxyHeader" {
+			switch t.Name.Local {
+			case "useIpInProxyHeader":
 				if settings++; settings > 1 {
 					return invalid("sets useIpInProxyHeader more than once")
 				}
 				inSetting = true
+			case "logFormat":
+				format.Reset()
+				inFormat = true
 			}
 			depth++
 		case xml.CharData:
@@ -264,25 +284,36 @@ func lswsClientIPFromHeader(path string) (string, error) {
 			if inSetting {
 				value.Write(t)
 			}
+			if inFormat {
+				format.Write(t)
+			}
 		case xml.EndElement:
 			depth--
 			if inSetting {
-				if v := strings.TrimSpace(value.String()); v != "" && v != "0" {
-					active = v
+				if v := strings.TrimSpace(value.String()); v != "" && v != "0" && active == "" {
+					active = "useIpInProxyHeader " + v
 				}
 			}
-			inSetting = false
+			if inFormat {
+				v := strings.TrimSpace(format.String())
+				logged, ok := apacheFormatLogsClientValue(v, false)
+				if !ok {
+					return invalid("has a logFormat it cannot read")
+				}
+				if logged && active == "" {
+					active = "logFormat " + v
+				}
+			}
+			inSetting, inFormat = false, false
 		}
 	}
 	if roots != 1 {
 		return invalid("is not one httpServerConfig document")
 	}
-	v := strings.TrimSpace(value.String())
-	switch {
-	case settings == 0 || v == "0":
-		return "", nil
-	case v == "":
-		return invalid("sets an empty useIpInProxyHeader")
+	if settings == 1 && active == "" {
+		if v := strings.TrimSpace(value.String()); v == "" {
+			return invalid("sets an empty useIpInProxyHeader")
+		}
 	}
-	return v, nil
+	return active, nil
 }
