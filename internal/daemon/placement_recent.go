@@ -13,7 +13,7 @@ const (
 )
 
 // analysisKey identifies one analysis of one file version. A rename keeps
-// dev, inode, size, mtime, mode and owner; Class holds everything else the
+// dev, inode, content, size, mtime, mode and owner; Class holds everything else the
 // analysis outcome depends on, so a key match means the same analysis
 // already ran.
 type analysisKey struct {
@@ -22,6 +22,7 @@ type analysisKey struct {
 	Mode          uint32
 	Uid, Gid      uint32
 	Class         string
+	Digest        [32]byte
 }
 
 type analysedInode struct{ dev, ino uint64 }

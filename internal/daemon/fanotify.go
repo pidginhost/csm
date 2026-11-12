@@ -584,9 +584,9 @@ type fileEvent struct {
 	// to have existed under its PID.
 	at          time.Time
 	writerChain []int
-	// suspicious, when set, receives whether the analysis found suspicious
-	// content, the verdict a dropper candidate carries.
-	suspicious *bool
+	// cacheable is set only by a completed clean content scan. Other
+	// detector paths may depend on state outside the placement cache key.
+	cacheable *bool
 }
 
 func (fm *FileMonitor) currentCfg() *config.Config {
@@ -1411,17 +1411,19 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 	}()
 	work := queuehealth.Work[fileEvent]{Value: event, Ticket: event.queueTicket}
 	work.Process(func(queued fileEvent) {
-		// Keyed before the analysis: a write during it changes mtime, so
-		// the newer version never matches what was recorded.
 		begun := fm.recent.Begin()
-		key, keyed := analysisKeyOf(queued.fd, fm.eventClass(queued))
-		var suspicious bool
-		queued.suspicious = &suspicious
+		var snapshot analysisSnapshot
+		var keyed bool
+		if fm.recent != nil {
+			snapshot, keyed = snapshotForAnalysis(queued.fd, fm.eventClass(queued))
+		}
+		var cacheable bool
+		queued.cacheable = &cacheable
 		fileAnalyzer(fm, queued)
-		// A skip would place the file without that verdict, so a suspicious
-		// file is analysed again wherever it lands.
-		if keyed && !suspicious {
-			fm.recent.Record(key, begun, time.Now())
+		// A writer can restore mtime or keep its descriptor open past the
+		// rename. Only an unchanged scan of the keyed bytes is reusable.
+		if keyed && cacheable && snapshot.unchanged(queued.fd) {
+			fm.recent.Record(snapshot.key, begun, time.Now())
 		}
 	})
 }
@@ -1433,22 +1435,13 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 // config publication or rule load. Hashed so each remembered analysis costs a
 // fixed size whatever the path length.
 func (fm *FileMonitor) eventClass(ev fileEvent) string {
+	if ev.dropperOnly || !isPHPSourceExtension(strings.ToLower(filepath.Base(atomicWriteContentPath(ev.path)))) {
+		return ""
+	}
 	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%t\x00%t\x00%t\x00%d\x00%d\x00%d",
 		atomicWriteContentPath(ev.path), ev.dropperOnly, ev.phpExecutable, fm.suppressedPath(ev.path),
 		config.ActiveGeneration(), signatures.CacheGeneration(), yara.CacheGeneration()))
 	return string(sum[:])
-}
-
-// analysisKeyOf identifies the file version behind fd under class.
-func analysisKeyOf(fd int, class string) (analysisKey, bool) {
-	var st unix.Stat_t
-	if class == "" || unix.Fstat(fd, &st) != nil {
-		return analysisKey{}, false
-	}
-	return analysisKey{
-		Dev: uint64(st.Dev), Ino: st.Ino, Size: st.Size, MtimeNs: st.Mtim.Nano(),
-		Mode: st.Mode, Uid: st.Uid, Gid: st.Gid, Class: class,
-	}, true
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to
@@ -1659,9 +1652,6 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Fstat/Statx) so they do not disturb the fd for later content checks.
 	cand := fm.observeDropperCandidate(event, procInfo)
 	markDropperContentSuspicious := func() {
-		if event.suspicious != nil {
-			*event.suspicious = true
-		}
 		if cand == nil {
 			return
 		}
@@ -1970,8 +1960,11 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// earlier in this function (before the /tmp early-return) so specific
 	// file types take precedence over the /tmp generic block.
 	if isPHPSourceExtension(nameLower) {
-		if fm.checkPHPContent(event.fd, path, procInfo) {
+		result := fm.inspectPHPContent(event.fd, path, procInfo)
+		if result.matched {
 			markDropperContentSuspicious()
+		} else if event.cacheable != nil {
+			*event.cacheable = result.complete
 		}
 		return
 	}
@@ -2376,11 +2369,23 @@ func confirmedPHPExecutionData(data []byte) bool {
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
 // C3 - reads from fd, not path. M4 - 32KB scan size.
 func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
+	return fm.inspectPHPContent(fd, path, procInfo).matched
+}
+
+// A missing verdict is distinct from a clean scan: only the latter may be
+// reused when a file is placed at another name.
+type contentScanResult struct {
+	matched  bool
+	complete bool
+}
+
+func (fm *FileMonitor) inspectPHPContent(fd int, path, procInfo string) contentScanResult {
 	recordReadTruncation(fd, 32768, "php_check")
 	data, scanned := readVersionedFileFromFd(fd, 32768)
 	if data == nil {
-		return false
+		return contentScanResult{}
 	}
+	complete := scanned != nil && int64(len(data)) == min(scanned.Size(), 32768)
 	content := strings.ToLower(string(data))
 	executable := strings.ToLower(checks.PHPExecutableCode(string(data)))
 	structure := strings.ToLower(checks.PHPRequestFlowStructure(string(data)))
@@ -2394,7 +2399,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		} else {
 			fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime", message, details, path, procInfo)
 		}
-		return true
+		return contentScanResult{matched: true}
 	}
 
 	// Remote payload fetching — paste sites are always suspicious.
@@ -2406,7 +2411,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 			fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 				fmt.Sprintf("PHP dropper with paste site URL: %s", path),
 				fmt.Sprintf("Fetches from: %s", p), path, procInfo)
-			return true
+			return contentScanResult{matched: true}
 		}
 	}
 	githubURLs := []string{"gist.githubusercontent.com", "raw.githubusercontent.com"}
@@ -2424,7 +2429,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 					fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 						fmt.Sprintf("PHP dropper fetching from GitHub with dangerous call: %s", path),
 						fmt.Sprintf("URL: %s, Function: %s", gh, fn), path, procInfo)
-					return true
+					return contentScanResult{matched: true}
 				}
 			}
 		}
@@ -2454,7 +2459,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 				} else {
 					fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime", message, details, path, procInfo)
 				}
-				return true
+				return contentScanResult{matched: true}
 			}
 		}
 	}
@@ -2465,7 +2470,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 				fmt.Sprintf("Fragmented base64_decode evasion detected: %s", path),
 				"base64_decode function name split across string variables", path, procInfo)
-			return true
+			return contentScanResult{matched: true}
 		}
 	}
 
@@ -2475,7 +2480,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 			fmt.Sprintf("Concatenation payload detected: %s (%d concat ops)", path, concatCount),
 			"Variable built from hundreds of string concatenations then executed", path, procInfo)
-		return true
+		return contentScanResult{matched: true}
 	}
 
 	// Shell execution with request input
@@ -2521,7 +2526,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 				fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
 					fmt.Sprintf("Webshell pattern detected: %s", path),
 					fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path, procInfo)
-				return true
+				return contentScanResult{matched: true}
 			}
 		}
 	}
@@ -2530,7 +2535,11 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// Attackers append payloads (eval+base64) at the end of legitimate PHP files,
 	// beyond the head scan window. Only do the cheap heuristic checks, not full
 	// signature scanning (which would be too slow on every large PHP file).
-	if tailData := readTailFromFd(fd, 32768); tailData != nil {
+	tailData := readTailFromFd(fd, 32768)
+	if complete && scanned.Size() > 32768 && len(tailData) != 32768 {
+		complete = false
+	}
+	if tailData != nil {
 		tail := strings.ToLower(string(tailData))
 
 		// Check for eval+decoder on same line in tail
@@ -2544,7 +2553,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 					fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 						fmt.Sprintf("Obfuscated PHP appended to file tail: %s", path),
 						fmt.Sprintf("PHP code execution with %s found at end of file", dec), path, procInfo)
-					return true
+					return contentScanResult{matched: true}
 				}
 			}
 		}
@@ -2555,7 +2564,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 				fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 					fmt.Sprintf("Fragmented base64_decode evasion in file tail: %s", path),
 					"Payload appended at end of legitimate PHP file", path, procInfo)
-				return true
+				return contentScanResult{matched: true}
 			}
 		}
 
@@ -2565,7 +2574,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 				fmt.Sprintf("Concatenation payload in file tail: %s (%d concat ops)", path, tailConcatCount),
 				"Payload appended at end of legitimate PHP file", path, procInfo)
-			return true
+			return contentScanResult{matched: true}
 		}
 	}
 
@@ -2585,13 +2594,15 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	}
 	if !checks.CMSCacheEmpty() && checks.CMSCacheMayContainSize(contentSize) &&
 		checks.IsVerifiedCMSHash(hashEventFD(fd, data, contentSize)) {
-		return false
+		return contentScanResult{complete: complete}
 	}
 
 	// External signature + YARA scanning. The YAML engine sees the complete
 	// event-file size even though realtime analysis scans a bounded prefix, so
 	// per-rule file-size limits cannot be defeated by prefix truncation.
-	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, fd, scannedIdentity(fd))
+	result := fm.scanSignatures(data, contentSize, path, filepath.Ext(path), procInfo, fd, scannedIdentity(fd))
+	result.complete = result.complete && complete
+	return result
 }
 
 // Images fitting the combined read budget are scanned in one piece so a
@@ -2913,6 +2924,10 @@ func (fm *FileMonitor) runEventSignatureScan(fd int, data []byte, path, ext, pro
 }
 
 func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, fd int, scanned os.FileInfo) bool {
+	return fm.scanSignatures(data, contentSize, path, ext, procInfo, fd, scanned).matched
+}
+
+func (fm *FileMonitor) scanSignatures(data []byte, contentSize int64, path, ext, procInfo string, fd int, scanned os.FileInfo) contentScanResult {
 	// Both engines see every file. A .yml hit used to end the scan here, so
 	// a file matching a High .yml rule never met the Critical YARA rule and
 	// the inline quarantine that only a Critical match triggers. Only a file
@@ -2966,7 +2981,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 					fm.sendAlert(alert.Critical, "auto_response",
 						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
 						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
-					return true
+					return contentScanResult{matched: true, complete: true}
 				}
 			}
 		}
@@ -2976,7 +2991,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 		matches, err := yara.ScanBytesChecked(yaraScanner, path, data)
 		if err != nil {
 			fm.reportYARAScanError(path, err)
-			return matched
+			return contentScanResult{matched: matched}
 		}
 		if len(matches) > 0 {
 			fm.sendFileFinding(alert.Finding{
@@ -2988,11 +3003,11 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 				ProcessInfo:   procInfo,
 				ContentSHA256: windowDigest(data, contentSize, scanned),
 			})
-			return true
+			return contentScanResult{matched: true, complete: true}
 		}
 	}
 
-	return matched
+	return contentScanResult{matched: matched, complete: true}
 }
 
 // windowDigest fingerprints the scanned bytes only when they are the whole

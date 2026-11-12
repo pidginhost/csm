@@ -94,8 +94,8 @@ func (fm *FileMonitor) analyzedUnchanged(ev fileEvent) bool {
 	if _, removed := removedFileAt(ev.path); removed {
 		return false
 	}
-	key, ok := analysisKeyOf(ev.fd, fm.eventClass(ev))
-	return ok && fm.recent.Seen(key, time.Now())
+	snapshot, ok := snapshotForAnalysis(ev.fd, fm.eventClass(ev))
+	return ok && fm.recent.Seen(snapshot.key, time.Now())
 }
 
 // openPlacedFile opens path without following a final symlink and returns the

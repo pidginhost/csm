@@ -431,6 +431,140 @@ func TestPlacementReplayThroughAliasIsAnalyzed(t *testing.T) {
 	}
 }
 
+func TestPlacementRewriteBeforeWriterClosesIsAnalyzed(t *testing.T) {
+	shell := `<?php system($_POST['c']);`
+	benign := "<?php echo 1;" + strings.Repeat(" ", len(shell)-len("<?php echo 1;"))
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	staged, path := recordedPlacement(t, fm, t.TempDir(), "x.php", benign)
+	stubInlineQuarantine(t)
+	var before unix.Stat_t
+	if err := unix.Stat(staged, &before); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := unix.Open(staged, unix.O_WRONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(writer) }()
+	if _, err := unix.Pwrite(writer, []byte(shell), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.UtimesNanoAt(unix.AT_FDCWD, staged, []unix.Timespec{before.Atim, before.Mtim}, 0); err != nil {
+		t.Fatal(err)
+	}
+	// No close-write can invalidate the old verdict while writer stays open.
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("rewritten placement queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "webshell_content_realtime", path) {
+		t.Fatalf("findings %+v, want the rewritten shell detected", found)
+	}
+}
+
+func TestPlacementAfterFailedScanIsAnalyzed(t *testing.T) {
+	backend := &snapshotBackend{t: t, scanErr: errors.New("worker unavailable")}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	staged, path := recordedPlacement(t, fm, t.TempDir(), "x.php", "<?php include 'original.png';")
+	if found := drainFindings(alerts); !hasFinding(found, "yara_realtime_scan_error", "") {
+		t.Fatalf("findings %+v, want the scanner error", found)
+	}
+	// Recovery of the same backend need not publish a new rules generation.
+	backend.scanErr = nil
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("placement after scan failure queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "yara_match_realtime", path) {
+		t.Fatalf("findings %+v, want the recovered scanner's verdict", found)
+	}
+}
+
+func TestPlacementConfigFindingIsNotCachedAsClean(t *testing.T) {
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	staged, path := recordedPlacement(t, fm, t.TempDir(), ".user.ini", "allow_url_include = On\n")
+	if found := drainFindings(alerts); !hasFinding(found, "php_config_realtime", staged) {
+		t.Fatalf("findings %+v, want the staged configuration finding", found)
+	}
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("suspicious configuration placement queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "php_config_realtime", path) {
+		t.Fatalf("findings %+v, want the installed configuration finding", found)
+	}
+}
+
+func TestPlacementReadFailureIsNotCachedAsClean(t *testing.T) {
+	dir := t.TempDir()
+	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte(`<?php system($_POST['c']);`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(staged, unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	stubInlineQuarantine(t)
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	// Metadata is readable, but the content read fails on this descriptor.
+	fm.analyzeFileSafe(fileEvent{path: staged, fd: fd})
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("placement after read failure queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "webshell_content_realtime", path) {
+		t.Fatalf("findings %+v, want a successful content scan", found)
+	}
+}
+
+func TestPlacementMutationDuringAnalysisIsNotCached(t *testing.T) {
+	dir := t.TempDir()
+	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
+	shell := `<?php system($_POST['c']);`
+	benign := "<?php echo 1;" + strings.Repeat(" ", len(shell)-len("<?php echo 1;"))
+	if err := os.WriteFile(staged, []byte(shell), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var before unix.Stat_t
+	if err := unix.Stat(staged, &before); err != nil {
+		t.Fatal(err)
+	}
+	rewrite := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(staged, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := unix.UtimesNanoAt(unix.AT_FDCWD, staged, []unix.Timespec{before.Atim, before.Mtim}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := fileAnalyzer
+	t.Cleanup(func() { fileAnalyzer = previous })
+	fileAnalyzer = func(fm *FileMonitor, event fileEvent) {
+		rewrite(benign)
+		previous(fm, event)
+		rewrite(shell)
+	}
+	stubInlineQuarantine(t)
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	analyzeClosedWrite(t, fm, staged)
+	fileAnalyzer = previous
+	if found := drainFindings(alerts); len(found) != 0 {
+		t.Fatalf("fixture should scan clean intermediate bytes, got %+v", found)
+	}
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("placement after mutation queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "webshell_content_realtime", path) {
+		t.Fatalf("findings %+v, want the restored malicious bytes scanned", found)
+	}
+}
+
 // Writes the kernel dropped carry no descriptor, so no inode can be
 // forgotten selectively.
 func TestPlacementAfterQueueOverflowIsAnalyzed(t *testing.T) {
