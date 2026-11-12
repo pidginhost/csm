@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,9 +199,9 @@ func scanCallers(t *testing.T, cfg *config.Config, bot botClassifier, callers *w
 func aliceCallers(flagged map[string]bool) *webshellCallers {
 	return &webshellCallers{
 		docroots: map[string]string{
-			"example.com":      callerDocroot,
-			"shop.example.com": callerDocroot + "/shop",
-			"other.example":    "/home/bob/public_html",
+			"example.com":       callerDocroot,
+			"shop.example.com":  callerDocroot + "/shop",
+			"other.example.com": "/home/bob/public_html",
 		},
 		flagged: flagged,
 	}
@@ -245,8 +246,8 @@ func TestWebshellCallerReported(t *testing.T) {
 
 func TestWebshellCallerOtherSiteNotCounted(t *testing.T) {
 	findings := scanCallers(t, &config.Config{}, nopBotClassifier{}, aliceCallers(map[string]bool{callerShell: false}),
-		callerRequest{"other.example", "bob", callerLine("192.0.2.10", domlogScanTime.Add(-time.Minute), "POST", "/x/shell.php", 200)},
-		callerRequest{"unknown.example", "", callerLine("192.0.2.10", domlogScanTime.Add(-time.Minute), "POST", "/x/shell.php", 200)},
+		callerRequest{"other.example.com", "bob", callerLine("192.0.2.10", domlogScanTime.Add(-time.Minute), "POST", "/x/shell.php", 200)},
+		callerRequest{"unknown.example.com", "", callerLine("192.0.2.10", domlogScanTime.Add(-time.Minute), "POST", "/x/shell.php", 200)},
 		callerRequest{"", "", callerLine("192.0.2.10", domlogScanTime.Add(-time.Minute), "POST", "/x/shell.php", 200)})
 	if len(findings) != 0 {
 		t.Fatalf("a request on another site was counted: %+v", findings)
@@ -435,4 +436,131 @@ func setCallerPanel(t *testing.T, panel platform.Panel) {
 	platform.ResetForTest()
 	platform.SetOverrides(platform.Overrides{Panel: &panel})
 	t.Cleanup(platform.ResetForTest)
+}
+
+func TestRequestedFileNormalization(t *testing.T) {
+	flagged := map[string]bool{callerShell: false, callerDocroot + "/a/b/index.php": false}
+	for _, tt := range []struct{ uri, want string }{
+		{"/../x/shell.php", ""},
+		{"/a/../../x/shell.php", ""},
+		{"/%2e%2e/x/shell.php", ""},
+		{"/x%2fshell.php", ""},
+		{"/x%2Fshell.php", ""},
+		{"/a/b/.", callerDocroot + "/a/b/index.php"},
+		{"/a/b/c/..", callerDocroot + "/a/b/index.php"},
+		{"/a/b/%2e", callerDocroot + "/a/b/index.php"},
+	} {
+		got, ok := requestedFile(callerDocroot, tt.uri, flagged)
+		if got != tt.want || ok != (tt.want != "") {
+			t.Errorf("%q: got (%q, %v), want %q", tt.uri, got, ok, tt.want)
+		}
+	}
+}
+
+func TestWebshellCallerKeepsRequestDomain(t *testing.T) {
+	nested := callerDocroot + "/shop/x/shell.php"
+	for _, sameClient := range []bool{false, true} {
+		secondIP := "192.0.2.11"
+		if sameClient {
+			secondIP = "192.0.2.10"
+		}
+		requests := []callerRequest{
+			aliceRequest("192.0.2.10", 1, "GET", "/shop/x/shell.php", 200),
+			{"shop.example.com", "alice", callerLine(secondIP, domlogScanTime.Add(-time.Minute), "GET", "/x/shell.php", 200)},
+		}
+		for _, reverse := range []bool{false, true} {
+			if reverse {
+				requests[0], requests[1] = requests[1], requests[0]
+			}
+			got := scanCallers(t, &config.Config{}, nopBotClassifier{}, aliceCallers(map[string]bool{nested: false}), requests...)
+			if sameClient {
+				if len(got) != 1 || got[0].Domain != "" || !strings.Contains(got[0].Details, "2 requests") || strings.Count(got[0].Details, nested) != 1 {
+					t.Fatalf("shared caller: %+v", got)
+				}
+			} else {
+				if len(got) != 2 {
+					t.Fatalf("callers: %+v", got)
+				}
+				for _, f := range got {
+					want := "example.com"
+					if f.SourceIP == secondIP {
+						want = "shop.example.com"
+					}
+					if f.Domain != want {
+						t.Errorf("caller %s: domain %q, want %q", f.SourceIP, f.Domain, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestWebshellPublicCountsExcludedClients(t *testing.T) {
+	requests := publicRequests(webshellPublicClients, "/x/shell.php")
+	cfg := &config.Config{}
+	for i := 1; i < webshellPublicClients; i++ {
+		cfg.InfraIPs = append(cfg.InfraIPs, "198.51.100."+itoa(i))
+	}
+	got := scanCallers(t, cfg, nopBotClassifier{}, aliceCallers(map[string]bool{callerShell: false}), requests...)
+	if len(got) != 1 || got[0].Check != "webshell_path_public" {
+		t.Fatalf("public clients reported individually: %+v", got)
+	}
+}
+
+func TestWebshellCallerFullRequestTarget(t *testing.T) {
+	// Truncation leaves a shell prefix; the complete URI resolves elsewhere.
+	prefix := "/x/shell.php/" + strings.Repeat("a/", 2100)
+	requests := []callerRequest{
+		aliceRequest("192.0.2.10", 1, "GET", prefix+strings.Repeat("../", 2101)+"safe.php", 200),
+		aliceRequest("192.0.2.11", 2, "GET", "/"+strings.Repeat("./", 2100)+"x/shell.php", 200),
+	}
+	logPath := filepath.Join(t.TempDir(), "example.com")
+	if err := os.WriteFile(logPath, []byte(requests[0].line+"\n"+requests[1].line+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stats := newDomlogStatsAt(domlogScanTime)
+	stats.callers = aliceCallers(map[string]bool{callerShell: false})
+	if n := tailDomlogsInto(context.Background(), []string{logPath}, &config.Config{}, stats, nopBotClassifier{}, 10); n != 1 {
+		t.Fatalf("scanned %d logs", n)
+	}
+	got := stats.callers.emit()
+	if len(got) != 1 || got[0].SourceIP != "192.0.2.11" {
+		t.Fatalf("truncated target used: %+v", got)
+	}
+}
+
+// Publicness counts addresses across aliases, not address/domain pairs.
+func TestWebshellPublicAliasesCountDistinctClients(t *testing.T) {
+	for _, count := range []int{webshellPublicClients - 1, webshellPublicClients} {
+		callers := aliceCallers(map[string]bool{callerShell: false})
+		callers.docroots["shop.example.com"] = callerDocroot
+		var requests []callerRequest
+		for _, request := range publicRequests(count, "/x/shell.php") {
+			requests = append(requests, request)
+			request.domain = "shop.example.com"
+			requests = append(requests, request)
+		}
+		got := scanCallers(t, &config.Config{}, nopBotClassifier{}, callers, requests...)
+		if count == webshellPublicClients {
+			if len(got) != 1 || got[0].Check != "webshell_path_public" || got[0].Domain != "" || got[0].TenantID != "alice" || !strings.Contains(got[0].Details, itoa(count)+" clients") {
+				t.Fatalf("public aliases: %+v", got)
+			}
+		} else {
+			if len(got) != count {
+				t.Fatalf("alias visitors: %+v", got)
+			}
+			for _, f := range got {
+				if f.Check != "webshell_caller" || f.Domain != "" || !strings.Contains(f.Details, "2 requests") {
+					t.Fatalf("alias visitor: %+v", f)
+				}
+			}
+		}
+	}
+}
+
+func TestWebshellPublicCountsVerifiedBots(t *testing.T) {
+	got := scanCallers(t, &config.Config{}, verifiedBotClassifier{}, aliceCallers(map[string]bool{callerShell: false}), publicRequests(webshellPublicClients, "/x/shell.php")...)
+	if len(got) != 1 || got[0].Check != "webshell_path_public" || got[0].SourceIP != "" {
+		t.Fatalf("public bot requests: %+v", got)
+	}
 }

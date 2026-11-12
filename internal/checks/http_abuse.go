@@ -32,10 +32,12 @@ import (
 // The parser tolerates either the 9-field plain CLF or the 10-field
 // cPanel variant. Bad lines return ok=false; callers must skip them.
 type accessLogRecord struct {
-	RemoteIP  string
-	Time      time.Time
-	Method    string
-	URI       string
+	RemoteIP string
+	Time     time.Time
+	Method   string
+	URI      string
+	// fullURI preserves the request target for file attribution before display truncation.
+	fullURI   string
 	Status    int
 	UserAgent string
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
@@ -277,14 +279,17 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		return
 	}
 	ip := client.Client.String()
-	if cfg != nil && isInfraIP(ip, cfg.InfraIPs) {
+	infra := cfg != nil && isInfraIP(ip, cfg.InfraIPs)
+	verifiedBot := !infra && bot != nil && bot.IsVerifiedBot(ip, rec.UserAgent)
+	// Exempt clients still show that a URL is public, but never get caller findings.
+	s.callers.record(rec, ip, s.scanTime, !infra && !verifiedBot)
+	if infra {
 		return
 	}
-	if bot != nil && bot.IsVerifiedBot(ip, rec.UserAgent) {
+	if verifiedBot {
 		removeChallengeIP(ip)
 		return
 	}
-	s.callers.record(rec, ip, s.scanTime)
 	// The record the counters below name. Its address is the HTTP peer only
 	// when no trusted proxy chain supplied it; stamp reads a count with any
 	// chained record as a trusted chain.
@@ -1079,6 +1084,8 @@ func itoa(n int) string {
 	return string(buf[pos:])
 }
 
+const accessLogURILimit = 4096
+
 // parseAccessLogRecord parses one Combined Log Format line into an
 // accessLogRecord. It does NOT use strings.Fields because quoted
 // request/referer/user-agent fields can contain spaces.
@@ -1089,7 +1096,7 @@ func itoa(n int) string {
 //
 // Returns ok=false for any line that cannot be parsed. Never panics.
 func parseAccessLogRecord(line string) (accessLogRecord, bool) {
-	return parseAccessLogRecordWithURILimit(line, 4096)
+	return parseAccessLogRecordWithURILimit(line, accessLogURILimit)
 }
 
 // Callers grouping by request target must retain its full identity rather than

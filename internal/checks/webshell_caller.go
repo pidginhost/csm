@@ -3,7 +3,6 @@ package checks
 import (
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -38,11 +37,15 @@ type webshellCallers struct {
 }
 
 type webshellPathHits struct {
-	domain, account string
-	clients         map[string]*webshellHits
+	clients map[webshellRequestSource]*webshellHits
+}
+
+type webshellRequestSource struct {
+	client, domain, account string
 }
 
 type webshellHits struct {
+	reportable      bool
 	requests, posts int
 	newest          time.Time
 	sample          string
@@ -83,8 +86,19 @@ func loadWebshellCallers(store *state.Store) *webshellCallers {
 	return &webshellCallers{docroots: docroots, flagged: flagged}
 }
 
+// File attribution needs the whole target. Other domlog consumers keep their
+// existing retention limit even when this collector shares their scan.
+func parseWebshellCallerRecord(line string) (accessLogRecord, bool) {
+	rec, ok := parseAccessLogRecordWithURILimit(line, len(line))
+	if len(rec.URI) > accessLogURILimit {
+		rec.fullURI = rec.URI
+		rec.URI = rec.URI[:accessLogURILimit]
+	}
+	return rec, ok
+}
+
 // record counts rec for client when it requests a flagged file.
-func (w *webshellCallers) record(rec accessLogRecord, client string, now time.Time) {
+func (w *webshellCallers) record(rec accessLogRecord, client string, now time.Time, reportable bool) {
 	if w == nil || rec.Domain == "" || rec.Time.IsZero() || now.Sub(rec.Time) > webshellCallerLookback {
 		return
 	}
@@ -92,7 +106,11 @@ func (w *webshellCallers) record(rec accessLogRecord, client string, now time.Ti
 	if !ok {
 		return
 	}
-	file, ok := requestedFile(docroot, rec.URI, w.flagged)
+	uri := rec.URI
+	if rec.fullURI != "" {
+		uri = rec.fullURI
+	}
+	file, ok := requestedFile(docroot, uri, w.flagged)
 	if !ok {
 		return
 	}
@@ -101,14 +119,16 @@ func (w *webshellCallers) record(rec accessLogRecord, client string, now time.Ti
 	}
 	hits := w.paths[file]
 	if hits == nil {
-		hits = &webshellPathHits{domain: rec.Domain, account: rec.Account, clients: make(map[string]*webshellHits)}
+		hits = &webshellPathHits{clients: make(map[webshellRequestSource]*webshellHits)}
 		w.paths[file] = hits
 	}
-	c := hits.clients[client]
+	source := webshellRequestSource{client: client, domain: strings.ToLower(rec.Domain), account: rec.Account}
+	c := hits.clients[source]
 	if c == nil {
 		c = &webshellHits{}
-		hits.clients[client] = c
+		hits.clients[source] = c
 	}
+	c.reportable = c.reportable || reportable
 	c.requests++
 	if rec.Method == "POST" {
 		c.posts++
@@ -144,15 +164,34 @@ func (w *webshellCallers) emit() []alert.Finding {
 	var keys []string
 	for _, file := range files {
 		hits := w.paths[file]
-		if len(hits.clients) >= webshellPublicClients {
+		clients := make(map[string]bool)
+		domains := make(map[string]bool)
+		accounts := make(map[string]bool)
+		for source := range hits.clients {
+			clients[source.client] = true
+			domains[source.domain] = true
+			accounts[source.account] = true
+		}
+		if len(clients) >= webshellPublicClients {
+			domain, account := "", ""
+			if len(domains) == 1 {
+				for d := range domains {
+					domain = d
+				}
+			}
+			if len(accounts) == 1 {
+				for a := range accounts {
+					account = a
+				}
+			}
 			out = append(out, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "webshell_path_public",
-				TenantID: hits.account,
-				Domain:   hits.domain,
+				TenantID: account,
+				Domain:   domain,
 				DedupKey: file,
 				Message:  "Flagged PHP file requested by many clients: " + file,
-				Details: itoa(len(hits.clients)) + " clients requested it in the last 24 hours. The address is public or embedded in a page, " +
+				Details: itoa(len(clients)) + " clients requested it in the last 24 hours. The address is public or embedded in a page, " +
 					"so its clients are not reported one by one.",
 			})
 			continue
@@ -161,23 +200,28 @@ func (w *webshellCallers) emit() []alert.Finding {
 		if w.flagged[file] {
 			label += " (removed)"
 		}
-		for client, c := range hits.clients {
-			scope := hits.account
-			if scope == "" {
-				scope = hits.domain
+		for source, c := range hits.clients {
+			if !c.reportable {
+				continue
 			}
-			key := client + "|" + scope
+			scope := source.account
+			if scope == "" {
+				scope = source.domain
+			}
+			key := source.client + "|" + scope
 			caller := callers[key]
 			if caller == nil {
-				caller = &webshellCaller{client: client, account: hits.account, domains: make(map[string]bool)}
+				caller = &webshellCaller{client: source.client, account: source.account, domains: make(map[string]bool)}
 				callers[key] = caller
 				keys = append(keys, key)
 			}
-			caller.domains[hits.domain] = true
-			caller.files = append(caller.files, label)
+			caller.domains[source.domain] = true
+			if len(caller.files) == 0 || caller.files[len(caller.files)-1] != label {
+				caller.files = append(caller.files, label)
+			}
 			caller.requests += c.requests
 			caller.posts += c.posts
-			if !c.newest.Before(caller.newest) {
+			if c.newest.After(caller.newest) || (c.newest.Equal(caller.newest) && c.sample < caller.sample) {
 				caller.newest, caller.sample = c.newest, c.sample
 			}
 		}
@@ -261,9 +305,8 @@ func webshellFlaggedFiles(latest []alert.Finding, removed []RemovedFile, docroot
 	return flagged
 }
 
-// webshellCallerTarget reports whether a request for path runs a file that
-// only its operator has a reason to request: PHP a web server executes, inside
-// a document root, and not one of the site's entry points.
+// webshellCallerTarget excludes known entry points from caller attribution.
+// Other flagged PHP files can still be public or embedded in a page.
 func webshellCallerTarget(path string, roots *DocrootIndex) bool {
 	if !contenttype.IsExecutablePHPName(strings.ToLower(filepath.Base(path))) {
 		return false
@@ -297,26 +340,48 @@ func requestedFile(docroot, uri string, flagged map[string]bool) (string, bool) 
 	if i := strings.IndexAny(uri, "?#"); i >= 0 {
 		uri = uri[:i]
 	}
+	// Encoded slashes depend on the vhost's AllowEncodedSlashes policy.
+	// Without that policy, decoding them could name a different file.
+	if strings.Contains(strings.ToLower(uri), "%2f") {
+		return "", false
+	}
 	decoded, err := url.PathUnescape(uri)
 	if err != nil || strings.IndexByte(decoded, 0) >= 0 {
 		return "", false
 	}
-	clean := path.Clean(decoded)
-	if clean == "/" {
+	parts := strings.Split(decoded, "/")
+	clean := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part {
+		case "", ".":
+		case "..":
+			// Servers reject traversal above the URL root instead of clamping it.
+			if len(clean) == 0 {
+				return "", false
+			}
+			clean = clean[:len(clean)-1]
+		default:
+			clean = append(clean, part)
+		}
+	}
+	if len(clean) == 0 {
 		return "", false
 	}
-	file := docroot
-	for _, part := range strings.Split(clean[1:], "/") {
-		file += "/" + part
+	file := docroot + "/" + strings.Join(clean, "/")
+	end := len(docroot)
+	for _, part := range clean {
+		end += 1 + len(part)
 		// A directory can carry a script's name, so every script-named
 		// prefix is a candidate, not only the first.
 		if contenttype.IsExecutablePHPName(strings.ToLower(part)) {
-			if _, ok := flagged[file]; ok {
-				return file, true
+			candidate := file[:end]
+			if _, ok := flagged[candidate]; ok {
+				return candidate, true
 			}
 		}
 	}
-	if strings.HasSuffix(decoded, "/") {
+	last := parts[len(parts)-1]
+	if last == "" || last == "." || last == ".." {
 		file += "/index.php"
 		if _, ok := flagged[file]; ok {
 			return file, true

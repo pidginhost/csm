@@ -306,6 +306,10 @@ func effectiveDomlogMaxAge(cfg *config.Config) time.Duration {
 // per-file ctx gate, the parse-or-skip behaviour, and the scanned
 // counter cannot drift between callers.
 func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, stats *domlogStats, classifier botClassifier, tailLines int) int {
+	parse := parseAccessLogRecord
+	if stats.callers != nil {
+		parse = parseWebshellCallerRecord
+	}
 	scanned := 0
 	for _, p := range paths {
 		if ctx != nil {
@@ -316,7 +320,7 @@ func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, st
 		domain := domainFromDomlogPath(p)
 		account := domainAccountOwner(domain)
 		for _, r := range tailFileRecords(p, tailLines) {
-			rec, ok := parseAccessLogRecord(r.text)
+			rec, ok := parse(r.text)
 			if !ok {
 				continue
 			}
