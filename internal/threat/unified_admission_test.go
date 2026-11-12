@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// Operator ruling 2 (1.5c-3b): a threat lookup reports an executed
+// A threat lookup reports an executed
 // admission block from the firewall state, though the tracker never named
 // the address.
 func TestLookupReportsAnAdmissionBlock(t *testing.T) {

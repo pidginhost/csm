@@ -43,7 +43,7 @@ func testRoots(t *testing.T) func(alert.Finding) PreparedRoot {
 }
 
 // An incident block answers the root of the finding that attested its
-// address (spec 5.2: an incident is a derived wrapper that adds no root of
+// address (an incident is a derived wrapper that adds no root of
 // its own); a finding without address evidence keeps no root.
 func TestIncidentBlockCarriesItsAttestingRoot(t *testing.T) {
 	roots := testRoots(t)

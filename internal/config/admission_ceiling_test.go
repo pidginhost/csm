@@ -6,7 +6,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 )
 
-// Ruling R4 (spec 5.6): the admission ceiling maps max_blocks_per_hour,
+// The admission ceiling maps max_blocks_per_hour,
 // with omitted or zero selecting its own default and values past the
 // largest ceiling clamped. The legacy hourly counter keeps reading the
 // same key with its own default until routing replaces it.
