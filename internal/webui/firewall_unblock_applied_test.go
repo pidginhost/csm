@@ -35,7 +35,7 @@ func TestDropAutoBlockThreatRowWaitsForAnAppliedBatch(t *testing.T) {
 	<-chosen
 	dropped := make(chan struct{})
 	go func() {
-		dropAutoBlockThreatRow(ip)
+		checks.DropAutoBlockThreatRow(ip)
 		close(dropped)
 	}()
 	select {

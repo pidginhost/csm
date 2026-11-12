@@ -53,7 +53,7 @@ func TestAdmissionAppliedBlockYieldsToAConcurrentUnblock(t *testing.T) {
 		// row, then the handler drops the threat row.
 		go func() {
 			writeState(firewall.FirewallState{})
-			dropAutoBlockThreatRow(ip)
+			checks.DropAutoBlockThreatRow(ip)
 			close(unblocked)
 		}()
 		select {
