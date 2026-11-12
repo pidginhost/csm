@@ -73,7 +73,7 @@ func TestKernelPlacementReportsRenameLinkExchange(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	stopReader := p.reader.Start(ctx)
+	stopReader := p.source.Start(ctx)
 	defer func() {
 		cancel()
 		for _, l := range p.links {
@@ -167,7 +167,7 @@ func TestKernelPlacementReportsRenameLinkExchange(t *testing.T) {
 	deadline := time.After(10 * time.Second)
 	for received := 0; received < len(want)+1; received++ {
 		select {
-		case work, ok := <-p.reader.Events():
+		case work, ok := <-p.source.Events():
 			if !ok {
 				t.Fatal("reader stopped early")
 			}
@@ -210,11 +210,16 @@ func TestKernelPlacementReportsRenameLinkExchange(t *testing.T) {
 		}
 	}
 	select {
-	case work := <-p.reader.Events():
+	case work := <-p.source.Events():
 		t.Errorf("unexpected extra placement %+v", work.Value)
 	case <-time.After(200 * time.Millisecond):
 	}
-	if s := p.QueueStatuses(time.Now()); s["kernel"].DroppedTotal != 0 || s["unresolved"].DroppedTotal != 0 {
-		t.Errorf("placements lost: %+v", s)
+	// Every hook call above reached the ring at its used length; none failed.
+	var counts struct{ Lost, Submitted uint64 }
+	if err = p.objs.QueueStats.Lookup(uint32(0), &counts); err != nil {
+		t.Fatal(err)
+	}
+	if counts.Lost != 0 || counts.Submitted != uint64(len(want)+1) {
+		t.Errorf("kernel counters %+v, want submitted=%d lost=0", counts, len(want)+1)
 	}
 }

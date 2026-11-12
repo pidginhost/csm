@@ -27,19 +27,33 @@ typedef uint32_t __u32;
 static void *bpf_map_lookup_elem(void *map, const void *key);
 static void *bpf_ringbuf_reserve(void *ring, uint64_t size, unsigned long flags);
 static void bpf_ringbuf_submit(void *event, unsigned long flags);
+static long bpf_ringbuf_output(void *ring, void *data, uint64_t size, unsigned long flags);
 #include "csm_ringbuf.h"
 static struct csm_queue_stats counts;
 static uint64_t at_publication;
+static long output_err;
 static void *bpf_map_lookup_elem(void *map, const void *key) { return &counts; }
 static void *bpf_ringbuf_reserve(void *ring, uint64_t size, unsigned long flags) { return &counts; }
 static void bpf_ringbuf_submit(void *event, unsigned long flags) {
     /* A consumer can run as soon as publication clears the busy bit. */
     at_publication = counts.submitted;
 }
+static long bpf_ringbuf_output(void *ring, void *data, uint64_t size, unsigned long flags) {
+    if (output_err == 0) {
+        at_publication = counts.submitted;
+    }
+    return output_err;
+}
 int main(void) {
     int event = 0;
     csm_ringbuf_submit(&event);
-    printf("%llu\n", (unsigned long long)at_publication);
+    unsigned long long submitted = at_publication;
+    csm_ringbuf_output(&counts, &event, sizeof(event));
+    unsigned long long output = at_publication;
+    output_err = -11;
+    long err = csm_ringbuf_output(&counts, &event, sizeof(event));
+    printf("%llu %llu %ld %llu %llu\n", submitted, output, err,
+           (unsigned long long)counts.submitted, (unsigned long long)counts.lost);
     return 0;
 }
 `
@@ -55,7 +69,13 @@ int main(void) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	published, err := strconv.ParseUint(strings.TrimSpace(string(output)), 10, 64)
+	fields := strings.Fields(string(output))
+	// A copied record is counted before publication too, and a failed copy
+	// leaves exactly one loss and no submission behind.
+	if len(fields) != 5 || fields[1] != "2" || fields[2] != "-11" || fields[3] != "2" || fields[4] != "1" {
+		t.Fatalf("output helper accounting = %q, want submit=1 output=2 err=-11 submitted=2 lost=1", output)
+	}
+	published, err := strconv.ParseUint(fields[0], 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}

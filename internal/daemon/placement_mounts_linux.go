@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
 // mountEntry is one /proc/self/mountinfo line. Dev uses the stat(2)
@@ -139,7 +141,7 @@ func (fm *FileMonitor) placementFromRaw(raw PlacementRawEvent, mounts []mountEnt
 		path, ok = resolvePlacementPath(dev, raw.Components, mounts)
 	}
 	if !ok {
-		fm.reportUnresolvedPlacement(dev, raw.Components, raw.Truncated)
+		fm.reportUnresolvedPlacement(dev, raw)
 		return placementEvent{}, false
 	}
 	return placementEvent{
@@ -151,21 +153,41 @@ func (fm *FileMonitor) placementFromRaw(raw PlacementRawEvent, mounts []mountEnt
 
 // reportUnresolvedPlacement keys its cooldown on the device, not the names:
 // a writer can make every placement unresolvable.
-func (fm *FileMonitor) reportUnresolvedPlacement(dev uint64, leafFirst []string, truncated bool) {
-	device := fmt.Sprintf("%d:%d", unix.Major(dev), unix.Minor(dev))
+func (fm *FileMonitor) reportUnresolvedPlacement(dev uint64, raw PlacementRawEvent) {
+	device := deviceName(dev)
 	if !fm.shouldAlert(placementUnresolvedCheck, "dev "+device) {
 		return
 	}
-	names := make([]string, 0, len(leafFirst)+1)
+	names := make([]string, 0, len(raw.Components)+1)
 	names = append(names, "...")
-	for i := len(leafFirst) - 1; i >= 0; i-- {
-		names = append(names, leafFirst[i])
+	for i := len(raw.Components) - 1; i >= 0; i-- {
+		names = append(names, raw.Components[i])
 	}
 	reason := "the filesystem has no whole mount to resolve the path under"
-	if truncated {
+	if raw.Truncated {
 		reason = "the path is deeper or longer than realtime protection follows"
 	}
 	fm.sendAlert(alert.High, placementUnresolvedCheck,
 		fmt.Sprintf("Realtime protection could not resolve the path of a file or directory moved or linked on device %s", device),
-		fmt.Sprintf("Realtime protection did not check it because %s. Nearest names: %s. The next deep scan covers it.", reason, strings.Join(names, "/")))
+		fmt.Sprintf("Realtime protection did not check it because %s. Nearest names: %s; inode %d on that device, placed by PID %d. The next deep scan covers it.",
+			reason, strings.Join(names, "/"), raw.Ino, raw.PID))
+}
+
+// reportUncoveredPlacementRoots names each watch root whose device has no
+// whole-filesystem mount. Its device stays out of the kernel filter, so
+// placements under it are never reported at all.
+func (fm *FileMonitor) reportUncoveredPlacementRoots(mounts []mountEntry) {
+	for _, r := range fm.watchRoots {
+		if slices.ContainsFunc(mounts, func(m mountEntry) bool { return m.Dev == r.device }) {
+			continue
+		}
+		csmlog.Warn("placement: watch root has no whole-filesystem mount", "root", r.path, "device", deviceName(r.device))
+		fm.sendAlert(alert.High, placementUnresolvedCheck,
+			fmt.Sprintf("Realtime protection cannot see files moved or linked into %s (device %s)", r.path, deviceName(r.device)),
+			"No mount shows this filesystem from its root, so realtime protection cannot resolve paths of files renamed or hard-linked there. The deep scan covers them.")
+	}
+}
+
+func deviceName(dev uint64) string {
+	return fmt.Sprintf("%d:%d", unix.Major(dev), unix.Minor(dev))
 }

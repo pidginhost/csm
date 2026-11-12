@@ -130,7 +130,8 @@ func TestTruncatedPlacementRaisesFinding(t *testing.T) {
 	}
 	f := found[0]
 	if f.Severity != alert.High || !strings.Contains(f.Message, "259:3") ||
-		!strings.Contains(f.Details, ".../d62/d63/shell.php") || !strings.Contains(f.Details, "deep scan") {
+		!strings.Contains(f.Details, ".../d62/d63/shell.php") || !strings.Contains(f.Details, "deep scan") ||
+		!strings.Contains(f.Details, "inode 12") || !strings.Contains(f.Details, "PID 77") {
 		t.Fatalf("finding does not name the device, the partial path and the fallback: %+v", f)
 	}
 	// Every placement can be made unresolvable, so the device shares one cooldown.
@@ -167,5 +168,27 @@ func TestPlacementFromRawConvertsTheDevice(t *testing.T) {
 	want := placementEvent{Path: "/home/plugins/plugin", Dev: home, Ino: 9, IsDir: true, PID: 42, Kind: placementLink, At: at}
 	if !ok || ev != want {
 		t.Fatalf("placement %+v, %v; want %+v", ev, ok, want)
+	}
+}
+
+// A watch root with no whole-filesystem mount is left out of the kernel
+// filter, so placements under it are never reported. Startup says so.
+func TestUncoveredPlacementRootsRaiseFindings(t *testing.T) {
+	alerts := make(chan alert.Finding, 8)
+	fm := placementTestMonitor(alerts)
+	home, bound := unix.Mkdev(259, 3), unix.Mkdev(253, 1)
+	fm.watchRoots = []watchRootMark{
+		{path: "/home", device: home},
+		{path: "/srv/bound", device: bound},
+	}
+	fm.reportUncoveredPlacementRoots([]mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}})
+	found := unresolvedPlacementFindings(t, alerts)
+	if len(found) != 1 {
+		t.Fatalf("findings %+v, want one for the uncovered root", found)
+	}
+	f := found[0]
+	if f.Severity != alert.High || !strings.Contains(f.Message, "/srv/bound") ||
+		!strings.Contains(f.Message, "253:1") || !strings.Contains(f.Details, "deep scan") {
+		t.Fatalf("finding does not name the root, its device and the fallback: %+v", f)
 	}
 }

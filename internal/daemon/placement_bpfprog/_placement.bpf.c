@@ -49,6 +49,18 @@ struct {
     __uint(max_entries, 64);
 } devs_watched SEC(".maps");
 
+// Events are built here and copied out at their used length, so the ring
+// holds a typical placement in about a hundred bytes, not the full 4 KiB.
+// The program runs with migration disabled. Only a fully preemptible kernel
+// could let another hook on this CPU reuse the slot mid-build; userspace's
+// identity check rejects such a mixed record.
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct placement_event);
+    __uint(max_entries, 1);
+} scratch SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 20); // 1 MiB
@@ -72,7 +84,8 @@ static __always_inline void report(struct dentry *source, struct dentry *target,
         return;
     }
 
-    struct placement_event *e = csm_ringbuf_reserve(&events, sizeof(*e));
+    __u32 zero = 0;
+    struct placement_event *e = bpf_map_lookup_elem(&scratch, &zero);
     if (!e) {
         return;
     }
@@ -108,7 +121,12 @@ static __always_inline void report(struct dentry *source, struct dentry *target,
     }
     e->depth     = depth;
     e->truncated = !at_root;
-    csm_ringbuf_submit(e);
+    // The clamp bounds the size for verifiers that do not track off.
+    __u64 size = __builtin_offsetof(struct placement_event, path) + off;
+    if (size > sizeof(*e)) {
+        size = sizeof(*e);
+    }
+    csm_ringbuf_output(&events, e, size);
 }
 
 // For RENAME_EXCHANGE the core calls this hook once per direction with the

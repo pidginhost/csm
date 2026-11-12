@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/pidginhost/csm/internal/bpf"
 	bpfprog "github.com/pidginhost/csm/internal/daemon/placement_bpfprog"
-	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
@@ -26,11 +24,22 @@ import (
 // waits on them: a full output queue drops and counts the event.
 const placementWorkers = 4
 
+// placementSource is the part of bpf.Reader that Run consumes.
+type placementSource interface {
+	Start(context.Context) func()
+	Events() <-chan queuehealth.Work[PlacementRawEvent]
+	Errors() <-chan error
+	QueueStatuses(time.Time) map[string]queuehealth.Status
+}
+
 type placementBPF struct {
 	objs   *bpfprog.PlacementObjects
 	links  []io.Closer
-	reader *bpf.Reader[PlacementRawEvent]
+	source placementSource
 	fm     *FileMonitor
+	// handle is fm.handlePlacement; tests substitute a blocking or
+	// panicking handler.
+	handle func(placementEvent)
 	// mounts is read once at startup. A mount moved later only costs
 	// verification failures, never analysis of a different file.
 	mounts []mountEntry
@@ -51,11 +60,7 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 		return nil, fmt.Errorf("read mountinfo: %w", err)
 	}
 	mounts := placementMounts(all, fm.watchRoots)
-	for _, r := range fm.watchRoots {
-		if !slices.ContainsFunc(mounts, func(m mountEntry) bool { return m.Dev == r.device }) {
-			csmlog.Warn("placement bpf: watch root has no whole-filesystem mount; placements there are not reported", "root", r.path)
-		}
-	}
+	fm.reportUncoveredPlacementRoots(mounts)
 	if len(mounts) == 0 {
 		return nil, errors.New("no watch root is on a whole-filesystem mount")
 	}
@@ -64,7 +69,7 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 	if err = bpfprog.LoadPlacementObjects(objs, nil); err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
 	}
-	p := &placementBPF{objs: objs, fm: fm, mounts: mounts, unresolved: queuehealth.New(0, time.Minute)}
+	p := &placementBPF{objs: objs, fm: fm, handle: fm.handlePlacement, mounts: mounts, unresolved: queuehealth.New(0, time.Minute)}
 	if err = p.attach(); err != nil {
 		p.closeKernel()
 		return nil, err
@@ -74,7 +79,7 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 		p.closeKernel()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
-	p.reader = reader
+	p.source = reader
 	return p, nil
 }
 
@@ -122,13 +127,13 @@ func (p *placementBPF) Mode() string       { return "bpf" }
 func (p *placementBPF) EventCount() uint64 { return p.count.Load() }
 
 func (p *placementBPF) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	states := p.reader.QueueStatuses(now)
+	states := p.source.QueueStatuses(now)
 	states["unresolved"] = p.unresolved.Snapshot(now)
 	return states
 }
 
 func (p *placementBPF) Run(ctx context.Context) {
-	stopReader := p.reader.Start(ctx)
+	stopReader := p.source.Start(ctx)
 	var workers sync.WaitGroup
 	for range placementWorkers {
 		workers.Add(1)
@@ -138,7 +143,7 @@ func (p *placementBPF) Run(ctx context.Context) {
 		}()
 	}
 	// The reader closes its error channel once ctx ends and it has stopped.
-	for err := range p.reader.Errors() {
+	for err := range p.source.Errors() {
 		emitBPFReaderError(p.fm.alertCh, "placement", err)
 	}
 	// Consumers stop before the hooks detach, and both before the reader
@@ -152,7 +157,7 @@ func (p *placementBPF) Run(ctx context.Context) {
 }
 
 func (p *placementBPF) consume(ctx context.Context) {
-	events := p.reader.Events()
+	events := p.source.Events()
 	for {
 		select {
 		case <-ctx.Done():
@@ -183,6 +188,6 @@ func (p *placementBPF) process(work queuehealth.Work[PlacementRawEvent]) {
 			return
 		}
 		path = ev.Path
-		p.fm.handlePlacement(ev)
+		p.handle(ev)
 	})
 }

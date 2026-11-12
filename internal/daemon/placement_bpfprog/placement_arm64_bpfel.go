@@ -38,6 +38,7 @@ const (
 	PlacementMapDevsWatched     = "devs_watched"
 	PlacementMapEvents          = "events"
 	PlacementMapQueueStats      = "queue_stats"
+	PlacementMapScratch         = "scratch"
 	PlacementProgCsmInodeLink   = "csm_inode_link"
 	PlacementProgCsmInodeRename = "csm_inode_rename"
 	PlacementVarUnused          = "unused"
@@ -96,6 +97,7 @@ type PlacementMapSpecs struct {
 	DevsWatched *ebpf.MapSpec `ebpf:"devs_watched"`
 	Events      *ebpf.MapSpec `ebpf:"events"`
 	QueueStats  *ebpf.MapSpec `ebpf:"queue_stats"`
+	Scratch     *ebpf.MapSpec `ebpf:"scratch"`
 }
 
 // PlacementVariableSpecs contains global variables before they are loaded into the kernel.
@@ -128,6 +130,7 @@ type PlacementMaps struct {
 	DevsWatched *ebpf.Map `ebpf:"devs_watched"`
 	Events      *ebpf.Map `ebpf:"events"`
 	QueueStats  *ebpf.Map `ebpf:"queue_stats"`
+	Scratch     *ebpf.Map `ebpf:"scratch"`
 }
 
 func (m *PlacementMaps) Close() error {
@@ -135,6 +138,7 @@ func (m *PlacementMaps) Close() error {
 		m.DevsWatched,
 		m.Events,
 		m.QueueStats,
+		m.Scratch,
 	)
 }
 
