@@ -33,6 +33,9 @@ type Snapshot struct {
 	ConfigHash           string          `json:"config_hash,omitempty"`
 	BinaryHash           string          `json:"binary_hash,omitempty"`
 	Capabilities         []string        `json:"capabilities,omitempty"`
+	// Backends names the backend each live monitor selected at startup:
+	// bpf, legacy or none.
+	Backends map[string]string `json:"backends"`
 	// DryRunBlocks is the count of firewall blocks that were intercepted by
 	// auto_response.dry_run and logged rather than applied to nftables.
 	// Cleared whenever auto-response is live; dry-run mode keeps a recent

@@ -97,6 +97,9 @@ func appendActiveBPFFeatures(out []string) []string {
 	if bpf.ActiveKind("sensitive_files") == bpf.BackendBPF {
 		out = append(out, "bpf-sensitive-files")
 	}
+	if bpf.ActiveKind("placement") == bpf.BackendBPF {
+		out = append(out, "bpf-file-placement")
+	}
 	return out
 }
 

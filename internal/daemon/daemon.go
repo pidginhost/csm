@@ -3028,6 +3028,9 @@ func (d *Daemon) startFileMonitor() {
 	}
 	fm.registerMetrics()
 	d.setFileMonitor(fm)
+	// The placement backend feeds the analyzer queue. Joining it before Run
+	// means a stop during the backend's load cannot close that queue first.
+	d.startPlacementMonitor(fm)
 	d.wg.Add(1)
 	obs.Go("fanotify", func() {
 		defer d.wg.Done()

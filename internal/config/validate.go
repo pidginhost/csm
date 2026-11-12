@@ -425,6 +425,15 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "bpf_enforcement", err.Error()})
 	}
 
+	// Warn only: the daemon runs an unknown value as auto, and the key is
+	// newer than configs that already load.
+	switch strings.ToLower(strings.TrimSpace(cfg.Detection.PlacementBackend)) {
+	case "", "auto", "bpf", "legacy", "none":
+	default:
+		results = append(results, ValidationResult{"warn", "detection.placement_backend",
+			fmt.Sprintf("unknown value %q runs as auto; use auto, bpf, legacy, or none", cfg.Detection.PlacementBackend)})
+	}
+
 	// --- EmailProtection ---
 	if cfg.EmailProtection.RateWarnThreshold > 0 && cfg.EmailProtection.RateWarnThreshold < 10 {
 		results = append(results, ValidationResult{"warn", "email_protection.rate_warn_threshold", "rate_warn_threshold < 10 may cause excessive alerts"})

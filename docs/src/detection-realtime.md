@@ -36,9 +36,9 @@ and dropped events from the received total to count events rejected before
 queue admission, including those whose file path could not be resolved.
 
 Atomic-save files enter the same bounded worker queue as ordinary writes.
-Where supported, create events inspect available content; close-write events inspect the
-completed write. Scans read the original event descriptor even if the file has
-been renamed, replaced, or deleted before analysis. No rename event is needed
+The watcher receives close-write events, not create events. Scans read the
+original event descriptor even if the file has been renamed, replaced, or
+deleted before analysis. No rename event is needed
 to inspect those bytes. Repeated findings use the normal alert cooldown, and
 queue overflow schedules a directory rescan of files that remain on disk.
 That recovery runs one pass at a time, under a time budget and with a minimum
@@ -49,9 +49,11 @@ Kernel notification loss still relies on the next deep scan. Shutdown drains
 the queue under a fixed time budget: events still waiting when it expires are
 released without being scanned; files still on disk are covered by the next
 deep scan. Both budgets are checked between scans, so a scan or directory
-read already in progress must still finish before shutdown completes. A rename-only
-arrival without a usable create or close-write event is also first examined
-by the rolling content scan; the watcher does not subscribe to rename events.
+read already in progress must still finish before shutdown completes. A file
+renamed or hard-linked into a watched tree, or a directory moved into one,
+raises no close-write event at its new path. The
+[placement monitor](#files-moved-or-linked-into-a-site) covers those when a
+placement backend runs; otherwise they are left to the deep scan.
 
 Realtime YARA scans hand the worker a sealed memory-backed copy of the
 captured bytes, whatever their size, without reopening the event path for
@@ -134,7 +136,7 @@ alert stays.
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
-- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. A file whose exact bytes WordPress moved or copied into place before removing the original is not reported: plugin, theme and core packages, language packs, and the version file a core update reads first. Language-pack and version-probe copies also require a complete, stable data-only snapshot with no suspicious content or earlier unsafe write. A core update that stops after reading its version file leaves the old release installed, so no installed copy matches; that version file is not reported when its bytes equal the wordpress.org checksum for the release and locale it declares. Core checksum downloads start in the background when capacity permits. Plugin downloads do not consume core checksum capacity or share its admission limit. Concurrent requests for a release reuse its download and cached result; a file still unverified at the deletion probe is reported. Package headers are read only from regular files, never blocking on an account-writable named pipe or device. Other executable files do not qualify for this copy exception. The script Really Simple Security copies into uploads to test whether PHP runs there, then deletes, is not reported when its content is byte for byte the shipped script; any other content under that name is. Elementor Safe Mode copies its loader into mu-plugins while enabled and deletes it when switched off; that removal is not reported when the loader's bytes equal the wordpress.org checksum for the same file in the Elementor release the same site had installed when the loader was written. When those checksums cannot be consulted, a loader byte for byte identical to a complete, stable snapshot of the installed plugin's own file, reached without symlinks, is reported as Warning and the finding names that file. The same package proof applies when a different file replaced the loader's path. Other capability-probe scripts cannot exempt executable content in this loader. A loader the checksums reject, or whose earlier payload was rewritten, stays Critical even when its containing directory was removed. A core update unpacks the whole release but installs only what changed and never overwrites the bundled themes and plugins; a staged file it deletes that way is not reported when its bytes equal the wordpress.org checksum for that path in the release now installed. The checksum must describe the same complete, stable snapshot as the retained content. Earlier nonempty content must also be known and unchanged, including content observed at creation; later official bytes or an identical installed copy cannot erase that evidence. The same history rule applies to every staged core, plugin and theme file and to the Safe Mode loader: a file whose content changed after it was first written is reported even when WordPress then moves it into place, an identical copy is installed, or its last bytes are official. Repeated analysis of the same snapshot does not count as another write. A single snapshot whose complete bytes could not be read can still match a move by file identity; a second nonempty snapshot leaves the unknown earlier bytes unaccounted for. Files too large for a complete snapshot retain their leading bytes for content checks. Other files removed from staging without an identical installed copy are still reported. Upgrade staging, atomic-save temp files, template compile caches, BackWPup job-state files (the running job's JSON and its folder list, written behind a PHP comment, including a captured head cut inside a CRLF line ending), a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; files removed together with the directory holding them, such as a language pack WordPress unpacked and discarded, are reported once for that directory; a create/delete burst collapses into one lower-severity notice. Grouping is recalculated after ignored paths are removed: remaining files can form directory groups, while a lone remaining file is reported on its own. Off with `thresholds.dropper_detection: false`. Candidate tracking and findings held for aggregation each accept up to 16,384 entries; additional work is refused without evicting older evidence. Status and doctor report refusals, exhausted probes, overdue work and stalled processing through [protection queue health](api.md#protection-queue-health).
+- Self-deleting droppers: a PHP or executable created under a document root and unlinked within `thresholds.dropper_unlink_ttl_sec` (default 300s), the loader technique that creates a rogue admin then erases itself before any scan. A file whose exact bytes WordPress moved or copied into place before removing the original is not reported: plugin, theme and core packages, language packs, and the version file a core update reads first. Language-pack and version-probe copies also require a complete, stable data-only snapshot with no suspicious content or earlier unsafe write. A core update that stops after reading its version file leaves the old release installed, so no installed copy matches; that version file is not reported when its bytes equal the wordpress.org checksum for the release and locale it declares. Core checksum downloads start in the background when capacity permits. Plugin downloads do not consume core checksum capacity or share its admission limit. Concurrent requests for a release reuse its download and cached result; a file still unverified at the deletion probe is reported. Package headers are read only from regular files, never blocking on an account-writable named pipe or device. Other executable files do not qualify for this copy exception. The script Really Simple Security copies into uploads to test whether PHP runs there, then deletes, is not reported when its content is byte for byte the shipped script; any other content under that name is. Elementor Safe Mode copies its loader into mu-plugins while enabled and deletes it when switched off; that removal is not reported when the loader's bytes equal the wordpress.org checksum for the same file in the Elementor release the same site had installed when the loader was written. When those checksums cannot be consulted, a loader byte for byte identical to a complete, stable snapshot of the installed plugin's own file, reached without symlinks, is reported as Warning and the finding names that file. The same package proof applies when a different file replaced the loader's path. Other capability-probe scripts cannot exempt executable content in this loader. A loader the checksums reject, or whose earlier payload was rewritten, stays Critical even when its containing directory was removed. A core update unpacks the whole release but installs only what changed and never overwrites the bundled themes and plugins; a staged file it deletes that way is not reported when its bytes equal the wordpress.org checksum for that path in the release now installed. The checksum must describe the same complete, stable snapshot as the retained content. Earlier nonempty content must also be known and unchanged, including the first close-write snapshot; later official bytes or an identical installed copy cannot erase that evidence. The same history rule applies to every staged core, plugin and theme file and to the Safe Mode loader: a file whose content changed after it was first written is reported even when WordPress then moves it into place, an identical copy is installed, or its last bytes are official. Repeated analysis of the same snapshot does not count as another write. A single snapshot whose complete bytes could not be read can still match a move by file identity; a second nonempty snapshot leaves the unknown earlier bytes unaccounted for. Files too large for a complete snapshot retain their leading bytes for content checks. Other files removed from staging without an identical installed copy are still reported. Upgrade staging, atomic-save temp files, template compile caches, BackWPup job-state files (the running job's JSON and its folder list, written behind a PHP comment, including a captured head cut inside a CRLF line ending), a path taken over by a newer file, and a file whose original directory was removed are recognized and reported at a lower severity; files removed together with the directory holding them, such as a language pack WordPress unpacked and discarded, are reported once for that directory; a create/delete burst collapses into one lower-severity notice. Grouping is recalculated after ignored paths are removed: remaining files can form directory groups, while a lone remaining file is reported on its own. Off with `thresholds.dropper_detection: false`. Candidate tracking and findings held for aggregation each accept up to 16,384 entries; additional work is refused without evicting older evidence. Status and doctor report refusals, exhausted probes, overdue work and stalled processing through [protection queue health](api.md#protection-queue-health).
 - Dropper admission and pending findings follow the live `suppressions.ignore_paths` list after reload. Intentionally suppressed candidates consume no tracker capacity; losses of eligible candidates still raise the capacity warning.
 - PHP in uploads, languages, upgrade directories
 - PHP in `.ssh`, `.cpanel`, `.gnupg` or `.cagefs` directories, or in the `mail` directory of an account home, including cPanel accounts on further home partitions such as `/home2` (critical escalation). Account mail locations ignore redundant separators but keep Linux directory-name case sensitivity. Directories named `mail` inside applications or document roots do not count; their PHP content is still scanned.
@@ -154,10 +156,12 @@ alert stays.
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
-Completed upload execution probes remain tracked until the deletion check so
-combined or out-of-order create and close-write events preserve completion
-evidence. A probe without a completed write, or with earlier unsafe or
-uncertain content, remains reportable.
+Self-deleting file tracking requires a close-write observation and a recent
+filesystem birth time. Filesystems that do not provide birth time cannot
+support this detector; ordinary realtime content scanning still runs.
+Completed upload execution probes remain tracked until the deletion check.
+Earlier unsafe or uncertain content remains reportable even when a later
+close-write contains a harmless probe.
 Image writes use the existing notification-only fanotify instance, its 16,384
 event queue and 4-16 analyzer workers. They create no permission-event holds
 and do not enter the mail scanner. Thumbnail and WebP bursts fill the same
@@ -218,6 +222,90 @@ previously observed code always override inert-content filtering.
 - Process info enrichment (PID, command, UID)
 - Auto-quarantine on high-confidence realtime signature matches (category, size, entropy, and hex/execution validation)
 - Auto-quarantine on confirmed PHP request-to-execution flows and executable packed payloads, using the stable file version that was inspected
+
+## Files Moved or Linked Into a Site
+
+A file written elsewhere and then renamed or hard-linked into a site raises no
+close-write event at its new path. The placement monitor reports these files.
+Each one goes through the same admission, analysis and response as a write at
+that path, including quarantine of confirmed shells, whatever the file's age.
+The monitor rejects a symlink at the final path component and verifies the
+file's identity before analysis. With `bpf`, that identity comes from the
+kernel event. With `legacy`, the event identifies the parent directory and
+entry name; CSM records the file's identity when it resolves that entry. A
+replacement made before that lookup can be analyzed, but a replacement made
+after it fails the identity check. The event keeps the placing process's PID
+for restore detection; `legacy` cannot prove that process placed a replacement
+found during lookup.
+
+`detection.placement_backend` selects how the monitor sees placements. It
+takes effect after a restart.
+
+- `bpf` uses BPF LSM rename and link hooks. It sees renames, including both
+  sides of a rename exchange, hard links, including a temporary file
+  published with `linkat`, and directories moved in. It needs a BPF-tagged
+  build and a kernel that can attach BPF LSM programs. Chosen explicitly, it
+  has no fallback.
+- `legacy` uses a second fanotify group that reports directory entries, on
+  kernel 5.9 or newer. It sees files and directories moved in, and new
+  entries, which include hard links and temporary files published with
+  `linkat`. A new file that its own close-write already analyzed is not
+  analyzed twice.
+- `auto` (default) tries `bpf`, then `legacy`, then runs without a backend.
+- `none` turns the monitor off. Placed files are left to the deep scan.
+
+Without a backend the daemon logs a startup warning that files moved or
+linked into watched trees are checked only by the deep scan. The status
+response names the selection under `backends.placement` (`bpf`, `legacy` or
+`none`), and `csm doctor` shows it as the `backend: placement` check. That
+check warns on `none` unless the config chose it. `GET /api/v1/capabilities`
+lists `bpf-file-placement` while the BPF backend runs. A failed start raises
+`bpf_unavailable`, as for the other BPF monitors. It is High when an explicit
+`bpf` choice cannot start, or when an explicit `legacy` choice or `auto` fails
+for an unexpected reason, and a Warning when `auto` falls back to `legacy`. A
+kernel that supports neither backend under `auto`, or lacks the `legacy`
+backend when it is chosen explicitly, shows `none` without a finding.
+
+Placements that do not fit the monitor's queue go to the same recovery as a
+full analyzer queue: CSM rescans the directory each file landed in, whatever
+the files' age, and queues a moved-in directory for its walk. BPF recovery allows the
+rename or link to finish before completing a rescan or starting a walk.
+Recovery queues remain bounded; evictions and unfinished work count as drops.
+
+When a watched filesystem has several whole-filesystem mounts, BPF checks
+each watched location separately. Admission uses that location's name, and a
+child mount hiding one view does not prevent checks through another view.
+
+A directory moved into a watched tree is walked, because its files raised no
+events of their own. Each file gets the same identity check and analysis as
+a placed file. The walk never follows symlinks, runs on its own worker, waits
+for analyzer room so live writes keep priority, and works through a large
+tree in bounded passes. When realtime cannot finish a directory, because it
+holds too many entries, too many moved-in directories are waiting, the
+analyzers stay busy for a whole pass, or entries cannot be read, it raises
+one High `placed_dir_incomplete_realtime` naming the directory. The next deep
+scan covers the files it did not check.
+
+`placement_unresolved_realtime` reports what the monitor cannot see, with
+either backend. It is High for a moved or linked file whose path realtime
+could not resolve, such as a path deeper or longer than realtime protection
+follows or a directory the `legacy` backend could not open, and for a watch
+root the running backend cannot see. Unresolved files repeat the finding at
+most once per alert cooldown for each device. A file or directory removed
+before realtime reached it raises nothing. One Warning per start names the
+roots on a filesystem this kernel cannot watch for placements. The deep scan
+covers those files. A kernel queue overflow in the `legacy` backend raises
+`fanotify_kernel_overflow`.
+
+A PHP file saved under an atomic-save temporary name and then renamed to its
+final name is not scanned twice. A recent clean scan is reused only when the
+file's content, size, modification time, permissions and owner match that
+scan, its final name gets the same analysis, and no setting or rule changed
+since. Executable files and files too large for a complete read are always
+analyzed. `csm_fanotify_placement_skipped_total` counts those reuses, and
+`csm_fanotify_placement_unverified_total` counts placements that failed the
+identity check. Queue health for the monitor appears under `bpf.placement` and
+`placement.dir_walk` in [protection queue health](api.md#protection-queue-health).
 
 ## Sensitive System File Watcher
 

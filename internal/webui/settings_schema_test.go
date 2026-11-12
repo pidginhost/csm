@@ -17,7 +17,7 @@ func TestSettingsSectionsAreStable(t *testing.T) {
 	want := []string{
 		"alerts", "thresholds", "mail_logs", "stalwart", "suppressions", "auto_response",
 		"reputation", "email_protection", "challenge", "php_shield",
-		"signatures", "email_av", "modsec", "performance", "cloudflare",
+		"detection", "signatures", "email_av", "modsec", "performance", "cloudflare",
 		"geoip", "infra_ips", "disabled_checks", "sentry", "firewall",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -803,5 +803,30 @@ func TestSettingsHelpStatesTheShippedDefaults(t *testing.T) {
 				t.Errorf("%s.%s help = %q, want %q", tc.section, tc.field, f.Help, want)
 			}
 		}
+	}
+}
+
+// Backend selection runs at startup, so the field carries its own restart
+// tag inside the otherwise live-reloaded detection block.
+func TestDetectionSchemaOffersPlacementBackends(t *testing.T) {
+	section, ok := LookupSettingsSection("detection")
+	if !ok {
+		t.Fatal("no detection section")
+	}
+	field := findSchemaField(section, "placement_backend")
+	if field == nil || field.Type != "enum" {
+		t.Fatalf("placement_backend field %+v, want an enum", field)
+	}
+	if want := []string{"auto", "bpf", "legacy", "none"}; !reflect.DeepEqual(field.Options, want) {
+		t.Errorf("options %v, want %v", field.Options, want)
+	}
+	if len(section.Fields) != 1 {
+		t.Errorf("detection section exposes %d fields, want only placement_backend", len(section.Fields))
+	}
+	old, changed := &config.Config{}, &config.Config{}
+	changed.Detection.PlacementBackend = "none"
+	diff := config.Diff(old, changed)
+	if len(diff) != 1 || diff[0].Field != "detection.placement_backend" || diff[0].Tag != config.TagRestart {
+		t.Errorf("changing the placement backend reloads as %+v, want a restart", diff)
 	}
 }

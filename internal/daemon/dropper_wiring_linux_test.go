@@ -50,7 +50,7 @@ func newDropperWiringTestMonitor(docroot string, ttl time.Duration) *FileMonitor
 	return fm
 }
 
-func TestDropperObservePreservesFDOffsetAndRefreshesCreate(t *testing.T) {
+func TestDropperObservePreservesFDOffsetAndRefreshesRewrite(t *testing.T) {
 	docroot := t.TempDir()
 	path := filepath.Join(docroot, ".temp.123.payload.php")
 	content := []byte("<?php if (isset($_GET['x'])) { system($_GET['x']); }")
@@ -67,17 +67,17 @@ func TestDropperObservePreservesFDOffsetAndRefreshesCreate(t *testing.T) {
 	}
 
 	fm := newDropperWiringTestMonitor(docroot, time.Minute)
-	created := fm.observeDropperCandidate(fileEvent{
-		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE,
+	first := fm.observeDropperCandidate(fileEvent{
+		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE,
 	}, "pid=4242 cmd=php")
-	if created == nil || !created.Created {
-		t.Fatalf("create observation = %+v, want admitted Created candidate", created)
+	if first == nil {
+		t.Fatal("first close-write was not admitted")
 	}
 	closed := fm.observeDropperCandidate(fileEvent{
 		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE,
 	}, "pid=4242 cmd=php")
 	if closed == nil {
-		t.Fatal("close-write did not refresh the create candidate")
+		t.Fatal("second close-write did not refresh the tracked candidate")
 	}
 	if got, err := f.Seek(0, io.SeekCurrent); err != nil || got != 7 {
 		t.Fatalf("event fd offset = %d, err=%v, want 7", got, err)
@@ -88,9 +88,9 @@ func TestDropperObservePreservesFDOffsetAndRefreshesCreate(t *testing.T) {
 
 	due := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
 	if len(due) != 1 {
-		t.Fatalf("tracked candidates = %d, want one merged create/close entry", len(due))
+		t.Fatalf("tracked candidates = %d, want one merged entry", len(due))
 	}
-	if !due[0].Created || due[0].Size != int64(len(content)) || !due[0].DigestKnown {
+	if due[0].Size != int64(len(content)) || !due[0].DigestKnown {
 		t.Fatalf("merged candidate = %+v", due[0])
 	}
 }
@@ -136,7 +136,7 @@ func TestDropperObserveSkipsDigestWithoutRenameShape(t *testing.T) {
 	defer func() { _ = f.Close() }()
 	fm := newDropperWiringTestMonitor(docroot, time.Minute)
 	c := fm.observeDropperCandidate(fileEvent{
-		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+		path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE,
 	}, "")
 	if c == nil {
 		t.Fatal("PHP candidate was not admitted")
@@ -164,11 +164,11 @@ func TestDropperHandleEventPreservesMaskForAtomicStage(t *testing.T) {
 
 	fm := newDropperWiringTestMonitor(docroot, time.Minute)
 	fm.analyzerCh = make(chan fileEvent, 1)
-	fm.handleEvent(dupFD, 4242, FAN_CREATE|FAN_CLOSE_WRITE)
+	fm.handleEvent(dupFD, 4242, FAN_CLOSE_WRITE)
 	event := <-fm.analyzerCh
 	defer func() { _ = unix.Close(event.fd) }()
-	if event.mask&FAN_CREATE == 0 || event.mask&FAN_CLOSE_WRITE == 0 {
-		t.Fatalf("queued mask = %#x, want CREATE|CLOSE_WRITE", event.mask)
+	if event.mask != FAN_CLOSE_WRITE {
+		t.Fatalf("queued mask = %#x, want CLOSE_WRITE", event.mask)
 	}
 	if event.dropperOnly {
 		t.Fatal("atomic staging path must receive normal content checks")
@@ -196,7 +196,7 @@ func TestDropperHandleEventKeepsAlreadyDeletedPHP(t *testing.T) {
 
 	fm := newDropperWiringTestMonitor(docroot, time.Minute)
 	fm.analyzerCh = make(chan fileEvent, 1)
-	fm.handleEvent(dupFD, 4242, FAN_CREATE|FAN_CLOSE_WRITE)
+	fm.handleEvent(dupFD, 4242, FAN_CLOSE_WRITE)
 	event := <-fm.analyzerCh
 	defer func() { _ = unix.Close(event.fd) }()
 	if event.path != path {
@@ -225,7 +225,7 @@ func TestDropperHandleEventAdmitsArbitraryExecutableUnderDocroot(t *testing.T) {
 
 	fm := newDropperWiringTestMonitor(docroot, time.Minute)
 	fm.analyzerCh = make(chan fileEvent, 1)
-	fm.handleEvent(dupFD, 4242, FAN_CREATE)
+	fm.handleEvent(dupFD, 4242, FAN_CLOSE_WRITE)
 	event := <-fm.analyzerCh
 	defer func() { _ = unix.Close(event.fd) }()
 	if !event.dropperOnly {
@@ -253,6 +253,15 @@ func TestDropperHandleEventAdmitsInheritedPHPHandler(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = f.Close() }()
+			// A host-shared mount stamps birth with the host clock, which can
+			// run ahead of this one, and a future birth is not fresh.
+			if birth, ok := statxBirthFromFD(int(f.Fd())); ok {
+				skew := time.Until(birth)
+				if skew > 5*time.Second {
+					t.Fatalf("file birth is %v ahead of the local clock", skew)
+				}
+				time.Sleep(skew)
+			}
 			dupFD, err := unix.Dup(int(f.Fd()))
 			if err != nil {
 				t.Fatal(err)
@@ -261,7 +270,7 @@ func TestDropperHandleEventAdmitsInheritedPHPHandler(t *testing.T) {
 			fm := newDropperWiringTestMonitor(docroot, time.Minute)
 			fm.docRootPatterns = []string{docroot}
 			fm.analyzerCh = make(chan fileEvent, 1)
-			fm.handleEvent(dupFD, 4242, FAN_CREATE|FAN_CLOSE_WRITE)
+			fm.handleEvent(dupFD, 4242, FAN_CLOSE_WRITE)
 			event := <-fm.analyzerCh
 			defer func() { _ = unix.Close(event.fd) }()
 			if event.dropperOnly != tc.dropperOnly || !event.phpExecutable {
@@ -329,7 +338,7 @@ func TestDropperAtomicStageScansAndRetainsSuspiciousContentVerdict(t *testing.T)
 	alerts := make(chan alert.Finding, 8)
 	fm.alertCh = alerts
 	fm.analyzeFile(fileEvent{
-		path: path, fd: int(f.Fd()), mask: FAN_CREATE | FAN_CLOSE_WRITE,
+		path: path, fd: int(f.Fd()), mask: FAN_CLOSE_WRITE,
 	})
 	due := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
 	if len(due) != 1 || !due[0].ContentSuspicious {
@@ -478,7 +487,7 @@ func TestDropperProbeMatchesQuarantineWithReplantedPath(t *testing.T) {
 	fd := openRawFd(t, path)
 	fm := newDropperWiringTestMonitor(docroot, time.Minute)
 	original := fm.observeDropperCandidate(fileEvent{
-		path: path, fd: fd, pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+		path: path, fd: fd, pid: 4242, mask: FAN_CLOSE_WRITE,
 	}, "")
 	if original == nil {
 		t.Fatal("original payload was not tracked")
@@ -492,7 +501,7 @@ func TestDropperProbeMatchesQuarantineWithReplantedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	replanted := fm.observeDropperCandidate(fileEvent{
-		path: path, fd: openRawFd(t, path), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+		path: path, fd: openRawFd(t, path), pid: 4242, mask: FAN_CLOSE_WRITE,
 	}, "")
 	if replanted == nil || replanted.Inode == original.Inode {
 		t.Fatal("replacement payload must be tracked as a new inode")

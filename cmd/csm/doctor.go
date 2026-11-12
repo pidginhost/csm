@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/clientaddr"
 	"github.com/pidginhost/csm/internal/config"
@@ -163,6 +166,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		}
 		report.Checks = append(report.Checks, st)
 	}
+	report.Checks = append(report.Checks, backendDoctorChecks(cfg, sr.Snapshot.Backends)...)
 	if !sr.Snapshot.StoreHealthy {
 		report.Checks = append(report.Checks, DoctorCheck{
 			Name:    "bbolt store healthy",
@@ -769,6 +773,34 @@ func challengeGateProbeURL(cfg *config.Config) (string, error) {
 func challengeListenAddrIsLoopbackDoctor(addr string) bool {
 	ip := net.ParseIP(challenge.ListenHost(addr))
 	return ip != nil && ip.IsLoopback()
+}
+
+// backendDoctorChecks names each live monitor's backend. A monitor running
+// on none warns rather than fails: a kernel without the support is no fault
+// the operator can fix. One the config turned off reports ok.
+func backendDoctorChecks(cfg *config.Config, backends map[string]string) []DoctorCheck {
+	configured := map[string]string{
+		"af_alg":             cfg.Detection.AFAlgBackend,
+		"connection_tracker": cfg.Detection.ConnectionTrackerBackend,
+		"exec_monitor":       cfg.Detection.ExecMonitorBackend,
+		"sensitive_files":    cfg.Detection.SensitiveFilesBackend,
+		"placement":          cfg.Detection.PlacementBackend,
+	}
+	checks := make([]DoctorCheck, 0, len(backends))
+	for _, feature := range slices.Sorted(maps.Keys(backends)) {
+		check := DoctorCheck{Name: "backend: " + feature, Status: "ok", Message: backends[feature]}
+		switch {
+		case backends[feature] != bpf.BackendNone:
+		case strings.EqualFold(strings.TrimSpace(configured[feature]), bpf.BackendNone):
+			check.Message = "disabled by config"
+		default:
+			check.Status = "warn"
+			check.Message = "no live backend"
+			check.Fix = fmt.Sprintf("see why in journalctl -u csm.service -g %s; detection.%s_backend: none turns this monitor off on purpose", feature, feature)
+		}
+		checks = append(checks, check)
+	}
+	return checks
 }
 
 // collapseDoctor reduces a slice of checks to the worst status seen:

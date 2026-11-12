@@ -58,5 +58,13 @@
   {
     "Package": "github.com/pidginhost/csm/internal/workerproc",
     "Name": "TestKernelUnitLauncherMemoryCap"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelPlacementReportsRenameLinkExchange"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelPlacementFIDReportsRenameAndLink"
   }
 ]

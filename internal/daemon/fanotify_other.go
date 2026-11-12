@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
@@ -22,5 +23,6 @@ func (fm *FileMonitor) Run(_ <-chan struct{})     {}
 func (fm *FileMonitor) Stop()                     {}
 func (fm *FileMonitor) registerMetrics()          {}
 func (fm *FileMonitor) WatchScopeSummary() string { return "" }
+func (fm *FileMonitor) runPlacement(bpf.Backend)  {}
 
 func (fm *FileMonitor) queueStatuses(_ time.Time) map[string]queuehealth.Status { return nil }

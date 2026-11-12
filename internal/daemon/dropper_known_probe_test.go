@@ -36,7 +36,7 @@ func TestDropperUploadExecutionProbeIsNotADropper(t *testing.T) {
 		c := knownProbeTestCandidate(body)
 		e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
 		if !e.admit(c) {
-			t.Fatal("completed upload execution probe was not retained for late create events")
+			t.Fatal("completed upload execution probe was not retained for deletion assessment")
 		}
 		due := e.tr.Due(c.Observed.Add(time.Hour))
 		if len(due) != 1 {
@@ -77,7 +77,6 @@ func TestDropperUploadExecutionProbeLookalikesStillReported(t *testing.T) {
 			c.Size = int64(len(c.Head))
 		}},
 		{"executable mode", func(c *dropperCandidate) { c.Mode = 0o100755 }},
-		{"write not closed", func(c *dropperCandidate) { c.WritePending = true }},
 		{"raced read", func(c *dropperCandidate) { c.ContentUnsettled = true }},
 		{"earlier code", func(c *dropperCandidate) { c.ContentMayExecute = true }},
 		{"content verdict", func(c *dropperCandidate) { c.ContentSuspicious = true }},

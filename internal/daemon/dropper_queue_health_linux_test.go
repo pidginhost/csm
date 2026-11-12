@@ -72,21 +72,20 @@ func TestDropperQueueHealthRefreshPreservesRetryLimit(t *testing.T) {
 	now := time.Now()
 	e, findings := newTestEngine(time.Minute)
 	c := freshDropperCandidate(now.Add(-2 * time.Minute))
-	c.BirthKnown = false
 	if !e.tr.Observe(c) {
 		t.Fatal("initial observation was refused")
 	}
 	prober := &fakeProber{byPath: map[string]dropperProbe{c.Path: {Conclusive: false}}}
 	e.probeStep(now, prober, now)
-	c.Birth, c.BirthKnown = c.Observed, true
+	c.Size++
 	if !e.tr.Refresh(c) {
-		t.Fatal("close-write did not strengthen the waiting identity")
+		t.Fatal("close-write did not refresh the waiting entry")
 	}
 	for i := 0; i < maxDropperProbeAttempts+1; i++ {
 		e.probeStep(now, prober, now)
 	}
 	if prober.calls != maxDropperProbeAttempts || len(e.attempts) != 0 || e.tr.trackedCount() != 0 || len(*findings) != 0 {
-		t.Fatalf("identity refresh reset retries or stranded accounting: probes=%d attempts=%d tracked=%d findings=%+v", prober.calls, len(e.attempts), e.tr.trackedCount(), *findings)
+		t.Fatalf("refresh reset retries or stranded accounting: probes=%d attempts=%d tracked=%d findings=%+v", prober.calls, len(e.attempts), e.tr.trackedCount(), *findings)
 	}
 	got := (&FileMonitor{dropper: e}).queueStatuses(time.Now())["fanotify.dropper"]
 	if got.DroppedTotal != 1 || got.Depth != 0 || got.InFlight != 0 {

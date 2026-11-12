@@ -34,7 +34,7 @@ func TestFanotifyQueueHealthTracksOverflowAndScannerFailure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fm.handleEvent(fd, 4242, FAN_CREATE|FAN_CLOSE_WRITE)
+		fm.handleEvent(fd, 4242, FAN_CLOSE_WRITE)
 	}
 	d := &Daemon{fileMonitor: fm}
 	s := d.QueueStatuses()["fanotify.analyzer"]

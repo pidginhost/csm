@@ -138,6 +138,8 @@ func (s *Scanner) LoadError() error {
 
 // Reload loads/reloads all .yml and .yaml rule files from the rules directory.
 func (s *Scanner) Reload() error {
+	// After the swap, so a new generation never pairs with the old rules.
+	defer cacheGeneration.Add(1)
 	if s.rulesDir == "" {
 		s.setLoadErr(nil)
 		return nil

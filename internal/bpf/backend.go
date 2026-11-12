@@ -94,6 +94,20 @@ func SetActive(feature, active string) {
 	activeMu.Unlock()
 }
 
+// ActiveKinds returns a copy of every selected feature's kind, for status.
+// It is never nil, so status shows an empty object rather than null.
+func ActiveKinds() map[string]string {
+	activeMu.RLock()
+	defer activeMu.RUnlock()
+	out := make(map[string]string, len(activeKinds))
+	for feature, kind := range activeKinds {
+		if kind != "" {
+			out[feature] = kind
+		}
+	}
+	return out
+}
+
 // ActiveKind returns the kind currently selected for the given feature, or
 // "" if SetActive was never called for it. internal/health uses this to
 // render per-feature capability strings without importing the metrics

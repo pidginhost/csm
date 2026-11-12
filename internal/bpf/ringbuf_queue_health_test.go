@@ -186,3 +186,33 @@ func TestReaderKeepsKernelAndDecodedLossSeparate(t *testing.T) {
 		t.Fatalf("userspace losses must be one invalid and two abandoned records: states=%+v delivered=%d", states, r.EventCount())
 	}
 }
+
+// An owner that can recover an event the full queue refused gets it on the
+// reader goroutine; the queue still counts the drop.
+func TestReaderHandsDroppedEventsToOwner(t *testing.T) {
+	rb := &queuedRingReader{exhausted: make(chan struct{}), closed: make(chan struct{})}
+	for _, data := range [][]byte{{1}, {2}, {3}} {
+		rb.records = append(rb.records, ringbuf.Record{RawSample: data})
+	}
+	r := &Reader[int]{
+		rb: rb, out: queuehealth.NewChannel[int](1, time.Minute), errs: make(chan error, 1),
+		decode: func(data []byte) (int, error) { return int(data[0]), nil },
+	}
+	var dropped []int
+	r.OnDrop(func(v int) { dropped = append(dropped, v) })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); r.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	select {
+	case <-rb.exhausted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader did not consume the scripted records")
+	}
+	if len(dropped) != 2 || dropped[0] != 2 || dropped[1] != 3 {
+		t.Fatalf("owner received %v, want the two refused events", dropped)
+	}
+	if got := r.QueueStatuses(time.Now())["output"]; got.DroppedTotal != 2 || r.DroppedCount() != 2 {
+		t.Fatalf("recovered drops left queue health: %+v, dropped=%d", got, r.DroppedCount())
+	}
+}

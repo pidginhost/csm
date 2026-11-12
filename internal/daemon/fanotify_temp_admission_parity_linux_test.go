@@ -194,7 +194,7 @@ func TestTempRootAdmissionPreservesDropperTracking(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			fm.handleEvent(fd, 4242, FAN_CREATE|FAN_CLOSE_WRITE)
+			fm.handleEvent(fd, 4242, FAN_CLOSE_WRITE)
 			select {
 			case event := <-fm.analyzerCh:
 				defer func() { _ = unix.Close(event.fd) }()
@@ -210,7 +210,7 @@ func TestTempRootAdmissionPreservesDropperTracking(t *testing.T) {
 				t.Fatal("dropper-only routing introduced a content finding for a temp file")
 			}
 			candidates := fm.dropper.tr.Due(time.Now().Add(2 * time.Minute))
-			if len(candidates) != 1 || candidates[0].Path != path || !candidates[0].Created ||
+			if len(candidates) != 1 || candidates[0].Path != path ||
 				candidates[0].PHPExecutable != tc.handlerPHP || candidates[0].ContentSuspicious {
 				t.Fatalf("tracked candidates = %+v, want the admitted dropper with its content verdict", candidates)
 			}

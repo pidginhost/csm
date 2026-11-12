@@ -10,6 +10,7 @@ import (
 	afalg "github.com/pidginhost/csm/internal/daemon/af_alg_bpfprog"
 	connection "github.com/pidginhost/csm/internal/daemon/connection_bpfprog"
 	execution "github.com/pidginhost/csm/internal/daemon/exec_bpfprog"
+	placement "github.com/pidginhost/csm/internal/daemon/placement_bpfprog"
 	sensitive "github.com/pidginhost/csm/internal/daemon/sensitive_file_bpfprog"
 )
 
@@ -21,6 +22,7 @@ func TestBPFProgramsCarryKernelLossCounters(t *testing.T) {
 		{"af_alg", afalg.LoadAFAlg},
 		{"connection", connection.LoadConnection},
 		{"execution", execution.LoadExec},
+		{"placement", placement.LoadPlacement},
 		{"sensitive_files", sensitive.LoadSensitiveFile},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

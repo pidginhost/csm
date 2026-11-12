@@ -198,7 +198,6 @@ func TestDropperElementorSafeModeLoaderWithoutProofStillCritical(t *testing.T) {
 		prepare    func(t *testing.T, s safeModeSite)
 		checksums  func(t *testing.T) testChecksums
 		executable bool
-		createOnly bool
 	}
 	official := func(t *testing.T) testChecksums {
 		return officialElementor(t, testElementorLoader)
@@ -215,7 +214,6 @@ func TestDropperElementorSafeModeLoaderWithoutProofStillCritical(t *testing.T) {
 		{name: "payload rewritten to plugin file copy", writes: []string{testForgedLoaderPayload, testElementorLoader}, checksums: offline},
 		{name: "payload emptied then official loader", writes: []string{testForgedLoaderPayload, "", testElementorLoader}, checksums: official},
 		{name: "executable mode", writes: []string{testElementorLoader}, checksums: official, executable: true},
-		{name: "create before the close supplied bytes", writes: []string{testElementorLoader}, checksums: official, createOnly: true},
 		{name: "Elementor not installed", writes: []string{testElementorLoader}, checksums: offline,
 			prepare: func(t *testing.T, s safeModeSite) {
 				if err := os.RemoveAll(s.plugin); err != nil {
@@ -255,11 +253,7 @@ func TestDropperElementorSafeModeLoaderWithoutProofStillCritical(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				mask := uint64(FAN_CREATE | FAN_CLOSE_WRITE)
-				if tc.createOnly {
-					mask = FAN_CREATE
-				}
-				c := r.fm.observeDropperCandidate(fileEvent{path: s.muPlugin, fd: int(f.Fd()), pid: 4242, mask: mask}, "pid=4242 cmd=lsphp uid=1000")
+				c := r.fm.observeDropperCandidate(fileEvent{path: s.muPlugin, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "pid=4242 cmd=lsphp uid=1000")
 				_ = f.Close()
 				if c == nil {
 					t.Fatal("mu-plugin write was not admitted")
@@ -357,7 +351,7 @@ func TestDropperPluginCopyHeaderLookupDoesNotBlockOnFIFO(t *testing.T) {
 			done := make(chan *dropperCandidate, 1)
 			go func() {
 				done <- r.fm.observeDropperCandidate(fileEvent{
-					path: s.muPlugin, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+					path: s.muPlugin, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE,
 				}, "")
 			}()
 			select {

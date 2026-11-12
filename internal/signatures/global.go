@@ -1,11 +1,20 @@
 package signatures
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 var (
 	globalScanner *Scanner
 	globalOnce    sync.Once
 )
+
+var cacheGeneration atomic.Uint64
+
+// CacheGeneration changes on every rule load and global swap. The rule file
+// version alone cannot retire verdicts after an edit to an existing rule.
+func CacheGeneration() uint64 { return cacheGeneration.Load() }
 
 // Init initializes the global scanner with rules from the given directory.
 // Safe to call multiple times - only the first call takes effect.
@@ -31,6 +40,7 @@ func Global() *Scanner {
 // restore anything. Tests that need to swap rules use this instead, and put
 // the previous scanner back when they finish.
 func SetGlobal(s *Scanner) *Scanner {
+	defer cacheGeneration.Add(1)
 	previous := globalScanner
 	globalScanner = s
 	return previous

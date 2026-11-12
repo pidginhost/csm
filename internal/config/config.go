@@ -700,6 +700,14 @@ type Config struct {
 		// backend runs the content-hash check. Empty / zero defaults to 5m.
 		SensitiveFilesPollInterval time.Duration `yaml:"sensitive_files_poll_interval"`
 
+		// PlacementBackend selects how realtime protection sees files
+		// renamed or hard-linked into a watched tree. "auto" tries BPF LSM
+		// rename and link hooks, then a fanotify group that reports
+		// directory entries (kernel 5.9+), then none. "bpf" requires BPF
+		// (no fallback). "legacy" pins the fanotify group. "none" leaves
+		// those files to the deep scan. Chosen once at startup.
+		PlacementBackend string `yaml:"placement_backend" hotreload:"restart"`
+
 		// DirectSMTPEgress flags non-MTA local processes opening
 		// outbound SMTP connections. Phase 3 of the BPF Incident
 		// Response Roadmap. Detection-only this phase; Phase 4 will
@@ -2343,6 +2351,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	// wild; operators can override via YAML to add e.g. 2525.
 	if cfg.Detection.DirectSMTPEgress.Backend == "" {
 		cfg.Detection.DirectSMTPEgress.Backend = "auto"
+	}
+	if cfg.Detection.PlacementBackend == "" {
+		cfg.Detection.PlacementBackend = "auto"
 	}
 	if len(cfg.Detection.DirectSMTPEgress.Ports) == 0 {
 		cfg.Detection.DirectSMTPEgress.Ports = []int{25, 465, 587}

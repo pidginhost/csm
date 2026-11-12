@@ -40,6 +40,7 @@ type Reader[T any] struct {
 	errs      chan error
 	count     atomic.Uint64
 	dropped   atomic.Uint64
+	onDrop    func(T)
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -106,6 +107,11 @@ func (r *Reader[T]) Start(ctx context.Context) func() {
 		}
 	}
 }
+
+// OnDrop passes each decoded event the full output queue refuses to fn, on
+// the reader goroutine, so the owner can recover it. The queue still counts
+// the drop. Call before Start; fn must not block.
+func (r *Reader[T]) OnDrop(fn func(T)) { r.onDrop = fn }
 
 // Errors reports one unexpected read error per outage. Run keeps retrying;
 // a successful read resets the outage gate so a later failure is reported.
@@ -186,6 +192,9 @@ func (r *Reader[T]) Run(ctx context.Context) {
 			dropped := r.dropped.Add(1)
 			if shouldLogDroppedEvent(dropped) {
 				csmlog.Warn("bpf ringbuf consumer back-pressure dropped events", "dropped_total", dropped, "events_delivered", r.count.Load())
+			}
+			if r.onDrop != nil {
+				r.onDrop(ev)
 			}
 		}
 	}

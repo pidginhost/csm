@@ -154,21 +154,6 @@ func TestDropperInertGateExecutableCarriageReturnIsNotWhitespace(t *testing.T) {
 	}
 }
 
-func TestDropperInertGatePendingWriteIsNotComplete(t *testing.T) {
-	c := inertTestCandidate()
-	c.WritePending = true
-	e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
-	if !e.admit(c) {
-		t.Fatal("pending create was not admitted")
-	}
-	// An unlinked file can still have a writer holding it open. Without a
-	// close-write snapshot, its initially empty contents prove nothing.
-	due := e.tr.Due(c.Observed.Add(2 * dropperTestTTL))
-	if len(due) != 1 || assessDropper(due[0], dropperProbe{Conclusive: true}) != dropperSuspect {
-		t.Fatalf("unfinished write demoted as an empty guard: %+v", due)
-	}
-}
-
 func TestDropperInertGatePHPBoundaries(t *testing.T) {
 	for _, body := range []string{
 		"<?php/*/\r\n?><?php echo 1;",
@@ -257,16 +242,17 @@ const dropperTestTTL = 3 * time.Minute
 // index.php guard file written under an uploads directory and removed again.
 func inertTestCandidate() dropperCandidate {
 	return dropperCandidate{
-		Path:     "/home/alice/public_html/wp-content/uploads/wpallimport/uploads/abc/index.php",
-		Docroot:  "/home/alice/public_html",
-		Observed: time.Unix(1_770_000_000, 0),
-		Created:  true,
-		Device:   41,
-		Inode:    7002,
-		Mode:     0o100644,
-		Size:     0,
-		PID:      4242,
-		Head:     nil,
+		Path:       "/home/alice/public_html/wp-content/uploads/wpallimport/uploads/abc/index.php",
+		Docroot:    "/home/alice/public_html",
+		Observed:   time.Unix(1_770_000_000, 0),
+		Birth:      time.Unix(1_770_000_000, 0),
+		BirthKnown: true,
+		Device:     41,
+		Inode:      7002,
+		Mode:       0o100644,
+		Size:       0,
+		PID:        4242,
+		Head:       nil,
 	}
 }
 

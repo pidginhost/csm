@@ -84,6 +84,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"config_hash":            snap.ConfigHash,
 		"binary_hash":            snap.BinaryHash,
 		"capabilities":           snap.Capabilities,
+		"backends":               snap.Backends,
 		"dry_run_blocks":         snap.DryRunBlocks,
 		"automation":             snap.Automation,
 		"mode":                   snap.Mode,

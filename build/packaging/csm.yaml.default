@@ -291,6 +291,10 @@ stalwart:
 
 # Detection knobs. Each subsection controls a separate detector.
 detection:
+  # How realtime protection sees files renamed or hard-linked into a site:
+  # auto tries BPF, then fanotify (kernel 5.9+), then none (deep scan only).
+  placement_backend: auto   # auto | bpf | legacy | none
+
   # Known-vulnerable WordPress plugin detector: matches installed plugin
   # versions against a curated CVE/CISA-KEV feed and reports confirmed hits
   # at High or Critical regardless of how far behind latest they are. Default on;

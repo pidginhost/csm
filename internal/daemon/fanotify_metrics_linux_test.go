@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,6 +41,8 @@ func TestFanotifyRegisterMetricsExposesExpectedNames(t *testing.T) {
 		"csm_fanotify_events_admitted_total",
 		"csm_fanotify_queue_depth",
 		"csm_fanotify_events_dropped_total",
+		"csm_fanotify_placement_unverified_total",
+		"csm_fanotify_placement_skipped_total",
 		"csm_fanotify_reconcile_latency_seconds",
 		"csm_realtime_content_scan_truncated_total",
 	} {
@@ -124,5 +127,34 @@ func TestFanotifyEventMetricsMatchAdmissionOutcomes(t *testing.T) {
 	}
 	if got := fanotifyDroppedTotal.Value() - beforeDropped; got != 1 {
 		t.Errorf("dropped metric delta = %g, want 1", got)
+	}
+}
+
+// Placement checks that end before admission reach operators: placements
+// that never opened as the reported file, and placed files whose recent
+// analysis was reused.
+func TestPlacementCountersReachMetrics(t *testing.T) {
+	fm := placementTestMonitor(make(chan alert.Finding, 16))
+	fm.registerMetrics()
+	dir := t.TempDir()
+	link := filepath.Join(dir, "link.php")
+	if err := os.Symlink(filepath.Join(dir, "missing.php"), link); err != nil {
+		t.Fatal(err)
+	}
+	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte("<?php echo 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analyzeClosedWrite(t, fm, staged)
+	before := scrapeBody(t)
+
+	fm.handlePlacement(placementOf(t, link, 0))
+	placeAndAnalyze(t, fm, staged, path, 0)
+
+	after := scrapeBody(t)
+	for _, name := range []string{"csm_fanotify_placement_unverified_total", "csm_fanotify_placement_skipped_total"} {
+		if got := readGauge(after, name) - readGauge(before, name); got != 1 {
+			t.Errorf("%s advanced by %g, want 1", name, got)
+		}
 	}
 }

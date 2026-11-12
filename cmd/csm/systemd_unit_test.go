@@ -155,6 +155,8 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"perf_event_open",
 		"fanotify_init",
 		"fanotify_mark",
+		// The fanotify placement backend resolves directory handles.
+		"open_by_handle_at",
 		"inotify_init",
 		"inotify_init1",
 		"inotify_add_watch",

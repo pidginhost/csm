@@ -143,7 +143,7 @@ func TestAtomicWriteCloseScansCompletedContent(t *testing.T) {
 	}
 	alerts := make(chan alert.Finding, 8)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: alerts, analyzerCh: make(chan fileEvent, 1)}
-	fm.analyzeFile(queuedAtomicWriteEvent(t, fm, path, FAN_CREATE))
+	fm.analyzeFile(queuedAtomicWriteEvent(t, fm, path, FAN_CLOSE_WRITE))
 	assertAtomicWriteFinding(t, alerts, path, false)
 	if _, err := f.WriteString("EVIL_MARKER_A'; ?>"); err != nil {
 		t.Fatal(err)

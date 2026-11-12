@@ -183,6 +183,15 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   events do not disappear from detection -- they arrive delayed.
   Alert target: `rate(csm_fanotify_events_dropped_total[5m]) > 0`
   paired with a short for-clause.
+- `csm_fanotify_placement_unverified_total` (counter): files and
+  directories moved, linked or created into watched trees that did not
+  open as the file the placement monitor reported, so realtime did not
+  check them there. A file replaced again right after it was placed is
+  counted here. Sustained growth means placements are being raced; the
+  deep scan covers those files.
+- `csm_fanotify_placement_skipped_total` (counter): placed files not
+  analyzed again because the same version was analyzed recently under
+  the same conditions, such as an atomic save renamed to its final name.
 - `csm_fanotify_kernel_queue_overflow_total` (counter): kernel-side
   fanotify queue overflows (FAN_Q_OVERFLOW). Unlike analyzer-queue
   drops, the kernel gives no file descriptor for lost events, so

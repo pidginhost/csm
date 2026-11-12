@@ -185,8 +185,6 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		Mode:          uint32(st.Mode),
 		PID:           event.pid,
 		ProcInfo:      procInfo,
-		Created:       event.mask&FAN_CREATE != 0,
-		WritePending:  event.mask&FAN_CREATE != 0 && event.mask&FAN_CLOSE_WRITE == 0,
 		PHPExecutable: event.phpExecutable,
 	}
 	if birth, ok := statxBirthFromFD(event.fd); ok {
@@ -204,11 +202,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		return nil
 	}
 
-	trackFresh := shouldTrackDropper(c, fm.dropper.selfPID, fm.dropper.ttl)
-	// A known old birth time proves this CLOSE_WRITE is not the completion of
-	// a fresh create entry. Filesystems without birth time still need the full
-	// snapshot so Refresh can join a separate FAN_CREATE event to its close.
-	if !trackFresh && c.BirthKnown {
+	if !shouldTrackDropper(c, fm.dropper.selfPID, fm.dropper.ttl) {
 		return nil
 	}
 	if parent, err := statDropperCandidateParent(c.Path, c.Device, c.Inode); err == nil {
@@ -236,8 +230,8 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	}
 	c.ContentUnsettled = !stable
 	if whole && body != nil && stable && int64(len(body)) == c.Size {
-		// Hash the retained snapshot, including CREATE observations, rather
-		// than rereading an fd whose bytes may already have been replaced.
+		// Hash the retained snapshot rather than rereading an fd whose bytes
+		// may already have been replaced.
 		c.Digest, c.DigestKnown = sha256.Sum256(body), true
 		if core {
 			// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
@@ -247,7 +241,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 			c.PluginRelease = fm.pluginReleaseOf(c)
 		}
 	}
-	// Copy exceptions must check even CREATE snapshots: a benign CLOSE_WRITE
+	// Copy exceptions must check every snapshot: a benign later close-write
 	// cannot erase an earlier payload. Blank snapshots carry no such evidence.
 	if wpCopy && (!stable || !dropperContentIsInert(c.Head, c.Size)) {
 		// Keep only the proof and hash, not a large translation body in each
@@ -264,19 +258,14 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 			}
 		}
 		c.WPInstallUnsafe = !c.WPInstallData || c.Mode&0o111 != 0
-	} else if !wpCopy && !whole && !c.WritePending && atomicWriteRenameCandidate(c.Path) != "" {
+	} else if !wpCopy && !whole && atomicWriteRenameCandidate(c.Path) != "" {
 		c.Digest, c.DigestKnown = digestFromFD(event.fd, st.Size)
 	}
 
-	// FAN_CREATE and FAN_CLOSE_WRITE normally arrive as separate records. The
-	// create proves freshness on filesystems without STATX_BTIME; the close
-	// supplies the final bytes. Worker scheduling may deliver either one first,
-	// so Refresh is attempted for every non-create snapshot before admission.
-	if !c.Created && fm.dropper.tr.Refresh(c) {
+	// A rewrite of a tracked file updates its entry even when the new bytes
+	// look inert, so admission's inert gate cannot drop the later snapshot.
+	if fm.dropper.tr.Refresh(c) {
 		return &c
-	}
-	if !trackFresh {
-		return nil
 	}
 	fm.dropper.admit(c)
 	// Even an inert snapshot must reach the content pass: a signature hit
@@ -391,7 +380,7 @@ func (fm *FileMonitor) reportDropperOverflow() {
 
 // statxBirthFromFD returns the file birth time for an open fd when the
 // filesystem records it (ext4, xfs, btrfs). Returns ok=false on filesystems
-// without STATX_BTIME so the caller falls back to the create-event signal.
+// without STATX_BTIME; those files cannot enter fresh-dropper tracking.
 func statxBirthFromFD(fd int) (time.Time, bool) {
 	var stx unix.Statx_t
 	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_SYMLINK_NOFOLLOW, unix.STATX_BTIME, &stx); err != nil {

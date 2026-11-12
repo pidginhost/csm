@@ -4,6 +4,7 @@ import (
 	"maps"
 	"time"
 
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
@@ -75,6 +76,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		ConfigHash:             p.ConfigHash(),
 		BinaryHash:             p.BinaryHash(),
 		Capabilities:           caps,
+		Backends:               bpf.ActiveKinds(),
 		DryRunBlocks:           p.DryRunBlocksCount(),
 		Automation:             p.AutomationStatus(),
 		Update:                 p.UpdateInfo(),

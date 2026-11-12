@@ -96,7 +96,8 @@ account, and re-arm after the same check returns successfully.
 
 The webshell, .htaccess, phishing and filesystem scans run on every deep cycle
 alongside the file index, including while the realtime monitor is active: the
-monitor reports neither a file renamed into place nor a setuid bit being set.
+monitor does not report a setuid bit being set, and it sees files renamed or
+linked into place only where a placement backend runs.
 The exposed-file scan runs in that tier too, on its own interval, because it
 confirms each candidate with a live request to the site rather than by reading
 the file. A cycle that skips it on that interval leaves its existing findings

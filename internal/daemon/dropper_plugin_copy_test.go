@@ -72,8 +72,6 @@ func TestAssessDropperPluginCopy(t *testing.T) {
 			mutate: func(c *dropperCandidate) { c.ContentRewritten = true }},
 		{name: "content rewritten, installed copy", evidence: dropperPluginCopyInstalled, want: dropperSuspect,
 			mutate: func(c *dropperCandidate) { c.ContentRewritten = true }},
-		{name: "write pending", evidence: dropperPluginCopyOfficial, want: dropperSuspect,
-			mutate: func(c *dropperCandidate) { c.WritePending = true }},
 		{name: "unsettled read", evidence: dropperPluginCopyInstalled, want: dropperSuspect,
 			mutate: func(c *dropperCandidate) { c.ContentUnsettled = true }},
 		{name: "digest unknown", evidence: dropperPluginCopyOfficial, want: dropperSuspect,

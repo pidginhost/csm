@@ -44,7 +44,6 @@ func admitPHP(e *dropperEngine, now time.Time, path string) {
 		Path:     path,
 		Docroot:  "/home/alice/public_html",
 		Observed: now,
-		Created:  true,
 		Device:   41,
 		Inode:    7001,
 		Mode:     0o100644,
@@ -126,7 +125,7 @@ func TestEngineAdmitGatesOnShouldTrack(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	e, _ := newTestEngine(time.Minute)
 
-	// A stale (non-created, no birth) file must not be admitted.
+	// A stale file (no birth time) must not be admitted.
 	// Head/Size describe a real PHP file: this test is about the freshness
 	// gate, and a candidate with no content at all is separately rejected as
 	// inert (see dropper_inert_test.go), which would mask what is asserted here.
@@ -137,16 +136,16 @@ func TestEngineAdmitGatesOnShouldTrack(t *testing.T) {
 		Head: body, Size: int64(len(body)),
 	}
 	if e.admit(stale) {
-		t.Error("stale non-created candidate must not be admitted")
+		t.Error("stale candidate must not be admitted")
 	}
 	if e.tr.trackedCount() != 0 {
 		t.Errorf("tracker holds %d after rejected admit, want 0", e.tr.trackedCount())
 	}
 
 	fresh := stale
-	fresh.Created = true
+	fresh.Birth, fresh.BirthKnown = now, true
 	if !e.admit(fresh) {
-		t.Error("fresh created candidate must be admitted")
+		t.Error("fresh candidate must be admitted")
 	}
 	if e.tr.trackedCount() != 1 {
 		t.Errorf("tracker holds %d after admit, want 1", e.tr.trackedCount())

@@ -12,6 +12,7 @@ func (fm *FileMonitor) initQueueHealth() {
 	fm.queueHealthOnce.Do(func() {
 		fm.analyzerHealth = queuehealth.New(cap(fm.analyzerCh), time.Minute)
 		fm.reconcileHealth = queuehealth.New(reconcileDirCap, time.Minute)
+		fm.placedDirHealth = queuehealth.New(placedDirQueueCap, time.Minute)
 		fm.kernelQueueHealth = queuehealth.New(0, time.Minute)
 		fm.kernelQueue = newNotificationQueue(fanotifyDescriptor(fm.fd), fm.kernelQueueHealth, queuehealth.New(1, time.Minute))
 	})
@@ -22,12 +23,15 @@ func (fm *FileMonitor) queueStatuses(now time.Time) map[string]queuehealth.Statu
 	kernel, reader := fm.kernelQueue.snapshot(time.Now)
 	reconcile := fm.reconcileHealth.Snapshot(now)
 	reconcile.DepthUnit = "directories"
+	placedDirs := fm.placedDirHealth.Snapshot(now)
+	placedDirs.DepthUnit = "directories"
 	statuses := map[string]queuehealth.Status{
 		"fanotify.analyzer":        fm.analyzerHealth.Snapshot(now),
 		"fanotify.kernel":          kernel,
 		"fanotify.reader":          reader,
 		"fanotify.reconcile":       reconcile,
 		"fanotify.staged_packages": fm.stagedPackages().snapshot(now),
+		"placement.dir_walk":       placedDirs,
 	}
 	if fm.dropper != nil {
 		statuses["fanotify.dropper"], statuses["fanotify.dropper_findings"] = fm.dropper.tr.queueStatuses(now)

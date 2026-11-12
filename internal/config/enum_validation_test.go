@@ -204,3 +204,44 @@ func TestValidatePortFloodEntries(t *testing.T) {
 		t.Error("a case-insensitive TCP protocol that the engine handles must validate")
 	}
 }
+
+// An unknown placement backend runs as auto, so validation warns instead of
+// refusing a config that loaded before the key existed. The Settings form
+// refuses it at save.
+func TestValidatePlacementBackend(t *testing.T) {
+	for _, v := range []string{"", "auto", "bpf", "legacy", "none", " BPF "} {
+		cfg := lockoutTestConfig(nil)
+		cfg.Detection.PlacementBackend = v
+		for _, level := range []string{"warn", "error"} {
+			if r, ok := findResult(Validate(cfg), level, "detection.placement_backend"); ok {
+				t.Errorf("value %q reported: %+v", v, r)
+			}
+		}
+	}
+
+	cfg := lockoutTestConfig(nil)
+	cfg.Detection.PlacementBackend = "potato"
+	results := Validate(cfg)
+	if _, ok := findResult(results, "error", "detection.placement_backend"); ok {
+		t.Error("an unknown placement backend must not refuse the config")
+	}
+	r, ok := findResult(results, "warn", "detection.placement_backend")
+	if !ok || !strings.Contains(r.Message, "auto, bpf, legacy, or none") {
+		t.Fatalf("an unknown placement backend must warn and list the values, got %+v %v", r, ok)
+	}
+
+	loaded, err := LoadBytes([]byte("hostname: \"\"\ndetection:\n  placement_backend: potato\n"))
+	if err != nil || loaded.Detection.PlacementBackend != "potato" {
+		t.Fatalf("load refused or rewrote an unknown placement backend: %v %+v", err, loaded)
+	}
+}
+
+func TestPlacementBackendDefaultsToAuto(t *testing.T) {
+	cfg, err := LoadBytes([]byte("hostname: \"\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Detection.PlacementBackend != "auto" {
+		t.Fatalf("default placement backend %q, want auto", cfg.Detection.PlacementBackend)
+	}
+}

@@ -454,6 +454,7 @@ detection:
   exec_monitor_poll_interval: 30m       # legacy process monitor interval
   sensitive_files_backend: "auto"       # auto | bpf | legacy | none
   sensitive_files_poll_interval: 5m     # sensitive-file poll/watchset refresh interval
+  placement_backend: "auto"             # auto | bpf | legacy | none; files renamed or hard-linked into a site; restart required
   direct_smtp_egress:
     enabled: false                      # detect non-MTA local processes opening outbound SMTP
     backend: "auto"                     # auto | bpf | legacy | none

@@ -33,3 +33,20 @@ func TestKernelDeviceIDMatchesLSMEncoding(t *testing.T) {
 		}
 	}
 }
+
+// Placement events carry the kernel dev_t; the identity check compares it
+// with fstat, so it has to come back to the userspace encoding exactly.
+func TestUserDeviceIDInvertsKernelDeviceID(t *testing.T) {
+	for _, c := range []struct{ major, minor uint32 }{
+		{0, 30}, {8, 2}, {259, 3}, {253, 5}, {8, 300}, {300, 1}, {4095, 1<<20 - 1},
+	} {
+		user := unix.Mkdev(c.major, c.minor)
+		kernel := uint64(c.major)<<20 | uint64(c.minor)
+		if got := userDeviceID(kernel); got != user {
+			t.Errorf("userDeviceID(%#x) = %#x, want Mkdev(%d,%d) = %#x", kernel, got, c.major, c.minor, user)
+		}
+		if got := userDeviceID(kernelDeviceID(user)); got != user {
+			t.Errorf("round trip of Mkdev(%d,%d) = %#x, want %#x", c.major, c.minor, got, user)
+		}
+	}
+}

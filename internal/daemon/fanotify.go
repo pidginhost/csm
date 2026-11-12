@@ -43,7 +43,6 @@ const (
 	FAN_MARK_MOUNT      = 0x00000010
 	FAN_MARK_FILESYSTEM = 0x00000100
 	FAN_CLOSE_WRITE     = 0x00000008
-	FAN_CREATE          = 0x00000100
 	FAN_CLASS_NOTIF     = 0x00000000
 	FAN_CLOEXEC         = 0x00000001
 	FAN_NONBLOCK        = 0x00000002
@@ -82,9 +81,9 @@ func (s markScope) String() string {
 // blind for precisely the accounts most likely to be compromised. Marking the
 // superblock covers every mount of it.
 //
-// The ladder degrades in two independent directions: kernels without
-// FAN_MARK_FILESYSTEM fall back to the mount mark, and kernels without
-// FAN_CREATE (EL8 among them) keep their scope and drop that event bit.
+// Kernels without FAN_MARK_FILESYSTEM fall back to the mount mark. Close
+// after write is the only event: FAN_CREATE needs an FID-reporting group,
+// which this one is not, so a mask carrying it is always rejected.
 func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
 	var lastErr error
 	for _, attempt := range []struct {
@@ -94,13 +93,11 @@ func markWatchRoot(fd int, path string, mark markFunc) (markScope, error) {
 		{markScopeFilesystem, FAN_MARK_ADD | FAN_MARK_FILESYSTEM},
 		{markScopeMount, FAN_MARK_ADD | FAN_MARK_MOUNT},
 	} {
-		for _, mask := range []uint64{FAN_CLOSE_WRITE | FAN_CREATE, FAN_CLOSE_WRITE} {
-			if err := mark(fd, attempt.flags, mask, -1, path); err != nil {
-				lastErr = err
-				continue
-			}
-			return attempt.scope, nil
+		if err := mark(fd, attempt.flags, FAN_CLOSE_WRITE, -1, path); err != nil {
+			lastErr = err
+			continue
 		}
+		return attempt.scope, nil
 	}
 	return markScopeNone, lastErr
 }
@@ -185,6 +182,13 @@ type EventStats struct {
 	Received int64
 	Admitted int64
 	Dropped  int64
+	// PlacementUnverified counts placement reports dropped because the path
+	// never opened as the reported file or directory. They reach no
+	// admission decision.
+	PlacementUnverified int64
+	// PlacementSkipped counts placed files not analysed again because the
+	// same version was analysed recently under the same conditions.
+	PlacementSkipped int64
 }
 
 // Filtered counts events rejected before queue admission, including events
@@ -196,7 +200,10 @@ func (s EventStats) Filtered() int64 { return s.Received - s.Admitted - s.Droppe
 func (fm *FileMonitor) EventStats() EventStats {
 	fm.eventStatsMu.Lock()
 	defer fm.eventStatsMu.Unlock()
-	return fm.eventStats
+	stats := fm.eventStats
+	stats.PlacementUnverified = fm.placementUnverified.Load()
+	stats.PlacementSkipped = fm.placementSkipped.Load()
+	return stats
 }
 
 func (fm *FileMonitor) recordEvent(admitted, dropped bool) {
@@ -305,6 +312,16 @@ type FileMonitor struct {
 	eventStats    EventStats
 	droppedEvents int64
 	droppedAlerts int64
+	// placementUnverified and placementSkipped are published through
+	// EventStats; the process-wide metrics count the same events.
+	placementUnverified atomic.Int64
+	placementSkipped    atomic.Int64
+	// recent is nil unless a placement backend runs: nothing else reads it,
+	// and keeping it costs a read and hash per analysis.
+	recent *recentAnalyses
+	// placementCreates holds the running fanotify placement backend's
+	// creates until their own close-write settles them; nil otherwise.
+	placementCreates atomic.Pointer[createSettler]
 
 	// queueOverflows counts FAN_Q_OVERFLOW events: the kernel notification
 	// queue filled and events were dropped before userspace ever saw them.
@@ -381,6 +398,20 @@ type FileMonitor struct {
 	// storm's trigger rate feeds the storm.
 	reconcileRunning  atomic.Bool
 	reconcileLastPass atomic.Int64
+
+	// Directories renamed or linked into a watched tree wait here for the
+	// bounded walk that checks the files inside them. placedDirSig wakes
+	// the walk worker; placedDirWG lets shutdown join it before closing the
+	// analyzer queue it feeds.
+	placedDirMu     sync.Mutex
+	placedDirs      []placedDir
+	placedDirSig    chan struct{}
+	placedDirWG     sync.WaitGroup
+	placedDirHealth *queuehealth.Tracker
+
+	// placementWG joins the placement backend, whose workers admit into
+	// analyzerCh, before shutdown closes that channel.
+	placementWG sync.WaitGroup
 
 	// metricsOnce guards one-time registration of the fanotify-scoped
 	// Prometheus metrics. Each FileMonitor registers its own hooks when
@@ -469,6 +500,8 @@ var (
 	fanotifyEventsAdmittedTotal *metrics.Counter
 	fanotifyDroppedTotal        *metrics.Counter
 	fanotifyKernelOverflowTotal *metrics.Counter
+	fanotifyPlacementUnverified *metrics.Counter
+	fanotifyPlacementSkipped    *metrics.Counter
 	fanotifyReconcileDur        *metrics.Histogram
 	contentScanTruncated        *metrics.CounterVec
 )
@@ -504,6 +537,18 @@ func (fm *FileMonitor) registerMetrics() {
 				"FAN_Q_OVERFLOW events: the kernel fanotify notification queue filled and dropped events before userspace read them. Unlike analyzer-queue drops these carry no fd, so the affected files are unknown; the next scheduled deep scan is the backstop. Sustained growth means a storm (bulk unzip, backup restore) or an attack producing more file activity than the reader can drain.",
 			)
 			metrics.MustRegister("csm_fanotify_kernel_queue_overflow_total", fanotifyKernelOverflowTotal)
+
+			fanotifyPlacementUnverified = metrics.NewCounter(
+				"csm_fanotify_placement_unverified_total",
+				"Files and directories renamed, hard-linked or created into watched trees that did not open as the file the placement backend reported, so they reached no admission decision. A file replaced again right after it was placed lands here; sustained growth means placements are being raced.",
+			)
+			metrics.MustRegister("csm_fanotify_placement_unverified_total", fanotifyPlacementUnverified)
+
+			fanotifyPlacementSkipped = metrics.NewCounter(
+				"csm_fanotify_placement_skipped_total",
+				"Files placed into watched trees and not analysed again because the same version was analysed recently under the same conditions, such as an atomic save renamed to its final name.",
+			)
+			metrics.MustRegister("csm_fanotify_placement_skipped_total", fanotifyPlacementSkipped)
 
 			fanotifyReconcileDur = metrics.NewHistogram(
 				"csm_fanotify_reconcile_latency_seconds",
@@ -562,6 +607,9 @@ type fileEvent struct {
 	// to have existed under its PID.
 	at          time.Time
 	writerChain []int
+	// cacheable is set only by a completed clean content scan. Other
+	// detector paths may depend on state outside the placement cache key.
+	cacheable *bool
 }
 
 func (fm *FileMonitor) currentCfg() *config.Config {
@@ -616,9 +664,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	// the next scheduled scan. Mask matches spoolwatch.go (the proven
 	// production pattern for directory-scoped marks): FAN_CLOSE_WRITE
 	// alone catches both new and modified crontabs, since the close
-	// after O_CREAT|O_WRONLY|... fires the close-write event. FAN_CREATE
-	// is omitted because it has stricter kernel requirements with
-	// directory-scoped (non-MOUNT) marks and adds no coverage here.
+	// after O_CREAT|O_WRONLY|... fires the close-write event.
 	if _, statErr := os.Stat(cronSpoolDir()); statErr == nil {
 		if err := unix.FanotifyMark(fd, FAN_MARK_ADD,
 			FAN_CLOSE_WRITE|FAN_EVENT_ON_CHILD, -1, cronSpoolDir()); err != nil {
@@ -655,6 +701,7 @@ func newFileMonitorCore(cfg *config.Config, alertCh chan<- alert.Finding) *FileM
 		stopCh:              make(chan struct{}),
 		reconcileDirs:       make(map[string]reconcileDirectory),
 		reconcileSig:        make(chan struct{}, 1),
+		placedDirSig:        make(chan struct{}, 1),
 		webRootPatterns:     checks.PHPConfigRealtimeRootPatterns(cfg),
 		accountRootPatterns: checks.AccountHomePatterns(),
 		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
@@ -749,6 +796,10 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	// Resolve staged WordPress package files once their checksums land.
 	fm.wg.Add(1)
 	obs.Go("fanotify-wp-package", fm.stagedPackageLoop)
+
+	// Walk directories placed into watched trees.
+	fm.placedDirWG.Add(1)
+	obs.Go("placement-dir-walk", fm.placedDirLoop)
 
 	// Start the self-deleting-dropper probe loop when the detector is enabled.
 	if fm.dropper != nil {
@@ -918,6 +969,8 @@ func (fm *FileMonitor) handleQueueOverflow() {
 	fm.initQueueHealth()
 	fm.kernelQueueHealth.Lose(time.Now(), 1)
 	atomic.AddInt64(&fm.queueOverflows, 1)
+	// Dropped writes name no inode, so any recorded analysis may be stale.
+	fm.recent.Purge()
 	if fanotifyKernelOverflowTotal != nil {
 		fanotifyKernelOverflowTotal.Inc()
 	}
@@ -949,9 +1002,14 @@ func (fm *FileMonitor) reportQueueOverflow() {
 func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		fm.drainDeadline.Store(time.Now().Add(analyzerDrainBudget).UnixNano())
+		// The placement backend admits into analyzerCh and queues walks
+		// until it sees stopCh; the walk worker then admits until it does.
+		fm.placementWG.Wait()
+		fm.placedDirWG.Wait()
 		close(fm.analyzerCh)
 		fm.wg.Wait()
 		fm.discardReconcilePending()
+		fm.discardPlacedDirs()
 		fm.stagedPackages().discardPending(time.Now())
 		if fm.dropper != nil {
 			fm.dropper.tr.discardPending(time.Now())
@@ -986,20 +1044,58 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 }
 
 func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time.Time) {
-	var admitted, dropped bool
-	defer func() { fm.recordEvent(admitted, dropped) }()
-	// Get the file path from the fd via /proc/self/fd/N
-	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
-	if err != nil {
-		_ = unix.Close(fd)
+	path, unlinked, ok := eventFDPath(fd)
+	if !ok {
+		fm.rejectUnresolved(fd)
 		return
 	}
-	path = normalizeFanotifyEventPath(path)
-
+	// Before admission: a write under a name admission ignores still changes
+	// what a later rename back would place.
+	var st unix.Stat_t
+	var closedWrite bool
+	if mask&FAN_CLOSE_WRITE != 0 {
+		if unix.Fstat(fd, &st) == nil {
+			fm.recent.Invalidate(uint64(st.Dev), st.Ino)
+			// A descriptor whose name is gone (O_TMPFILE, an unlinked link
+			// source) is analysed under that name, not the one the inode
+			// was linked to, so it cannot stand in for the create.
+			closedWrite = !unlinked
+		}
+	}
 	event, admit := fm.classifyEvent(path, fd)
+	if fm.admitEvent(fd, event, admit, pid, mask, readAt) && closedWrite {
+		// A dropped close-write cannot replace the placement scan: its
+		// mtime-based recovery may exclude an old inode linked into place.
+		fm.noteClosedWrite(uint64(st.Dev), st.Ino, path)
+	}
+}
+
+// eventFDPath resolves the path an event descriptor was opened at. unlinked
+// reports that the name no longer exists.
+func eventFDPath(fd int) (path string, unlinked, ok bool) {
+	raw, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+	if err != nil {
+		return "", false, false
+	}
+	path = normalizeFanotifyEventPath(raw)
+	return path, path != raw, true
+}
+
+// rejectUnresolved closes an event descriptor whose path could not be read.
+// It still counts as received and filtered.
+func (fm *FileMonitor) rejectUnresolved(fd int) {
+	_ = unix.Close(fd)
+	fm.recordEvent(false, false)
+}
+
+// admitEvent queues the event classifyEvent built for fd and takes
+// ownership of fd. It returns whether the analyzer queue accepted it.
+func (fm *FileMonitor) admitEvent(fd int, event fileEvent, admit bool, pid int32, mask uint64, readAt time.Time) bool {
+	var admitted, dropped bool
+	defer func() { fm.recordEvent(admitted, dropped) }()
 	if !admit {
 		_ = unix.Close(fd)
-		return
+		return false
 	}
 
 	// Send to analyzer pool (with backpressure)
@@ -1021,10 +1117,11 @@ func (fm *FileMonitor) handleEventAt(fd int, pid int32, mask uint64, readAt time
 		if n%100 == 0 {
 			fmt.Fprintf(os.Stderr, "[%s] fanotify: %d events dropped (analyzer queue full)\n", ts(), n)
 		}
-		fm.recordDroppedDir(path)
+		fm.recordDroppedEvent(event)
 		fm.maybeTriggerEagerReconcile(n)
 		_ = unix.Close(fd)
 	}
+	return admitted
 }
 
 // classifyEvent decides whether a write at path is queued for analysis and
@@ -1349,7 +1446,38 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 		}
 	}()
 	work := queuehealth.Work[fileEvent]{Value: event, Ticket: event.queueTicket}
-	work.Process(func(queued fileEvent) { fileAnalyzer(fm, queued) })
+	work.Process(func(queued fileEvent) {
+		begun := fm.recent.Begin()
+		var snapshot analysisSnapshot
+		var keyed bool
+		if fm.recent != nil {
+			snapshot, keyed = snapshotForAnalysis(queued.fd, fm.eventClass(queued))
+		}
+		var cacheable bool
+		queued.cacheable = &cacheable
+		fileAnalyzer(fm, queued)
+		// A writer can restore mtime or keep its descriptor open past the
+		// rename. Only an unchanged scan of the keyed bytes is reusable.
+		if keyed && cacheable && snapshot.unchanged(queued.fd) {
+			fm.recent.Record(snapshot.key, begun, time.Now())
+		}
+	})
+}
+
+// eventClass is everything besides the file version that decides how an
+// admitted event is analysed. The content path carries the location and name
+// rules, so the class only matches when those are unchanged: a cPanel
+// .temp.<n>.<name> write renamed to <name>. The generations retire it on any
+// config publication or rule load. Hashed so each remembered analysis costs a
+// fixed size whatever the path length.
+func (fm *FileMonitor) eventClass(ev fileEvent) string {
+	if ev.dropperOnly || !isPHPSourceExtension(strings.ToLower(filepath.Base(atomicWriteContentPath(ev.path)))) {
+		return ""
+	}
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%t\x00%t\x00%t\x00%d\x00%d\x00%d",
+		atomicWriteContentPath(ev.path), ev.dropperOnly, ev.phpExecutable, fm.suppressedPath(ev.path),
+		config.ActiveGeneration(), signatures.CacheGeneration(), yara.CacheGeneration()))
+	return string(sum[:])
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to
@@ -1586,10 +1714,8 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// H2 - suppression path matching using filepath.Match. Read the live config
 	// (config.Active via currentCfg) so a SIGHUP change to suppressions.ignore_paths
 	// takes effect without a restart, matching the rest of this analyzer.
-	for _, ignore := range fm.currentCfg().Suppressions.IgnorePaths {
-		if matchSuppression(ignore, path) {
-			return
-		}
+	if fm.suppressedPath(path) {
+		return
 	}
 
 	// Skip unmodified WordPress core and plugin files: the hash matches the
@@ -1870,8 +1996,11 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// earlier in this function (before the /tmp early-return) so specific
 	// file types take precedence over the /tmp generic block.
 	if isPHPSourceExtension(nameLower) {
-		if fm.checkPHPContent(event.fd, path, procInfo) {
+		result := fm.inspectPHPContent(event.fd, path, procInfo)
+		if result.matched {
 			markDropperContentSuspicious()
+		} else if event.cacheable != nil {
+			*event.cacheable = result.complete
 		}
 		return
 	}
@@ -2276,11 +2405,23 @@ func confirmedPHPExecutionData(data []byte) bool {
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
 // C3 - reads from fd, not path. M4 - 32KB scan size.
 func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
+	return fm.inspectPHPContent(fd, path, procInfo).matched
+}
+
+// A missing verdict is distinct from a clean scan: only the latter may be
+// reused when a file is placed at another name.
+type contentScanResult struct {
+	matched  bool
+	complete bool
+}
+
+func (fm *FileMonitor) inspectPHPContent(fd int, path, procInfo string) contentScanResult {
 	recordReadTruncation(fd, 32768, "php_check")
 	data, scanned := readVersionedFileFromFd(fd, 32768)
 	if data == nil {
-		return false
+		return contentScanResult{}
 	}
+	complete := scanned != nil && int64(len(data)) == min(scanned.Size(), 32768)
 	content := strings.ToLower(string(data))
 	executable := strings.ToLower(checks.PHPExecutableCode(string(data)))
 	structure := strings.ToLower(checks.PHPRequestFlowStructure(string(data)))
@@ -2294,7 +2435,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		} else {
 			fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime", message, details, path, procInfo)
 		}
-		return true
+		return contentScanResult{matched: true}
 	}
 
 	// Remote payload fetching — paste sites are always suspicious.
@@ -2306,7 +2447,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 			fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 				fmt.Sprintf("PHP dropper with paste site URL: %s", path),
 				fmt.Sprintf("Fetches from: %s", p), path, procInfo)
-			return true
+			return contentScanResult{matched: true}
 		}
 	}
 	githubURLs := []string{"gist.githubusercontent.com", "raw.githubusercontent.com"}
@@ -2324,7 +2465,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 					fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 						fmt.Sprintf("PHP dropper fetching from GitHub with dangerous call: %s", path),
 						fmt.Sprintf("URL: %s, Function: %s", gh, fn), path, procInfo)
-					return true
+					return contentScanResult{matched: true}
 				}
 			}
 		}
@@ -2354,7 +2495,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 				} else {
 					fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime", message, details, path, procInfo)
 				}
-				return true
+				return contentScanResult{matched: true}
 			}
 		}
 	}
@@ -2365,7 +2506,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 				fmt.Sprintf("Fragmented base64_decode evasion detected: %s", path),
 				"base64_decode function name split across string variables", path, procInfo)
-			return true
+			return contentScanResult{matched: true}
 		}
 	}
 
@@ -2375,7 +2516,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 			fmt.Sprintf("Concatenation payload detected: %s (%d concat ops)", path, concatCount),
 			"Variable built from hundreds of string concatenations then executed", path, procInfo)
-		return true
+		return contentScanResult{matched: true}
 	}
 
 	// Shell execution with request input
@@ -2421,7 +2562,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 				fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
 					fmt.Sprintf("Webshell pattern detected: %s", path),
 					fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path, procInfo)
-				return true
+				return contentScanResult{matched: true}
 			}
 		}
 	}
@@ -2430,7 +2571,11 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// Attackers append payloads (eval+base64) at the end of legitimate PHP files,
 	// beyond the head scan window. Only do the cheap heuristic checks, not full
 	// signature scanning (which would be too slow on every large PHP file).
-	if tailData := readTailFromFd(fd, 32768); tailData != nil {
+	tailData := readTailFromFd(fd, 32768)
+	if complete && scanned.Size() > 32768 && len(tailData) != 32768 {
+		complete = false
+	}
+	if tailData != nil {
 		tail := strings.ToLower(string(tailData))
 
 		// Check for eval+decoder on same line in tail
@@ -2444,7 +2589,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 					fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 						fmt.Sprintf("Obfuscated PHP appended to file tail: %s", path),
 						fmt.Sprintf("PHP code execution with %s found at end of file", dec), path, procInfo)
-					return true
+					return contentScanResult{matched: true}
 				}
 			}
 		}
@@ -2455,7 +2600,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 				fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 					fmt.Sprintf("Fragmented base64_decode evasion in file tail: %s", path),
 					"Payload appended at end of legitimate PHP file", path, procInfo)
-				return true
+				return contentScanResult{matched: true}
 			}
 		}
 
@@ -2465,7 +2610,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 				fmt.Sprintf("Concatenation payload in file tail: %s (%d concat ops)", path, tailConcatCount),
 				"Payload appended at end of legitimate PHP file", path, procInfo)
-			return true
+			return contentScanResult{matched: true}
 		}
 	}
 
@@ -2485,13 +2630,15 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	}
 	if !checks.CMSCacheEmpty() && checks.CMSCacheMayContainSize(contentSize) &&
 		checks.IsVerifiedCMSHash(hashEventFD(fd, data, contentSize)) {
-		return false
+		return contentScanResult{complete: complete}
 	}
 
 	// External signature + YARA scanning. The YAML engine sees the complete
 	// event-file size even though realtime analysis scans a bounded prefix, so
 	// per-rule file-size limits cannot be defeated by prefix truncation.
-	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo, fd, scannedIdentity(fd))
+	result := fm.scanSignatures(data, contentSize, path, filepath.Ext(path), procInfo, fd, scannedIdentity(fd))
+	result.complete = result.complete && complete
+	return result
 }
 
 // Images fitting the combined read budget are scanned in one piece so a
@@ -2813,6 +2960,10 @@ func (fm *FileMonitor) runEventSignatureScan(fd int, data []byte, path, ext, pro
 }
 
 func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string, fd int, scanned os.FileInfo) bool {
+	return fm.scanSignatures(data, contentSize, path, ext, procInfo, fd, scanned).matched
+}
+
+func (fm *FileMonitor) scanSignatures(data []byte, contentSize int64, path, ext, procInfo string, fd int, scanned os.FileInfo) contentScanResult {
 	// Both engines see every file. A .yml hit used to end the scan here, so
 	// a file matching a High .yml rule never met the Critical YARA rule and
 	// the inline quarantine that only a Critical match triggers. Only a file
@@ -2866,7 +3017,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 					fm.sendAlert(alert.Critical, "auto_response",
 						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
 						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
-					return true
+					return contentScanResult{matched: true, complete: true}
 				}
 			}
 		}
@@ -2876,7 +3027,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 		matches, err := yara.ScanBytesChecked(yaraScanner, path, data)
 		if err != nil {
 			fm.reportYARAScanError(path, err)
-			return matched
+			return contentScanResult{matched: matched}
 		}
 		if len(matches) > 0 {
 			fm.sendFileFinding(alert.Finding{
@@ -2888,11 +3039,11 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 				ProcessInfo:   procInfo,
 				ContentSHA256: windowDigest(data, contentSize, scanned),
 			})
-			return true
+			return contentScanResult{matched: true, complete: true}
 		}
 	}
 
-	return matched
+	return contentScanResult{matched: matched, complete: true}
 }
 
 // windowDigest fingerprints the scanned bytes only when they are the whole
@@ -3267,6 +3418,16 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 
 	// Run signature scan on the content
 	fm.runEventSignatureScan(fd, data, path, filepath.Ext(path), procInfo)
+}
+
+// suppressedPath reports whether an operator suppression covers path.
+func (fm *FileMonitor) suppressedPath(path string) bool {
+	for _, ignore := range fm.currentCfg().Suppressions.IgnorePaths {
+		if matchSuppression(ignore, path) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchSuppression checks if a file path matches a suppression glob pattern.
