@@ -259,6 +259,54 @@ func recordedPlacement(t *testing.T, fm *FileMonitor, dir, name, body string) (s
 	return staged, path
 }
 
+// The deletion probe looks at the path a candidate was tracked at. A skipped
+// placement is still a new path for a file that may delete itself there.
+func TestPlacementSkippedFileTrackedAsDropper(t *testing.T) {
+	const ttl = time.Minute
+	dir := t.TempDir()
+	fm := placementTestMonitor(make(chan alert.Finding, 16))
+	fm.dropper = newDropperEngine(dropperEngineConfig{ttl: ttl, selfPID: 99999})
+	fm.dropperQuarantines = newDropperQuarantineLedger(ttl + time.Minute)
+	fm.setDropperDocroots([]string{dir})
+	var got []capturedAlert
+	fm.dropper.emit = func(sev alert.Severity, check, msg, details, path, _ string) {
+		got = append(got, capturedAlert{sev: sev, check: check, msg: msg, details: details, path: path})
+	}
+	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte("<?php echo 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(staged, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm.handleEvent(fd, writerPID, unix.FAN_CLOSE_WRITE)
+	events := queuedPlacements(t, fm)
+	if len(events) != 1 {
+		t.Fatalf("close-write queued %d events, want 1", len(events))
+	}
+	fm.analyzeFileSafe(events[0])
+
+	if n := placeAndAnalyze(t, fm, staged, path, writerPID); n != 0 {
+		t.Fatalf("unchanged rename queued %d events, want the skip", n)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	probeAt := time.Now().Add(ttl + time.Second)
+	prober := fm.newDropperFSProbe()
+	fm.dropper.probeStep(probeAt, prober, probeAt)
+	flushAt := probeAt.Add(dropperGraceWindow + time.Second)
+	fm.dropper.probeStep(flushAt, prober, flushAt)
+
+	for _, a := range got {
+		if a.check == dropperCheckName && a.path == path {
+			return
+		}
+	}
+	t.Fatalf("dropper findings %+v, want a self-delete of %s", got, path)
+}
+
 // chmod raises no event and keeps mtime, but the analysis branches on mode.
 func TestPlacementModeChangeIsAnalyzed(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), ".config")

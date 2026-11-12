@@ -76,6 +76,10 @@ func (fm *FileMonitor) handlePlacedFile(fd int, pid int32, at time.Time) {
 	event, admit := fm.classifyEvent(path, fd)
 	if admit && fm.analyzedUnchanged(event) {
 		fm.placementSkipped.Add(1)
+		// Only the content analysis is redundant. The deletion probe checks
+		// the path a candidate was tracked at, and this path is new.
+		event.pid, event.mask, event.at = pid, eventPlacedIn, at
+		fm.observeDropperCandidate(event, resolveProcessInfo(pid))
 		_ = unix.Close(fd)
 		return
 	}
