@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +112,47 @@ func TestStalwartScanAndAbuseBansIgnoreKnownCustomer(t *testing.T) {
 		if len(got) != 1 || got[0].Severity != alert.Critical || !checks.BlockableFinding(cfg, got[0]) {
 			t.Fatalf("%s from a known customer: findings = %+v, want a blocking Critical", event, got)
 		}
+	}
+}
+
+// Stalwart's bans now expire, so a known customer's address that keeps
+// failing is banned again. Only the first ban within the known-customer
+// window is excused; the next one blocks.
+func TestStalwartKnownCustomerSecondBanBlocks(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.BlockIPs = true, true
+	d, _ := newStalwartAuthDaemon(t, cfg)
+	d.knownCustomers.Note("203.0.113.36", knownCustomerIMAP, "user@example.com", time.Now(), serviceLog)
+	ban := func(at time.Time) alert.Finding {
+		t.Helper()
+		got := feedStalwart(d, stalwartLine(at, "security.authentication-ban", 993, "203.0.113.36", ""))
+		if len(got) != 1 {
+			t.Fatalf("findings = %+v, want one", got)
+		}
+		return got[0]
+	}
+	if f := ban(stalwartTestStart); f.Severity != alert.High || !strings.Contains(f.Message, "not blocked") {
+		t.Fatalf("first ban = %+v, want High and not blocked", f)
+	}
+	if f := ban(stalwartTestStart.Add(2 * time.Hour)); f.Severity != alert.Critical || strings.Contains(f.Message, "not blocked") || !checks.BlockableFinding(cfg, f) {
+		t.Fatalf("second ban = %+v, want a blocking Critical", f)
+	}
+	if f := ban(stalwartTestStart.Add(knownCustomerTTL + time.Hour)); f.Severity != alert.High {
+		t.Fatalf("ban after the window = %+v, want it excused again", f)
+	}
+}
+
+func TestExcusedBansBounded(t *testing.T) {
+	var e excusedBans
+	base := netip.MustParseAddr("2001:db8::").As16()
+	for i := 0; i <= maxKnownCustomers; i++ {
+		a := base
+		a[12], a[13], a[14], a[15] = byte(i>>24), byte(i>>16), byte(i>>8), byte(i)
+		if !e.first(netip.AddrFrom16(a), stalwartTestStart.Add(time.Duration(i)*time.Second)) {
+			t.Fatalf("address %d was not new", i)
+		}
+	}
+	if n := e.size(); n > maxKnownCustomers {
+		t.Fatalf("size = %d, want at most %d", n, maxKnownCustomers)
 	}
 }
