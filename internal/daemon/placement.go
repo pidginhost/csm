@@ -98,10 +98,6 @@ func (fm *FileMonitor) analyzedUnchanged(ev fileEvent) bool {
 	return ok && fm.recent.Seen(key, time.Now())
 }
 
-// queuePlacedDir hands a placed-in directory to the bounded walk. Until that
-// walk exists, only the directory's later writes are seen.
-func (fm *FileMonitor) queuePlacedDir(path string, dev, ino uint64, pid int32) {}
-
 // openPlacedFile opens path without following a final symlink and returns the
 // descriptor only when it is the regular file or directory the kernel
 // reported. A different inode at the path is never analysed in its place.
@@ -121,9 +117,14 @@ func openPlacedFile(path string, dev, ino uint64) (fd int, isDir bool, err error
 // openPlacedOnce reports retry for the two states a pending rename or link
 // can leave behind: no entry yet, or the old inode still in place.
 func openPlacedOnce(path string, dev, ino uint64) (fd int, isDir, retry bool, err error) {
+	return openPlacedAt(unix.AT_FDCWD, path, dev, ino)
+}
+
+// openPlacedAt is openPlacedOnce for name relative to dirfd.
+func openPlacedAt(dirfd int, name string, dev, ino uint64) (fd int, isDir, retry bool, err error) {
 	// A pending rename may replace any entry, including a socket or device.
 	// O_PATH lets identity checks precede I/O and keeps mismatches retryable.
-	probe, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	probe, err := unix.Openat(dirfd, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, false, errors.Is(err, unix.ENOENT), err
 	}

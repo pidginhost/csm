@@ -1,0 +1,312 @@
+//go:build linux
+
+package daemon
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/queuehealth"
+)
+
+const (
+	// placedDirEntryBudget bounds what one placed directory may cost
+	// realtime protection; the deep scan covers anything past it.
+	placedDirEntryBudget = 20000
+	// placedDirTimeBudget bounds one pass so a slow tree cannot hold back
+	// the directories queued behind it. The walk resumes on a later pass.
+	placedDirTimeBudget = 30 * time.Second
+	// placedDirQueueCap bounds waiting directories. Eviction is oldest
+	// first and always reported.
+	placedDirQueueCap = 256
+)
+
+// Vars so tests can lower the budgets.
+var (
+	placedDirEntryLimit = placedDirEntryBudget
+	placedDirTimeLimit  = placedDirTimeBudget
+	placedDirQueueLimit = placedDirQueueCap
+)
+
+const placedDirIncompleteCheck = "placed_dir_incomplete_realtime"
+
+// placedDir is a directory renamed or linked into a watched tree. Its files
+// raised no events of their own, so the walk is their realtime check.
+type placedDir struct {
+	path     string
+	dev, ino uint64
+	pid      int32
+	ticket   queuehealth.Ticket
+	// cursor is the last entry visited, as components below path. Names
+	// are walked in sorted order, so a resumed pass skips up to it.
+	cursor  []string
+	entries int
+	failed  bool
+}
+
+// queuePlacedDir hands a placed-in directory to the walk worker. It never
+// walks on the caller's goroutine.
+func (fm *FileMonitor) queuePlacedDir(path string, dev, ino uint64, pid int32) {
+	fm.initQueueHealth()
+	now := time.Now()
+	fm.placedDirMu.Lock()
+	fm.placedDirs = append(fm.placedDirs, placedDir{
+		path: path, dev: dev, ino: ino, pid: pid, ticket: fm.placedDirHealth.Begin(now),
+	})
+	evicted := fm.evictPlacedDirsLocked(now)
+	fm.placedDirMu.Unlock()
+	fm.reportEvictedPlacedDirs(evicted)
+	select {
+	case fm.placedDirSig <- struct{}{}:
+	default:
+	}
+}
+
+// evictPlacedDirsLocked drops the oldest waiting directories past the cap.
+// The caller holds placedDirMu and reports what it returns.
+func (fm *FileMonitor) evictPlacedDirsLocked(now time.Time) []placedDir {
+	over := len(fm.placedDirs) - placedDirQueueLimit
+	if over <= 0 {
+		return nil
+	}
+	evicted := slices.Clone(fm.placedDirs[:over])
+	fm.placedDirs = slices.Delete(fm.placedDirs, 0, over)
+	for _, dir := range evicted {
+		dir.ticket.Reject(now)
+	}
+	return evicted
+}
+
+func (fm *FileMonitor) reportEvictedPlacedDirs(evicted []placedDir) {
+	for _, dir := range evicted {
+		fm.reportPlacedDirIncomplete(dir, fmt.Sprintf("more than %d moved-in directories were waiting", placedDirQueueLimit))
+	}
+}
+
+func (fm *FileMonitor) reportPlacedDirIncomplete(dir placedDir, reason string) {
+	fm.sendAlertWithPath(alert.High, placedDirIncompleteCheck,
+		fmt.Sprintf("Realtime protection did not finish checking a directory moved into a site: %s", dir.path),
+		fmt.Sprintf("Realtime protection stopped before it reached every file in this directory: %s. The next deep scan covers the files it did not check.", reason),
+		dir.path, resolveProcessInfo(dir.pid))
+}
+
+// placedDirLoop is the single walk worker. Run starts it; drainAndClose
+// waits for it before closing the analyzer queue the walk feeds.
+func (fm *FileMonitor) placedDirLoop() {
+	defer fm.placedDirWG.Done()
+	for {
+		select {
+		case <-fm.stopCh:
+			return
+		case <-fm.placedDirSig:
+		}
+		for fm.walkNextPlacedDir() {
+		}
+	}
+}
+
+// walkNextPlacedDir runs one bounded pass over the oldest waiting directory
+// and reports whether there was one.
+func (fm *FileMonitor) walkNextPlacedDir() bool {
+	select {
+	case <-fm.stopCh:
+		return false
+	default:
+	}
+	fm.placedDirMu.Lock()
+	if len(fm.placedDirs) == 0 {
+		fm.placedDirMu.Unlock()
+		return false
+	}
+	dir := fm.placedDirs[0]
+	fm.placedDirs = slices.Delete(fm.placedDirs, 0, 1)
+	fm.placedDirMu.Unlock()
+
+	dir.ticket.Start(time.Now())
+	yield, reason := fm.walkPlacedDirSafe(&dir)
+	now := time.Now()
+	switch {
+	case yield:
+		// Behind newer arrivals, so one large tree cannot starve them.
+		dir.ticket.Requeue(now)
+		fm.placedDirMu.Lock()
+		fm.placedDirs = append(fm.placedDirs, dir)
+		evicted := fm.evictPlacedDirsLocked(now)
+		fm.placedDirMu.Unlock()
+		fm.reportEvictedPlacedDirs(evicted)
+	case reason != "":
+		dir.ticket.Reject(now)
+		fm.reportPlacedDirIncomplete(dir, reason)
+	default:
+		dir.ticket.Finish(now)
+	}
+	return true
+}
+
+// walkPlacedDirSafe contains a panic the way analyzeFileSafe does: one
+// crafted tree must not stop the walks queued behind it.
+func (fm *FileMonitor) walkPlacedDirSafe(dir *placedDir) (yield bool, reason string) {
+	defer func() {
+		if r := recover(); r != nil {
+			fm.reportScannerPanic(dir.path, r)
+			yield, reason = false, "the walk failed"
+		}
+	}()
+	w := placedDirWalk{fm: fm, dir: dir, deadline: time.Now().Add(placedDirTimeLimit)}
+	yield, reason = w.walk(nil, dir.dev, dir.ino, dir.cursor)
+	if !yield && reason == "" && dir.failed {
+		reason = "some entries could not be read"
+	}
+	return yield, reason
+}
+
+type placedDirWalk struct {
+	fm       *FileMonitor
+	dir      *placedDir
+	deadline time.Time
+	visited  int
+}
+
+// yield reports whether this pass must stop: the monitor is stopping, or
+// the time budget is spent after at least one entry, so every pass advances.
+func (w *placedDirWalk) yield() bool {
+	select {
+	case <-w.fm.stopCh:
+		return true
+	default:
+	}
+	return w.visited > 0 && !time.Now().Before(w.deadline)
+}
+
+// walk visits rel, the directory below the placed root that its parent's
+// listing saw as dev+ino, from after, the rest of the resume cursor.
+func (w *placedDirWalk) walk(rel []string, dev, ino uint64, after []string) (yield bool, reason string) {
+	fd, ok := w.open(rel, dev, ino)
+	if !ok {
+		return false, ""
+	}
+	defer func() {
+		if fd >= 0 {
+			_ = unix.Close(fd)
+		}
+	}()
+	names, err := readDirNames(fd)
+	if err != nil {
+		w.dir.failed = true
+		return false, ""
+	}
+	for _, name := range names {
+		var below []string
+		revisit := false
+		if len(after) > 0 {
+			if name < after[0] {
+				continue
+			}
+			if name == after[0] {
+				revisit, below = true, after[1:]
+			}
+		}
+		path := append(slices.Clip(rel), name)
+		if !revisit {
+			if w.yield() {
+				return true, ""
+			}
+			if w.dir.entries >= placedDirEntryLimit {
+				return false, fmt.Sprintf("it holds more than %d entries", placedDirEntryLimit)
+			}
+			w.dir.entries++
+			w.visited++
+			w.dir.cursor = path
+		}
+		var st unix.Stat_t
+		if err := unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			w.dir.failed = w.dir.failed || !errors.Is(err, unix.ENOENT)
+			continue
+		}
+		switch st.Mode & unix.S_IFMT {
+		case unix.S_IFREG:
+			if !revisit {
+				w.file(fd, name, &st)
+			}
+		case unix.S_IFDIR:
+			// Hold no descriptor for this level while below it, so a deep
+			// tree cannot exhaust the daemon's descriptors.
+			_ = unix.Close(fd)
+			fd = -1
+			if yield, reason = w.walk(path, uint64(st.Dev), st.Ino, below); yield || reason != "" {
+				return yield, reason
+			}
+			if fd, ok = w.open(rel, dev, ino); !ok {
+				return false, ""
+			}
+		}
+	}
+	return false, ""
+}
+
+// open reopens a directory of the walk by path and accepts it only with the
+// identity the walk saw, so a component swapped for a symlink is never read.
+// A directory moved away or replaced raised its own event and is not lost.
+func (w *placedDirWalk) open(rel []string, dev, ino uint64) (int, bool) {
+	path := filepath.Join(append([]string{w.dir.path}, rel...)...)
+	fd, isDir, retry, err := openPlacedOnce(path, dev, ino)
+	if err != nil {
+		w.dir.failed = w.dir.failed || !retry
+		return -1, false
+	}
+	if !isDir {
+		_ = unix.Close(fd)
+		return -1, false
+	}
+	return fd, true
+}
+
+// file runs one walked file through the placed-file path, opened relative
+// to its listed directory with the identity the listing saw.
+func (w *placedDirWalk) file(dirfd int, name string, st *unix.Stat_t) {
+	fd, isDir, retry, err := openPlacedAt(dirfd, name, uint64(st.Dev), st.Ino)
+	if err != nil {
+		w.dir.failed = w.dir.failed || !retry
+		return
+	}
+	if isDir {
+		_ = unix.Close(fd)
+		return
+	}
+	w.fm.handlePlacedFile(fd, w.dir.pid, time.Now())
+}
+
+// readDirNames lists fd's directory in sorted order without consuming fd.
+// shortcut: reads every name of a directory at once like reconcile; stream a
+// bounded window if huge flat directories show up in the field.
+func readDirNames(fd int) ([]string, error) {
+	dup, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G115 -- Openat returned a non-negative descriptor because err is nil.
+	dir := os.NewFile(uintptr(dup), ".")
+	defer func() { _ = dir.Close() }()
+	names, err := dir.Readdirnames(-1)
+	slices.Sort(names)
+	return names, err
+}
+
+// discardPlacedDirs counts directories still waiting at shutdown as lost.
+// The walk worker has exited before this runs.
+func (fm *FileMonitor) discardPlacedDirs() {
+	fm.placedDirMu.Lock()
+	defer fm.placedDirMu.Unlock()
+	now := time.Now()
+	for _, dir := range fm.placedDirs {
+		dir.ticket.Reject(now)
+	}
+	fm.placedDirs = nil
+}

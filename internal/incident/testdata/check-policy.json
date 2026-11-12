@@ -225,6 +225,7 @@
       "php_shield_eval",
       "php_suspicious_execution",
       "php_taint_scan_incomplete",
+      "placed_dir_incomplete_realtime",
       "prestashop_admin_injection",
       "prestashop_content_injection",
       "prestashop_settings_injection",

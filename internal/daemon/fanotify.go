@@ -394,6 +394,16 @@ type FileMonitor struct {
 	reconcileRunning  atomic.Bool
 	reconcileLastPass atomic.Int64
 
+	// Directories renamed or linked into a watched tree wait here for the
+	// bounded walk that checks the files inside them. placedDirSig wakes
+	// the walk worker; placedDirWG lets shutdown join it before closing the
+	// analyzer queue it feeds.
+	placedDirMu     sync.Mutex
+	placedDirs      []placedDir
+	placedDirSig    chan struct{}
+	placedDirWG     sync.WaitGroup
+	placedDirHealth *queuehealth.Tracker
+
 	// metricsOnce guards one-time registration of the fanotify-scoped
 	// Prometheus metrics. Each FileMonitor registers its own hooks when
 	// it first starts; subsequent calls are a no-op.
@@ -668,6 +678,7 @@ func newFileMonitorCore(cfg *config.Config, alertCh chan<- alert.Finding) *FileM
 		stopCh:              make(chan struct{}),
 		reconcileDirs:       make(map[string]reconcileDirectory),
 		reconcileSig:        make(chan struct{}, 1),
+		placedDirSig:        make(chan struct{}, 1),
 		webRootPatterns:     checks.PHPConfigRealtimeRootPatterns(cfg),
 		accountRootPatterns: checks.AccountHomePatterns(),
 		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
@@ -763,6 +774,10 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	// Resolve staged WordPress package files once their checksums land.
 	fm.wg.Add(1)
 	obs.Go("fanotify-wp-package", fm.stagedPackageLoop)
+
+	// Walk directories placed into watched trees.
+	fm.placedDirWG.Add(1)
+	obs.Go("placement-dir-walk", fm.placedDirLoop)
 
 	// Start the self-deleting-dropper probe loop when the detector is enabled.
 	if fm.dropper != nil {
@@ -965,9 +980,12 @@ func (fm *FileMonitor) reportQueueOverflow() {
 func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		fm.drainDeadline.Store(time.Now().Add(analyzerDrainBudget).UnixNano())
+		// The walk worker admits into analyzerCh until it sees stopCh.
+		fm.placedDirWG.Wait()
 		close(fm.analyzerCh)
 		fm.wg.Wait()
 		fm.discardReconcilePending()
+		fm.discardPlacedDirs()
 		fm.stagedPackages().discardPending(time.Now())
 		if fm.dropper != nil {
 			fm.dropper.tr.discardPending(time.Now())

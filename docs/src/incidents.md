@@ -910,6 +910,7 @@ Attribution gaps:
 | `php_shield_webshell` | security event |  |  |
 | `php_suspicious_execution` | security event |  |  |
 | `php_taint_scan_incomplete` | ignored | self-health |  |
+| `placed_dir_incomplete_realtime` | ignored | self-health |  |
 | `prestashop_admin_injection` | security event |  |  |
 | `prestashop_content_injection` | security event |  |  |
 | `prestashop_settings_injection` | security event |  |  |
