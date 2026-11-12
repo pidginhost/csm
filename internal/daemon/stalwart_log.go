@@ -22,20 +22,22 @@ const stalwartLogWatcher = "stalwart_log"
 
 // stalwartLogStats counts what the reader delivered, for the health check.
 type stalwartLogStats struct {
-	read     atomic.Int64 // lines delivered
-	parsed   atomic.Int64 // lines in Stalwart's layout
-	lastLine atomic.Int64 // unix seconds of the last delivered line, or the start
+	read         atomic.Int64 // lines delivered
+	parsed       atomic.Int64 // lines in Stalwart's layout
+	lastLine     atomic.Int64 // unix seconds of the last delivered line, or the start
+	unattributed atomic.Int64 // sends on a connection with no remembered login
 }
 
 // stalwartState is what the Stalwart log handler keeps between lines.
 type stalwartState struct {
-	ports   stalwartlog.Ports
-	stats   stalwartLogStats
-	webmail *stalwartWebmailTracker
+	ports    stalwartlog.Ports
+	stats    stalwartLogStats
+	webmail  *stalwartWebmailTracker
+	sessions *stalwartSessions
 }
 
 func newStalwartState(ports stalwartlog.Ports, start time.Time) *stalwartState {
-	s := &stalwartState{ports: ports, webmail: newStalwartWebmailTracker()}
+	s := &stalwartState{ports: ports, webmail: newStalwartWebmailTracker(), sessions: newStalwartSessions()}
 	s.stats.lastLine.Store(start.Unix())
 	return s
 }
@@ -108,7 +110,18 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 		if !ok {
 			return nil
 		}
+		// Every login names its connection's sends, a loopback one included:
+		// sites submit locally.
+		if account := ev.Fields["accountName"]; ev.Name == "auth.success" && account != "" {
+			s.sessions.remember(stalwartSessionKey(session), account, ev.Time)
+		}
 		return d.stalwartAuth(ev, session, obs, cfg)
+	case "queue.authenticated-message-queued":
+		session, ok := ev.Session()
+		if !ok {
+			return nil
+		}
+		return d.stalwartSend(ev, session, cfg)
 	case "security.authentication-ban", "security.abuse-ban", "security.scan-ban":
 		session, ok := ev.Session()
 		if !ok {
