@@ -27,7 +27,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - With process killing on, CSM now stops a process that writes back a file it removed, when a web request started it or it runs detached.
 - CSM now raises a High alert while it skips unusable trusted proxy entries.
 - Realtime protection now quarantines PHP shells that run commands sent in the raw request body, instead of only alerting.
-- Realtime protection no longer quarantines PHP for shell example text and still detects request-body execution after shell commands.
+- Realtime protection now also quarantines confirmed PHP shells placed after a shell command in backticks.
 
 ### Added
 
