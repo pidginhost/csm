@@ -293,6 +293,40 @@ func TestC2ConnectionKeepsFirstSeen(t *testing.T) {
 
 // The process holding each socket is named when one is found, best effort:
 // the first process found, once. The uid stays the kernel row's.
+// One connection keeps one alert identity while the process holding it, its
+// executable or a listener on its port changes between scans, so a repeat
+// is not a new Critical alert and a dismissal keeps applying.
+func TestC2ConnectionAlertIdentity(t *testing.T) {
+	cfg := &config.Config{C2Blocklist: []string{"203.0.113.9"}}
+	sock := outboundOS(t, c2Row, testBootID)
+	scan := func() alert.Finding {
+		t.Helper()
+		got := c2Findings(CheckOutboundConnections(context.Background(), cfg, nil))
+		if len(got) != 1 {
+			t.Fatalf("c2_connection findings = %+v, want one", got)
+		}
+		return got[0]
+	}
+	plain := scan()
+	sock.fds = []string{"/proc/4242/fd/3"}
+	sock.links = map[string]string{"/proc/4242/fd/3": "socket:[12345]", "/proc/4242/exe": "/usr/bin/beacon"}
+	held := scan()
+	sock.fds = []string{"/proc/10000/fd/3", "/proc/4242/fd/3"}
+	sock.links["/proc/10000/fd/3"] = "socket:[12345]"
+	forked := scan()
+	sock.table = "0: 00000000:C350 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1001 0 100\n" + c2Row
+	listening := scan()
+	for _, f := range []alert.Finding{held, forked, listening} {
+		if f.Key() != plain.Key() || f.Fingerprint() != plain.Fingerprint() {
+			t.Fatalf("details %q changed the alert identity from %q to %q", f.Details, plain.Key(), f.Key())
+		}
+	}
+	sock.table = strings.Replace(c2Row, ":C350", ":C351", 1)
+	if other := scan(); other.Key() == plain.Key() {
+		t.Fatal("another connection to the same address shares the alert identity")
+	}
+}
+
 func TestC2ConnectionNamesSocketProcess(t *testing.T) {
 	cfg := &config.Config{C2Blocklist: []string{"203.0.113.9"}}
 	table := c2Row + "2: 010200C0:C351 097100CB:01BB 01 00000000:00000000 00:00000000 00000000 1001 0 23456\n"

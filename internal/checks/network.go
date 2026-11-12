@@ -106,11 +106,13 @@ func scanOutboundConnections(cfg *config.Config, store *state.Store) ([]alert.Fi
 			if remoteIP == blocked {
 				outbound := !listeners.has(net.ParseIP(localIP), localPort)
 				details := fmt.Sprintf("Local socket: %s:%d", localIP, localPort)
+				identity := fmt.Sprintf("%s:%d>%s:%d", localIP, localPort, remoteIP, remotePort)
 				if inode != "" {
 					details += ", socket inode " + inode
 				}
 				if uidKnown {
 					details += fmt.Sprintf(", uid %d", uid)
+					identity += fmt.Sprintf(" uid %d", uid)
 				}
 				if !outbound {
 					details += ", local port also listening"
@@ -121,6 +123,9 @@ func scanOutboundConnections(cfg *config.Config, store *state.Store) ([]alert.Fi
 					Message:  fmt.Sprintf("Connection to known C2 IP: %s:%d", remoteIP, remotePort),
 					Details:  details,
 					SourceIP: remoteIP,
+					// Details carry process and listener text that can change
+					// while the same connection stays open.
+					DedupKey: identity,
 				}
 				if stream != "" && inode != "" {
 					// A later scan of the same socket rereads the same
