@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
@@ -158,12 +159,20 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 	return named == len(e.times)
 }
 
+// Only ASCII case is an alias. Unicode lowercasing can turn a distinct login
+// name into an ASCII mailbox and lend it that mailbox's trust.
 func normalizeMailAuthAccount(account string) string {
-	local, domain, ok := strings.Cut(account, "@")
-	if !ok || local == "" || domain == "" {
-		return account
+	// Replacing invalid bytes with a Unicode replacement character would
+	// merge malformed attempts with a different, valid login name.
+	if !utf8.ValidString(account) {
+		return ""
 	}
-	return local + "@" + strings.ToLower(domain)
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, strings.TrimSpace(account))
 }
 
 // slowConfinedToEstablishedGood reports whether every mailbox the slow-window
@@ -1096,10 +1105,18 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind string) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
 	t.knownCustomers.Note(ip, kind, account, at, syslogFed)
+	// A tracker key is not an authenticated identity. Keep the logged local
+	// part or hosting-account case for owner lookup and mailbox response.
+	loginAccount := strings.TrimSpace(account)
+	account = normalizeMailAuthAccount(account)
 	if ip == "" || account == "" {
 		return nil
 	}
-	account = normalizeMailAuthAccount(account)
+	if local, _, ok := strings.Cut(loginAccount, "@"); ok && local != "" {
+		if _, domain, _ := strings.Cut(account, "@"); domain != "" {
+			loginAccount = local + "@" + domain
+		}
+	}
 	// Registered before tracker cleanup so resolution sees no held locks.
 	// The one finding is stamped for the mailbox it names.
 	defer func() {
@@ -1138,6 +1155,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 			recordGoodSource = false
 		}
 		if v != nil {
+			v.Mailbox = loginAccount
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			sprayed = &f
 		}
@@ -1185,11 +1203,11 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		return nil
 	}
 	a.compromiseSuppressed = now.Add(t.suppression)
-	_, compDomain := alert.SplitEmail(account)
+	_, compDomain := alert.SplitEmail(loginAccount)
 	t.findingsEmitted++
 	severity := alert.Critical
 	message := fmt.Sprintf("Mail account compromise: successful login for %s from %s after recent auth failures",
-		account, ip)
+		loginAccount, ip)
 	details := "Attacker succeeded after repeated failed attempts from the same IP for this mailbox. Rotate password and revoke sessions."
 	// An IP with established standing on several other mailboxes is far more
 	// likely a shared office or agency device carrying one stale credential
@@ -1214,7 +1232,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		SourceIP:    ip,
 		Attribution: admission.AttributionPeer,
 		Domain:      compDomain,
-		Mailbox:     account,
+		Mailbox:     loginAccount,
 	}}
 }
 
