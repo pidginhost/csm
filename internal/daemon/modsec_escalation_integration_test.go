@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -17,11 +18,11 @@ import (
 // with the given rule ID, message, and space-separated tags.
 func modsecApacheLine(ip, ruleID, msg, tags string) string {
 	line := `[Wed Apr 01 15:15:05 2026] [error] [client ` + ip +
-		`] ModSecurity: Access denied with code 403, [id "` + ruleID + `"] [msg "` + msg + `"]`
+		`] ModSecurity: Access denied with code 403, [id "` + ruleID + `"] [msg "` + msg + `"] [severity "CRITICAL"]`
 	for _, tg := range strings.Fields(tags) {
 		line += ` [tag "` + tg + `"]`
 	}
-	line += ` [severity "CRITICAL"] [hostname "shop.example.ro"] [uri "/checkout"]`
+	line += ` [hostname "shop.example.ro"] [uri "/checkout"]`
 	return line
 }
 
@@ -55,6 +56,7 @@ func TestParseModSec_LowConfBurst_NoBan(t *testing.T) {
 // attack rule escalates at the normal bar.
 func TestParseModSec_MixedHighEscalates(t *testing.T) {
 	resetModSecState()
+	installModSecRegistryForTest(t, map[int]string{210381: "deny,msg:'URL Encoding Abuse Attack Attempt'"})
 	cfg := &config.Config{}
 	ip := "203.0.113.41"
 	lines := []string{
@@ -83,16 +85,19 @@ func TestParseModSec_CRSAnomalyIsLowNotHigh(t *testing.T) {
 	}
 }
 
-// Criterion 8: the attack class is read from the rule tags. A CRS SQLi rule with
-// an attack-sqli tag classifies high and escalates.
+// The attack class comes from configured tags, even when the log omits them.
 func TestParseModSec_AttackTagEscalates(t *testing.T) {
 	resetModSecState()
+	installModSecRegistryForTest(t, map[int]string{942100: "deny,tag:'application-multi',tag:'attack-sqli',tag:'OWASP_CRS'"})
 	cfg := &config.Config{}
 	ip := "203.0.113.44"
-	line := modsecApacheLine(ip, "942100",
-		"SQL Injection Attack Detected via libinjection",
-		"application-multi attack-sqli OWASP_CRS")
-	if !modsecFindingChecks(cfg, []string{line, line, line})["modsec_block_escalation"] {
+	line := modsecApacheLine(ip, "942100", "Custom hit", "")
+	base := parseModSecLogLine(line, cfg)
+	if len(base) != 1 || base[0].Severity != alert.High {
+		t.Fatalf("configured attack tag findings = %+v, want one High finding", base)
+	}
+	seen := modsecFindingChecks(cfg, []string{line, line, line})
+	if !seen["modsec_block_escalation"] || seen["modsec_classifier_gap"] {
 		t.Fatal("a rule tagged attack-sqli must classify high and escalate")
 	}
 }
@@ -309,15 +314,22 @@ func TestParseModSec_FileManagerRequiresRepeatedDenies(t *testing.T) {
 				uri, _, _ := strings.Cut(tc.uri, "?")
 				line = strings.Replace(line, `[uri "/checkout"]`, `[uri "`+uri+`"]`, 1)
 				if server == "litespeed" {
+					// Native LiteSpeed logs no request data with a trigger.
 					line = strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"900107"`, 1)
+				} else {
+					// Apache writes [data] after [msg], before [severity].
+					data := ` [data "` + tc.method + ` ` + tc.uri + `"]`
+					line = strings.Replace(line, ` [severity "`, data+` [severity "`, 1)
 				}
-				line += ` [data "` + tc.method + ` ` + tc.uri + `"]`
 				for hit := 1; hit <= cfg.Thresholds.ModSecEscalationHits; hit++ {
 					findings := parseModSecLogLineDeduped(line, cfg)
 					switch hit {
 					case 1:
 						if len(findings) != 1 || findings[0].Check != "modsec_block_realtime" {
 							t.Fatalf("first endpoint deny findings = %+v", findings)
+						}
+						if !strings.HasPrefix(findings[0].Details, "Rule: 900107\n") {
+							t.Fatalf("endpoint deny lost its rule: %q", findings[0].Details)
 						}
 					case cfg.Thresholds.ModSecEscalationHits:
 						if len(findings) != 1 || findings[0].Check != "modsec_csm_block_escalation" {

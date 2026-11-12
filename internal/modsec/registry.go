@@ -22,9 +22,11 @@ import (
 // log-line classifier - error_log records every match as "triggered!"
 // regardless of whether the rule's action denied the request, so the action
 // lookup is the only signal that distinguishes a real deny from a noisy
-// pass-action informational rule.
+// pass-action informational rule. Literal message and tag metadata is kept
+// for every parsed rule, including those without a decisive disposition.
 type Registry struct {
 	actions     map[int]string
+	metadata    map[int]RuleMetadata
 	fingerprint string
 }
 
@@ -82,6 +84,7 @@ func (r *Registry) Fingerprint() string {
 // same tree still resolves to it.
 func BuildRegistry(dirs []string) (*Registry, error) {
 	actions := make(map[int]string)
+	metadata := make(map[int]RuleMetadata)
 	claimed := make(map[int]struct{})
 	digest := sha256.New()
 	// Read failures and parse failures are not the same for caching. Bytes
@@ -132,15 +135,17 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 				defaults[fileDir][phase] = action
 			}
 			for _, r := range rules {
-				found = append(found, foundRule{id: r.ID, action: r.Action, phase: r.Phase, dir: fileDir})
+				found = append(found, foundRule{id: r.ID, action: r.Action, phase: r.Phase, dir: fileDir, metadata: ruleMetadata(r.Raw)})
 			}
 			return nil
 		})
 		perDirActions := make(map[int]string)
+		perDirMetadata := make(map[int]RuleMetadata)
 		perDirClaimed := make(map[int]struct{})
 		root := filepath.Clean(dir)
 		for _, r := range found {
 			perDirClaimed[r.id] = struct{}{}
+			perDirMetadata[r.id] = r.metadata
 			action := r.action
 			if action == "block" {
 				action = inheritedAction(defaults, incomplete, root, r.dir, r.phase)
@@ -156,6 +161,7 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 		for id := range perDirClaimed {
 			if _, exists := claimed[id]; !exists {
 				claimed[id] = struct{}{}
+				metadata[id] = perDirMetadata[id]
 				action, hasAction := perDirActions[id]
 				if !hasAction {
 					continue
@@ -165,7 +171,7 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 		}
 		readErr = errors.Join(readErr, walkErr)
 	}
-	reg := &Registry{actions: actions}
+	reg := &Registry{actions: actions, metadata: metadata}
 	if readErr == nil {
 		reg.fingerprint = hex.EncodeToString(digest.Sum(nil))
 	}
@@ -173,10 +179,11 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 }
 
 type foundRule struct {
-	id     int
-	action string
-	phase  int
-	dir    string
+	id       int
+	action   string
+	phase    int
+	dir      string
+	metadata RuleMetadata
 }
 
 // inheritedAction returns the disruptive action of the nearest default for

@@ -46,7 +46,7 @@ func TestParseModSec_UnreadableExclusionsDoNotBan(t *testing.T) {
 					store.SetGlobal(previous)
 					_ = db.Close()
 				})
-				installModSecRegistryForTest(t, map[int]string{rule: "deny"})
+				installModSecRegistryForTest(t, map[int]string{rule: "deny,tag:'attack-sqli'"})
 				line := modsecApacheLine("203.0.113.68", strconv.Itoa(rule), "Denied request", "attack-sqli")
 				if server == "litespeed" {
 					line = strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"`+strconv.Itoa(rule)+`"`, 1)

@@ -59,45 +59,6 @@ func TestIsTrustedCountry_EmptyTrustedList(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractModSecField
-// ---------------------------------------------------------------------------
-
-func TestExtractModSecField_Standard(t *testing.T) {
-	line := `[id "920420"] [msg "Request content type not allowed"]`
-	got := extractModSecField(line, `[id "`, `"]`)
-	if got != "920420" {
-		t.Errorf("got %q, want 920420", got)
-	}
-}
-
-func TestExtractModSecField_Missing(t *testing.T) {
-	if got := extractModSecField("no delimiters here", `[id "`, `"]`); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractModSecField_NoEndDelimiter(t *testing.T) {
-	if got := extractModSecField(`[id "920420`, `[id "`, `"]`); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractModSecField_EmptyValue(t *testing.T) {
-	if got := extractModSecField(`[id ""]`, `[id "`, `"]`); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractModSecField_MultipleOccurrences(t *testing.T) {
-	line := `[id "111"] [id "222"]`
-	got := extractModSecField(line, `[id "`, `"]`)
-	// Should return the first occurrence.
-	if got != "111" {
-		t.Errorf("got %q, want 111", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // mergeInfraIPs
 // ---------------------------------------------------------------------------
 
