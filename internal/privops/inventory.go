@@ -774,9 +774,9 @@ var operations = []Op{
 		ID:   "integrate.challenge_snippet",
 		Risk: RiskDestructive,
 		Contract: &SafetyContract{
-			Authority: "non-observe startup refreshes legacy snippets and stale managed snippets on supported web servers independently of challenge.enabled; explicit integration commands also install or remove them",
+			Authority: "non-observe startup refreshes legacy snippets and stale managed snippets, including the cPanel per-site snippet, on supported web servers independently of challenge.enabled; explicit integration commands also install or remove them, and on cPanel explicit install or upgrade rebuilds httpd.conf once so HTTPS site blocks read the per-site snippet",
 			Identity:  "managed Install and Remove run the web server configtest after changing the snippet and before reload; legacy map-reference repair and runtime map updates do not use that transaction",
-			Recovery:  "managed configtest or reload failure attempts to restore previous snippet bytes; restore failures are logged and recovery reload is best-effort; legacy repair and runtime maps have no unified rollback with the gate",
+			Recovery:  "managed configtest or reload failure attempts to restore previous snippet bytes, and after an httpd.conf rebuild rebuilds again from the restored snippets; restore failures are logged and recovery reload is best-effort; legacy repair and runtime maps have no unified rollback with the gate",
 			Limit:     "managed Install skips identical bytes, and nginx map reload skips unchanged maps; there is no shared reload pacing or capacity bound",
 		},
 		Subsystem:    "host integration",

@@ -24,12 +24,17 @@ import (
 //     -> Rewrite -> External Rewrite Rules. The installer writes the
 //     file but emits a stderr note pointing at the manual step.
 type lswsHandler struct {
+	*cpanelSites
 	cmdRunner cmdRunner
 	cpanel    bool
 }
 
 func newLSWSHandler(info platform.Info, r cmdRunner) *lswsHandler {
-	return &lswsHandler{cmdRunner: r, cpanel: info.IsCPanel()}
+	h := &lswsHandler{cmdRunner: r, cpanel: info.IsCPanel()}
+	if h.cpanel {
+		h.cpanelSites = newCPanelSites(r)
+	}
+	return h
 }
 
 func (h *lswsHandler) Kind() string { return "lsws" }

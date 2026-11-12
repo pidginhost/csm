@@ -73,6 +73,10 @@ func runWebserverIntegration() {
 		}
 	}
 
+	// Only these explicit commands may regenerate httpd.conf so HTTPS sites
+	// read the per-site snippet; the daemon's own refresh never does.
+	inst.RebuildSiteIncludes = verb == "install" || verb == "upgrade"
+
 	var (
 		res webserver.Result
 		op  error

@@ -337,6 +337,17 @@ The installer auto-detects the active webserver via
 | LiteSpeed (LSWS)            | `/usr/local/lsws/conf/templates/csm-challenge.conf` |
 | Nginx (plain + Engintron + phpanel) | `/etc/nginx/conf.d/csm-challenge.conf`      |
 
+On cPanel, Apache and LiteSpeed alike, HTTPS site blocks do not inherit the
+server-wide snippet, so the installer also writes the rule to the per-site
+include `/etc/apache2/conf.d/userdata/csm-challenge.conf`. It skips
+`/.well-known/` paths so certificate validation keeps working. cPanel adds
+that include to every site block when it rebuilds `httpd.conf` with a file
+present. `csm webserver-integration install` and `upgrade` run that rebuild
+once when needed, inside the same configtest-then-reload run. The daemon's
+startup refresh writes the file but never rebuilds `httpd.conf`; HTTPS sites
+are then covered after cPanel's next rebuild, and `csm doctor challenge`
+warns until they are.
+
 The snippets are rendered from the effective CSM config. Apache and LSWS
 read their RewriteMap from `/var/cache/csm/challenge_ips.txt`; Nginx reads
 a native map include from `/var/cache/csm/challenge_ips.nginx.map`. The

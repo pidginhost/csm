@@ -331,6 +331,7 @@ func TestShippedTemplatesRenderRuntimeConfig(t *testing.T) {
 		{name: "apache", body: apacheTemplate, wantMapPath: "/run/custom-csm/challenge_ips.txt", rejectMapPath: "/run/custom-csm/challenge_ips.nginx.map"},
 		{name: "lsws", body: lswsTemplate, wantMapPath: "/run/custom-csm/challenge_ips.txt", rejectMapPath: "/run/custom-csm/challenge_ips.nginx.map"},
 		{name: "nginx", body: nginxTemplate, wantMapPath: "/run/custom-csm/challenge_ips.nginx.map", rejectMapPath: "/run/custom-csm/challenge_ips.txt"},
+		{name: "cpanel-site", body: cpanelSiteTemplate, wantMapPath: "/run/custom-csm/challenge_ips.txt", rejectMapPath: "/run/custom-csm/challenge_ips.nginx.map"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &fakeHandler{kind: tc.name, body: tc.body}
