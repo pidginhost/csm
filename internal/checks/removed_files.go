@@ -252,6 +252,21 @@ func RemovedFilesSince(seq uint64) ([]RemovedFile, uint64) {
 	return out, removedFiles.seq
 }
 
+// RemovedFiles returns every removal still recent enough to recognise,
+// including those loaded after a restart.
+func RemovedFiles() []RemovedFile {
+	now := removedFilesNow()
+	removedFiles.RLock()
+	defer removedFiles.RUnlock()
+	var out []RemovedFile
+	for _, r := range removedFiles.byPath {
+		if now.Sub(r.At) < removedFileMemory {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // ForgetRemovedFile drops path before an operator restores it, so the restore
 // is not taken for the removed file coming back.
 func ForgetRemovedFile(path string) {
