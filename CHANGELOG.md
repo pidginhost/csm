@@ -24,6 +24,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A file CSM quarantined or cleaned now alerts again when it comes back, instead of being held back as a repeat.
 - CSM now raises a Critical alert when a process writes back a file CSM quarantined or cleaned, and repeats that response.
 - With process killing on, CSM now stops a process that writes back a file it removed, when a web request started it or it runs detached.
+- CSM now raises a High alert while it skips unusable trusted proxy entries.
 
 ### Added
 

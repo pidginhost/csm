@@ -249,6 +249,7 @@
       "suspicious_process",
       "symlink_attack",
       "test_alert",
+      "trusted_proxy_unusable",
       "user_outbound_connection",
       "vulnerable_timthumb",
       "waf_bypass",

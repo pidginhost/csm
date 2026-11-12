@@ -38,6 +38,16 @@ func WebServerLocalTrustError(entries []string) error {
 	return fmt.Errorf("web_server.trusted_proxies entry %q covers %s, an address of this host: CSM never trusts it, so requests a proxy there forwards count against nobody. Have that proxy's web server log the client address, or remove the entry", entry, covered)
 }
 
+// UnusableTrustedProxies reports each trusted_proxies entry CSM skips, in
+// the words Validate warns with.
+func UnusableTrustedProxies(cfg *Config) []ValidationResult {
+	if cfg == nil {
+		return nil
+	}
+	return append(unusableTrustedProxyResults("warn", "web_server.trusted_proxies", cfg.WebServer.TrustedProxies),
+		unusableTrustedProxyResults("warn", "challenge.trusted_proxies", cfg.Challenge.TrustedProxies)...)
+}
+
 // unusableTrustedProxyResults reports each entry of key that is empty, not
 // an IP address or CIDR range, or a catch-all. Validate reports them as
 // warnings, since an error stops a daemon that ran with them; Settings save

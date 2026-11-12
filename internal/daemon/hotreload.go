@@ -222,6 +222,8 @@ func (d *Daemon) reconcileHotReloadables() {
 
 	// auto_response.max_blocks_per_hour sets the admission ceiling.
 	d.reloadAdmission()
+
+	d.refreshTrustedProxyFinding()
 }
 
 // applySavedConfig applies a config the web UI has already saved and
