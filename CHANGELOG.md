@@ -13,6 +13,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - IMAP and POP3 password spray alerts now count upper and lower case spellings of a mailbox as one target.
 - Malware cleanup preserves site content when whole-file removal is uncertain and leaves changed files for review.
+- Malware cleanup preserves literal page output and leaves files for review when their WordPress release cannot be confirmed.
 - Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
 - A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.

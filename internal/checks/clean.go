@@ -437,7 +437,7 @@ func SetPackageListing(fn func(path string) (listed, known bool)) {
 }
 
 // notShippedByRelease accepts only a definitive absence from the provider.
-// Cached WordPress manifests report misses as unknown.
+// A manifest miss is known only with an authenticated release header.
 func notShippedByRelease(path string) bool {
 	listing := packageListing.Load()
 	if listing == nil {
@@ -511,34 +511,22 @@ func cleanLeavesNothing(content string) bool {
 	return true
 }
 
-// phpWithoutOutput reports whether src sends nothing but whitespace to the
-// browser: every byte outside its PHP code is a <?php or ?> tag or ASCII
-// whitespace. Short and echo tags count as output, since short_open_tag
-// decides whether they run.
+// phpWithoutOutput reports whether src has only whitespace outside long-tag
+// PHP regions. It does not evaluate output from PHP statements. Short and echo
+// tags stay for review. Use the lexer boundary, not its mask: the mask also
+// removes line comments ending at a closing tag and loses tag positions.
 func phpWithoutOutput(src string) bool {
-	regions := phpCodeRegions(src)
-	if len(regions) != len(src) {
-		return false
-	}
-	// The mask keeps PHP code bytes and blanks the rest: tags and output.
-	outside := []byte(src)
-	for i := range outside {
-		if regions[i] == src[i] {
-			outside[i] = ' '
+	var code strings.Builder
+	for i := 0; i < len(src); {
+		if isPHPSpace(src[i]) {
+			i++
+			continue
 		}
-	}
-	asciiSpace := func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' }
-	for _, field := range strings.FieldsFunc(string(outside), asciiSpace) {
-		for field != "" {
-			switch {
-			case len(field) >= 5 && strings.EqualFold(field[:5], "<?php"):
-				field = field[5:]
-			case strings.HasPrefix(field, "?>"):
-				field = field[2:]
-			default:
-				return false
-			}
+		if i+5 > len(src) || !strings.EqualFold(src[i:i+5], "<?php") ||
+			i+5 < len(src) && !isPHPOpenTagSpace(src[i+5]) {
+			return false
 		}
+		i = copyPHPModeRegion(&code, src, i+5)
 	}
 	return true
 }

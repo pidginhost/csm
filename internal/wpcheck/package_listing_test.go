@@ -4,8 +4,11 @@ import (
 	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -277,5 +280,91 @@ func TestPackageListingRejectsFIFOHeader(t *testing.T) {
 		_ = writer.Close()
 		<-done
 		t.Fatal("release lookup blocked on a tenant-controlled header")
+	}
+}
+
+func TestPackageListingPluginHeaderScope(t *testing.T) {
+	for _, name := range []string{"non-slug main", "late header"} {
+		t.Run(name, func(t *testing.T) {
+			c := stoppedCache(t)
+			root := filepath.Join(t.TempDir(), "wp-content/plugins/test-plugin")
+			main := "<?php\n/*\nPlugin Name: Test\nVersion: 1.0.0\n*/\n"
+			filename := "main.php"
+			if name == "late header" {
+				filename = "test-plugin.php"
+				main = strings.Repeat(" ", pluginHeaderReadLimit) + main
+			}
+			writeListingFile(t, filepath.Join(root, filename), main)
+			c.setPluginChecksums("test-plugin", "1.0.0", map[string]string{filename: sha256Hex(main)})
+			if listed, known := c.PackageListing(filepath.Join(root, "extra.php")); listed || known {
+				t.Fatalf("listed=%t known=%t, want unknown", listed, known)
+			}
+		})
+	}
+}
+
+// Each cache state either lists the candidate or cannot authenticate the
+// header. Combining the two states must never authorize removal.
+func TestPackageListingUsesOneManifest(t *testing.T) {
+	for _, plugin := range []bool{false, true} {
+		t.Run(map[bool]string{false: "core", true: "plugin"}[plugin], func(t *testing.T) {
+			c := stoppedCache(t)
+			root := coreInstall(t, c, "6.9.4")
+			path := filepath.Join(root, "wp-includes/extra.php")
+			key := cacheKey("6.9.4", "en_US")
+			manifests := c.checksums
+			authentic := map[string]string{"wp-includes/version.php": md5Hex(coreVersionFile("6.9.4")), "wp-includes/extra.php": "x"}
+			if plugin {
+				root = filepath.Join(t.TempDir(), "wp-content/plugins/test-plugin")
+				main := "<?php\n/*\nPlugin Name: Test\nVersion: 1.0.0\n*/\n"
+				writeListingFile(t, filepath.Join(root, "test-plugin.php"), main)
+				path = filepath.Join(root, "extra.php")
+				key = pluginKey("test-plugin", "1.0.0")
+				manifests = c.pluginChecksums
+				authentic = map[string]string{"test-plugin.php": sha256Hex(main), "extra.php": "x"}
+			}
+			manifests[key] = authentic
+			unavailable := map[string]string{}
+			stop := make(chan struct{})
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					c.mu.Lock()
+					manifests[key] = authentic
+					c.mu.Unlock()
+					c.mu.Lock()
+					manifests[key] = unavailable
+					c.mu.Unlock()
+				}
+			})
+			defer func() { close(stop); wg.Wait() }()
+			for i := 0; i < 2000; i++ {
+				if listed, known := c.PackageListing(path); known && !listed {
+					t.Fatal("mixed cache states authorized removal")
+				}
+			}
+		})
+	}
+}
+
+func TestAuthenticHeaderReadBoundaries(t *testing.T) {
+	for _, size := range []int{0, authenticHeaderMax - 1, authenticHeaderMax, authenticHeaderMax + 1} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "header.php")
+			content := strings.Repeat("x", size)
+			writeListingFile(t, path, content)
+			data, ok := readAuthenticHeader(path)
+			if want := size <= authenticHeaderMax; ok != want {
+				t.Fatalf("read accepted=%t, want %t", ok, want)
+			}
+			if ok && string(data) != content {
+				t.Fatal("header was not read whole")
+			}
+		})
 	}
 }

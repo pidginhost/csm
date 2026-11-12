@@ -1667,7 +1667,7 @@ func FuzzProcParentAndTTY(f *testing.F) {
 }
 
 func FuzzWholeFilePHPProof(f *testing.F) {
-	for _, seed := range []string{wholeFileShell, "<?php ?>?>", "<? echo 'site'; ?>", "<?php echo <<<PAGE\n?>\nPAGE;", "<?php /* unfinished"} {
+	for _, seed := range []string{wholeFileShell, "<?php // comment ?>", "<?php # comment ?>", "<?php\v;", "<?php\f;", "\v", "<?php ?>?>", "<? echo 'site'; ?>", "<?php echo <<<PAGE\n?>\nPAGE;", "<?php /* unfinished"} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, content string) {

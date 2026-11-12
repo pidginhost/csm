@@ -460,17 +460,23 @@ func (c *Cache) PackageListing(path string) (listed, known bool) {
 		if !ok {
 			return false, false
 		}
-		m := rePluginVersionHeader.FindSubmatch(data)
-		if m == nil || !rePluginNameHeader.Match(data) {
+		header := data[:min(len(data), pluginHeaderReadLimit)]
+		m := rePluginVersionHeader.FindSubmatch(header)
+		if m == nil || !rePluginNameHeader.Match(header) {
 			return false, false
 		}
 		version := string(m[1])
-		want, ok := c.lookupPluginChecksum(slug, version, main)
 		sum := sha256.Sum256(data)
+		// Authenticate and test membership against one cache state. A refresh
+		// must not turn a missing replacement manifest into a known absence.
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		manifest := c.pluginChecksums[pluginKey(slug, version)]
+		want, ok := manifest[main]
 		if !ok || !hexDigestEqual(hex.EncodeToString(sum[:]), want) {
 			return false, false
 		}
-		_, listed = c.lookupPluginChecksum(slug, version, RelativePath(root, path))
+		_, listed = manifest[RelativePath(root, path)]
 		return listed, true
 	}
 	if strings.Contains(path, "/wp-content/themes/") {
@@ -492,12 +498,15 @@ func (c *Cache) PackageListing(path string) (listed, known bool) {
 	if err != nil {
 		return false, false
 	}
-	want, ok := c.lookupChecksum(version, locale, "wp-includes/version.php")
 	sum := md5.Sum(data) // #nosec G401 -- wordpress.org publishes MD5 digests for core files
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	manifest := c.checksums[cacheKey(version, locale)]
+	want, ok := manifest["wp-includes/version.php"]
 	if !ok || !hexDigestEqual(hex.EncodeToString(sum[:]), want) {
 		return false, false
 	}
-	_, listed = c.lookupChecksum(version, locale, rel)
+	_, listed = manifest[rel]
 	return listed, true
 }
 
