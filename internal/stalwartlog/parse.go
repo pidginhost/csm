@@ -262,10 +262,14 @@ func unicodeEscape(s string) (rune, int) {
 		return 0, 0
 	}
 	v, err := strconv.ParseUint(s[1:end], 16, 32)
-	if err != nil || !utf8.ValidRune(rune(v)) {
+	if err != nil || v > utf8.MaxRune {
 		return 0, 0
 	}
-	return rune(v), end + 1
+	r := rune(v) // #nosec G115 -- bounded by utf8.MaxRune above
+	if !utf8.ValidRune(r) {
+		return 0, 0
+	}
+	return r, end + 1
 }
 
 // listValue reads ["a", "b"]. Elements are quoted strings or bare tokens.

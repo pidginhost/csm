@@ -154,3 +154,19 @@ func TestSessionUnmapsIPv4Mapped(t *testing.T) {
 		t.Fatalf("Session() = %+v, %v", s, ok)
 	}
 }
+
+func TestParseUnicodeEscapes(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`\u{e9}`, "é"},
+		{`\u{1F600}`, "\U0001F600"},
+		{`\u{110000}`, "u{110000}"},
+		{`\u{FFFFFFFF}`, "u{FFFFFFFF}"},
+		{`\u{zz}`, "u{zz}"},
+		{`\u`, "u"},
+	} {
+		ev := mustParse(t, `2026-11-11T10:00:00Z INFO Authentication failed (auth.failed) accountName = "`+tc.in+`"`)
+		if got := ev.Fields["accountName"]; got != tc.want {
+			t.Errorf("%s decoded to %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
