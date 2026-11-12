@@ -23,7 +23,212 @@ import (
 func placementTestMonitor(alerts chan alert.Finding) *FileMonitor {
 	fm := shutdownDrainTestMonitor(8)
 	fm.alertCh = alerts
+	fm.recent = newRecentAnalyses(recentAnalysisCap, recentAnalysisTTL)
 	return fm
+}
+
+// analyzeClosedWrite runs path through close-write admission and a completed
+// analysis, the way the analyzer worker does.
+func analyzeClosedWrite(t *testing.T, fm *FileMonitor, path string) {
+	t.Helper()
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm.handleEvent(fd, 0, unix.FAN_CLOSE_WRITE)
+	events := queuedPlacements(t, fm)
+	if len(events) != 1 {
+		t.Fatalf("close-write of %s queued %d events, want 1", path, len(events))
+	}
+	fm.analyzeFileSafe(events[0])
+}
+
+// stubInlineQuarantine keeps confirmed PHP findings from moving test files.
+func stubInlineQuarantine(t *testing.T) {
+	t.Helper()
+	prev := inlineQuarantineConfirmedPHP
+	inlineQuarantineConfirmedPHP = func(_ *config.Config, finding *alert.Finding, _ string, _ []byte, _ os.FileInfo, _ int) (string, bool, *alert.Finding) {
+		finding.AutoFileResponseEvaluated = true
+		return "", false, nil
+	}
+	t.Cleanup(func() { inlineQuarantineConfirmedPHP = prev })
+}
+
+func hasFinding(found []alert.Finding, check, path string) bool {
+	for _, f := range found {
+		if f.Check == check && f.FilePath == path {
+			return true
+		}
+	}
+	return false
+}
+
+// placeAndAnalyze renames from to to, hands the placement over and analyses
+// whatever it queued. It returns the number of events queued.
+func placeAndAnalyze(t *testing.T, fm *FileMonitor, from, to string, pid int32) int {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(from, to); err != nil {
+		t.Fatal(err)
+	}
+	fm.handlePlacement(placementOf(t, to, pid))
+	events := queuedPlacements(t, fm)
+	for _, ev := range events {
+		fm.analyzeFileSafe(ev)
+	}
+	return len(events)
+}
+
+// cPanel's file transfer writes .temp.<n>.<name> and renames it into place.
+// The bytes, inode and analysis are the same, so the placement is not
+// analysed a second time.
+func TestPlacementSkipsUnchangedRenameWithinClass(t *testing.T) {
+	dir := t.TempDir()
+	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte("<?php echo 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fm := placementTestMonitor(make(chan alert.Finding, 16))
+	analyzeClosedWrite(t, fm, staged)
+	before := fm.EventStats()
+
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 0 {
+		t.Fatalf("unchanged rename queued %d events, want none", n)
+	}
+	if after := fm.EventStats(); after.Received != before.Received {
+		t.Fatalf("stats %+v -> %+v, want the placement skipped before admission", before, after)
+	}
+}
+
+func TestPlacementExtensionChangeIsAnalyzed(t *testing.T) {
+	// A credential log name is admitted anywhere, so the text file gets a
+	// full analysis under the text rules first.
+	dir := eventFilterDir(t)
+	staged, path := filepath.Join(dir, "results.txt"), filepath.Join(dir, "results.php")
+	if err := os.WriteFile(staged, []byte(`<?php system($_POST['c']);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubInlineQuarantine(t)
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	analyzeClosedWrite(t, fm, staged)
+	if found := drainFindings(alerts); hasFinding(found, "webshell_content_realtime", staged) {
+		t.Fatalf("results.txt already raised the PHP finding: %+v", found)
+	}
+
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("extension change queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "webshell_content_realtime", path) {
+		t.Fatalf("findings %+v, want the PHP scan on %s", found, path)
+	}
+}
+
+// A shell uploaded as HTML passes the phishing check; renamed to PHP it
+// must meet the PHP scanner.
+func TestPlacementHTMLToPHPIsAnalyzed(t *testing.T) {
+	// Not under a shared temp tree, whose admission drops plain HTML.
+	docroot := filepath.Join(eventFilterDir(t), "public_html")
+	if err := os.Mkdir(docroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staged, path := filepath.Join(docroot, "a.html"), filepath.Join(docroot, "a.php")
+	if err := os.WriteFile(staged, []byte(`<?php system($_POST['c']);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubInlineQuarantine(t)
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	fm.docRootPatterns = []string{docroot}
+	analyzeClosedWrite(t, fm, staged)
+	if found := drainFindings(alerts); hasFinding(found, "webshell_content_realtime", staged) {
+		t.Fatalf("a.html already raised the PHP finding: %+v", found)
+	}
+
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("html to php rename queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "webshell_content_realtime", path) {
+		t.Fatalf("findings %+v, want the PHP scan on %s", found, path)
+	}
+}
+
+func TestPlacementStagingToUploadsIsAnalyzed(t *testing.T) {
+	site := t.TempDir()
+	staged := filepath.Join(site, "wp-content", "upgrade", "pkg", "s.php")
+	path := filepath.Join(site, "wp-content", "uploads", "s.php")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte(`<?php system($_POST['c']);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubInlineQuarantine(t)
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	analyzeClosedWrite(t, fm, staged)
+	if found := drainFindings(alerts); hasFinding(found, "php_in_uploads_realtime", staged) {
+		t.Fatalf("staging analysis raised an uploads finding: %+v", found)
+	}
+
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("staging to uploads rename queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "php_in_uploads_realtime", path) {
+		t.Fatalf("findings %+v, want the uploads finding on %s", found, path)
+	}
+}
+
+// A suppression that covered the staged name says nothing about the file
+// once it leaves that name.
+func TestPlacementOutOfSuppressedPathIsAnalyzed(t *testing.T) {
+	dir := t.TempDir()
+	staged, path := filepath.Join(dir, ".temp.1731400000123.x.php"), filepath.Join(dir, "x.php")
+	if err := os.WriteFile(staged, []byte(`<?php system($_POST['c']);`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubInlineQuarantine(t)
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	fm.cfg.Suppressions.IgnorePaths = []string{".temp.*"}
+	analyzeClosedWrite(t, fm, staged)
+	if found := drainFindings(alerts); len(found) != 0 {
+		t.Fatalf("suppressed staged write raised %+v", found)
+	}
+
+	if n := placeAndAnalyze(t, fm, staged, path, 0); n != 1 {
+		t.Fatalf("rename out of the suppression queued %d events, want 1", n)
+	}
+	if found := drainFindings(alerts); !hasFinding(found, "webshell_content_realtime", path) {
+		t.Fatalf("findings %+v, want the PHP scan on %s", found, path)
+	}
+}
+
+// A restore loop stages the removed payload and renames it over the old
+// path. That rename is the restore, whatever was analysed before it.
+func TestPlacementOverRemovedPathIsAnalyzed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.php")
+	staged := filepath.Join(dir, ".temp.1731400000123.index.php")
+	stubRemovedFileAt(t, map[string]checks.RemovedFile{path: removalOf(path, restoredPayload, 9)})
+	if err := os.WriteFile(staged, []byte(restoredPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	analyzeClosedWrite(t, fm, staged)
+	if got := restoredFindings(drainFindings(alerts)); len(got) != 0 {
+		t.Fatalf("staged copy raised %+v, want no restore before the rename", got)
+	}
+
+	if n := placeAndAnalyze(t, fm, staged, path, writerPID); n != 1 {
+		t.Fatalf("rename over the removed path queued %d events, want 1", n)
+	}
+	if got := restoredFindings(drainFindings(alerts)); len(got) != 1 || got[0].PID != writerPID {
+		t.Fatalf("restore findings = %+v, want one naming pid %d", got, writerPID)
+	}
 }
 
 func placementOf(t *testing.T, path string, pid int32) placementEvent {

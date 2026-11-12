@@ -310,6 +310,7 @@ type FileMonitor struct {
 	droppedAlerts int64
 	// placementUnverified is published through EventStats.
 	placementUnverified atomic.Int64
+	recent              *recentAnalyses
 
 	// queueOverflows counts FAN_Q_OVERFLOW events: the kernel notification
 	// queue filled and events were dropped before userspace ever saw them.
@@ -661,6 +662,7 @@ func newFileMonitorCore(cfg *config.Config, alertCh chan<- alert.Finding) *FileM
 		webRootPatterns:     checks.PHPConfigRealtimeRootPatterns(cfg),
 		accountRootPatterns: checks.AccountHomePatterns(),
 		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
+		recent:              newRecentAnalyses(recentAnalysisCap, recentAnalysisTTL),
 	}
 
 	wpCache := wpcheck.NewCache(cfg.StatePath)
@@ -1352,7 +1354,46 @@ func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
 		}
 	}()
 	work := queuehealth.Work[fileEvent]{Value: event, Ticket: event.queueTicket}
-	work.Process(func(queued fileEvent) { fileAnalyzer(fm, queued) })
+	work.Process(func(queued fileEvent) {
+		// Keyed before the analysis: a write during it changes mtime, so
+		// the newer version never matches what was recorded.
+		key, keyed := analysisKeyOf(queued.fd, fm.eventClass(queued))
+		fileAnalyzer(fm, queued)
+		if keyed {
+			fm.recent.Record(key, time.Now())
+		}
+	})
+}
+
+// analysisClass is everything besides the file version that decides how a
+// file at path is analysed, or "" when admission rejects it. The content
+// path carries the location and name rules, so the class only matches when
+// those are unchanged: a cPanel .temp.<n>.<name> write renamed to <name>.
+func (fm *FileMonitor) analysisClass(path string, fd int) string {
+	ev, admit := fm.classifyEvent(path, fd)
+	if !admit {
+		return ""
+	}
+	return fm.eventClass(ev)
+}
+
+// eventClass hashes the class so each remembered analysis costs a fixed
+// size whatever the path length.
+func (fm *FileMonitor) eventClass(ev fileEvent) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%t\x00%t\x00%t",
+		atomicWriteContentPath(ev.path), ev.dropperOnly, ev.phpExecutable, fm.suppressedPath(ev.path)))
+	return string(sum[:])
+}
+
+// analysisKeyOf identifies the file version behind fd under class.
+func analysisKeyOf(fd int, class string) (analysisKey, bool) {
+	var st unix.Stat_t
+	if class == "" || unix.Fstat(fd, &st) != nil {
+		return analysisKey{}, false
+	}
+	return analysisKey{
+		Dev: uint64(st.Dev), Ino: st.Ino, Size: st.Size, MtimeNs: st.Mtim.Nano(), Class: class,
+	}, true
 }
 
 // reportScannerPanic logs the panic with its stack, forwards it to
@@ -1589,10 +1630,8 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// H2 - suppression path matching using filepath.Match. Read the live config
 	// (config.Active via currentCfg) so a SIGHUP change to suppressions.ignore_paths
 	// takes effect without a restart, matching the rest of this analyzer.
-	for _, ignore := range fm.currentCfg().Suppressions.IgnorePaths {
-		if matchSuppression(ignore, path) {
-			return
-		}
+	if fm.suppressedPath(path) {
+		return
 	}
 
 	// Skip unmodified WordPress core and plugin files: the hash matches the
@@ -3270,6 +3309,16 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 
 	// Run signature scan on the content
 	fm.runEventSignatureScan(fd, data, path, filepath.Ext(path), procInfo)
+}
+
+// suppressedPath reports whether an operator suppression covers path.
+func (fm *FileMonitor) suppressedPath(path string) bool {
+	for _, ignore := range fm.currentCfg().Suppressions.IgnorePaths {
+		if matchSuppression(ignore, path) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchSuppression checks if a file path matches a suppression glob pattern.
