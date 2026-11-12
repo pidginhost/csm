@@ -36,7 +36,7 @@ func TestDropperUploadExecutionProbeIsNotADropper(t *testing.T) {
 		c := knownProbeTestCandidate(body)
 		e := newDropperEngine(dropperEngineConfig{ttl: dropperTestTTL, selfPID: 1})
 		if !e.admit(c) {
-			t.Fatal("completed upload execution probe was not retained for late create events")
+			t.Fatal("completed upload execution probe was not retained for deletion assessment")
 		}
 		due := e.tr.Due(c.Observed.Add(time.Hour))
 		if len(due) != 1 {

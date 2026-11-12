@@ -380,7 +380,7 @@ func (fm *FileMonitor) reportDropperOverflow() {
 
 // statxBirthFromFD returns the file birth time for an open fd when the
 // filesystem records it (ext4, xfs, btrfs). Returns ok=false on filesystems
-// without STATX_BTIME so the caller falls back to the create-event signal.
+// without STATX_BTIME; those files cannot enter fresh-dropper tracking.
 func statxBirthFromFD(fd int) (time.Time, bool) {
 	var stx unix.Statx_t
 	if err := unix.Statx(fd, "", unix.AT_EMPTY_PATH|unix.AT_SYMLINK_NOFOLLOW, unix.STATX_BTIME, &stx); err != nil {
