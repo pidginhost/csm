@@ -653,3 +653,18 @@ func FuzzMailboxResolverResolve(f *testing.F) {
 		}
 	})
 }
+
+func FuzzDecodePlacementEvent(f *testing.F) {
+	f.Add(placementRecord(1, 0, 0, 1, 30, 11, "x.php", "public_html", "user"))
+	f.Add(placementRecord(2, 1, 1, 1, 30, 11, "dir"))
+	f.Add([]byte{1, 0, 255, 0})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		ev, err := decodePlacementEvent(b)
+		if err != nil {
+			return
+		}
+		if len(ev.Components) != int(b[2]) {
+			t.Fatalf("decoded %d components for depth %d", len(ev.Components), b[2])
+		}
+	})
+}

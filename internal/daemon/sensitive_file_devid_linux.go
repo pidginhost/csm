@@ -14,3 +14,9 @@ import "golang.org/x/sys/unix"
 func kernelDeviceID(statDev uint64) uint64 {
 	return uint64(unix.Major(statDev))<<20 | uint64(unix.Minor(statDev))
 }
+
+// userDeviceID is the inverse of kernelDeviceID: a dev_t read in BPF back to
+// the stat(2) form that fstat on the same file reports.
+func userDeviceID(kernelDev uint64) uint64 {
+	return unix.Mkdev(uint32(kernelDev>>20), uint32(kernelDev&(1<<20-1))) // #nosec G115 -- the kernel dev_t is 32 bits
+}

@@ -178,6 +178,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "malware_companion_files", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "malware_companion_scan_incomplete", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "placed_dir_incomplete_realtime", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "placement_unresolved_realtime", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "new_executable_in_config", Category: CategoryMalware, Correlation: CorrelationMalwareArtifact},
 	{Name: "new_php_in_sensitive_dir", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "new_php_in_sensitive_dir_clean", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
