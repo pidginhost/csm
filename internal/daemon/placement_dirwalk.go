@@ -66,6 +66,9 @@ type placedDir struct {
 	cursor  []string
 	entries int
 	failed  bool
+	// overflowed is sticky: an over-budget listing walks a readdir-order
+	// subset, so names below a later cursor may never have been read.
+	overflowed bool
 }
 
 // queuePlacedDir hands a placed-in directory to the walk worker. It never
@@ -181,15 +184,19 @@ func (fm *FileMonitor) walkPlacedDirSafe(dir *placedDir) (yield bool, reason str
 	}()
 	w := placedDirWalk{fm: fm, dir: dir, deadline: time.Now().Add(placedDirTimeLimit)}
 	yield, reason = w.walk(nil, dir.dev, dir.ino, dir.cursor)
-	if yield && w.visited == 0 && !w.stopping() {
+	switch {
+	case yield && w.starved && w.files == 0:
 		// A whole pass without analyzer headroom: realtime is saturated,
 		// so say so instead of retrying this directory indefinitely.
 		return false, "the realtime analyzers stayed busy for a whole walk pass"
+	case yield || reason != "":
+		return yield, reason
+	case dir.overflowed:
+		return false, fmt.Sprintf("it holds more than %d entries", placedDirEntryLimit)
+	case dir.failed:
+		return false, "some entries could not be read"
 	}
-	if !yield && reason == "" && dir.failed {
-		reason = "some entries could not be read"
-	}
-	return yield, reason
+	return false, ""
 }
 
 type placedDirWalk struct {
@@ -197,6 +204,10 @@ type placedDirWalk struct {
 	dir      *placedDir
 	deadline time.Time
 	visited  int
+	// files counts files handed to analysis this pass; starved records
+	// that the pass ended waiting for analyzer headroom.
+	files   int
+	starved bool
 }
 
 // yield reports whether this pass must stop: the monitor is stopping, or
@@ -222,6 +233,7 @@ func (w *placedDirWalk) headroom() bool {
 	for len(w.fm.analyzerCh) >= limit {
 		wait := time.Until(w.deadline)
 		if wait <= 0 {
+			w.starved = true
 			return false
 		}
 		select {
@@ -254,6 +266,7 @@ func (w *placedDirWalk) walk(rel []string, dev, ino uint64, after []string) (yie
 		w.dir.failed = true
 		return false, ""
 	}
+	w.dir.overflowed = w.dir.overflowed || over
 	budgetCut := fmt.Sprintf("it holds more than %d entries", placedDirEntryLimit)
 	for _, name := range names {
 		var below []string
@@ -309,10 +322,6 @@ func (w *placedDirWalk) walk(rel []string, dev, ino uint64, after []string) (yie
 			}
 		}
 	}
-	if over {
-		// Entries removed since the listing must not hide that it overflowed.
-		return false, budgetCut
-	}
 	return false, ""
 }
 
@@ -347,6 +356,7 @@ func (w *placedDirWalk) file(dirfd int, name string, st *unix.Stat_t) {
 		_ = unix.Close(fd)
 		return
 	}
+	w.files++
 	w.fm.handlePlacedFile(fd, w.dir.pid, w.dir.at)
 }
 

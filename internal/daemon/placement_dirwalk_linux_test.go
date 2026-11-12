@@ -409,11 +409,71 @@ func TestPlacedDirWalkBoundsListing(t *testing.T) {
 
 	walkAllPlacedDirs(fm)
 
-	if read >= 2000 {
-		t.Fatalf("walk read %d names of a 2000-entry directory with a 10-entry budget", read)
+	if bound := 10 + 1 + placedDirReadBatch; read > bound {
+		t.Fatalf("walk read %d names with a 10-entry budget, want at most %d", read, bound)
 	}
 	found := incompleteDirFindings(drainFindings(alerts))
 	if len(found) != 1 || found[0].FilePath != placed {
 		t.Fatalf("incomplete findings %+v, want one High for %s", found, placed)
 	}
+}
+
+// An over-budget listing holds a readdir-order subset, so a resumed pass
+// cannot see the unread names below its cursor. Deleting the names past the
+// cursor must not let the walk end as complete.
+func TestPlacedDirWalkOverflowStaysCut(t *testing.T) {
+	lowerPlacedDirLimit(t, &placedDirEntryLimit, 10)
+	lowerPlacedDirLimit(t, &placedDirTimeLimit, 0)
+	fm, alerts := placedDirTestMonitor(t)
+	files := make(map[string]string)
+	for i := 0; i < 30; i++ {
+		files[fmt.Sprintf("f%02d.txt", i)] = ""
+	}
+	placed := placeDir(t, fm, stagedTree(t, files), "pkg")
+
+	if !fm.walkNextPlacedDir() {
+		t.Fatal("no walk queued")
+	}
+	fm.placedDirMu.Lock()
+	cursor := fm.placedDirs[0].cursor
+	fm.placedDirMu.Unlock()
+	if len(cursor) != 1 {
+		t.Fatalf("first pass left cursor %v, want one name", cursor)
+	}
+	for name := range files {
+		if name > cursor[0] {
+			if err := os.Remove(filepath.Join(placed, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	walkAllPlacedDirs(fm)
+
+	found := incompleteDirFindings(drainFindings(alerts))
+	if len(found) != 1 || found[0].FilePath != placed {
+		t.Fatalf("incomplete findings %+v, want one High for %s", found, placed)
+	}
+}
+
+// Visiting directories is no progress for files starved of analyzer room.
+func TestPlacedDirWalkStarvedPassRaisesHigh(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lowerPlacedDirLimit(t, &placedDirTimeLimit, time.Second)
+		fm, alerts := placedDirTestMonitor(t)
+		placed := placeDir(t, fm, stagedTree(t, map[string]string{"a/b/c/x.php": "<?php echo 1;"}), "pkg")
+		fillAnalyzerQueue(fm)
+
+		// One pass: it visits a, b and c but admits no file.
+		if !fm.walkNextPlacedDir() {
+			t.Fatal("no walk queued")
+		}
+
+		found := incompleteDirFindings(drainFindings(alerts))
+		if len(found) != 1 || found[0].FilePath != placed {
+			t.Fatalf("incomplete findings %+v, want one High for %s after the starved pass", found, placed)
+		}
+		if fm.walkNextPlacedDir() {
+			t.Fatal("starved walk stayed queued")
+		}
+	})
 }
