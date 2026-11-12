@@ -64,25 +64,34 @@ func (c *cpanelSites) SiteIncludeActive() (bool, error) {
 	return cpanelHTTPSIncludes(string(data)), nil
 }
 
+// cpanelUserSiteMarker is the per-user include path cPanel writes into every
+// user site block, active or as a commented example. The server's own
+// hostname blocks carry none and never get the global include, so they do
+// not count against coverage.
+const cpanelUserSiteMarker = "/etc/apache2/conf.d/userdata/ssl/"
+
 // cPanel emits its sites inline. A global include, a commented example, or
 // an HTTP-only include does not establish coverage of the HTTPS sites.
 func cpanelHTTPSIncludes(conf string) bool {
-	inSite, tls, included, found := false, false, false, false
+	inSite, tls, userSite, included, found := false, false, false, false, false
 	for _, line := range strings.Split(conf, "\n") {
+		if inSite && strings.Contains(line, cpanelUserSiteMarker) {
+			userSite = true
+		}
 		fields := strings.Fields(line)
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
 		switch strings.ToLower(fields[0]) {
 		case "<virtualhost":
-			inSite, tls, included = true, false, false
+			inSite, tls, userSite, included = true, false, false, false
 			for _, addr := range fields[1:] {
 				if strings.HasSuffix(strings.TrimSuffix(addr, ">"), ":443") {
 					tls = true
 				}
 			}
 		case "</virtualhost>":
-			if inSite && tls {
+			if inSite && tls && userSite {
 				if !included {
 					return false
 				}

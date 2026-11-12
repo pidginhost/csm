@@ -177,11 +177,12 @@ func TestCPanelSitesReadTheSiteSnippet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("<VirtualHost 192.0.2.10:443>\n  ServerName example.com\n</VirtualHost>\n")
+	user := "  # Include \"/etc/apache2/conf.d/userdata/ssl/2_4/user/example.com/*.conf\"\n"
+	write("<VirtualHost 192.0.2.10:443>\n  ServerName example.com\n" + user + "</VirtualHost>\n")
 	if active, err := h.SiteIncludeActive(); err != nil || active {
 		t.Fatalf("active = %v, %v; want false without the include", active, err)
 	}
-	write("<VirtualHost 192.0.2.10:443>\n  Include \"/etc/apache2/conf.d/userdata/*.conf\"\n</VirtualHost>\n")
+	write("<VirtualHost 192.0.2.10:443>\n" + user + "  Include \"/etc/apache2/conf.d/userdata/*.conf\"\n</VirtualHost>\n")
 	if active, err := h.SiteIncludeActive(); err != nil || !active {
 		t.Fatalf("active = %v, %v; want true with the include", active, err)
 	}

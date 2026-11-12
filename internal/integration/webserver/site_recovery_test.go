@@ -190,17 +190,23 @@ func TestServerAndSiteTemplatesExemptValidation(t *testing.T) {
 }
 
 func TestSiteIncludeCoverageChecksHTTPSBlocks(t *testing.T) {
+	// cPanel marks each user site block with its per-user include path; the
+	// server's own hostname blocks have none and never get the global include.
+	user := "# Include \"/etc/apache2/conf.d/userdata/ssl/2_4/user/example.com/*.conf\"\n"
+	hostname := "<VirtualHost *:443>\nServerName server.example.net\n</VirtualHost>\n"
 	for _, tc := range []struct {
 		name, conf string
 		active     bool
 	}{
-		{"comment", "<VirtualHost *:443>\n# " + cpanelSiteInclude + "\n</VirtualHost>\n", false},
-		{"global", cpanelSiteInclude + "\n<VirtualHost *:443>\n</VirtualHost>\n", false},
-		{"http only", "<VirtualHost *:80>\n" + cpanelSiteInclude + "\n</VirtualHost>\n<VirtualHost *:443>\n</VirtualHost>\n", false},
-		{"partial", "<VirtualHost *:443>\n" + cpanelSiteInclude + "\n</VirtualHost>\n<VirtualHost *:443>\n</VirtualHost>\n", false},
-		{"all HTTPS", "<VirtualHost *:80>\n</VirtualHost>\n<VirtualHost *:443>\n" + cpanelSiteInclude + "\n</VirtualHost>\n", true},
-		{"custom TLS port", "<VirtualHost *:8443>\nSSLEngine On\n</VirtualHost>\n", false},
-		{"whitespace", "<VirtualHost *:443>\n Include\t\"/etc/apache2/conf.d/userdata/*.conf\"\n</VirtualHost>\n", true},
+		{"comment", "<VirtualHost *:443>\n" + user + "# " + cpanelSiteInclude + "\n</VirtualHost>\n", false},
+		{"global", cpanelSiteInclude + "\n<VirtualHost *:443>\n" + user + "</VirtualHost>\n", false},
+		{"http only", "<VirtualHost *:80>\n" + cpanelSiteInclude + "\n</VirtualHost>\n<VirtualHost *:443>\n" + user + "</VirtualHost>\n", false},
+		{"partial", "<VirtualHost *:443>\n" + user + cpanelSiteInclude + "\n</VirtualHost>\n<VirtualHost *:443>\n" + user + "</VirtualHost>\n", false},
+		{"all HTTPS", "<VirtualHost *:80>\n</VirtualHost>\n<VirtualHost *:443>\n" + user + cpanelSiteInclude + "\n</VirtualHost>\n", true},
+		{"custom TLS port", "<VirtualHost *:8443>\nSSLEngine On\n" + user + "</VirtualHost>\n", false},
+		{"whitespace", "<VirtualHost *:443>\n" + user + " Include\t\"/etc/apache2/conf.d/userdata/*.conf\"\n</VirtualHost>\n", true},
+		{"hostname block beside covered sites", hostname + "<VirtualHost *:443>\n" + user + cpanelSiteInclude + "\n</VirtualHost>\n", true},
+		{"no user sites", hostname, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "httpd.conf")
