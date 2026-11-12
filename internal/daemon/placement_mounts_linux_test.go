@@ -181,7 +181,7 @@ func TestUncoveredPlacementRootsRaiseFindings(t *testing.T) {
 		{path: "/home", device: home},
 		{path: "/srv/bound", device: bound},
 	}
-	fm.reportUncoveredPlacementRoots([]mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}})
+	fm.reportUncoveredPlacementRoots([]mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}}, []mountEntry{{Dev: home, Root: "/", MountPoint: "/home"}})
 	found := unresolvedPlacementFindings(t, alerts)
 	if len(found) != 1 {
 		t.Fatalf("findings %+v, want one for the uncovered root", found)
@@ -190,5 +190,51 @@ func TestUncoveredPlacementRootsRaiseFindings(t *testing.T) {
 	if f.Severity != alert.High || !strings.Contains(f.Message, "/srv/bound") ||
 		!strings.Contains(f.Message, "253:1") || !strings.Contains(f.Details, "deep scan") {
 		t.Fatalf("finding does not name the root, its device and the fallback: %+v", f)
+	}
+}
+
+func TestPlacementMountsRejectsShadowedWholeMount(t *testing.T) {
+	dev := unix.Mkdev(8, 2)
+	for _, overlay := range []mountEntry{
+		{Dev: dev, Root: "/data/site", MountPoint: "/srv/site"},
+		{Dev: unix.Mkdev(8, 3), Root: "/", MountPoint: "/srv"},
+	} {
+		all := []mountEntry{{Dev: dev, Root: "/", MountPoint: "/"}, overlay}
+		got := placementMounts(all, []watchRootMark{{path: "/srv/site", device: dev}})
+		if len(got) != 0 {
+			t.Errorf("mount hidden by %+v selected as %+v", overlay, got)
+		}
+	}
+}
+
+func TestUncoveredPlacementAliasRaisesFinding(t *testing.T) {
+	alerts := make(chan alert.Finding, 8)
+	fm := placementTestMonitor(alerts)
+	dev := unix.Mkdev(259, 3)
+	fm.watchRoots = []watchRootMark{
+		{path: "/home", device: dev},
+		{path: "/srv/site", device: dev},
+	}
+	all := []mountEntry{
+		{Dev: dev, Root: "/", MountPoint: "/home"},
+		{Dev: dev, Root: "/user", MountPoint: "/srv/site"},
+	}
+	fm.reportUncoveredPlacementRoots(all, placementMounts(all, fm.watchRoots))
+	found := unresolvedPlacementFindings(t, alerts)
+	if len(found) != 1 || !strings.Contains(found[0].Message, "/srv/site") {
+		t.Fatalf("findings %+v, want one for the uncovered alias", found)
+	}
+}
+
+func TestUncoveredPlacementBindBelowWholeMountRaisesFinding(t *testing.T) {
+	alerts := make(chan alert.Finding, 8)
+	fm := placementTestMonitor(alerts)
+	dev := unix.Mkdev(8, 2)
+	fm.watchRoots = []watchRootMark{{path: "/tmp", device: dev}, {path: "/srv/site", device: dev}}
+	all := []mountEntry{{Dev: dev, Root: "/", MountPoint: "/"}, {Dev: dev, Root: "/data/site", MountPoint: "/srv/site"}}
+	fm.reportUncoveredPlacementRoots(all, placementMounts(all, fm.watchRoots))
+	found := unresolvedPlacementFindings(t, alerts)
+	if len(found) != 1 || !strings.Contains(found[0].Message, "/srv/site") {
+		t.Fatalf("findings %+v, want one for the covered-over root", found)
 	}
 }

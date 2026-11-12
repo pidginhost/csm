@@ -96,22 +96,29 @@ func placementMounts(all []mountEntry, roots []watchRootMark) []mountEntry {
 		if seen[r.device] {
 			continue
 		}
-		best := -1
-		for i, m := range all {
-			if m.Dev != r.device || m.Root != "/" || !pathWithin(r.path, m.MountPoint) {
-				continue
-			}
-			// Later entries win a tie: a mount over the same point hides the earlier one.
-			if best < 0 || len(m.MountPoint) >= len(all[best].MountPoint) {
-				best = i
-			}
-		}
+		best := placementRootMount(all, r)
 		if best >= 0 {
 			seen[r.device] = true
 			picked = append(picked, all[best])
 		}
 	}
 	return picked
+}
+
+// A deeper mount hides its ancestors even when it shows a different device
+// or a subdirectory of the same filesystem. Filtering those mounts first
+// would incorrectly treat a hidden whole-filesystem mount as usable.
+func placementRootMount(all []mountEntry, root watchRootMark) int {
+	best := -1
+	for i, m := range all {
+		if pathWithin(root.path, m.MountPoint) && (best < 0 || len(m.MountPoint) >= len(all[best].MountPoint)) {
+			best = i
+		}
+	}
+	if best < 0 || all[best].Dev != root.device || all[best].Root != "/" {
+		return -1
+	}
+	return best
 }
 
 func pathWithin(path, dir string) bool {
@@ -183,18 +190,17 @@ func (fm *FileMonitor) reportUnresolvedPlacement(dev uint64, raw PlacementRawEve
 			reason, strings.Join(names, "/"), raw.Ino, raw.PID))
 }
 
-// reportUncoveredPlacementRoots names each watch root whose device has no
-// whole-filesystem mount. Its device stays out of the kernel filter, so
-// placements under it are never reported at all.
-func (fm *FileMonitor) reportUncoveredPlacementRoots(mounts []mountEntry) {
+// reportUncoveredPlacementRoots names roots that cannot use the selected
+// canonical path. Sharing a device does not imply sharing that path.
+func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry) {
 	for _, r := range fm.watchRoots {
-		if slices.ContainsFunc(mounts, func(m mountEntry) bool { return m.Dev == r.device }) {
+		if i := placementRootMount(all, r); i >= 0 && slices.Contains(mounts, all[i]) {
 			continue
 		}
-		csmlog.Warn("placement: watch root has no whole-filesystem mount", "root", r.path, "device", deviceName(r.device))
+		csmlog.Warn("placement: watch root has no usable whole-filesystem mount", "root", r.path, "device", deviceName(r.device))
 		fm.sendAlert(alert.High, placementUnresolvedCheck,
 			fmt.Sprintf("Realtime protection cannot see files moved or linked into %s (device %s)", r.path, deviceName(r.device)),
-			"No mount shows this filesystem from its root, so realtime protection cannot resolve paths of files renamed or hard-linked there. The deep scan covers them.")
+			"This watch root has no usable whole-filesystem mount among the selected paths, so realtime protection cannot resolve placements at this location. The deep scan covers them.")
 	}
 }
 

@@ -582,3 +582,71 @@ func TestPlacedDirWalkBoundsListingBeforeCursor(t *testing.T) {
 		t.Fatalf("incomplete findings %+v, want one High for %s", found, placed)
 	}
 }
+
+// A listing that spends the whole pass must still allow a bounded wait for
+// analyzer room; otherwise each retry repeats the I/O without advancing.
+func TestPlacedDirSlowListingStillBoundsCongestion(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lowerPlacedDirLimit(t, &placedDirTimeLimit, time.Second)
+		fm, alerts := placedDirTestMonitor(t)
+		placed := placeDir(t, fm, stagedTree(t, map[string]string{"x.php": "<?php echo 1;"}), "pkg")
+		fillAnalyzerQueue(fm)
+		previous := placedDirReadNames
+		placedDirReadNames = func(dir *os.File, n int) ([]string, error) {
+			names, err := previous(dir, n)
+			if len(names) > 0 {
+				time.Sleep(2 * time.Second)
+			}
+			return names, err
+		}
+		t.Cleanup(func() { placedDirReadNames = previous })
+
+		if !fm.walkNextPlacedDir() {
+			t.Fatal("no walk queued")
+		}
+		found := incompleteDirFindings(drainFindings(alerts))
+		if len(found) != 1 || found[0].Severity != alert.High || found[0].FilePath != placed {
+			t.Fatalf("slow listing left congestion unbounded: %+v", found)
+		}
+		if fm.walkNextPlacedDir() {
+			t.Fatal("starved walk stayed queued")
+		}
+	})
+}
+
+func TestPlacedDirSlowListingAcceptsFreedHeadroom(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lowerPlacedDirLimit(t, &placedDirTimeLimit, time.Second)
+		fm, alerts := placedDirTestMonitor(t)
+		placed := placeDir(t, fm, stagedTree(t, map[string]string{"x.php": "<?php echo 1;"}), "pkg")
+		fillAnalyzerQueue(fm)
+		previous := placedDirReadNames
+		placedDirReadNames = func(dir *os.File, n int) ([]string, error) {
+			names, err := previous(dir, n)
+			if len(names) > 0 {
+				time.Sleep(2 * time.Second)
+			}
+			return names, err
+		}
+		t.Cleanup(func() { placedDirReadNames = previous })
+		go func() {
+			time.Sleep(2500 * time.Millisecond)
+			for range cap(fm.analyzerCh) {
+				<-fm.analyzerCh
+			}
+		}()
+
+		if !fm.walkNextPlacedDir() {
+			t.Fatal("no walk queued")
+		}
+		if got := walkedPaths(t, fm); len(got) != 1 || got[0] != filepath.Join(placed, "x.php") {
+			t.Fatalf("freed headroom did not admit the placed file once: %v", got)
+		}
+		if found := incompleteDirFindings(drainFindings(alerts)); len(found) != 0 {
+			t.Fatalf("available analyzers reported as congested: %+v", found)
+		}
+		if got := requirePlacedDirQueue(t, fm); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+			t.Fatalf("completed walk status = %+v", got)
+		}
+	})
+}

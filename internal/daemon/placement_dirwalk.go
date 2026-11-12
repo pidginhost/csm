@@ -234,13 +234,19 @@ func (w *placedDirWalk) stopping() bool {
 func (w *placedDirWalk) headroom() bool {
 	limit := max(cap(w.fm.analyzerCh)/2, 1)
 	started := time.Now()
+	deadline := w.deadline
+	// A slow listing may already have spent this pass. Give the first
+	// pending file its remaining congestion budget before repeating that I/O.
+	if !started.Before(deadline) {
+		deadline = started.Add(placedDirTimeLimit - w.dir.headroomWait)
+	}
 	for len(w.fm.analyzerCh) >= limit {
 		waited := w.dir.headroomWait + time.Since(started)
 		if waited >= placedDirTimeLimit {
 			w.starved = true
 			return false
 		}
-		wait := min(time.Until(w.deadline), placedDirTimeLimit-waited)
+		wait := min(time.Until(deadline), placedDirTimeLimit-waited)
 		if wait <= 0 {
 			w.dir.headroomWait = waited
 			return false
