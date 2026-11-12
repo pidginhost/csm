@@ -25,6 +25,12 @@ func FileStream(dev, ino uint64) string {
 	return "f:" + strconv.FormatUint(dev, 16) + ":" + strconv.FormatUint(ino, 16)
 }
 
+// SocketStream separates boots. Inodes can be reused within a boot;
+// rereads retain their first sighting rather than refreshing evidence.
+func SocketStream(bootID string) string {
+	return "s:" + bootID
+}
+
 // RecordCursor names one record of a file stream by its start offset and its
 // bytes, so a record rewritten at a reused offset is never an earlier one,
 // while the same bytes read again keep their cursor. record is the line as
