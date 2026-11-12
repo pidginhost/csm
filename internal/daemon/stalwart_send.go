@@ -113,13 +113,18 @@ func (s *stalwartSessions) evictLocked(now time.Time) {
 // toward volume and recipients only.
 func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *config.Config) []alert.Finding {
 	st := d.stalwart
+	smtp := st.ports.Of(s.LocalPort) == stalwartlog.ProtoSMTP
 	account, ok := st.sessions.account(stalwartSessionKey(s), ev.Time)
 	if !ok {
-		st.stats.unattributed.Add(1)
+		// An SMTP send always follows a login on its own connection; the
+		// health check reports a burst of sends CSM cannot name.
+		if smtp {
+			st.stats.unattributed.Add(1)
+		}
 		return nil
 	}
 	signalIP := ""
-	if ip := s.RemoteIP.String(); st.ports.Of(s.LocalPort) == stalwartlog.ProtoSMTP && !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
+	if ip := s.RemoteIP.String(); smtp && !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
 		signalIP = ip
 	}
 	now := time.Now()

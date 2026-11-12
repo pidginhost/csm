@@ -150,6 +150,7 @@ var componentCheckOrigin = map[string]string{
 	"smtp_probe_abuse":                           "maillog",
 	"smtp_subnet_spray":                          "maillog",
 	"stalwart_ban":                               "stalwart_log",
+	"stalwart_log_degraded":                      "stalwart_log",
 	"stalwart_webmail_bruteforce":                "stalwart_log",
 	"webshell_content_realtime":                  "fanotify",
 	"webshell_realtime":                          "fanotify",

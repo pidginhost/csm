@@ -192,3 +192,15 @@ func TestStalwartSessionJoinBounded(t *testing.T) {
 		t.Fatalf("fresh session = %q, %v", got, ok)
 	}
 }
+
+// Only an SMTP send always follows a login on its own connection; a webmail
+// send that does not join is not counted as unattributed.
+func TestStalwartUnattributedCountsSMTPOnly(t *testing.T) {
+	resetStalwartSendState(t)
+	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
+	send := stalwartLoginAndSend(8080, "198.51.100.60", "user@example.com", "user@example.com", "a@example.org")[1]
+	feedStalwart(d, send)
+	if n := d.stalwart.stats.unattributed.Load(); n != 0 {
+		t.Fatalf("unattributed = %d after an HTTP-listener send, want 0", n)
+	}
+}

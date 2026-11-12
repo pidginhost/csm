@@ -937,6 +937,7 @@ Attribution gaps:
 | `sshd_config_change` | ignored | host-scope |  |
 | `ssl_cert_issued` | ignored | informational |  |
 | `stalwart_ban` | ignored | attacker-side |  |
+| `stalwart_log_degraded` | ignored | self-health |  |
 | `stalwart_webmail_bruteforce` | ignored | attacker-side |  |
 | `suid_binary` | security event |  |  |
 | `supply_chain_vuln` | ignored | posture |  |

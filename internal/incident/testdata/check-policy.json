@@ -242,6 +242,7 @@
       "ssh_keys",
       "ssh_login_unknown_ip",
       "ssl_cert_issued",
+      "stalwart_log_degraded",
       "supply_chain_vuln",
       "suspicious_crontab",
       "suspicious_file",

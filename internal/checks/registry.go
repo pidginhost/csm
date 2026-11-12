@@ -488,6 +488,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "local_threat_score", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "mail_auth_backend_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "mail_log_source_unavailable", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "stalwart_log_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "protection_queue_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	// Admission notices report the response engine's own gaps; the
 	// finding they concern keeps its own correlation.

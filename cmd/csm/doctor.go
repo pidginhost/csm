@@ -245,6 +245,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	// releases until somebody reads it.
 	report.Checks = append(report.Checks, deployScriptDoctorChecks()...)
 	report.Checks = append(report.Checks, smtpAuthLoggingDoctorChecks()...)
+	report.Checks = append(report.Checks, stalwartLogDoctorChecks(cfg)...)
 
 	if cfg.PHPShield.Enabled {
 		report.Checks = append(report.Checks, phpShieldCageFSDoctorChecks()...)

@@ -25,7 +25,7 @@ type stalwartLogStats struct {
 	read         atomic.Int64 // lines delivered
 	parsed       atomic.Int64 // lines in Stalwart's layout
 	lastLine     atomic.Int64 // unix seconds of the last delivered line, or the start
-	unattributed atomic.Int64 // sends on a connection with no remembered login
+	unattributed atomic.Int64 // SMTP sends on a connection with no remembered login
 }
 
 // stalwartState is what the Stalwart log handler keeps between lines.
@@ -34,6 +34,7 @@ type stalwartState struct {
 	stats    stalwartLogStats
 	webmail  *stalwartWebmailTracker
 	sessions *stalwartSessions
+	hourly   stalwartHealth
 }
 
 func newStalwartState(ports stalwartlog.Ports, start time.Time) *stalwartState {
@@ -62,7 +63,26 @@ func (d *Daemon) startStalwartLogReader(cfg *config.Config) {
 	queue := maillog.NewQueue()
 	d.registerQueueSource("stalwart", queue)
 	ctx, cancel := context.WithCancel(context.Background())
-	d.wg.Add(2)
+	d.wg.Add(3)
+	obs.Go("stalwart-log-health", func() {
+		defer d.wg.Done()
+		ticker := time.NewTicker(stalwartHealthTick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.stopCh:
+				return
+			case now := <-ticker.C:
+				// A missing log already reports itself as unavailable.
+				active := d.WatcherStatuses()[stalwartLogWatcher] && stalwartServiceActive()
+				for _, f := range d.stalwart.health(now, active) {
+					if !alert.TryEnqueue(d.alertCh, f) {
+						atomic.AddInt64(&d.droppedAlerts, 1)
+					}
+				}
+			}
+		}
+	})
 	obs.Go("stalwart-log-stop", func() {
 		defer d.wg.Done()
 		select {
