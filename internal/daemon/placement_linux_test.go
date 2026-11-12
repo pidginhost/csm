@@ -824,6 +824,7 @@ func TestPlacementNeverFollowsSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	fm := placementTestMonitor(make(chan alert.Finding, 4))
+	setPlacementRetryDelays(t, 10*time.Second)
 
 	start := time.Now()
 	fm.handlePlacement(placementOf(t, link, 0))
@@ -836,8 +837,18 @@ func TestPlacementNeverFollowsSymlink(t *testing.T) {
 		t.Fatalf("stats = %+v, want one unverified placement and no admission decision", stats)
 	}
 	// A symlink can never become the reported inode, so waiting is pointless.
-	if elapsed := time.Since(start); elapsed >= 50*time.Millisecond {
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
 		t.Fatalf("symlink placement retried for %v", elapsed)
+	}
+}
+
+// setPlacementRetryDelays sets every identity retry wait to d for one test.
+func setPlacementRetryDelays(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := placementRetryDelays
+	t.Cleanup(func() { placementRetryDelays = old })
+	for i := range placementRetryDelays {
+		placementRetryDelays[i] = d
 	}
 }
 
@@ -850,6 +861,8 @@ func TestPlacementWaitsForPendingRename(t *testing.T) {
 	ev := placementOf(t, staged, 0)
 	ev.Path = path
 	fm := placementTestMonitor(make(chan alert.Finding, 4))
+	// The rename lands long before the first retry, however slow the host.
+	setPlacementRetryDelays(t, time.Second)
 	renamed := make(chan error, 1)
 	go func() {
 		time.Sleep(30 * time.Millisecond)
@@ -884,6 +897,8 @@ func TestPlacementWaitsForRenameOverSymlink(t *testing.T) {
 	ev := placementOf(t, staged, 0)
 	ev.Path = path
 	fm := placementTestMonitor(make(chan alert.Finding, 4))
+	// The rename lands long before the first retry, however slow the host.
+	setPlacementRetryDelays(t, time.Second)
 	renamed := make(chan error, 1)
 	go func() {
 		time.Sleep(30 * time.Millisecond)
