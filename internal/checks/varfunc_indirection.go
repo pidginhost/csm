@@ -288,7 +288,9 @@ func stripPHPStringsKeeping(code string, keep func(token string) bool) string {
 			i = end - 1
 			continue
 		}
-		if isPHPQuote(code[i]) {
+		// Backtick bodies use shell syntax. Their quotes must not expose
+		// literals to keep or consume the PHP code after the closing backtick.
+		if isPHPQuote(code[i]) || code[i] == '`' {
 			if end := skipPHPString(code, i); keep != nil && end < len(code) && keep(code[i:end+1]) {
 				b.WriteString(code[i : end+1])
 				i = end

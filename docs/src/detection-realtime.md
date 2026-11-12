@@ -210,6 +210,12 @@ previously observed code always override inert-content filtering.
 - Auto-quarantine on high-confidence realtime signature matches (category, size, entropy, and hex/execution validation)
 - Auto-quarantine on confirmed PHP request-to-execution flows and executable packed payloads, using the stable file version that was inspected
 
+Request-body confirmation accepts a complete quoted `php://input` value in PHP
+code. Examples inside longer strings, heredocs, nowdocs, comments, inline HTML,
+or backtick shell commands do not confirm execution. Shell quotes inside a
+backtick command do not hide PHP code that follows it. Escaped, interpolated,
+and unterminated spellings remain unconfirmed by this check.
+
 ## Sensitive System File Watcher
 
 Tracks a fixed set of system-configuration paths: the account and credential databases, `sudoers` and its drop-in directory, the SSH daemon config and its drop-in directory, the system cron drop-in directories, and per-user crontabs. The set is not operator-configurable -- a path an attacker knows is excluded is a free landing pad.
