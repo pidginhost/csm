@@ -9,10 +9,12 @@ import (
 // nginxDirective is one simple or block directive of an nginx
 // configuration, tagged with the file that set it.
 type nginxDirective struct {
-	Name   string
-	Args   []string
-	File   string
-	Module string
+	Name    string
+	Args    []string
+	File    string
+	Module  string
+	Context string
+	Block   bool
 }
 
 // nginxDirectives returns every directive of the nginx configuration at
@@ -25,7 +27,7 @@ func nginxDirectives(path string) ([]nginxDirective, bool) {
 		prefix = "."
 	}
 	r := nginxReader{prefix: strings.TrimSuffix(prefix, string(filepath.Separator)), active: make(map[string]bool), complete: true}
-	out := r.read(nil, path, 0, "")
+	out := r.read(nil, path, 0, "", "")
 	return out, r.complete
 }
 
@@ -35,7 +37,7 @@ type nginxReader struct {
 	complete bool
 }
 
-func (r *nginxReader) read(dst []nginxDirective, path string, depth int, module string) []nginxDirective {
+func (r *nginxReader) read(dst []nginxDirective, path string, depth int, module, context string) []nginxDirective {
 	if depth > apacheIncludeMaxDepth || r.active[path] {
 		r.complete = false
 		return dst
@@ -56,11 +58,14 @@ func (r *nginxReader) read(dst []nginxDirective, path string, depth int, module 
 		if d.Module == "" {
 			d.Module = module
 		}
+		if d.Context == "" {
+			d.Context = context
+		}
 		if d.Name != "include" {
 			dst = append(dst, d)
 			continue
 		}
-		if len(d.Args) != 1 {
+		if len(d.Args) != 1 || d.Block {
 			r.complete = false
 			continue
 		}
@@ -69,7 +74,7 @@ func (r *nginxReader) read(dst []nginxDirective, path string, depth int, module 
 			target = joinWebConfigPath(r.prefix, target)
 		}
 		if !strings.ContainsAny(target, "*?[") {
-			dst = r.read(dst, target, depth+1, d.Module)
+			dst = r.read(dst, target, depth+1, d.Module, d.Context)
 			continue
 		}
 		// An unreadable directory is not an empty one.
@@ -84,7 +89,7 @@ func (r *nginxReader) read(dst []nginxDirective, path string, depth int, module 
 				r.complete = false
 				continue
 			}
-			dst = r.read(dst, m, depth+1, d.Module)
+			dst = r.read(dst, m, depth+1, d.Module, d.Context)
 		}
 	}
 	return dst
@@ -100,6 +105,7 @@ func parseNginxDirectives(text, file string) ([]nginxDirective, bool) {
 	var out []nginxDirective
 	var words []string
 	modules := []string{""}
+	contexts := []string{""}
 	depth, start := 0, 0
 	lastSpace, needSpace, comment, escaped, variable := true, false, false, false, false
 	var quote byte
@@ -108,7 +114,10 @@ func parseNginxDirectives(text, file string) ([]nginxDirective, bool) {
 		if len(words) == 0 || words[0] == "" {
 			ok = false
 		} else {
-			out = append(out, nginxDirective{Name: words[0], Args: words[1:], File: file, Module: modules[depth]})
+			out = append(out, nginxDirective{
+				Name: words[0], Args: words[1:], File: file,
+				Module: modules[depth], Context: contexts[depth], Block: block,
+			})
 		}
 		if block {
 			module := modules[depth]
@@ -116,6 +125,11 @@ func parseNginxDirectives(text, file string) ([]nginxDirective, bool) {
 				module = words[0]
 			}
 			modules = append(modules, module)
+			context := ""
+			if len(words) > 0 {
+				context = words[0]
+			}
+			contexts = append(contexts, context)
 			depth++
 		}
 		words = nil
@@ -157,6 +171,7 @@ func parseNginxDirectives(text, file string) ([]nginxDirective, bool) {
 					ok = false
 				} else {
 					modules = modules[:depth]
+					contexts = contexts[:depth]
 					depth--
 				}
 				continue

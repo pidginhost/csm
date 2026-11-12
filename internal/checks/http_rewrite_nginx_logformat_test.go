@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/platform"
@@ -9,7 +10,7 @@ import (
 // nginx logs a client-chosen address when an access_log writes a format
 // whose first field holds a variable other than the peer or a server
 // value. The built-in combined format, access_log off and formats no
-// access_log names do not count; every definition of a name counts.
+// access_log names do not count; nginx selects the first matching name.
 func TestHTTPRewriteNginxLogFormats(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct {
@@ -20,6 +21,10 @@ func TestHTTPRewriteNginxLogFormats(t *testing.T) {
 		{"stock combined", "http {\n  access_log /var/log/nginx/access.log;\n  server { access_log /var/log/nginx/site.log combined; }\n}\n", RewriteNone, ""},
 		{"no access log", "events {}\nhttp { server { listen 80; } }\n", RewriteNone, ""},
 		{"leading spaces", "http { log_format leading '  $http_x_real_ip $status'; access_log logs/access leading; }\n", RewriteActive, "log_format leading   $http_x_real_ip $status"},
+		{"cookie first", `http { log_format cookie '$cookie_client $status'; access_log logs/access cookie; }`, RewriteActive, "log_format cookie $cookie_client $status"},
+		{"argument first", `http { log_format query '${arg_client} $status'; access_log logs/access query; }`, RewriteActive, "log_format query ${arg_client} $status"},
+		{"default quoted request", `http { log_format quoted escape=default '"$http_x_client" $status'; access_log logs/access quoted; }`, RewriteNone, ""},
+		{"json quoted request", `http { log_format quoted escape=json '"$http_x_client" $status'; access_log logs/access quoted; }`, RewriteNone, ""},
 		{"unescaped later value", "http { log_format raw escape=none '$remote_addr $request_body'; access_log logs/access raw; }\n", RewriteActive, "log_format raw escape=none $remote_addr $request_body"},
 		{"unescaped quoted value", "http { log_format raw escape=none '\"$request_body\"'; access_log logs/access raw; }\n", RewriteActive, "log_format raw escape=none \"$request_body\""},
 		{"invalid escape", "http { log_format bad escape=bogus '$remote_addr'; }\n", RewriteUnknown, ""},
@@ -32,6 +37,10 @@ func TestHTTPRewriteNginxLogFormats(t *testing.T) {
 		{"binary field framing", "http { log_format binary '$binary_remote_addr $http_x_real_ip'; access_log logs/access binary; }\n", RewriteUnknown, ""},
 		{"log outside a module", "log_format main '$remote_addr'; access_log logs/access main;\n", RewriteUnknown, ""},
 		{"mapped optional peer variable", "http { map $http_x_client $RealIP_Remote_Addr { default $http_x_client; } log_format custom '$REALIP_REMOTE_ADDR $status'; access_log logs/access custom; }\n", RewriteActive, "log_format custom $REALIP_REMOTE_ADDR $status"},
+		{"captured optional peer variable", `http { server { server_name ~^(?<realip_remote_addr>.*)$; } log_format custom '$realip_remote_addr $status'; access_log logs/access custom; }`, RewriteActive, "log_format custom $realip_remote_addr $status"},
+		{"scripted optional peer variable", `http { js_set $realip_remote_addr client.address; log_format custom '$realip_remote_addr $status'; access_log logs/access custom; }`, RewriteActive, "log_format custom $realip_remote_addr $status"},
+		{"captured optional peer port", `stream { map $proxy_protocol_addr $client { ~^(?<realip_remote_port>.*)$ $realip_remote_port; } log_format custom '$realip_remote_port $status'; access_log logs/access custom; }`, RewriteActive, "log_format custom $realip_remote_port $status"},
+		{"captured version dependent stream name", `stream { map $proxy_protocol_addr $client { ~^(?<server_name>.*)$ $server_name; } log_format custom '$server_name'; access_log logs/access custom; }`, RewriteActive, "log_format custom $server_name"},
 		{"set optional peer variable", "http { log_format custom '$realip_remote_addr $status'; server { set $realip_remote_addr $http_x_client; access_log logs/access custom; } }\n", RewriteActive, "log_format custom $realip_remote_addr $status"},
 		{"geo optional peer variable", "http { geo $realip_remote_addr { default 203.0.113.7; } log_format custom '$realip_remote_addr $status'; access_log logs/access custom; }\n", RewriteActive, "log_format custom $realip_remote_addr $status"},
 		{"split clients peer variable", "http { split_clients $http_x_client $realip_remote_addr { * 203.0.113.7; } log_format custom '$realip_remote_addr $status'; access_log logs/access custom; }\n", RewriteActive, "log_format custom $realip_remote_addr $status"},
@@ -91,6 +100,79 @@ func TestHTTPRewriteNginxLogFormats(t *testing.T) {
 			}
 			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), c.state, c.directive, file)
 		})
+	}
+}
+
+func TestHTTPRewriteNginxFormatLookup(t *testing.T) {
+	for _, module := range []string{"http", "stream"} {
+		for _, tc := range []struct {
+			name, body string
+			state      RewriteState
+			directive  string
+		}{
+			{"forward reference", `access_log logs/access later; log_format later '$remote_addr';`, RewriteUnknown, ""},
+			{"format in server", `server { log_format main '$remote_addr'; access_log logs/access main; }`, RewriteUnknown, ""},
+			{"format as block", `log_format main '$remote_addr' {} access_log logs/access main;`, RewriteUnknown, ""},
+			{"access as block", `log_format main '$remote_addr'; access_log logs/access main {}`, RewriteUnknown, ""},
+			{"access in upstream", `log_format main '$remote_addr'; upstream backend { access_log logs/access main; }`, RewriteUnknown, ""},
+			{"unused case variant", `log_format main '$remote_addr'; log_format MAIN '$proxy_protocol_addr'; access_log logs/access MAIN;`, RewriteNone, ""},
+			{"selected case variant", `log_format MAIN '$proxy_protocol_addr'; log_format main '$remote_addr'; access_log logs/access main;`, RewriteActive, "log_format MAIN $proxy_protocol_addr"},
+			{"non ASCII name mismatch", "log_format trac\u212a '$remote_addr'; access_log logs/access track;", RewriteUnknown, ""},
+			{"non ASCII name matches", "log_format trac\u212a '$remote_addr'; access_log logs/access TRAC\u212a;", RewriteNone, ""},
+		} {
+			t.Run(module+"/"+tc.name, func(t *testing.T) {
+				conf := writeRewriteFile(t, t.TempDir(), "nginx.conf", module+" { "+tc.body+" }")
+				file := ""
+				if tc.state == RewriteActive {
+					file = conf
+				}
+				requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), tc.state, tc.directive, file)
+			})
+		}
+	}
+}
+
+func TestHTTPRewriteNginxIncludeRequiresStatement(t *testing.T) {
+	dir := t.TempDir()
+	writeRewriteFile(t, dir, "formats.conf", `log_format main '$remote_addr';`)
+	conf := writeRewriteFile(t, dir, "nginx.conf", `http { include formats.conf {} access_log logs/access main; }`)
+	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), RewriteUnknown, "", "")
+}
+
+func TestHTTPRewriteNginxStreamServerVariables(t *testing.T) {
+	for _, variable := range []string{"bytes_received", "session_time", "protocol"} {
+		t.Run(variable, func(t *testing.T) {
+			conf := writeRewriteFile(t, t.TempDir(), "nginx.conf", fmt.Sprintf(`stream {
+    log_format main '$%s $proxy_protocol_addr';
+    access_log logs/stream main;
+}`, variable))
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), RewriteNone, "", "")
+			conf = writeRewriteFile(t, t.TempDir(), "nginx.conf", fmt.Sprintf(`http {
+    map $http_x_client $%s { default $http_x_client; }
+    log_format main '$%s $status';
+    access_log logs/http main;
+}`, variable, variable))
+			requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), RewriteActive, "log_format main $"+variable+" $status", conf)
+		})
+	}
+}
+
+// Map entries are values, even when their keys spell directive names.
+// Includes inside a map retain the same data context.
+func TestHTTPRewriteNginxMapEntries(t *testing.T) {
+	for _, module := range []string{"http", "stream"} {
+		for _, key := range []string{"log_format", "access_log", "map", "set", "geo", "split_clients", "auth_request_set", "perl_set"} {
+			t.Run(module+"/"+key, func(t *testing.T) {
+				dir := t.TempDir()
+				writeRewriteFile(t, dir, "entries.conf", key+" allowed;\n")
+				conf := writeRewriteFile(t, dir, "nginx.conf", module+` {
+    map $remote_addr $label { include entries.conf; }
+    log_format peer '$remote_addr';
+    access_log logs/access peer;
+}`)
+				requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: conf}), RewriteNone, "", "")
+			})
+		}
 	}
 }
 

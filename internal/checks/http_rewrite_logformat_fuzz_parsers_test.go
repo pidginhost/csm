@@ -70,5 +70,10 @@ func FuzzNginxLogFormat(f *testing.F) {
 		if value, ok := nginxFormatLogsClientValue("http", "default", custom, "$realip_remote_addr ", format); ok && !value {
 			t.Fatalf("user-defined peer spelling classified direct: %q", format)
 		}
+		for _, module := range []string{"http", "stream"} {
+			if value, ok := nginxFormatLogsClientValue(module, "default", nil, "$realip_remote_addr ", format); ok && !value {
+				t.Fatalf("optional peer spelling classified direct without module proof: %q, module=%s", format, module)
+			}
+		}
 	})
 }

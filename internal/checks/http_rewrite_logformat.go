@@ -654,11 +654,11 @@ func (l *apacheLogFormats) clientValue() *apacheLogFormat {
 	return nil
 }
 
-// nginxSafeLogVariables write the connection's peer or a value the server
-// sets.
+// nginxSafeLogVariables are HTTP core values with server-owned output.
+// Optional realip names are not proof of a peer: without that module,
+// regex captures and extension modules can define them from request data.
 var nginxSafeLogVariables = map[string]bool{
-	"remote_addr": true, "realip_remote_addr": true,
-	"remote_port": true, "realip_remote_port": true, "server_addr": true,
+	"remote_addr": true, "remote_port": true, "server_addr": true,
 	"server_port": true, "server_name": true, "hostname": true,
 	"time_local": true, "time_iso8601": true, "msec": true, "pid": true,
 	"connection": true, "connection_requests": true, "status": true,
@@ -667,17 +667,16 @@ var nginxSafeLogVariables = map[string]bool{
 }
 
 // A name that is built in to HTTP may be a user variable in stream.
+// Stream server_name also remains user-definable before nginx 1.25.5.
 func nginxSafeLogVariable(module, name string) bool {
-	if !nginxSafeLogVariables[name] {
-		return false
-	}
 	if module == "http" {
-		return true
+		return nginxSafeLogVariables[name]
 	}
 	switch name {
-	case "remote_addr", "realip_remote_addr", "remote_port", "realip_remote_port",
-		"server_addr", "server_port", "server_name", "hostname", "time_local",
-		"time_iso8601", "msec", "pid", "connection", "status", "bytes_sent", "nginx_version":
+	case "remote_addr", "remote_port",
+		"server_addr", "server_port", "hostname", "time_local",
+		"time_iso8601", "msec", "pid", "connection", "status", "bytes_sent", "nginx_version",
+		"bytes_received", "session_time", "protocol":
 		return true
 	}
 	return false

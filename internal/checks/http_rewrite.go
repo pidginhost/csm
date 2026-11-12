@@ -283,13 +283,16 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 		value     bool
 	}
 	type key struct{ module, name string }
-	formats := make(map[key][]format)
+	formats := map[key]format{{"http", "combined"}: {}}
 	seen := make(map[key]bool)
-	var used []key
+	var used []format
 	// Optional modules can leave their variable names available for user
 	// definitions. A familiar spelling alone does not prove a peer value.
 	custom := make(map[string]map[string]bool)
 	for _, d := range directives {
+		if nginxDataContext(d.Context) {
+			continue
+		}
 		var target string
 		switch d.Name {
 		case "map", "split_clients":
@@ -329,22 +332,26 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 		if d.Name == "set_real_ip_from" {
 			return strings.Join(append([]string{d.Name}, d.Args...), " "), d.File, complete
 		}
+		if nginxDataContext(d.Context) {
+			continue
+		}
 		if d.Name != "log_format" && d.Name != "access_log" {
 			continue
 		}
-		if d.Module != "http" && d.Module != "stream" {
+		if d.Module != "http" && d.Module != "stream" || d.Block {
 			complete = false
 			continue
 		}
 		switch d.Name {
 		case "log_format":
-			if len(d.Args) < 2 {
+			if len(d.Args) < 2 || d.Context != d.Module {
 				complete = false
 				continue
 			}
 			exact := key{d.Module, d.Args[0]}
 			if seen[exact] || d.Module == "http" && d.Args[0] == "combined" {
 				complete = false
+				continue
 			}
 			seen[exact] = true
 			args, escape := d.Args[1:], "default"
@@ -357,10 +364,18 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 				complete = false
 				continue
 			}
-			name := key{d.Module, strings.ToLower(d.Args[0])}
-			formats[name] = append(formats[name], format{d, value})
+			name := key{d.Module, lowerASCII(d.Args[0])}
+			// nginx permits case variants but binds to the first ASCII
+			// case-insensitive match already declared at the use site.
+			if _, exists := formats[name]; !exists {
+				formats[name] = format{d, value}
+			}
 		case "access_log":
-			if len(d.Args) == 0 {
+			contextOK := d.Context == d.Module || d.Context == "server"
+			if d.Module == "http" {
+				contextOK = contextOK || d.Context == "location" || d.Context == "if" || d.Context == "limit_except"
+			}
+			if len(d.Args) == 0 || !contextOK {
 				complete = false
 				continue
 			}
@@ -377,24 +392,29 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 				}
 				continue
 			}
-			name := key{d.Module, strings.ToLower(d.Args[1])}
-			if name.module == "http" && name.name == "combined" {
-				continue
+			name := key{d.Module, lowerASCII(d.Args[1])}
+			if f, exists := formats[name]; exists {
+				used = append(used, f)
+			} else {
+				complete = false
 			}
-			used = append(used, name)
 		}
 	}
-	for _, name := range used {
-		if len(formats[name]) == 0 {
-			complete = false
-		}
-		for _, f := range formats[name] {
-			if f.value {
-				return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete
-			}
+	for _, f := range used {
+		if f.value {
+			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete
 		}
 	}
 	return "", "", complete
+}
+
+// These blocks use their own entry handlers, not nginx directive lookup.
+func nginxDataContext(context string) bool {
+	switch context {
+	case "map", "geo", "split_clients", "types":
+		return true
+	}
+	return false
 }
 
 // lswsClientAddressRewrite returns the first LiteSpeed setting that logs a
