@@ -1167,6 +1167,32 @@ add_action(example_hook('plugininit'), 'example_register');`,
 			sample: `<p>` + strings.Repeat("\u3100", 10) + ` casino</p>`,
 		},
 		{
+			name: "single-line PHP translation file with a keyword inside a word",
+			rule: "spam_japanese_seo",
+			ext:  ".php",
+			sample: `<?php
+return ['messages'=>['Hire'=>'` + strings.Repeat("\u3042", 10) + `','Hand-picked specialists for any project'=>'` + strings.Repeat("\u3044", 10) + `']];`,
+		},
+		{
+			name:   "keyword far from the Japanese text on one line",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			sample: `<p>` + strings.Repeat("\u3042", 10) + `</p>` + strings.Repeat("<span>plain text</span>", 12) + `<p>casino</p>`,
+		},
+		{
+			name:   "keyword prefix of a longer word",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			sample: `<p>` + strings.Repeat("\u3042", 10) + ` casinova slotting</p>`,
+		},
+		{
+			name:   "plural slot keyword beside kana",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<p>` + strings.Repeat("\u30b9", 10) + ` <a href="https://spam.example.test/">free slots</a></p>`,
+		},
+		{
 			name:   "translation catalogue containing Japanese casino text",
 			rule:   "spam_japanese_seo",
 			ext:    ".po",
