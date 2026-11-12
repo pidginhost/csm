@@ -75,8 +75,9 @@ type rewriteSources struct {
 }
 
 // DetectHTTPRewrite reads the host web server's configuration from disk: an
-// Apache RemoteIPHeader or RemoteIPProxyProtocol, an nginx set_real_ip_from,
-// or LiteSpeed's client IP from header, in any scope.
+// Apache RemoteIPHeader or RemoteIPProxyProtocol, mod_cloudflare or
+// mod_rpaf, an nginx set_real_ip_from, or LiteSpeed's client IP from
+// header, in any scope.
 func DetectHTTPRewrite(info platform.Info) HTTPRewrite {
 	src := rewriteSources{server: info.WebServer}
 	switch info.WebServer {
@@ -117,7 +118,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 		}
 	}
 	if src.apacheConfig != "" {
-		directive, file, complete := apacheRemoteIPRewrite(src.apacheConfig)
+		directive, file, complete := apacheClientAddressRewrite(src.apacheConfig)
 		if directive != "" {
 			r.State, r.Directive, r.File = RewriteActive, directive, file
 			return r
@@ -146,24 +147,50 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	return r
 }
 
-// apacheRemoteIPRewrite returns the first mod_remoteip directive that
-// replaces the client address, its file, and whether the whole tree was
-// read. A rewrite directive Apache would refuse leaves the tree unknown.
-func apacheRemoteIPRewrite(path string) (directive, file string, complete bool) {
+// apacheClientAddressRewrite returns the first directive that replaces the
+// client address, its file, and whether the whole tree was read: a
+// mod_remoteip header or PROXY protocol, a loaded or configured
+// mod_cloudflare, or an enabled mod_rpaf (0.6 or 0.8 names). A rewrite
+// directive Apache would refuse leaves the tree unknown.
+func apacheClientAddressRewrite(path string) (directive, file string, complete bool) {
 	lines, complete := assembleApacheConfigWithStatus(path)
 	malformed := false
 	valid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, _ apacheLineContext) {
 		if directive != "" {
 			return
 		}
+		is := func(names ...string) bool {
+			for _, n := range names {
+				if strings.EqualFold(fields[0], n) {
+					return true
+				}
+			}
+			return false
+		}
 		switch {
-		case strings.EqualFold(fields[0], "RemoteIPHeader"):
+		case is("RemoteIPHeader", "CloudFlareRemoteIPHeader"):
 			if len(fields) != 2 {
 				malformed = true
 				return
 			}
 			directive, file = strings.Join(fields, " "), line.File
-		case strings.EqualFold(fields[0], "RemoteIPProxyProtocol"):
+		case is("CloudFlareRemoteIPTrustedProxy"):
+			if len(fields) < 2 {
+				malformed = true
+				return
+			}
+			directive, file = strings.Join(fields, " "), line.File
+		case is("LoadModule") && len(fields) > 1 && apacheArgumentHasVariable(fields[1]):
+			// Only Apache can resolve its Define and environment values.
+			malformed = true
+		case is("LoadModule") && len(fields) > 1 && fields[1] == "cloudflare_module":
+			if len(fields) != 3 {
+				malformed = true
+				return
+			}
+			// mod_cloudflare trusts its built-in Cloudflare ranges once loaded.
+			directive, file = strings.Join(fields, " "), line.File
+		case is("RemoteIPProxyProtocol", "RPAF_Enable", "RPAFenable"):
 			switch {
 			case len(fields) == 2 && strings.EqualFold(fields[1], "On"):
 				directive, file = strings.Join(fields, " "), line.File
