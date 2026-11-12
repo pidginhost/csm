@@ -59,3 +59,22 @@ func writeAutomationFirewallState(t *testing.T, stateRoot string, state firewall
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
+
+// An engine with configured but unapplied locks must report no protection.
+func TestAutomationStatusLocalPortLocks(t *testing.T) {
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true, LocalPortLocks: []string{"8080:www-data,stalwart"}}}
+	prev := config.Active()
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	eng, err := firewall.NewEngine(cfg.Firewall, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	if got := (&Daemon{cfg: cfg, fwEngine: eng}).AutomationStatus().FirewallLocalPortLocks; len(got) != 0 {
+		t.Fatalf("unapplied FirewallLocalPortLocks = %v, want none", got)
+	}
+	if got := (&Daemon{cfg: cfg}).AutomationStatus().FirewallLocalPortLocks; got != nil {
+		t.Fatalf("without an engine FirewallLocalPortLocks = %v, want none", got)
+	}
+}

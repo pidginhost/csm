@@ -528,7 +528,28 @@ What CSM reads:
 - Authentication, abuse and scan bans Stalwart logs for an SMTP, IMAP, POP3 or ManageSieve listener raise `stalwart_ban`, which blocks the address for the auto-response block length. Stalwart's ban stays in place. A failed-login ban of an address a customer logged in from within the last 30 days, such as an office network with one stale password, is a High finding and is not blocked. Loiter bans, refused connections and bans on the HTTP listener or an unmapped port are ignored.
 - Authenticated sends on SMTP listeners and unmapped ports are matched to the login on the same connection and feed the rate, sender profile and cloud-relay checks. Sends from a loopback or private address, such as sites on the same server, and sends on an unmapped port count toward volume and recipients only.
 
-Stalwart logs failed logins at debug level by default, so password guessing over SMTP, IMAP and POP3 is invisible until the `auth.failed` event is raised to info in Stalwart's logging settings. `csm doctor` reports whether the newest log holds failed logins, whether it is current, and whether its recent lines are in the layout CSM reads.
+Stalwart logs failed logins at debug level by default, so password guessing over SMTP, IMAP and POP3 is invisible until the `auth.failed` event is raised to info. `csm stalwart setup` does that (see below). `csm doctor` reports whether the newest log holds failed logins, whether it is current, and whether its recent lines are in the layout CSM reads.
+
+### Preparing Stalwart
+
+`csm stalwart setup` changes three settings through Stalwart's admin API at `stalwart.api_url` (default `http://127.0.0.1:8080`), then reloads Stalwart's settings once. The API address, including a `--url` override, must not contain a login, query or fragment. Remote addresses require HTTPS and cannot use this host's port locks as protection. Run it as root with a Stalwart admin login:
+
+```
+STALWART_USER=admin csm stalwart setup --dry-run --password-file /root/stalwart-admin.pw
+STALWART_USER=admin csm stalwart setup --password-file /root/stalwart-admin.pw
+```
+
+`STALWART_PASSWORD` works in place of `--password-file`. The password is never printed. Before sending it to an address on this host, setup and doctor check that the API port and each connected peer belong to root or Stalwart's service user (`stalwart` or `stalwart-mail`). An unreadable ownership record stops the login. This also protects reconnects when Stalwart restarts. `--dry-run` shows each step and changes nothing; a second run after a successful one changes nothing and does not reload. If setup fails, some settings may already be stored. Resolve the error and reload settings in Stalwart before running setup again. If only the reload failed, restart Stalwart: a second run reads the stored settings as done.
+
+1. **Failed-login logging.** Sets the `auth.failed` event to info unless it is already logged at info, warn or error.
+2. **Webmail client addresses.** Makes Stalwart's HTTP listener take the client address from `X-Forwarded-For` (1 hop), so webmail and JMAP failures name the real client instead of the web server. Anyone who can connect to the listener could forge that header, so setup only does this when the API address names this host on loopback, every HTTP listener has known loopback-only binds, and the running CSM daemon locks each of their ports to the web server and Stalwart. Otherwise it skips the step and prints what is missing, including the line to add under `firewall` in `csm.yaml`, for example `local_port_locks: ["8080:www-data,stalwart"]`; restart CSM after adding it. If Stalwart already takes forwarded addresses without that protection, setup reports the step as unsafe and exits 1 without changing it. See [Local port locks](firewall.md#local-port-locks).
+
+   With one hop Stalwart reads the last `X-Forwarded-For` entry, so the web server in front of it must set that header itself. nginx passes a client's header through unchanged unless told otherwise; add `proxy_set_header X-Forwarded-For $remote_addr;` (or `$proxy_add_x_forwarded_for`) to the Stalwart location. Without it a remote client chooses the address Stalwart logs and bans. Setup cannot check this. The users in the lock line must not run site code: run PHP-FPM pools as their own users, not as the web server's user.
+3. **Ban expiry.** Sets Stalwart's failed-login, abuse and scan ban periods to `auto_response.block_expiry`, so its bans end when CSM's blocks do. Loiter bans are left alone.
+
+Setup also reports listeners that accept the PROXY protocol, which it does not change.
+
+`csm doctor` checks the same steps read-only when `STALWART_USER` and `STALWART_PASSWORD` are set; a step setup would change is a warning. From the log alone it also warns when Stalwart's HTTP listener logs a login from another host on a port CSM does not lock, and when Stalwart bans a CDN or proxy address, which locks out every client behind it.
 
 
 `stalwart_log_degraded` warns when an hour of log lines holds none in Stalwart's layout, as after an upgrade that changes it; when many authenticated SMTP sends in an hour cannot be matched to a login; and when the log stops growing for hours while Stalwart runs.

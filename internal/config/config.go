@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/stalwartlog"
 )
 
@@ -180,6 +181,9 @@ type StalwartConfig struct {
 	LogDir    string   `yaml:"log_dir"`
 	LogPrefix string   `yaml:"log_prefix"`
 	Ports     []string `yaml:"ports,omitempty"`
+	// APIURL is where `csm stalwart setup` and doctor reach Stalwart's
+	// admin API.
+	APIURL string `yaml:"api_url,omitempty"`
 }
 
 type Config struct {
@@ -2237,6 +2241,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Stalwart.LogPrefix == "" {
 		cfg.Stalwart.LogPrefix = "stalwart.log"
 	}
+	if cfg.Stalwart.APIURL == "" {
+		cfg.Stalwart.APIURL = "http://127.0.0.1:8080"
+	}
 
 	if cfg.Updates.Interval == "" {
 		cfg.Updates.Interval = "24h"
@@ -3040,6 +3047,12 @@ func validateStalwartField(cfg *Config) (string, error) {
 	for i, entry := range cfg.Stalwart.Ports {
 		if _, err := stalwartlog.ParsePorts([]string{entry}); err != nil {
 			field := fmt.Sprintf("stalwart.ports[%d]", i)
+			return field, fmt.Errorf("%s: %w", field, err)
+		}
+	}
+	if raw := cfg.Stalwart.APIURL; raw != "" {
+		const field = "stalwart.api_url"
+		if err := stalwartapi.ValidateURL(raw); err != nil {
 			return field, fmt.Errorf("%s: %w", field, err)
 		}
 	}

@@ -360,6 +360,7 @@ stalwart:
   log_dir: /var/log/stalwart            # where Stalwart writes stalwart.log.YYYY-MM-DD
   log_prefix: stalwart.log              # file name before the date suffix
   ports: []                             # non-standard listeners as PORT:PROTOCOL (smtp, imap, pop3, sieve, http), e.g. ["10465:smtp"]
+  api_url: http://127.0.0.1:8080        # Stalwart admin API for csm stalwart setup and csm doctor; https unless on this host; file-only, the login comes from the environment
 
 # --- State ---
 state_path: "/var/lib/csm/state"        # bbolt DB and state files
@@ -916,6 +917,10 @@ firewall:
   smtp_block: false                     # block outgoing mail except allowed users
   smtp_allow_users: [cpanel, mailman]   # extra outbound SMTP users, also exempt from direct SMTP egress detection and BPF enforcement; root and mailnull are always allowed
   smtp_ports: [25,465,587]
+
+  # Local port locks: "PORT:user,user"; only these users and root may open
+  # new connections to the port on this host
+  local_port_locks: []
 
   # Dynamic DNS
   dyndns_hosts: []                      # hostnames to resolve and whitelist periodically

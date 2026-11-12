@@ -92,6 +92,10 @@ type FirewallConfig struct {
 	SMTPAllowUsers []string `yaml:"smtp_allow_users"` // usernames allowed to send
 	SMTPPorts      []int    `yaml:"smtp_ports"`
 
+	// LocalPortLocks lets only the listed users (and root) open new
+	// connections to a port on this host, as "PORT:user,user".
+	LocalPortLocks []string `yaml:"local_port_locks"`
+
 	// Dynamic DNS - resolve hostnames to IPs, update allowed set periodically
 	DynDNSHosts []string `yaml:"dyndns_hosts"`
 

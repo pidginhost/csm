@@ -891,6 +891,18 @@ var operations = []Op{
 		WithoutPrivilege: "the mitigation is applied by hand from the command the audit prints",
 	},
 	{
+		ID:               "operate.stalwart_setup",
+		Risk:             RiskReversible,
+		RecoveryGap:      "Setup prints the previous values; undoing a change is done by hand in Stalwart's admin interface.",
+		Subsystem:        "operator commands",
+		Summary:          "prepare Stalwart through its admin API: log failed logins, trust the webmail client address behind CSM's port lock, and match ban length to CSM's blocks",
+		Privileges:       []Privilege{Root},
+		Trigger:          Operator,
+		Unsandboxed:      true,
+		Writes:           []string{"stalwart:failed-login log level, HTTP client address source, ban periods, settings reload"},
+		WithoutPrivilege: "Stalwart is prepared by hand in its admin interface",
+	},
+	{
 		ID:               "operate.install_service",
 		Risk:             RiskDestructive,
 		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",

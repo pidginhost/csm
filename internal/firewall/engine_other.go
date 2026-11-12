@@ -71,6 +71,7 @@ func (e *Engine) Apply() error                                      { return Err
 func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error { return ErrUnsupportedPlatform }
 func (e *Engine) BlockedCount() int                                 { return 0 }
 func (e *Engine) RuleCounts() RuleCounts                            { return RuleCounts{} }
+func (e *Engine) LockedLocalPorts() []int                           { return nil }
 func (e *Engine) UpdateInfraResolved(_ string, _ []string)          {}
 func (e *Engine) DropInfraResolved(_ string)                        {}
 func (e *Engine) BlockProtected(_ string) bool                      { return false }

@@ -286,6 +286,7 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 		rc := engine.RuleCounts()
 		out.FirewallBlockedIPs = rc.Blocked
 		out.FirewallBlockedSubnets = rc.Subnets
+		out.FirewallLocalPortLocks = engine.LockedLocalPorts()
 	}
 	if mgr := rollback.Global(); mgr != nil {
 		st := mgr.Status()

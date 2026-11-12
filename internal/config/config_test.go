@@ -2118,3 +2118,33 @@ func TestPerformanceErrorLogCriticalSizeDefault(t *testing.T) {
 		t.Fatalf("explicit critical size = %d, want 300", cfg.Performance.ErrorLogCriticalSizeMB)
 	}
 }
+
+func TestStalwartAPIURLDefaultAndValidation(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Stalwart.APIURL != "http://127.0.0.1:8080" {
+		t.Fatalf("api_url default = %q", cfg.Stalwart.APIURL)
+	}
+	for _, ok := range []string{"http://127.0.0.1:8080", "https://[::1]:443/", "http://localhost:8080", "http://[::1]:8080", "https://mail.example.org", "https://mail.example.org/admin/"} {
+		if _, err := LoadBytes([]byte("stalwart:\n  api_url: \"" + ok + "\"\n")); err != nil {
+			t.Fatalf("%s refused: %v", ok, err)
+		}
+	}
+	// Plain http would carry the admin login in the clear past this host.
+	for _, bad := range []string{"ftp://x", "http://", "127.0.0.1:8080", "http://admin:pw@127.0.0.1:8080", "http://mail.example.org:8080", "http://192.0.2.10:8080"} {
+		_, err := LoadBytes([]byte("stalwart:\n  api_url: \"" + bad + "\"\n"))
+		if err == nil || !strings.Contains(err.Error(), "stalwart.api_url") {
+			t.Errorf("%s: err = %v, want a stalwart.api_url error", bad, err)
+		}
+	}
+}
+
+func TestStalwartAPIURLRejectsAmbiguousOrigin(t *testing.T) {
+	for _, address := range []string{"https://mail.example.org/?q=x", "https://mail.example.org/#x"} {
+		if _, err := LoadBytes([]byte("stalwart:\n  api_url: " + address + "\n")); err == nil {
+			t.Fatal("ambiguous API origin accepted")
+		}
+	}
+}

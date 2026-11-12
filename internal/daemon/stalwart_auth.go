@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -195,12 +196,73 @@ func (d *Daemon) stalwartBan(ev stalwartlog.Event, s stalwartlog.Session, cfg *c
 	// another listener attributed to it. Only Critical bans block, so this
 	// one is reported and not blocked. Scanning and abuse are never a
 	// customer's own mistake. On a Stalwart host the customer logins come
-	// from Stalwart's log, which only stalwart and root can write.
-	if _, known := d.knownCustomers.Lookup(ip); known && ev.Name == "security.authentication-ban" {
+	// from Stalwart's log, which only stalwart and root can write. Stalwart's
+	// bans expire, so only the first ban within the known-customer window is
+	// excused: an address banned again keeps failing and is blocked.
+	if _, known := d.knownCustomers.Lookup(ip); known && ev.Name == "security.authentication-ban" &&
+		d.stalwart.excused.first(s.RemoteIP, ev.Time) {
 		f.Severity = alert.High
 		f.Message += "; not blocked, a customer logged in from this address recently"
 		f.Details = "A customer logged in successfully from this address within the last 30 days, so CSM reports " +
 			"Stalwart's ban without blocking the address at its firewall. Stalwart's own ban still refuses its mail connections."
 	}
 	return []alert.Finding{f}
+}
+
+// excusedBans remembers when a known customer's address last had a
+// failed-login ban excused.
+type excusedBans struct {
+	mu sync.Mutex
+	at map[netip.Addr]time.Time
+}
+
+// first reports whether ip has had no ban excused within knownCustomerTTL
+// of now, and records now when it has not. It holds at most
+// maxKnownCustomers addresses, dropping expired ones first, then the oldest.
+func (e *excusedBans) first(ip netip.Addr, now time.Time) bool {
+	ip = ip.Unmap()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if last, ok := e.at[ip]; ok && now.Sub(last) < knownCustomerTTL {
+		return false
+	}
+	if e.at == nil {
+		e.at = map[netip.Addr]time.Time{}
+	}
+	if _, ok := e.at[ip]; !ok && len(e.at) >= maxKnownCustomers {
+		e.evict(now)
+	}
+	e.at[ip] = now
+	return true
+}
+
+// evict drops expired entries and, if that frees nothing, the oldest tenth,
+// so a full set costs one sort per tenth of the cap rather than one per ban.
+func (e *excusedBans) evict(now time.Time) {
+	for ip, at := range e.at {
+		if now.Sub(at) >= knownCustomerTTL {
+			delete(e.at, ip)
+		}
+	}
+	if len(e.at) < maxKnownCustomers {
+		return
+	}
+	type entry struct {
+		ip netip.Addr
+		at time.Time
+	}
+	all := make([]entry, 0, len(e.at))
+	for ip, at := range e.at {
+		all = append(all, entry{ip, at})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+	for _, x := range all[:len(all)-maxKnownCustomers*9/10] {
+		delete(e.at, x.ip)
+	}
+}
+
+func (e *excusedBans) size() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.at)
 }

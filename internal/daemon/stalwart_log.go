@@ -35,6 +35,7 @@ type stalwartState struct {
 	webmail  *stalwartWebmailTracker
 	sessions *stalwartSessions
 	hourly   stalwartHealth
+	excused  excusedBans
 }
 
 func newStalwartState(ports stalwartlog.Ports, start time.Time) *stalwartState {

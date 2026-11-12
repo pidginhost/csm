@@ -42,7 +42,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Added
 
 - Challenge passes are now logged and counted in the challenge stats.
-- On Stalwart mail servers CSM now reads Stalwart's log to detect password guessing, stolen logins and hacked mailboxes, and blocks addresses Stalwart bans; map other listener ports in stalwart.ports. Raise Stalwart's auth.failed event to info to see failed logins.
+- On Stalwart mail servers CSM now reads Stalwart's log to detect password guessing, stolen logins and hacked mailboxes, and blocks addresses Stalwart bans; map other listener ports in stalwart.ports. Run csm stalwart setup to see failed logins.
+- The firewall can limit which local users may connect to a port on this host; set it in firewall.local_port_locks.
+- New `csm stalwart setup` command prepares a Stalwart server: it logs failed logins, makes Stalwart's bans expire with CSM's blocks, and trusts webmail addresses behind CSM's port lock.
+- csm doctor warns when Stalwart trusts forwarded webmail addresses without CSM's port lock, and checks Stalwart's settings when given the admin login.
 - The Email page has a Suspended tab listing the mailboxes and accounts CSM suspended, with their live status and a Release button.
 
 ### Changed

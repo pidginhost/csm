@@ -52,6 +52,7 @@ func TestKnownHostBindingSettingsFieldsAreFileOnly(t *testing.T) {
 		"performance":   {"wp_cron_fix.php_bin"},
 		"email_av":      {"clamd_socket"},
 		"mail_logs":     {"file"},
+		"stalwart":      {"log_dir", "api_url"},
 		"firewall":      {"country_db_path"},
 		"alerts":        {"webhook.hmac_secret_env"},
 		"auto_response": {"verdict_callback.hmac_secret_env"},

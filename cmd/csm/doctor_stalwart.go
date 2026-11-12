@@ -3,17 +3,23 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/stalwartlog"
+	"github.com/pidginhost/csm/internal/stalwartsetup"
 )
 
 const (
@@ -23,8 +29,32 @@ const (
 	stalwartDoctorTailBytes = 256 * 1024
 )
 
-func stalwartLogDoctorChecks(cfg *config.Config) []DoctorCheck {
-	return stalwartLogDoctorCheck(platform.DetectMTA(), cfg.Stalwart, time.Now())
+// stalwartDoctorChecks runs the Stalwart checks: the log checks, what the
+// log shows about client addresses and bans, and Stalwart's settings when an
+// admin login is in the environment.
+func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus) []DoctorCheck {
+	mta := platform.DetectMTA()
+	if mta != platform.MTAStalwart {
+		return nil
+	}
+	now := time.Now()
+	out := stalwartLogDoctorCheck(mta, cfg.Stalwart, now)
+	if path, err := stalwartlog.NewestFile(cfg.Stalwart.LogDir, cfg.Stalwart.LogPrefix, now); err == nil {
+		if lines, err := tailLines(path, stalwartDoctorTailLines, stalwartDoctorTailBytes); err == nil {
+			// Config load validated the mappings.
+			ports, _ := stalwartlog.ParsePorts(cfg.Stalwart.Ports)
+			out = append(out,
+				stalwartForwardedCheck(lines, ports, automation.FirewallLocalPortLocks),
+				stalwartCDNBanCheck(lines, func(ip string) bool { return checks.KnownProxyPeer(ip, cfg) }))
+		}
+	}
+	in := stalwartInputs(cfg, platform.Detect().WebServerUsers(), &automation)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	newAPI := func(url, user, password string) stalwartsetup.API {
+		return stalwartapi.NewWithPeerCheck(url, user, password, checkStalwartPeer)
+	}
+	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, defaultCheckStalwartListener, cfg.Stalwart, in)...)
 }
 
 // stalwartLogDoctorCheck reports, on a Stalwart host, whether CSM finds a
@@ -101,7 +131,7 @@ func stalwartFailedLoginCheck(path string) DoctorCheck {
 	if !found {
 		check.Status = "warn"
 		check.Message = "Stalwart logs no rejected logins, so password guessing over SMTP, IMAP and POP3 is not detected"
-		check.Fix = "raise the auth.failed event to the info level in Stalwart's logging settings"
+		check.Fix = "run csm stalwart setup"
 	}
 	return check
 }
@@ -165,4 +195,99 @@ func tailLines(path string, n int, maxBytes int64) ([]string, error) {
 		lines = lines[len(lines)-n:]
 	}
 	return lines, nil
+}
+
+// stalwartSettingsDoctorChecks reports each setup step read-only. It needs
+// an admin login, which only the environment supplies.
+func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartsetup.API, checkListener func(url string) error, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
+	user, password := getenv("STALWART_USER"), getenv("STALWART_PASSWORD")
+	if user == "" || password == "" {
+		return []DoctorCheck{{Name: "stalwart settings", Status: "ok",
+			Message: "Not checked; set STALWART_USER and STALWART_PASSWORD to a Stalwart admin login to check Stalwart's settings"}}
+	}
+	defer func() {
+		for i := range result {
+			result[i].Name = stalwartapi.Redact(result[i].Name, user, password)
+			result[i].Message = stalwartapi.Redact(result[i].Message, user, password)
+			result[i].Fix = stalwartapi.Redact(result[i].Fix, user, password)
+		}
+	}()
+	if err := checkListener(sc.APIURL); err != nil {
+		return []DoctorCheck{{Name: "stalwart settings", Status: "warn",
+			Message: "Not checked; the admin login is not sent to " + sc.APIURL + ": " + err.Error(),
+			Fix:     "start Stalwart, or find what else listens on its admin port"}}
+	}
+	if !stalwartapi.LocalURL(sc.APIURL) {
+		in.LockManaged = false
+		in.LockedPorts = nil
+	}
+	plan, err := stalwartsetup.Inspect(ctx, newAPI(sc.APIURL, user, password), in)
+	if err != nil {
+		return []DoctorCheck{{Name: "stalwart settings", Status: "warn",
+			Message: "Cannot read Stalwart's settings at " + sc.APIURL + ": " + strings.ReplaceAll(err.Error(), password, "[redacted]"),
+			Fix:     "check stalwart.api_url and the admin login"}}
+	}
+	return stalwartStepChecks(plan)
+}
+
+func stalwartStepChecks(plan stalwartsetup.Plan) []DoctorCheck {
+	checks := make([]DoctorCheck, 0, len(plan.Steps))
+	for _, s := range plan.Steps {
+		c := DoctorCheck{Name: "stalwart " + s.Name, Status: "ok", Message: s.Detail}
+		switch s.State {
+		case stalwartsetup.Change:
+			c.Status, c.Fix = "warn", "run csm stalwart setup"
+		case stalwartsetup.Unsafe:
+			c.Status = "fail"
+		case stalwartsetup.Warn:
+			c.Status = "warn"
+		}
+		checks = append(checks, c)
+	}
+	return checks
+}
+
+// stalwartForwardedCheck looks for logins on an HTTP listener that name a
+// client other than this host. Behind a web server that means Stalwart takes
+// the address from a forwarded header, which anyone who can connect can
+// forge unless CSM locks the port. A listener clients reach directly logs
+// the same way, and the log cannot tell the two apart, so this warns.
+func stalwartForwardedCheck(lines []string, ports stalwartlog.Ports, lockedPorts []int) DoctorCheck {
+	check := DoctorCheck{Name: "stalwart webmail addresses", Status: "ok", Message: "No webmail login from another host on an unlocked port in the recent log"}
+	for _, line := range lines {
+		ev, ok := stalwartlog.Parse(line)
+		if !ok || (ev.Name != "auth.failed" && ev.Name != "auth.success") {
+			continue
+		}
+		s, ok := ev.Session()
+		if !ok || ports.Of(s.LocalPort) != stalwartlog.ProtoHTTP || s.RemoteIP.Unmap().IsLoopback() || slices.Contains(lockedPorts, int(s.LocalPort)) {
+			continue
+		}
+		check.Status = "warn"
+		check.Message = fmt.Sprintf("Stalwart's HTTP listener on port %d logged a login from %s, and CSM does not lock that port. If Stalwart takes the address from a forwarded header, any local user can make it name, and ban, any address", s.LocalPort, s.RemoteIP)
+		check.Fix = "run csm stalwart setup --dry-run to see what is missing"
+		return check
+	}
+	return check
+}
+
+// stalwartCDNBanCheck looks for Stalwart bans of a CDN or proxy edge
+// address, which lock out every client behind that edge.
+func stalwartCDNBanCheck(lines []string, isCDN func(string) bool) DoctorCheck {
+	check := DoctorCheck{Name: "stalwart proxy bans", Status: "ok", Message: "No ban of a CDN or proxy address in the recent log"}
+	for _, line := range lines {
+		ev, ok := stalwartlog.Parse(line)
+		if !ok || !strings.HasPrefix(ev.Name, "security.") || !strings.HasSuffix(ev.Name, "-ban") {
+			continue
+		}
+		s, ok := ev.Session()
+		if !ok || !isCDN(s.RemoteIP.String()) {
+			continue
+		}
+		check.Status = "warn"
+		check.Message = fmt.Sprintf("Stalwart banned %s, a CDN or proxy address, which locks out every client behind it", s.RemoteIP)
+		check.Fix = "make Stalwart see the client address behind the proxy, or reach Stalwart without the proxy"
+		return check
+	}
+	return check
 }

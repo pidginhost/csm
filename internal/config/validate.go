@@ -316,6 +316,9 @@ func Validate(cfg *Config) []ValidationResult {
 		for _, e := range validateDOSExemptRanges(cfg.Firewall.DOSExemptRanges) {
 			results = append(results, ValidationResult{"error", "firewall.dos_exempt_ranges", e})
 		}
+		if _, err := firewall.ParseLocalPortLocks(cfg.Firewall.LocalPortLocks); err != nil {
+			results = append(results, ValidationResult{"error", "firewall.local_port_locks", err.Error()})
+		}
 		if cfg.Firewall.Enabled {
 			// 0 disables the connection meter: it is what the engine does with
 			// the value and what the web UI's own help text promises. Absent
@@ -1984,6 +1987,9 @@ func validateFirewallConfig(cfg *Config) error {
 		return nil
 	}
 	errs := validateDOSExemptRanges(cfg.Firewall.DOSExemptRanges)
+	if _, err := firewall.ParseLocalPortLocks(cfg.Firewall.LocalPortLocks); err != nil {
+		errs = append(errs, "firewall.local_port_locks: "+err.Error())
+	}
 	if len(errs) == 0 {
 		return nil
 	}

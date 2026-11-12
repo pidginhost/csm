@@ -287,6 +287,7 @@ stalwart:
   log_dir: /var/log/stalwart
   log_prefix: stalwart.log
   ports: []
+  api_url: http://127.0.0.1:8080   # admin API for csm stalwart setup; the login comes from the environment
 
 # Detection knobs. Each subsection controls a separate detector.
 detection:
@@ -573,6 +574,7 @@ firewall:
     - 25
     - 465
     - 587
+  local_port_locks: []          # "PORT:user,user": only these users and root may open new connections to the port on this host
   # dyndns_hosts:               # resolve hostnames to IPs, update allowed set every 5 min
   #   - "myhost.dyndns.org"
   log_dropped: true
