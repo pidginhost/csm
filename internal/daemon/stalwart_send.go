@@ -107,16 +107,25 @@ func (s *stalwartSessions) evictLocked(now time.Time) {
 	}
 }
 
+// stalwartCarriesSends reports whether sends on a listener are matched to
+// its logins: SMTP, and unmapped ports such as a local submission listener.
+// An HTTP connection from the web server's proxy can carry several webmail
+// users, and IMAP, POP3 and ManageSieve never send.
+func stalwartCarriesSends(p stalwartlog.Protocol) bool {
+	return p == stalwartlog.ProtoSMTP || p == stalwartlog.ProtoUnknown
+}
+
 // stalwartSend feeds one authenticated send to the rate, sender-profile and
 // cloud-relay detectors. Only a send on an SMTP listener from a public
-// address carries an address signal; a local or HTTP-listener send counts
-// toward volume and recipients only.
+// address carries an address signal; a local send or one on an unmapped
+// listener counts toward volume and recipients only.
 func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *config.Config) []alert.Finding {
 	st := d.stalwart
-	if st.ports.Of(s.LocalPort) == stalwartlog.ProtoUnknown {
+	proto := st.ports.Of(s.LocalPort)
+	if !stalwartCarriesSends(proto) {
 		return nil
 	}
-	smtp := st.ports.Of(s.LocalPort) == stalwartlog.ProtoSMTP
+	smtp := proto == stalwartlog.ProtoSMTP
 	account, ok := st.sessions.account(stalwartSessionKey(s), ev.Time)
 	if !ok {
 		// An SMTP send always follows a login on its own connection; the

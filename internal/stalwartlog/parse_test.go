@@ -188,7 +188,7 @@ func TestSessionUnmapsIPv4Mapped(t *testing.T) {
 
 func TestParseUnicodeEscapes(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{`\u{e9}`, "é"},
+		{`\u{e9}`, "\u00e9"},
 		{`\u{1F600}`, "\U0001F600"},
 		{`\u{110000}`, "u{110000}"},
 		{`\u{FFFFFFFF}`, "u{FFFFFFFF}"},

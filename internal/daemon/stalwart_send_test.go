@@ -107,27 +107,68 @@ func TestStalwartSendsKeepListenerPortsSeparate(t *testing.T) {
 	}
 }
 
-func TestStalwartSendsOnUnknownPortIgnored(t *testing.T) {
+// A listener CSM cannot map, such as a local submission port, still carries
+// sends: they count toward volume and recipients, never as an address signal.
+func TestStalwartSendsOnUnknownPortCountVolumeOnly(t *testing.T) {
 	resetStalwartSendState(t)
+	stubStalwartPTR(t, "ec2-203-0-113-40.compute.amazonaws.com")
 	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
-	if got := feedStalwart(d, stalwartLoginAndSend(2525, "203.0.113.40", "user@example.com", "user@example.com", "a@example.org")...); len(got) != 0 {
-		t.Fatalf("unmapped listener produced findings: %+v", got)
+	var got []alert.Finding
+	for i := 0; i < 3; i++ {
+		got = append(got, feedStalwart(d, stalwartLoginAndSend(2525, "203.0.113.40", "user@example.com", "user@example.com", "a@example.org")...)...)
 	}
-	if _, ok := senderWindows.Load("user@example.com"); ok {
-		t.Fatal("unmapped listener trained the sender profile")
+	if relay := findingsOf(got, "email_cloud_relay_abuse"); len(relay) != 0 {
+		t.Fatalf("an unmapped listener fed the cloud-relay check: %+v", relay)
 	}
-	if n := d.stalwart.sessions.size(); n != 0 {
-		t.Fatalf("unmapped listener retained %d sessions", n)
+	if brute := findingsOf(got, "smtp_bruteforce"); len(brute) != 0 || d.smtpAuthTracker.Size() != 0 {
+		t.Fatalf("an unmapped listener's logins reached a tracker: %+v", got)
+	}
+	if day := senderDay(t, "user@example.com"); day == nil || day.Sends != 3 || len(day.IPs) != 0 {
+		t.Fatalf("sender day = %+v, want 3 sends and no address", day)
 	}
 }
 
-// Sites send through a loopback listener, and webmail sends through the HTTP
-// listener: both count toward volume and recipients only.
+// The field host's sites send through a loopback listener on a port Stalwart
+// does not use by default. Those sends are counted without any port mapping.
+func TestStalwartLocalSubmissionOnUnmappedPortCounted(t *testing.T) {
+	resetStalwartSendState(t)
+	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
+	for i := 0; i < 2; i++ {
+		feedStalwart(d, stalwartLoginAndSend(10465, "127.0.0.1", "site@example.com", "site@example.com", "a@example.org")...)
+	}
+	if day := senderDay(t, "site@example.com"); day == nil || day.Sends != 2 {
+		t.Fatalf("sender day = %+v, want 2 sends", day)
+	}
+}
+
+// Webmail and JMAP logins can share a proxy connection, so their sends are
+// not tied to an account, and IMAP, POP3 and ManageSieve logins, which never
+// send, do not fill the connection memory.
+func TestStalwartNonSendingListenersNotMatched(t *testing.T) {
+	resetStalwartSendState(t)
+	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
+	got := feedStalwart(d, stalwartLoginAndSend(8080, "198.51.100.60", "web@example.com", "web@example.com", "a@example.org")...)
+	if len(got) != 0 {
+		t.Fatalf("an HTTP-listener send raised %+v", got)
+	}
+	if _, ok := senderWindows.Load("web@example.com"); ok {
+		t.Fatal("an HTTP-listener send was charged to an account")
+	}
+	for _, port := range []int{993, 995, 4190} {
+		feedStalwart(d, stalwartLine(stalwartTestStart, "auth.success", port, "203.0.113.61", `, accountName = "imap@example.com", accountId = 8`))
+	}
+	if n := d.stalwart.sessions.size(); n != 0 {
+		t.Fatalf("logins that never send were remembered: %d", n)
+	}
+}
+
+// Sites send through a loopback listener, and a mapped SMTP listener from a
+// private or loopback address: both count toward volume and recipients only.
 func TestStalwartLocalSubmissionVolumeOnly(t *testing.T) {
 	for _, tc := range []struct {
 		port int
 		ip   string
-	}{{10465, "127.0.0.1"}, {8080, "198.51.100.50"}} {
+	}{{10465, "127.0.0.1"}, {10465, "10.0.0.5"}} {
 		t.Run(fmt.Sprint(tc.port), func(t *testing.T) {
 			resetStalwartSendState(t)
 			stubStalwartPTR(t, "ec2-198-51-100-50.compute.amazonaws.com")

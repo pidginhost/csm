@@ -127,12 +127,12 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 	switch ev.Name {
 	case "auth.failed", "auth.success":
 		session, ok := ev.Session()
-		if !ok || s.ports.Of(session.LocalPort) == stalwartlog.ProtoUnknown {
+		if !ok {
 			return nil
 		}
-		// Every login names its connection's sends, a loopback one included:
-		// sites submit locally.
-		if account := ev.Fields["accountName"]; ev.Name == "auth.success" && account != "" {
+		// A login names its connection's sends, a loopback one included:
+		// sites submit locally, often on a port CSM does not map.
+		if account := ev.Fields["accountName"]; ev.Name == "auth.success" && account != "" && stalwartCarriesSends(s.ports.Of(session.LocalPort)) {
 			s.sessions.remember(stalwartSessionKey(session), account, ev.Time)
 		}
 		return d.stalwartAuth(ev, session, obs, cfg)
