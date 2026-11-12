@@ -755,6 +755,7 @@ func TestStolenLoginResponses_LoginNamesNeverHoldADomain(t *testing.T) {
 // The startup scan replays a day of exim_mainlog. A send logged before a
 // release must not suspend the released mailbox again.
 func TestRetroCloudRelayResponse_UsesLoggedTime(t *testing.T) {
+	withMailBackendHost(t, true) // models a cPanel host
 	db := withMailboxStore(t)
 	withUserdomains(t, "victim.example: cpuser\n")
 	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })

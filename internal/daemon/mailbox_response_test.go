@@ -487,6 +487,7 @@ func TestUAPICommandBoundsInheritedPipes(t *testing.T) {
 }
 
 func TestCloudRelayCredentialAbuseAction_SuspendsMailboxBeforeAccountHold(t *testing.T) {
+	withMailBackendHost(t, true) // models a cPanel host
 	resetEmailRateState()
 	withUserdomains(t, "victim.example: cpuser\n")
 	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })

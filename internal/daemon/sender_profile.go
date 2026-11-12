@@ -158,7 +158,7 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 		return nil
 	}
 	user := extractAuthUser(line)
-	if user == "" || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+	if user == "" {
 		return nil
 	}
 	ip := eximlog.ClientIP(line)
@@ -168,11 +168,21 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 	if parsed := net.ParseIP(ip); parsed != nil {
 		ip = parsed.String()
 	}
+	return senderProfileObserve(cfg, user, ip, eximlog.Recipients(line), now)
+}
+
+// senderProfileObserve judges one authenticated send by user against the
+// mailbox's own history. ip is the client address, or "" for a local
+// submission, which counts toward volume and recipients but adds no address
+// or country.
+func senderProfileObserve(cfg *config.Config, user, ip string, recipients []string, now time.Time) (findings []alert.Finding) {
+	if user == "" || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+		return nil
+	}
 	country := ""
-	if !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
+	if ip != "" && !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
 		country = geoLookup(ip).Country
 	}
-	recipients := eximlog.Recipients(line)
 	db := store.Global()
 
 	// Registered before the unlock defer so owner I/O runs after it.
@@ -209,7 +219,9 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 		now = w.lastEvent
 	}
 	w.lastEvent = now
-	w.observeSource(now, ip, country)
+	if ip != "" {
+		w.observeSource(now, ip, country)
+	}
 	hourIPs := len(w.events)
 	hourCountries := w.countries
 
@@ -230,7 +242,9 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 		w.profile.Days[today] = day
 	}
 	day.Sends++
-	day.IPs = addDistinct(day.IPs, ip, senderMaxDaySet)
+	if ip != "" {
+		day.IPs = addDistinct(day.IPs, ip, senderMaxDaySet)
+	}
 	if country != "" {
 		day.Countries = addDistinct(day.Countries, country, senderMaxDaySet)
 	}
@@ -328,10 +342,17 @@ func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (
 // marker is correlation state, not an auto-response action, so it is kept
 // even when the suspension is disabled or dry-run gated.
 func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason string, at time.Time) {
-	if domain := extractDomainFromEmail(authUser); domain != "" {
-		maybeSuspendMailbox(cfg, authUser, check, reason, at)
-		RecordCompromisedDomain(domain)
+	domain := extractDomainFromEmail(authUser)
+	if domain == "" {
+		return
 	}
+	if hostHasMailBackend() {
+		maybeSuspendMailbox(cfg, authUser, check, reason, at)
+	} else {
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: no mailbox suspension on this mail server; %s left active\n",
+			time.Now().Format("2006-01-02 15:04:05"), authUser)
+	}
+	RecordCompromisedDomain(domain)
 }
 
 // forgetSenderEvidence drops a released mailbox's sending evidence: its
