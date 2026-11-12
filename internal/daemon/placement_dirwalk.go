@@ -69,6 +69,9 @@ type placedDir struct {
 	// overflowed is sticky: an over-budget listing walks a readdir-order
 	// subset, so names below a later cursor may never have been read.
 	overflowed bool
+	// Only time waiting for analyzer room counts as starvation. Preserve it
+	// across passes so slow directory reads cannot cause endless retries.
+	headroomWait time.Duration
 }
 
 // queuePlacedDir hands a placed-in directory to the walk worker. It never
@@ -230,10 +233,16 @@ func (w *placedDirWalk) stopping() bool {
 // events. It reports false when the pass must end first.
 func (w *placedDirWalk) headroom() bool {
 	limit := max(cap(w.fm.analyzerCh)/2, 1)
+	started := time.Now()
 	for len(w.fm.analyzerCh) >= limit {
-		wait := time.Until(w.deadline)
-		if wait <= 0 {
+		waited := w.dir.headroomWait + time.Since(started)
+		if waited >= placedDirTimeLimit {
 			w.starved = true
+			return false
+		}
+		wait := min(time.Until(w.deadline), placedDirTimeLimit-waited)
+		if wait <= 0 {
+			w.dir.headroomWait = waited
 			return false
 		}
 		select {
@@ -242,6 +251,7 @@ func (w *placedDirWalk) headroom() bool {
 		case <-time.After(min(wait, placedDirHeadroomPoll)):
 		}
 	}
+	w.dir.headroomWait = 0
 	return true
 }
 
@@ -363,7 +373,8 @@ func (w *placedDirWalk) file(dirfd int, name string, st *unix.Stat_t) {
 // readDirNames lists the names of fd's directory from from on, sorted,
 // without consuming fd. It stops reading once more than limit names past
 // from are held: those alone exceed the entry budget, so the walk is cut and
-// their order no longer matters.
+// their order no longer matters. Names before the cursor count against the
+// full entry budget too, or a growing directory could make a resume unbounded.
 func readDirNames(fd int, from string, limit int) (names []string, over bool, err error) {
 	dup, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -372,18 +383,18 @@ func readDirNames(fd int, from string, limit int) (names []string, over bool, er
 	// #nosec G115 -- Openat returned a non-negative descriptor because err is nil.
 	dir := os.NewFile(uintptr(dup), ".")
 	defer func() { _ = dir.Close() }()
-	fresh := 0
+	fresh, read := 0, 0
 	for {
 		batch, err := placedDirReadNames(dir, placedDirReadBatch)
 		for _, name := range batch {
-			if name < from {
-				continue
+			read++
+			if name >= from {
+				names = append(names, name)
+				if name > from {
+					fresh++
+				}
 			}
-			names = append(names, name)
-			if name == from {
-				continue
-			}
-			if fresh++; fresh > limit {
+			if fresh > limit || read > placedDirEntryLimit {
 				slices.Sort(names)
 				return names, true, nil
 			}

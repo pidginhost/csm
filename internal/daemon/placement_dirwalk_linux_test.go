@@ -477,3 +477,108 @@ func TestPlacedDirWalkStarvedPassRaisesHigh(t *testing.T) {
 		}
 	})
 }
+
+// Listing time is not evidence that the analyzers were busy for a pass.
+func TestPlacedDirWalkResumesAfterBriefHeadroomWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lowerPlacedDirLimit(t, &placedDirTimeLimit, time.Second)
+		fm, alerts := placedDirTestMonitor(t)
+		placed := placeDir(t, fm, stagedTree(t, map[string]string{"x.php": "<?php echo 1;"}), "pkg")
+		fillAnalyzerQueue(fm)
+		previous := placedDirReadNames
+		slow := true
+		placedDirReadNames = func(dir *os.File, n int) ([]string, error) {
+			if slow {
+				slow = false
+				time.Sleep(3 * time.Second / 4)
+			}
+			return previous(dir, n)
+		}
+		t.Cleanup(func() { placedDirReadNames = previous })
+
+		if !fm.walkNextPlacedDir() {
+			t.Fatal("no walk queued")
+		}
+		if found := incompleteDirFindings(drainFindings(alerts)); len(found) != 0 {
+			t.Fatalf("brief headroom wait abandoned the walk: %+v", found)
+		}
+		for len(fm.analyzerCh) > 0 {
+			<-fm.analyzerCh
+		}
+		walkAllPlacedDirs(fm)
+		if got := walkedPaths(t, fm); len(got) != 1 || got[0] != filepath.Join(placed, "x.php") {
+			t.Fatalf("resumed walk queued %v, want the placed file once", got)
+		}
+		if got := requirePlacedDirQueue(t, fm); got.Depth != 0 || got.InFlight != 0 || got.DroppedTotal != 0 {
+			t.Fatalf("resumed walk status = %+v", got)
+		}
+	})
+}
+
+// Slow listings must not let sustained analyzer congestion retry forever.
+func TestPlacedDirWalkHeadroomWaitSpansPasses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lowerPlacedDirLimit(t, &placedDirTimeLimit, time.Second)
+		fm, alerts := placedDirTestMonitor(t)
+		placed := placeDir(t, fm, stagedTree(t, map[string]string{"x.php": "<?php echo 1;"}), "pkg")
+		fillAnalyzerQueue(fm)
+		previous := placedDirReadNames
+		placedDirReadNames = func(dir *os.File, n int) ([]string, error) {
+			names, err := previous(dir, n)
+			if len(names) > 0 {
+				time.Sleep(3 * time.Second / 4)
+			}
+			return names, err
+		}
+		t.Cleanup(func() { placedDirReadNames = previous })
+
+		for pass := 1; pass <= 4; pass++ {
+			if !fm.walkNextPlacedDir() {
+				t.Fatalf("walk ended before pass %d", pass)
+			}
+			found := incompleteDirFindings(drainFindings(alerts))
+			if pass < 4 {
+				if len(found) != 0 {
+					t.Fatalf("pass %d counted listing time as analyzer starvation: %+v", pass, found)
+				}
+			} else if len(found) != 1 || found[0].Severity != alert.High || found[0].FilePath != placed {
+				t.Fatalf("sustained congestion raised %+v, want one High for %s", found, placed)
+			}
+		}
+		if fm.walkNextPlacedDir() {
+			t.Fatal("starved walk stayed queued")
+		}
+	})
+}
+
+// Names before a resume cursor still cost directory I/O and must be bounded.
+func TestPlacedDirWalkBoundsListingBeforeCursor(t *testing.T) {
+	lowerPlacedDirLimit(t, &placedDirEntryLimit, 10)
+	fm, alerts := placedDirTestMonitor(t)
+	files := map[string]string{"z.php": "<?php echo 1;"}
+	for i := 0; i < 2000; i++ {
+		files[fmt.Sprintf("f%04d.txt", i)] = ""
+	}
+	placed := placeDir(t, fm, stagedTree(t, files), "pkg")
+	// The directory grew behind the cursor between walk passes.
+	fm.placedDirs[0].cursor = []string{"y.php"}
+	fm.placedDirs[0].entries = 1
+	read := 0
+	previous := placedDirReadNames
+	placedDirReadNames = func(dir *os.File, n int) ([]string, error) {
+		names, err := previous(dir, n)
+		read += len(names)
+		return names, err
+	}
+	t.Cleanup(func() { placedDirReadNames = previous })
+
+	walkAllPlacedDirs(fm)
+	_ = queuedPlacements(t, fm)
+	if bound := placedDirEntryLimit + 1 + placedDirReadBatch; read > bound {
+		t.Errorf("resumed listing read %d names, want at most %d", read, bound)
+	}
+	found := incompleteDirFindings(drainFindings(alerts))
+	if len(found) != 1 || found[0].Severity != alert.High || found[0].FilePath != placed {
+		t.Fatalf("incomplete findings %+v, want one High for %s", found, placed)
+	}
+}
