@@ -165,14 +165,11 @@ core or of a wordpress.org plugin that a site runs does not ship the file, it
 was planted and is quarantined. CSM trusts the release a site names only when
 its `version.php` or `<slug>.php` plugin main file is that release's own copy,
 and only from the checksums the realtime file monitor has cached. A plugin
-whose main file has another name, or whose metadata is outside WordPress's
-header area, remains unknown. Header authentication and file membership use
-the same cached manifest, including during a cache refresh. Page output means
-literal content outside PHP regions, including text resembling closing tags.
-A closing tag inside a string or block comment stays inside PHP, while one
-in a line comment ends PHP. Whole-file quarantine rechecks the original content
-under the same protection used for other verified file responses; a changed
-file stays in place. `csm clean` refuses a file it would leave empty.
+whose main file has another name stays with the cleaner. Page output is any
+text outside PHP code, including short and echo tags. Whole-file quarantine
+rechecks the original content under the same protection used for other
+verified file responses; a changed file stays in place. `csm clean` refuses a
+file it would leave empty.
 
 Automatic permission fixes dismiss the original finding after a successful fix
 or after confirming its unsafe permission is already gone. A confirmation alone
