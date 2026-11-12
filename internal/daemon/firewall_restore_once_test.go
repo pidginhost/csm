@@ -29,7 +29,7 @@ func expiredWindowWithUnreadableConfig(t *testing.T, before string) (*Daemon, st
 	return d, confirmFile, rollbackFile, seenFile
 }
 
-// Operator ruling 6 ("restore once"): when a pending window's saved
+// Restore once: when a pending window's saved
 // configuration is unreadable, its kernel and state restore runs once and
 // is recorded. Later restarts keep the blocks added since instead of
 // restoring the window's start again; the window stays pending and holds

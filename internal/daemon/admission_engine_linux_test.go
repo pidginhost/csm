@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// Ruling C2: on a host with the firewall on, the admission owner gets an
+// On a host with the firewall on, the admission owner gets an
 // engine provider that returns no engine until the firewall has started,
 // as an untyped nil the owner's checks see, and the started engine after.
 // The owner starts first and reads the provider on its own goroutine, so

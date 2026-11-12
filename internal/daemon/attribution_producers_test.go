@@ -10,7 +10,7 @@ import (
 )
 
 // Every finding a stamped producer emits for an evidence check says how its
-// parser read the address (spec 5.8): a mail, SSH, FTP or panel parser reads
+// parser read the address: a mail, SSH, FTP or panel parser reads
 // the transport peer, an HTTP parser the direct socket peer. Each test below
 // drives one emitting path.
 

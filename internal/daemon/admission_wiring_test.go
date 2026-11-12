@@ -30,7 +30,7 @@ func TestAdmissionOwnerPreviewsWithoutAFirewall(t *testing.T) {
 	}
 }
 
-// Design C7: the owner's live start reads legacy blocking's state from the
+// The owner's live start reads legacy blocking's state from the
 // daemon's state directory.
 func TestAdmissionOptionsReadTheLegacyHandover(t *testing.T) {
 	dir := t.TempDir()
@@ -46,7 +46,7 @@ func TestAdmissionOptionsReadTheLegacyHandover(t *testing.T) {
 	}
 }
 
-// Spec 3.6: while an admission owner keeps the dry_run_blocks bucket, the
+// While an admission owner keeps the dry_run_blocks bucket, the
 // legacy engine's dry-run recorder writes nothing to it; without one it
 // records as before.
 func TestLegacyDryRunRecorderLeavesAnOwnedBucket(t *testing.T) {
@@ -65,7 +65,7 @@ func TestLegacyDryRunRecorderLeavesAnOwnedBucket(t *testing.T) {
 	}
 }
 
-// Spec 3.8: the owner's dry-run summary is recorded in history only; a
+// The owner's dry-run summary is recorded in history only; a
 // delivery cancelled before its write records nothing and says so.
 func TestAdmissionSummaryGoesToHistory(t *testing.T) {
 	dir := t.TempDir()

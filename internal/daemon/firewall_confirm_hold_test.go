@@ -31,8 +31,8 @@ func lastHold(holds []batchHold) bool { return len(holds) > 0 && holds[len(holds
 
 // An apply-confirmed window holds admission's block batches from before
 // its snapshot until it ends, so a rollback cannot erase a row the owner
-// wrote inside it, and a row written before it is in the snapshot (design
-// C9). Confirmation and a rollback both end the hold.
+// wrote inside it, and a row written before it is in the snapshot.
+// Confirmation and a rollback both end the hold.
 func TestApplyConfirmedWindowHoldsBlockBatches(t *testing.T) {
 	for _, end := range []string{"confirm", "rollback"} {
 		t.Run(end, func(t *testing.T) {
@@ -207,7 +207,7 @@ func TestRecoveredWindowWithUnreadableConfigKeepsHold(t *testing.T) {
 			assertRestored()
 			requirePathExists(t, firewallStateSnapshotPath(rollbackFile))
 			// Legacy changes remain possible while the window is pending.
-			// Operator ruling 6: the restore ran once, so a repaired
+			// The restore ran once, so a repaired
 			// configuration settles the window and keeps them.
 			later := `{"blocked":[{"ip":"192.0.2.20"}]}`
 			writeTestFile(t, stateFile, later)

@@ -21,8 +21,8 @@ import (
 var _ health.AdmissionProvider = (*Daemon)(nil)
 
 // ownerKeepsDryRunExamples is set once an admission owner that runs blocks
-// starts. It then writes, prunes and purges the dry_run_blocks bucket alone
-// (spec 3.6), and the legacy recorder, prune and purge leave the bucket to
+// starts. It then writes, prunes and purges the dry_run_blocks bucket alone,
+// and the legacy recorder, prune and purge leave the bucket to
 // it.
 var ownerKeepsDryRunExamples atomic.Bool
 
@@ -49,8 +49,8 @@ var setResponseAdmission = checks.SetResponseAdmission
 // one handle on the state database's ledger. Every automatic response the
 // legacy funnels select is also handed to it. With the firewall on and
 // outside observe mode the owner runs on the firewall engine: a dry-run
-// policy forecasts, and a live one previews until plan 1.4c-2b. Otherwise
-// it only previews. It never executes (R1).
+// policy forecasts, and a live one previews until the admission owner is cut over. Otherwise
+// it only previews. It never executes.
 func (d *Daemon) startAdmission() {
 	d.startAdmissionWith(d.admissionOptions(store.Global()))
 }
@@ -101,7 +101,7 @@ func (d *Daemon) admissionBlocks() admissionowner.BlockEngine {
 }
 
 // executionPolicy is the execution policy of the live config, read with its
-// response epoch from one publication (D11).
+// response epoch from one publication.
 func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 	cfg, epoch := config.ActiveEpoch()
 	if cfg == nil {
