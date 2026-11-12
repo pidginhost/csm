@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Storage budgets of spec 5.4, internal constants rather than settings.
+// Storage budgets, internal constants rather than settings.
 const (
 	// HistoryBytes is the terminal-history budget: the details the ledger
 	// keeps about admitted candidates. A fifth, rounded up, is reserved for
@@ -116,7 +116,7 @@ func (r RingState) Remove() (RingState, error) {
 	return r, nil
 }
 
-// StorageState is the ledger's record of its storage budgets (spec 5.4):
+// StorageState is the ledger's record of its storage budgets:
 // each history allowance's pacing credit and retained bytes, the recovery
 // reserve and the two bounded rings.
 type StorageState struct {

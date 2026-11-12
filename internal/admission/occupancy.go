@@ -2,8 +2,8 @@ package admission
 
 // TemporaryCapacity is the finite temporary set capacity automatic
 // admission works within when the configured temporary limit is zero,
-// which leaves manual blocks unlimited (spec 5.6). It is code policy,
-// pending the validation gate of spec 5.19.
+// which leaves manual blocks unlimited. It is code policy, pending
+// validation.
 const TemporaryCapacity = 10000
 
 // AutomaticCapacity is the temporary set capacity automatic admission
@@ -39,7 +39,7 @@ type SetOccupancy struct {
 	General, Reserved int
 }
 
-// SetSlots is how a SetOccupancy divides the set (spec 5.6).
+// SetSlots is how a SetOccupancy divides the set.
 type SetSlots struct {
 	// Capacity is AutomaticCapacity of the limit; Available is what the
 	// unclaimed entries leave of it, never below zero.

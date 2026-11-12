@@ -653,7 +653,7 @@ func TestScheduleRecoveryBudgetSharedByLanes(t *testing.T) {
 	if err != nil || len(picks) != 1 || picks[0].ID != "direct" {
 		t.Fatalf("shared recovery picks: %+v %v", picks, err)
 	}
-	// A reservation's need includes its attempt's audit rows (ruling 2).
+	// A reservation's need includes its attempt's audit rows.
 	items[0].Recovery = MaxRecoveryNeed
 	if _, _, err = Schedule(items, ScheduleState{}, ScheduleLimits{General: 1, Reserved: 1, Members: 2, RecoveryBytes: 3000}); err != nil {
 		t.Fatalf("refused the largest recovery need: %v", err)

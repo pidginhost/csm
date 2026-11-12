@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// Attribution is how a parser learned the address a finding names (spec
-// 5.8). The parser that read the address sets it; a response path never
+// Attribution is how a parser learned the address a finding names. The
+// parser that read the address sets it; a response path never
 // does. Parked findings keep these numbers: append, never renumber.
 type Attribution uint8
 
@@ -102,14 +102,14 @@ const (
 	// not attribute.
 	CauseTargetMismatch
 	// CauseUnreachable: the address is a client behind a trusted proxy, not
-	// a packet source this host can contain (spec 5.8).
+	// a packet source this host can contain.
 	CauseUnreachable
 	// CauseProxyPeer: the address is a known CDN or proxy edge the
 	// operator did not configure as trusted, which carries many visitors
-	// and cannot be blocked as one of them (spec 5.8).
+	// and cannot be blocked as one of them.
 	CauseProxyPeer
 	// CauseRewrittenLog: the web server may replace the logged address;
-	// this build reads no separate connecting peer (spec 5.8).
+	// this build reads no separate connecting peer.
 	CauseRewrittenLog
 	causeEnd
 )
@@ -141,7 +141,7 @@ func refuseAttribution(c Cause, detail string) error {
 // BindTarget refuses a response target e does not attribute. A response
 // acts on e's address, or a service on it; only a range entry, whose
 // registered checks count the addresses of a range, may act on a prefix
-// holding it (spec 5.8, 5.13). via zero is e's own entry.
+// holding it. via zero is e's own entry.
 func BindTarget(target Target, via Entry, e Evidence) error {
 	if via == 0 {
 		via = e.Entry()

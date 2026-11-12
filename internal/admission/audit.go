@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Audit bounds of spec 5.4 and 5.17. Every admitted transition leaves one
+// Audit bounds. Every admitted transition leaves one
 // row in the outbox until the audit consumer acknowledges it; the ledger
 // reserves each row as a fixed slot.
 const (
@@ -31,7 +31,7 @@ const auditRowVersion = 2
 
 // AuditRow is the audit record of one admitted transition of an attempt:
 // its reservation, its execution or its outcome. (Attempt.ID, Transition)
-// keys it, so a consumer delivers it idempotently (spec 5.5). It carries
+// keys it, so a consumer delivers it idempotently. It carries
 // what was true at the transition: the intended effect, its expiry, the
 // original finding and the root evidence.
 type AuditRow struct {
@@ -210,7 +210,7 @@ func (r AuditRow) ID() AuditID { return AuditID{Action: r.Attempt.ID, Transition
 // AuditAck acknowledges the row ID names, written at At. The time fences an
 // acknowledgement held past its row's retirement: a re-minted attempt
 // writes a later row under the same ID, and the stale acknowledgement must
-// not remove it (ruling R1).
+// not remove it.
 type AuditAck struct {
 	ID AuditID
 	At time.Time

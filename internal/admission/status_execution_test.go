@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-// Once admission executes automatic blocks (1.5c-3b), an admission outage
+// Once admission executes automatic blocks, an admission outage
 // is an outage of automatic blocking. Every row closes by saying so, never
 // that existing blocking is unaffected, and a damaged ledger, a stopped
 // ingress or a Critical gap in the last hour fails where a preview only
-// warned (spec 5.17: doctor fails on unavailable safety state and on a
-// Critical response gap in the past hour). An interrupted generation and
+// warned: doctor fails on unavailable safety state and on a Critical
+// response gap in the past hour. An interrupted generation and
 // pressure on the reserve and outbox still warn.
 func TestDoctorChecksWhileExecuting(t *testing.T) {
 	rows := DoctorChecks(healthyStatus(), &IngressHealth{Admitting: true}, t0, true)
@@ -56,7 +56,7 @@ func TestDoctorChecksWhileExecuting(t *testing.T) {
 }
 
 // Unknown outcomes are visible in either mode: a row counts them and says
-// when the next can retire (P7); with none there is no row.
+// when the next can retire; with none there is no row.
 func TestDoctorChecksReportUnknownOutcomes(t *testing.T) {
 	for _, executing := range []bool{false, true} {
 		closing := PreviewUnaffected

@@ -19,7 +19,7 @@ var (
 )
 
 // A full partition yields to strictly higher work: the lowest tier goes
-// first, then the earliest expiry, then the lowest action ID (spec 5.6).
+// first, then the earliest expiry, then the lowest action ID.
 func TestSlotLimitsChooseTheLowestVictim(t *testing.T) {
 	soon, late := t0.Add(time.Hour), t0.Add(2*time.Hour)
 	victims := []EvictionVictim{

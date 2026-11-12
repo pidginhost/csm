@@ -7,7 +7,7 @@ import (
 )
 
 // A pick carries the tier of the item it serves, so a model can decide
-// what work it may replace (spec 5.6).
+// what work it may replace.
 func TestSchedulePicksCarryTheirTier(t *testing.T) {
 	items := []ScheduleItem{schedItem("c3", "a", ClassC3, SeverityCritical, time.Minute), schedItem("c1", "b", ClassC1, SeverityWarning, time.Minute)}
 	picks, _ := mustSchedule(t, items, ScheduleState{}, wide)

@@ -3,7 +3,7 @@ package admission
 import "fmt"
 
 // Prediction is what a dry-run forecast says live admission would have done
-// with a pick (spec 3.4). It is not a terminal reason: every forecast pick
+// with a pick. It is not a terminal reason: every forecast pick
 // ends as a dry run, and the prediction only counts.
 type Prediction uint8
 
@@ -27,15 +27,15 @@ const (
 	PredictNotModelled
 	// PredictCapacityEvict: the pick passes the modelled ceiling and takes
 	// the temporary slot of a strictly lower-tier automatic block, which it
-	// would replace (spec 5.6).
+	// would replace.
 	PredictCapacityEvict
 	// PredictCapacityRotate: the pick passes the modelled ceiling and
 	// rotates an equal-tier forecast block whose hold passed out of its
-	// full partition, as fresh work may (spec 5.6).
+	// full partition, as fresh work may.
 	PredictCapacityRotate
 	// PredictEqualTierWait: it would wait as set_full while its partition
 	// holds an equal-tier block that rotation does not give it yet: the
-	// block's hold, the shares or an answered episode stop it (spec 5.17).
+	// block's hold, the shares or an answered episode stop it.
 	PredictEqualTierWait
 	predictionEnd
 )

@@ -180,7 +180,7 @@ func testVictim(t *testing.T) Victim {
 }
 
 // An intent that evicts names its victim, so a restart knows which block
-// the batch may have removed (spec 5.4). An intent without one keeps the
+// the batch may have removed. An intent without one keeps the
 // version 1 encoding.
 func TestIntentCarriesItsVictim(t *testing.T) {
 	plain := testIntent(t)

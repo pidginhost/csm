@@ -9,7 +9,7 @@ import (
 
 // RotationHold is how long a verified automatic block keeps its slot
 // before equal-tier rotation may take it, on both wall and elapsed
-// admission time (spec 5.6).
+// admission time.
 const RotationHold = 30 * time.Minute
 
 // RotationHoldPassed reports whether a block applied at admission time
@@ -28,7 +28,7 @@ func (e EffectRecord) HoldPassed(now time.Time, elapsed time.Duration) bool {
 	return e.Verified() && RotationHoldPassed(e.Applied, e.Elapsed, now, elapsed)
 }
 
-// fairShare is the integer share rule of spec 5.6, the same for queue
+// fairShare is the integer share rule, the same for queue
 // positions and set slots: capacity split evenly over the scopes, and the
 // remainder one each to the scopes after the cursor in rotation order.
 type fairShare struct {
@@ -119,8 +119,8 @@ func (sh *setShares) move(p Partition, scope string, victim EvictionVictim) {
 	}
 }
 
-// Share lets fresh work rotate equal-tier blocks out of a full partition
-// (spec 5.6). holding is the slots each scope's unclaimed blocks hold in
+// Share lets fresh work rotate equal-tier blocks out of a full partition.
+// holding is the slots each scope's unclaimed blocks hold in
 // each partition, waiting the scopes with work waiting for a slot there,
 // and cursors the partitions' persisted remainder cursors. A partition is
 // shared among its active scopes, those holding or waiting and the
@@ -141,7 +141,7 @@ func (s *SlotLimits) Share(holding map[Partition]map[string]int, waiting map[Par
 // Advance moves each partition's remainder cursor to the first active
 // scope after it and returns the cursors; a partition without an active
 // scope keeps its cursor. A schedule cycle advances them once, so scopes
-// that outnumber the slots take turns at the remainder (spec 5.6).
+// that outnumber the slots take turns at the remainder.
 func (s *SlotLimits) Advance() QueueCursors {
 	if s == nil || s.shares == nil {
 		return QueueCursors{}
@@ -156,7 +156,7 @@ func (s *SlotLimits) Advance() QueueCursors {
 }
 
 // rotation is the index of the block fresh work d may rotate out of its
-// lane's partition, or -1 (spec 5.6). Only verified blocks of tier
+// lane's partition, or -1. Only verified blocks of tier
 // exactly d.Tier and of a scope are candidates. The scope comes first:
 // zero share waits; at or over a positive share d rotates only its own
 // blocks; below it, d reclaims only the greatest over-share borrowing,
@@ -222,7 +222,7 @@ func rotationCandidate(p Partition, d SlotDemand, v EvictionVictim) bool {
 // EqualTier reports whether lane's partition holds a block rotation could
 // give one-unit block work d once the block's hold, d's freshness and the
 // shares allow it. Work that finds no room while one does waits on an
-// equal-tier block (spec 5.17).
+// equal-tier block.
 func (s *SlotLimits) EqualTier(lane Lane, d SlotDemand) bool {
 	if s == nil || !d.Evicts || d.Cost != 1 {
 		return false

@@ -11,7 +11,7 @@ import (
 )
 
 // EpisodeQuiet is how long an episode without a verified response lasts
-// after its last accepted observation (spec 5.2).
+// after its last accepted observation.
 const EpisodeQuiet = time.Hour
 
 // Episode row bounds. The widest key is a service target's; the record
@@ -41,13 +41,13 @@ type EpisodeLine struct {
 	// VerifiedGeneration is the generation of this block kind's latest
 	// verified block in the episode, zero before one verifies. Its history
 	// outlives later generations, so the evidence gate can always read the
-	// latest removal (spec 5.13).
+	// latest removal.
 	VerifiedGeneration uint32
 }
 
 // Episode is the engine's record of the current offense episode at one
 // target: its identity, the observations and response that bound it, and
-// the latest candidate of each kind (spec 5.2). Responses of different
+// the latest candidate of each kind. Responses of different
 // kinds at one target share the episode.
 type Episode struct {
 	ID EpisodeID
@@ -334,7 +334,7 @@ func (e Episode) AnchorElapsed(c EpisodeClock) (Episode, error) {
 // Close ends e at verified, its verified block's original expiry in
 // admission time, read on c: the elapsed end becomes the time left until
 // then, so the episode lasts as long as the block on both clocks. An
-// episode already verified keeps its scheduled boundary (spec 5.2): a
+// episode already verified keeps its scheduled boundary: a
 // same-episode re-admission's block never moves it.
 func (e Episode) Close(verified time.Time, c EpisodeClock) (Episode, error) {
 	if _, ok := unixNano(verified); !ok {
@@ -368,7 +368,7 @@ type EpisodeChoice struct {
 
 // Place decides where an observation of kind made at observed belongs,
 // given the target's current episode (nil for none) and the state of each
-// of its lines in order, read on clock (spec 5.2). The episode ends at End:
+// of its lines in order, read on clock. The episode ends at End:
 // at a verified block's expiry even while other kinds' work is queued or in
 // flight (I1), otherwise once no line is queued or in flight. It ends only
 // once clock's elapsed time has passed EndElapsed too, so a forward wall

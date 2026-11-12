@@ -108,7 +108,7 @@ type QueueState struct {
 	NextSweep time.Time
 	Cursors   QueueCursors
 	// SetCursors are the remainder cursors of the temporary set's
-	// partitions, which a live ledger's schedule cycles move (spec 5.6).
+	// partitions, which a live ledger's schedule cycles move.
 	SetCursors QueueCursors
 }
 
@@ -179,7 +179,7 @@ func (e QueueEvent) Valid() bool { return e >= EventRefused && e < queueEventEnd
 
 // CountKey is one counter. Class and Severity are both zero for a
 // candidate without an assessment. No counter names an address, account or
-// check: spec 5.17 keeps these dimensions fixed.
+// check: these dimensions are fixed.
 type CountKey struct {
 	Event    QueueEvent
 	Reason   Reason
