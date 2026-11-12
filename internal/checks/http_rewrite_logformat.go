@@ -562,7 +562,8 @@ func (l *apacheLogFormats) add(line apacheConfigLine, fields []string, ctx apach
 	}
 	switch {
 	case strings.EqualFold(fields[0], "Define") || strings.EqualFold(fields[0], "UnDefine"):
-		if len(fields) > 1 && (fields[1] == "APACHE_LOG_DIR" || apacheArgumentHasVariable(fields[1])) {
+		// Apache looks up defined names ignoring case, unlike the environment.
+		if len(fields) > 1 && (strings.EqualFold(fields[1], "APACHE_LOG_DIR") || apacheArgumentHasVariable(fields[1])) {
 			l.logDirOverridden = true
 		}
 	case strings.EqualFold(fields[0], "LogFormat"):
