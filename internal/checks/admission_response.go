@@ -53,7 +53,7 @@ var (
 )
 
 // timeHandoff records how long a funnel waited on admission since start.
-// The comparison reads the 10 ms bucket for its p99 criterion (R11).
+// The comparison reads the 10 ms bucket for its p99 criterion.
 func timeHandoff(start time.Time) {
 	handoffSecondsOnce.Do(func() {
 		handoffSeconds = metrics.NewHistogram("csm_admission_handoff_seconds",
@@ -109,7 +109,7 @@ func respondSpray(f alert.Finding, cidr string) {
 
 // respondDerived hands admission the block a derived path applies, with the
 // root it carries, through its entry. A permanent block is never asked for
-// implicitly (spec 5.10): it is handed over without a root, as a path that
+// implicitly: it is handed over without a root, as a path that
 // kept none is, and admission refuses it.
 func respondDerived(req ApplyBlockRequest) {
 	if req.TTL == 0 {

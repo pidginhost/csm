@@ -31,7 +31,7 @@ func handoffSample(t *testing.T, name string) float64 {
 	return 0
 }
 
-// R11: every handoff a funnel makes to admission is timed, with a bucket at
+// Every handoff a funnel makes to admission is timed, with a bucket at
 // the 10 ms the comparison's p99 criterion reads; nothing is timed while
 // admission is not wired.
 func TestAdmissionHandoffsAreTimed(t *testing.T) {

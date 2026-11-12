@@ -74,7 +74,7 @@ func writeLegacyState(t *testing.T, body string) string {
 	return dir
 }
 
-// Spec 5.4 migration: the legacy hour's count is dated at the end of that
+// Upgrade from the legacy counter: the legacy hour's count is dated at the end of that
 // local-time hour, the latest instant any of its blocks could have run.
 func TestLegacyBlockSpendDatesTheCountAtTheEndOfItsHour(t *testing.T) {
 	zone := time.FixedZone("UTC+3", 3*60*60)

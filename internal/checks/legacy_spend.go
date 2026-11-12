@@ -27,7 +27,7 @@ const legacyHourLayout = "2006-01-02T15"
 const maxLegacyHourLead = 24 * time.Hour
 
 // LegacyBlockSpend reads the legacy hourly block counter for the admission
-// ledger's first limit (spec 5.4 migration). The whole state file must
+// ledger's first limit. The whole state file must
 // validate: a damaged or unreadable file is an error, never zero spend. No
 // file means no legacy blocks. The count is dated at the end of its hour in
 // now's zone, the later instance of an hour the clocks repeat, and an hour
@@ -41,7 +41,7 @@ func LegacyBlockSpend(statePath string, now time.Time) (admission.LegacySpend, e
 }
 
 // LegacyHandover reads legacy blocking's state for the admission owner's
-// live start (design C7): the hourly count as LegacyBlockSpend reads it,
+// live start: the hourly count as LegacyBlockSpend reads it,
 // and how many pending entries legacy blocking would still retry. A stale
 // entry, which its drain drops unblocked, is not counted. The whole file
 // must validate, as for LegacyBlockSpend.

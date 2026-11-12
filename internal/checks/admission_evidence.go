@@ -10,7 +10,7 @@ import (
 
 // AdmissionEvidence is what a finding asks admission to mint: the producer
 // that stamped its observation and the evidence input that producer attests,
-// aimed at the address the finding's parser read (spec 5.8). A finding
+// aimed at the address the finding's parser read. A finding
 // without an observation, naming a producer the table does not list, or
 // whose parser vouched for no address asks for nothing: provenance is never
 // reconstructed from the finding's other fields, and message text never
@@ -29,19 +29,19 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseKindNotAllowed, Detail: "no parser vouched for the finding's address"}
 	}
 	// This build reads no separate peer field when the web server replaces
-	// the logged address, so neither the peer nor a chain can be verified
-	// (spec 5.8). An unknown state is refused the same way.
+	// the logged address, so neither the peer nor a chain can be verified.
+	// An unknown state is refused the same way.
 	if (f.Attribution == admission.AttributionHTTPPeer || f.Attribution == admission.AttributionTrustedHTTPChain) &&
 		CurrentHTTPRewrite().State != RewriteNone {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseRewrittenLog, Detail: "the web server may replace the client address it logs"}
 	}
 	// A client behind a trusted proxy sends no packets to this host, so no
-	// response this build applies can contain it (spec 5.8).
+	// response this build applies can contain it.
 	if f.Attribution == admission.AttributionTrustedHTTPChain {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseUnreachable, Detail: "the address is a client behind a trusted proxy"}
 	}
 	// A known CDN or website-firewall edge carries every visitor behind it:
-	// blocking it as one of them is never an automatic response (spec 5.8).
+	// blocking it as one of them is never an automatic response.
 	if mayBeProxyEdge(f.Attribution, producer) && KnownProxyPeer(f.SourceIP, config.Active()) {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
 	}
