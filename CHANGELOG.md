@@ -33,6 +33,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - Account-wide outgoing mail holds now appear in the action log with the command that releases them.
 - Automatic response forecasts refuse web findings when Apache, nginx or LiteSpeed rewrites logged client addresses or CSM cannot read that setting, and `csm doctor` reports it.
+- Omitted backdoor port and SMTP sender lists now use packaged defaults; explicitly empty lists stay empty.
 
 ### Fixed
 
@@ -48,6 +49,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 - Restoring a mail message quarantined from a phishing finding now returns the whole message to the mail queue instead of failing, and a failed restore can be retried.
 - On servers whose Exim log adds a time zone or process ID, the deferral report now lists deferrals and outbound mail checks see delivered messages and real send times.
+- Settings saves no longer fail when the edited setting is left blank in the configuration file.
 
 ## [4.11.0] - 2026-11-10
 

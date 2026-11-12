@@ -324,6 +324,11 @@ func buildReplaceEdit(data []byte, li lineIndex, keyN, valN *yaml.Node, value in
 	end := li.lineEnd(valN.Line, data)
 	rendered, err := renderValueInline(value)
 	if err == nil {
+		// An implicit null starts immediately after the colon, before any
+		// whitespace. Its replacement needs a separator to remain a value.
+		if valN.Kind == yaml.ScalarNode && valN.Tag == "!!null" && valN.Value == "" {
+			rendered = " " + rendered
+		}
 		return edit{start: start, end: end, replacement: []byte(rendered)}, nil
 	}
 	if !needsBlockFallback(value) {

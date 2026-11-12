@@ -110,3 +110,19 @@ func TestResolveSMTPAllowedUIDsMailnullAbsentDoesNotCrash(t *testing.T) {
 		t.Errorf("resolveSMTPAllowedUIDs = %v, want %v (mailnull absent on host -> only root + cpanel)", got, want)
 	}
 }
+
+// The built-in allow list names cPanel users. On a host without them the
+// firewall still resolves root and mailnull and does not fail.
+func TestDefaultSMTPAllowUsersWithoutCPanelUsers(t *testing.T) {
+	def := DefaultConfig().SMTPAllowUsers
+	if want := []string{"cpanel", "mailman"}; !reflect.DeepEqual(def, want) {
+		t.Fatalf("DefaultConfig().SMTPAllowUsers = %#v, want %#v", def, want)
+	}
+	prev := smtpAllowlistLookupUser
+	smtpAllowlistLookupUser = fixtureLookupUser(t, map[string]string{"mailnull": "47"})
+	t.Cleanup(func() { smtpAllowlistLookupUser = prev })
+
+	if got, want := resolveSMTPAllowedUIDs(def), []uint32{0, 47}; !reflect.DeepEqual(got, want) {
+		t.Errorf("resolveSMTPAllowedUIDs(default) = %v, want %v", got, want)
+	}
+}
