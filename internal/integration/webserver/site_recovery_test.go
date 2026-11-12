@@ -206,7 +206,9 @@ func TestSiteIncludeCoverageChecksHTTPSBlocks(t *testing.T) {
 		{"custom TLS port", "<VirtualHost *:8443>\nSSLEngine On\n" + user + "</VirtualHost>\n", false},
 		{"whitespace", "<VirtualHost *:443>\n" + user + " Include\t\"/etc/apache2/conf.d/userdata/*.conf\"\n</VirtualHost>\n", true},
 		{"hostname block beside covered sites", hostname + "<VirtualHost *:443>\n" + user + cpanelSiteInclude + "\n</VirtualHost>\n", true},
-		{"no user sites", hostname, false},
+		// Nothing to cover yet; a later site gets the include at its rebuild.
+		{"no user sites", hostname, true},
+		{"unterminated block", "<VirtualHost *:443>\n" + user, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "httpd.conf")
@@ -381,8 +383,8 @@ func TestInstallChecksCoverageAfterRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Message, "HTTPS sites are redirected only after") {
-		t.Fatalf("claimed coverage without checking rebuilt configuration: %+v", res)
+	if !strings.Contains(res.Message, "still do not read") || strings.Contains(res.Message, "run `csm webserver-integration upgrade`") {
+		t.Fatalf("after a rebuild without coverage the note must not send the operator back to upgrade: %+v", res)
 	}
 	if h.rebuilds.Load() != 1 {
 		t.Fatalf("rebuilds = %d", h.rebuilds.Load())

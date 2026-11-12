@@ -320,6 +320,7 @@ func (i *Installer) Install() (Result, error) {
 	if rebuild {
 		// Even a failed command may have replaced httpd.conf.
 		rebuilt = true
+		site.rebuilt = true
 		if err := site.sites.RebuildSiteIncludes(); err != nil {
 			err = errors.Join(err, rollback())
 			res.Status = "fail"
@@ -393,6 +394,7 @@ type siteChange struct {
 	current    bool
 	active     bool
 	activeErr  error
+	rebuilt    bool
 }
 
 // pendingNote tells the operator when HTTPS sites still miss the rule. Safe
@@ -403,6 +405,8 @@ func (s *siteChange) pendingNote() string {
 		return ""
 	case s.activeErr != nil:
 		return "; could not tell whether HTTPS sites read " + s.path + ": " + s.activeErr.Error()
+	case s.rebuilt:
+		return "; HTTPS sites still do not read " + s.path + " after the rebuild: check cPanel's Apache virtual host templates"
 	default:
 		return "; HTTPS sites are redirected only after httpd.conf is rebuilt: run `csm webserver-integration upgrade`"
 	}

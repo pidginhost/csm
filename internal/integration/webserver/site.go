@@ -73,7 +73,7 @@ const cpanelUserSiteMarker = "/etc/apache2/conf.d/userdata/ssl/"
 // cPanel emits its sites inline. A global include, a commented example, or
 // an HTTP-only include does not establish coverage of the HTTPS sites.
 func cpanelHTTPSIncludes(conf string) bool {
-	inSite, tls, userSite, included, found := false, false, false, false, false
+	inSite, tls, userSite, included := false, false, false, false
 	for _, line := range strings.Split(conf, "\n") {
 		if inSite && strings.Contains(line, cpanelUserSiteMarker) {
 			userSite = true
@@ -95,7 +95,6 @@ func cpanelHTTPSIncludes(conf string) bool {
 				if !included {
 					return false
 				}
-				found = true
 			}
 			inSite = false
 		case "sslengine":
@@ -108,7 +107,9 @@ func cpanelHTTPSIncludes(conf string) bool {
 			}
 		}
 	}
-	return found && !inSite
+	// No user HTTPS site means nothing to cover yet: a site added later gets
+	// the include when cPanel builds its block with the file present.
+	return !inSite
 }
 
 func (c *cpanelSites) RebuildSiteIncludes() error {
