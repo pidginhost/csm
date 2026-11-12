@@ -242,6 +242,7 @@
       "ssh_keys",
       "ssh_login_unknown_ip",
       "ssl_cert_issued",
+      "stalwart_log_degraded",
       "supply_chain_vuln",
       "suspicious_crontab",
       "suspicious_file",
@@ -395,7 +396,9 @@
       "smtp_account_spray",
       "smtp_bruteforce",
       "smtp_probe_abuse",
-      "smtp_subnet_spray"
+      "smtp_subnet_spray",
+      "stalwart_ban",
+      "stalwart_webmail_bruteforce"
     ]
   },
   {

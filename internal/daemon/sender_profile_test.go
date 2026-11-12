@@ -150,6 +150,7 @@ func TestSenderProfile_BaselineRaisesThresholds(t *testing.T) {
 }
 
 func TestSenderProfile_ChurnFromNovelCountryIsCriticalAndSuspends(t *testing.T) {
+	withMailBackendHost(t, true) // models a cPanel host
 	resetSenderProfileState()
 	resetEmailRateState()
 	stubGeo(t, map[string]string{"198.51.100.1": "DE", "198.51.100.2": "DE", "198.51.100.3": "DE", "198.51.100.4": "DE"})

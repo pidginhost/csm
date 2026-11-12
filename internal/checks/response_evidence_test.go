@@ -56,6 +56,7 @@ var evidencePolicy = map[string]admission.Policy{
 	"smtp_bruteforce":             {Family: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: peerKind},
 	"smtp_probe_abuse":            {Family: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: peerKind},
 	"smtp_subnet_spray":           {Family: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: peerKind},
+	"stalwart_ban":                {Family: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: peerKind},
 	"credential_stuffing":         {Family: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: peerKind},
 	"pam_bruteforce":              {Family: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: peerKind},
 	"ssh_login_unknown_ip":        {Family: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: peerKind},
@@ -94,6 +95,7 @@ var notAddressEvidence = map[string]string{
 	"mail_account_spray":            "most recent of many sources of a per-mailbox summary",
 	"mail_bruteforce_suspected":     "advisory for an established source",
 	"mail_spam_source":              "report only; no local response by design",
+	"stalwart_webmail_bruteforce":   "address may come from a forwarded header; alert only",
 	"modsec_block_realtime":         "ModSecurity already denied the request",
 	"modsec_classifier_gap":         "record of CSM's own rule classification coverage",
 	"modsec_low_confidence_burst":   "low-confidence advisory",
@@ -375,8 +377,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding.
-	if len(producers) != 71 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 71 producers", len(producers))
+	if len(producers) != 73 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 73 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

@@ -33,6 +33,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
+- On Stalwart mail servers CSM now reads Stalwart's log to detect password guessing, stolen logins and hacked mailboxes, and blocks addresses Stalwart bans; map other listener ports in stalwart.ports. Raise Stalwart's auth.failed event to info to see failed logins.
 - The Email page has a Suspended tab listing the mailboxes and accounts CSM suspended, with their live status and a Release button.
 
 ### Changed

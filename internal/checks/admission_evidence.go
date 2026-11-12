@@ -58,13 +58,14 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 
 // mayBeProxyEdge reports whether a finding's address can be an edge that
 // relays other people's requests: an HTTP peer, a cpsrvd peer (CDNs proxy
-// the cPanel ports), or reputation intel resting on such a sighting.
+// the cPanel ports), a Stalwart peer (CDNs can proxy mail ports), or
+// reputation intel resting on such a sighting.
 func mayBeProxyEdge(kind admission.Attribution, producer admission.ProducerID) bool {
 	switch kind {
 	case admission.AttributionHTTPPeer, admission.AttributionDerived:
 		return true
 	case admission.AttributionPeer:
-		return producer == ProducerCpanelAccessLog || producer == ProducerCpanelScan
+		return producer == ProducerCpanelAccessLog || producer == ProducerCpanelScan || producer == ProducerStalwartLog
 	}
 	return false
 }

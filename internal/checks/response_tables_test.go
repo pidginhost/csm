@@ -52,6 +52,7 @@ var (
 		"smtp_probe_abuse":            attackdb.AttackBruteForce,
 		"smtp_subnet_spray":           attackdb.AttackBruteForce,
 		"ssh_login_unknown_ip":        attackdb.AttackBruteForce,
+		"stalwart_ban":                attackdb.AttackBruteForce,
 		"webmail_bruteforce":          attackdb.AttackBruteForce,
 		"webmail_login_realtime":      attackdb.AttackAuthSuccess,
 		"wp_login_bruteforce":         attackdb.AttackBruteForce,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,13 +34,17 @@ const defaultGoneGrace = 90 * time.Second
 type FileReader struct {
 	path  string
 	queue *Queue
+	// resolve, when set, names the file to follow, so the reader moves to a
+	// newer dated file when the source starts one.
+	resolve func() (string, error)
 
 	// onGone, when set, fires once when the source path has been missing
 	// continuously for goneGrace. A FileReader whose path vanishes mid-run
 	// (e.g. a syslog->journald migration) otherwise tails a dead fd
 	// silently; the callback lets the daemon surface a finding and mark the
 	// watcher unhealthy. onRestored fires after the path returns and the
-	// reader can use it again.
+	// reader can use it again. Resolved readers also report persistent
+	// failures to resolve or open their next target.
 	onGone     func(error)
 	onRestored func()
 	goneGrace  time.Duration
@@ -56,8 +61,44 @@ func NewFileReader(path string, queue *Queue) *FileReader {
 	return &FileReader{path: path, queue: queue, goneGrace: defaultGoneGrace, nowFn: time.Now}
 }
 
+// NewResolvedFileReader constructs a FileReader that follows the file
+// resolve names, such as the newest of a set of dated logs. It starts at the
+// end of the file resolve names now, and moves to a file resolve later names
+// only after reading the current one to its end. A resolve error is returned
+// unchanged so the supervisor reports the source unavailable.
+func NewResolvedFileReader(resolve func() (string, error), queue *Queue) (*FileReader, error) {
+	path, err := resolve()
+	if err != nil {
+		return nil, err
+	}
+	r := NewFileReader(path, queue)
+	r.resolve = resolve
+	return r, nil
+}
+
+// switchTarget names the newer file a resolved reader moves to. Only a read
+// that stopped, at the end of the current file or on an error, may move: the
+// minute ticker can fire while the old file still holds unread lines. The
+// reader moves only forward, to a name that sorts after the current one: if
+// the current file is removed, an older one must not be replayed from its
+// start.
+func (r *FileReader) switchTarget(atEOF bool) (string, error) {
+	if r.resolve == nil || !atEOF {
+		return "", nil
+	}
+	next, err := r.resolve()
+	if err != nil {
+		return "", err
+	}
+	if filepath.Base(next) <= filepath.Base(r.path) {
+		return "", nil
+	}
+	return next, nil
+}
+
 // SetOnGone installs a callback invoked once when the source path has been
-// missing for longer than the grace period. Must be called before Run.
+// missing, or a resolved target unavailable, for longer than the grace period.
+// Must be called before Run.
 func (r *FileReader) SetOnGone(fn func(error)) { r.onGone = fn }
 
 // SetOnRestored installs a callback invoked once after a previously-gone
@@ -65,7 +106,7 @@ func (r *FileReader) SetOnGone(fn func(error)) { r.onGone = fn }
 // before Run.
 func (r *FileReader) SetOnRestored(fn func()) { r.onRestored = fn }
 
-// recordStat advances the missing-source state machine from one stat result.
+// recordStat advances the missing-source state from a stat or resolution result.
 // It fires onGone once after the path is missing past the grace period and
 // arms the restore callback when the path returns.
 func (r *FileReader) recordStat(missing bool, missErr error) {
@@ -262,13 +303,48 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 		}
 	}
 
-	reopenOnRotate := func() {
+	switchTo := func(next *mailFileInput) {
+		_ = f.Close()
+		r.queue.discardFile(source, bufferedMailRecords(reader))
+		f, reader, lastDev, lastIno, unframed = next.file, next.reader, next.dev, next.ino, next.unframed
+		source = r.queue.file.attach(next, true)
+		pending.reset()
+		r.recordRestored()
+	}
+
+	reopenOnRotate := func(atEOF bool) {
+		// A resolved source moves only after draining its old file. A stat
+		// of that old file must not clear an unavailable new target either.
+		if r.resolve != nil && !atEOF {
+			return
+		}
+		path, resolveErr := r.switchTarget(atEOF)
+		if resolveErr != nil {
+			r.queue.file.outcome(fileOpenFault, true)
+			r.recordStat(true, resolveErr)
+			return
+		}
+		if path != "" {
+			prev := r.path
+			r.path = path
+			next, err := r.openRotated()
+			if err != nil {
+				r.path = prev
+				r.queue.file.outcome(fileOpenFault, true)
+				r.recordStat(true, err)
+				fmt.Fprintf(os.Stderr, "maillog file_reader %s open: %v\n", path, err)
+				return
+			}
+			r.recordStat(false, nil)
+			switchTo(next)
+			return
+		}
 		st, err := os.Stat(r.path)
 		if err != nil {
 			// Track persistent disappearance so a source that vanishes
 			// mid-run (syslog->journald migration) surfaces instead of
 			// tailing a dead fd in silence.
-			r.recordStat(os.IsNotExist(err), err)
+			r.recordStat(r.resolve != nil || os.IsNotExist(err), err)
 			return
 		}
 		r.recordStat(false, nil)
@@ -284,12 +360,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 			fmt.Fprintf(os.Stderr, "maillog file_reader %s reopen: %v\n", r.path, err)
 			return
 		}
-		_ = f.Close()
-		r.queue.discardFile(source, bufferedMailRecords(reader))
-		f, reader, lastDev, lastIno, unframed = next.file, next.reader, next.dev, next.ino, next.unframed
-		source = r.queue.file.attach(next, true)
-		pending.reset()
-		r.recordRestored()
+		switchTo(next)
 	}
 
 	for {
@@ -312,7 +383,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 					// hits EOF or any I/O error we re-stat the path so a
 					// post-rotate log is picked up by the next poll tick
 					// rather than waiting for the safety-net ticker.
-					reopenOnRotate()
+					reopenOnRotate(true)
 					break
 				}
 				r.queue.file.outcome(fileReadFault, false)
@@ -337,7 +408,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 			r.queue.file.idle()
 		case <-rotate.C:
 			r.queue.file.operation()
-			reopenOnRotate()
+			reopenOnRotate(false)
 			r.queue.file.idle()
 		}
 	}

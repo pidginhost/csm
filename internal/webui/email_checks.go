@@ -43,6 +43,8 @@ var emailChecks = []emailCheck{
 	{"smtp_subnet_spray", "auth_failure"},
 	{"smtp_account_spray", "auth_failure"},
 	{"smtp_probe_abuse", "auth_failure"},
+	{"stalwart_ban", "auth_failure"},
+	{"stalwart_webmail_bruteforce", "auth_failure"},
 
 	{"email_malware", "malware"},
 	{"email_phishing_content", "malware"},
@@ -73,6 +75,7 @@ var emailChecks = []emailCheck{
 	{"email_password_audit_incomplete", ""},
 	{"mail_auth_backend_degraded", ""},
 	{"mail_log_source_unavailable", ""},
+	{"stalwart_log_degraded", ""},
 	{"mail_spam_source", ""},
 	{"shared_senders_stale", ""},
 	{"antispam_apply_failed", ""},

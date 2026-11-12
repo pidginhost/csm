@@ -23,6 +23,7 @@ const (
 	ProducerEximLog         admission.ProducerID = "exim_log"
 	ProducerEximHistory     admission.ProducerID = "exim_history"
 	ProducerMailLog         admission.ProducerID = "mail_log"
+	ProducerStalwartLog     admission.ProducerID = "stalwart_log"
 	ProducerAccessLog       admission.ProducerID = "access_log"
 	ProducerDomlogScan      admission.ProducerID = "domlog_scan"
 	ProducerModSecLog       admission.ProducerID = "modsec_log"
@@ -77,6 +78,12 @@ var producerTable = []ProducerEntry{
 		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray"},
 		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "dovecot", Version: 1}},
+	{admission.ProducerSpec{ID: ProducerStalwartLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
+		// SMTP, IMAP, POP3 and ManageSieve listeners log the TCP peer.
+		// HTTP listener events never carry an attribution.
+		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray", "email_cloud_relay_abuse", "stalwart_ban"},
+		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
+		admission.ParserRef{Name: "stalwart", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerAccessLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"wp_login_bruteforce", "xmlrpc_abuse", "admin_panel_bruteforce"}, Attribution: mintsHTTPPeer},
 		admission.ParserRef{Name: "access_log", Version: 1}},

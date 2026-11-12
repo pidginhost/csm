@@ -663,6 +663,9 @@ func Validate(cfg *Config) []ValidationResult {
 	if field, err := validateMailLogsField(cfg); err != nil {
 		results = append(results, ValidationResult{"error", field, err.Error()})
 	}
+	if field, err := validateStalwartField(cfg); err != nil {
+		results = append(results, ValidationResult{"error", field, err.Error()})
+	}
 
 	// --- Reputation.Rspamd ---
 	if cfg.Reputation.Rspamd.Enabled {

@@ -212,3 +212,20 @@ func TestReputationFindingFromAKnownProxyIsRefused(t *testing.T) {
 		t.Fatalf("mint: %v, want the proxy_peer cause", err)
 	}
 }
+
+// A Stalwart ban names the peer of a mail listener; a known CDN or proxy edge
+// there carries other clients and is refused like a cPanel peer.
+func TestAdmissionEvidenceRefusesStalwartProxyEdge(t *testing.T) {
+	withKnownProxyPrefixes(t, "198.51.100.0/24")
+	SetASNLookup(nil)
+	f := httpPeerFinding("198.51.100.7")
+	f.Check, f.Severity, f.Attribution = "stalwart_ban", alert.High, admission.AttributionPeer
+	f.Observation.Producer = string(ProducerStalwartLog)
+	if _, _, err := AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseProxyPeer {
+		t.Fatalf("Stalwart ban of a proxy edge: %v, want the proxy_peer cause", err)
+	}
+	f.SourceIP = "203.0.113.9"
+	if _, _, err := AdmissionEvidence(f); err != nil {
+		t.Fatalf("ordinary Stalwart ban: %v, want evidence", err)
+	}
+}

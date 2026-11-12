@@ -469,6 +469,7 @@ func TestCloudRelayCredentialAbuseAction_DryRunRecordsDomainWithoutHold(t *testi
 }
 
 func TestCloudRelayCredentialAbuseAction_LiveFallsBackToAccountHold(t *testing.T) {
+	withMailBackendHost(t, true) // models a cPanel host
 	resetEmailRateState()
 	// Without a cPanel account for the domain the mailbox cannot be
 	// suspended on its own, so the account hold is the response.

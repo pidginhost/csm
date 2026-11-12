@@ -121,12 +121,16 @@ const (
 	MTAUnknown MTAKind = ""
 	MTAExim    MTAKind = "exim"
 	MTAPostfix MTAKind = "postfix"
+	// MTAStalwart is Stalwart mail server, which writes its own log and is
+	// detected only by its running service.
+	MTAStalwart MTAKind = "stalwart"
 )
 
 var (
-	mtaLookPath      = exec.LookPath
-	mtaStat          = os.Stat
-	mtaServiceActive = systemdMTAServiceActive
+	mtaLookPath       = exec.LookPath
+	mtaStat           = os.Stat
+	mtaServiceActive  = systemdMTAServiceActive
+	mtaServiceEnabled = systemdMTAServiceEnabled
 )
 
 // DetectMTA reports the delivery agent rather than whichever package happens
@@ -145,6 +149,15 @@ func DetectMTA() MTAKind {
 	}
 	if postfixActive {
 		return MTAPostfix
+	}
+	if mtaServiceActive("stalwart") || mtaServiceActive("stalwart-mail") {
+		return MTAStalwart
+	}
+	// CSM can start while Stalwart is still starting or restarting; an
+	// enabled unit still names the mail server once Exim and Postfix are
+	// not running.
+	if mtaServiceEnabled("stalwart") || mtaServiceEnabled("stalwart-mail") {
+		return MTAStalwart
 	}
 
 	eximInstalled := binaryInstalled([]string{"exim", "exim4"}, []string{
@@ -165,6 +178,9 @@ func DetectMTA() MTAKind {
 	return MTAPostfix
 }
 
+// ServiceActive reports whether the systemd unit is active.
+func ServiceActive(unit string) bool { return mtaServiceActive(unit) }
+
 func pathExists(path string) bool {
 	_, err := mtaStat(path)
 	return err == nil
@@ -175,6 +191,13 @@ func systemdMTAServiceActive(unit string) bool {
 	defer cancel()
 	// #nosec G204 -- callers pass only the literal MTA unit names above.
 	return exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run() == nil
+}
+
+func systemdMTAServiceEnabled(unit string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// #nosec G204 -- callers pass only the literal MTA unit names above.
+	return exec.CommandContext(ctx, "systemctl", "is-enabled", "--quiet", unit).Run() == nil
 }
 
 // binaryInstalled reports whether any of the named binaries is on PATH or at

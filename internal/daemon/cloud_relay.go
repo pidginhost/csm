@@ -217,7 +217,12 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
 		return nil
 	}
-	user := extractAuthUser(line)
+	return cloudRelayObserve(cfg, extractAuthUser(line), eximlog.ClientIP(line), extractEximHostname(line), time.Now())
+}
+
+// cloudRelayObserve evaluates one authenticated send by user from ip, whose
+// reverse DNS name is ptr, for the cloud-relay compromise pattern.
+func cloudRelayObserve(cfg *config.Config, user, ip, ptr string, now time.Time) (findings []alert.Finding) {
 	if user == "" {
 		return nil
 	}
@@ -227,11 +232,9 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 	if isCloudRelayAllowed(user, cfg.EmailProtection.CloudRelay.AllowUsers, cfg.EmailProtection.CloudRelay.AllowDomains) {
 		return nil
 	}
-	ptr := extractEximHostname(line)
 	if !isCloudProviderPTR(ptr) {
 		return nil
 	}
-	ip := eximlog.ClientIP(line)
 	if ip == "" {
 		// Without an IP we can't dedup distinct sources; bail silently
 		// so we don't count half-parsed records toward the threshold.
@@ -240,7 +243,6 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 
 	// Registered before the unlock defer so owner I/O runs after it.
 	defer func() { stampMailAccountOwner(findings, user) }()
-	now := time.Now()
 	unlock := lockMailResponse(store.MailboxSuspensionID(activeMailBackend.name(), user))
 	defer unlock()
 	w := lockCloudRelayWindowForUpdate(user, now)

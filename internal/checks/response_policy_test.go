@@ -69,7 +69,7 @@ func TestResponsePolicyForFollowsRenamedProducers(t *testing.T) {
 func TestRegistryResponsePolicyMatchesGoldenTables(t *testing.T) {
 	for _, c := range checkRegistry {
 		want := ResponsePolicy{
-			CriticalOnly:   c.Name == "mail_account_compromised",
+			CriticalOnly:   goldenCriticalOnly[c.Name],
 			ChallengeFirst: goldenChallengeable[c.Name],
 			NeverChallenge: goldenNeverChallenge[c.Name],
 			Evidence:       evidencePolicy[c.Name].Family,
@@ -118,6 +118,7 @@ var nonActionableAttackerSide = map[string]string{
 	"mail_bruteforce_suspected":     "advisory for an established source",
 	"mail_spam_source":              "report only; no local response by design",
 	"mail_subnet_spray":             "subnet summary; no single-IP block or challenge policy",
+	"stalwart_webmail_bruteforce":   "address may come from a forwarded header; Stalwart throttles and bans it",
 	"smtp_subnet_spray":             "subnet summary; no single-IP block or challenge policy",
 	"modsec_block_realtime":         "ModSecurity already denied the request",
 	"modsec_low_confidence_burst":   "low-confidence advisory",

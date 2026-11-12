@@ -22,9 +22,19 @@ func withMTAProbes(t *testing.T, onPath map[string]bool, present map[string]bool
 		return nil, os.ErrNotExist
 	}
 	mtaServiceActive = func(string) bool { return false }
+	oldServiceEnabled := mtaServiceEnabled
+	mtaServiceEnabled = func(string) bool { return false }
 	t.Cleanup(func() {
 		mtaLookPath, mtaStat, mtaServiceActive = oldLookPath, oldStat, oldServiceActive
+		mtaServiceEnabled = oldServiceEnabled
 	})
+}
+
+func withEnabledMTAService(t *testing.T, enabled map[string]bool) {
+	t.Helper()
+	old := mtaServiceEnabled
+	mtaServiceEnabled = func(unit string) bool { return enabled[unit] }
+	t.Cleanup(func() { mtaServiceEnabled = old })
 }
 
 func withActiveMTAService(t *testing.T, active map[string]bool) {
@@ -124,5 +134,58 @@ func TestDetectMTAReportsUnknownWhenNoMTAInstalled(t *testing.T) {
 	withMTAProbes(t, nil, nil)
 	if got := DetectMTA(); got != MTAUnknown {
 		t.Errorf("DetectMTA() = %q, want %q", got, MTAUnknown)
+	}
+}
+
+func TestDetectMTAStalwart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		active  map[string]bool
+		present map[string]bool
+		want    MTAKind
+	}{
+		{"stalwart", map[string]bool{"stalwart": true}, nil, MTAStalwart},
+		{"stalwart-mail", map[string]bool{"stalwart-mail": true}, nil, MTAStalwart},
+		{"exim wins", map[string]bool{"exim": true, "stalwart": true}, nil, MTAExim},
+		{"postfix wins", map[string]bool{"postfix": true, "stalwart": true}, nil, MTAPostfix},
+		{"cpanel wins", map[string]bool{"stalwart": true}, map[string]bool{"/usr/local/cpanel/version": true}, MTAExim},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withMTAProbes(t, nil, tc.present)
+			withActiveMTAService(t, tc.active)
+			if got := DetectMTA(); got != tc.want {
+				t.Errorf("DetectMTA() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServiceActiveUsesProbe(t *testing.T) {
+	withActiveMTAService(t, map[string]bool{"stalwart": true})
+	if !ServiceActive("stalwart") || ServiceActive("dovecot") {
+		t.Fatal("ServiceActive must report the probe's answer")
+	}
+}
+
+// Stalwart still starting, restarting or crash-looping when CSM starts must
+// not leave the host on the Postfix/Dovecot reader for the life of the
+// process: an enabled unit counts once no Exim or Postfix service is active.
+func TestDetectMTAStalwartEnabledButNotActive(t *testing.T) {
+	withMTAProbes(t, map[string]bool{"postfix": true}, nil)
+	withEnabledMTAService(t, map[string]bool{"stalwart": true})
+	if got := DetectMTA(); got != MTAStalwart {
+		t.Fatalf("enabled Stalwart with an installed Postfix binary: DetectMTA() = %q, want %q", got, MTAStalwart)
+	}
+	withActiveMTAService(t, map[string]bool{"exim": true})
+	if got := DetectMTA(); got != MTAExim {
+		t.Fatalf("an active Exim must win over an enabled Stalwart: DetectMTA() = %q", got)
+	}
+}
+
+func TestDetectMTAStalwartMailUnitEnabled(t *testing.T) {
+	withMTAProbes(t, nil, nil)
+	withEnabledMTAService(t, map[string]bool{"stalwart-mail": true})
+	if got := DetectMTA(); got != MTAStalwart {
+		t.Fatalf("DetectMTA() = %q, want %q", got, MTAStalwart)
 	}
 }

@@ -281,6 +281,13 @@ mail_logs:
   file: ""                  # override the platform default when non-empty
   units: []                 # empty/omitted = postfix, postfix@- (Debian/Ubuntu instance), dovecot
 
+# Stalwart mail server log, read on hosts where Stalwart is the mail server.
+# ports maps listeners on non-standard ports, e.g. ["10465:smtp"].
+stalwart:
+  log_dir: /var/log/stalwart
+  log_prefix: stalwart.log
+  ports: []
+
 # Detection knobs. Each subsection controls a separate detector.
 detection:
   # Known-vulnerable WordPress plugin detector: matches installed plugin
