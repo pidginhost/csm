@@ -42,7 +42,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - On Stalwart mail servers CSM now reads Stalwart's log to detect password guessing, stolen logins and hacked mailboxes, and blocks addresses Stalwart bans; map other listener ports in stalwart.ports. Run csm stalwart setup to see failed logins.
 - The firewall can limit which local users may connect to a port on this host; set it in firewall.local_port_locks.
-- Stalwart setup prepares failed-login detection, ban expiry, and protected webmail addresses while refusing admin logins to untrusted local services.
+- New `csm stalwart setup` command prepares a Stalwart server: it logs failed logins, makes Stalwart's bans expire with CSM's blocks, and trusts webmail addresses behind CSM's port lock.
 - csm doctor warns when Stalwart trusts forwarded webmail addresses without CSM's port lock, and checks Stalwart's settings when given the admin login.
 - The Email page has a Suspended tab listing the mailboxes and accounts CSM suspended, with their live status and a Release button.
 
