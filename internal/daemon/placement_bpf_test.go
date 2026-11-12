@@ -174,3 +174,22 @@ func TestUnresolvedPlacementIsCountedAndNotHandled(t *testing.T) {
 		t.Fatalf("unresolved findings %+v, want one", found)
 	}
 }
+
+// A worker may reach an event long after the ring delivered it. The event
+// keeps the time it was read, which restore detection compares with the
+// placing process's start time.
+func TestPlacementKeepsTheRingReadTime(t *testing.T) {
+	handled := make(chan placementEvent, 1)
+	_, src, _ := startFakePlacementBackend(t, 4, func(ev placementEvent) { handled <- ev })
+	raw := placedRaw("late.php")
+	raw.At = time.Now().Add(-time.Hour)
+	src.q.TrySend(raw)
+	select {
+	case ev := <-handled:
+		if !ev.At.Equal(raw.At) {
+			t.Fatalf("handled at %v, want the read time %v", ev.At, raw.At)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("event never reached a worker")
+	}
+}

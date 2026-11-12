@@ -140,7 +140,7 @@ func (p *placementBPF) Run(ctx context.Context) {
 
 func (p *placementBPF) resolve(raw PlacementRawEvent) (placementEvent, bool) {
 	p.count.Add(1)
-	ev, ok := p.fm.placementFromRaw(raw, p.mounts, time.Now())
+	ev, ok := p.fm.placementFromRaw(raw, p.mounts, raw.At)
 	if !ok {
 		p.unresolved.Lose(time.Now(), 1)
 	}

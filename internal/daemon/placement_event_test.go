@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"slices"
 	"testing"
+	"time"
 )
 
 // placementRecord builds a ring record the way the BPF program fills it: a
@@ -27,9 +28,15 @@ func placementRecord(kind, isDir, truncated uint8, pid uint32, dev, ino uint64, 
 
 func TestDecodePlacementEventRoundTrip(t *testing.T) {
 	rec := placementRecord(2, 0, 0, 4242, 259<<20|3, 987654, "shell.php", "public_html", "user")
+	before := time.Now()
 	got, err := decodePlacementEvent(rec)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The read time, not when a worker gets to it: restore detection
+	// compares it with the writer's start time.
+	if got.At.Before(before) || got.At.After(time.Now()) {
+		t.Fatalf("decoded at %v, want the read time", got.At)
 	}
 	want := PlacementRawEvent{Kind: 2, PID: 4242, Dev: 259<<20 | 3, Ino: 987654, Components: []string{"shell.php", "public_html", "user"}}
 	if got.Kind != want.Kind || got.IsDir || got.Truncated || got.PID != want.PID || got.Dev != want.Dev || got.Ino != want.Ino || !slices.Equal(got.Components, want.Components) {

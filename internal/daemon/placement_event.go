@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"time"
 )
 
 // Wire layout of struct placement_event in _placement.bpf.c.
@@ -14,7 +15,8 @@ const (
 
 // PlacementRawEvent is one decoded ring record. Components are the new
 // entry's names from the leaf up to the filesystem root, so userspace can
-// join them under that filesystem's mount. Dev is the kernel dev_t.
+// join them under that filesystem's mount. Dev is the kernel dev_t. At is
+// when the ring reader decoded it, however long a worker takes to reach it.
 type PlacementRawEvent struct {
 	Kind       uint8
 	IsDir      bool
@@ -22,6 +24,7 @@ type PlacementRawEvent struct {
 	PID        uint32
 	Dev, Ino   uint64
 	Components []string
+	At         time.Time
 }
 
 func decodePlacementEvent(b []byte) (PlacementRawEvent, error) {
@@ -35,6 +38,7 @@ func decodePlacementEvent(b []byte) (PlacementRawEvent, error) {
 		PID:       binary.LittleEndian.Uint32(b[4:8]),
 		Dev:       binary.LittleEndian.Uint64(b[8:16]),
 		Ino:       binary.LittleEndian.Uint64(b[16:24]),
+		At:        time.Now(),
 	}
 	depth := int(b[2])
 	names := b[placementEventHeaderSize:]
