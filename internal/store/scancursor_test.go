@@ -120,3 +120,25 @@ func TestScanCursorOverwrite(t *testing.T) {
 		t.Errorf("LastPath after overwrite: got %q, want %q", got.LastPath, updated.LastPath)
 	}
 }
+
+func TestScanCursorChangedProgressRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Unix(1700000000, 0).UTC()
+	want := ScanCursorRecord{
+		Account: "alice", Check: "php_content",
+		ChangedThrough: now, ChangedFrom: "/home/alice/public_html/a.php",
+		ChangedEnd: "/home/alice/public_html/z.php", ChangedLapStart: now.Add(time.Hour),
+		ChangedLapFailed: true, ChangedServedAt: now.Add(2 * time.Hour),
+		ChangedClock: now.Add(3 * time.Hour), ChangedUptime: 10000.25, ChangedBootID: "test-boot",
+	}
+	if err := db.PutScanCursor(want); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := db.GetScanCursor(want.Account, want.Check)
+	if err != nil || !found {
+		t.Fatalf("cursor read: found=%v err=%v", found, err)
+	}
+	if got != want {
+		t.Fatalf("changed progress did not round-trip: got %+v, want %+v", got, want)
+	}
+}

@@ -139,9 +139,14 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 // useRollingStore opens a temp bbolt store and installs it as the global store
-// for the duration of the test.
+// for the duration of the test. Fixtures are written just before the first
+// cycle, so the changed-file margin is zeroed: they predate each account's
+// first watermark and stay with the rolling windows these tests exercise.
 func useRollingStore(t *testing.T) *store.DB {
 	t.Helper()
+	prevMargin := rollingChangedMargin
+	rollingChangedMargin = 0
+	t.Cleanup(func() { rollingChangedMargin = prevMargin })
 	db, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)

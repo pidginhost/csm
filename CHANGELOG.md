@@ -12,6 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - Realtime PHP alerts that cannot be confirmed now get the scheduled scan's verdict right away, so a Critical file is removed within moments.
+- Scheduled PHP scans keep earlier alerts when a file cannot be read.
 - IMAP and POP3 password spray alerts now count upper and lower case spellings of a mailbox as one target.
 - Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
 - A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
@@ -29,6 +30,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - With process killing on, CSM now stops a process that writes back a file it removed, when a web request started it or it runs detached.
 - CSM now raises a High alert while it skips unusable trusted proxy entries.
 - CSM keeps track of the files it removed across restarts, so a file written back after a restart still triggers the repeat response.
+- New and changed PHP files anywhere in a site, including WordPress core folders and links, now take priority in scheduled content scans.
 - Realtime protection now quarantines PHP shells that run commands sent in the raw request body, instead of only alerting.
 - Realtime protection now also quarantines confirmed PHP shells placed after a shell command in backticks.
 - Scheduled and on-demand scans now report PHP shells that run commands sent in the raw request body, and realtime catches more of their variants.
