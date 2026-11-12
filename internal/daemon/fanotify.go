@@ -182,6 +182,10 @@ type EventStats struct {
 	Received int64
 	Admitted int64
 	Dropped  int64
+	// PlacementUnverified counts placement reports dropped because the path
+	// never opened as the reported file or directory. They reach no
+	// admission decision.
+	PlacementUnverified int64
 }
 
 // Filtered counts events rejected before queue admission, including events
@@ -193,7 +197,9 @@ func (s EventStats) Filtered() int64 { return s.Received - s.Admitted - s.Droppe
 func (fm *FileMonitor) EventStats() EventStats {
 	fm.eventStatsMu.Lock()
 	defer fm.eventStatsMu.Unlock()
-	return fm.eventStats
+	stats := fm.eventStats
+	stats.PlacementUnverified = fm.placementUnverified.Load()
+	return stats
 }
 
 func (fm *FileMonitor) recordEvent(admitted, dropped bool) {
@@ -302,6 +308,8 @@ type FileMonitor struct {
 	eventStats    EventStats
 	droppedEvents int64
 	droppedAlerts int64
+	// placementUnverified is published through EventStats.
+	placementUnverified atomic.Int64
 
 	// queueOverflows counts FAN_Q_OVERFLOW events: the kernel notification
 	// queue filled and events were dropped before userspace ever saw them.
