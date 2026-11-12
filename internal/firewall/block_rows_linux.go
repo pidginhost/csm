@@ -108,8 +108,8 @@ func (e *Engine) BlockActionsUnproven() error {
 
 // evictionVictimLocked picks the temporary block a new one replaces at the
 // cap. It leaves out the rows admission actions wrote: no legacy block,
-// automatic or operator, removes a block admission owns (design C8, spec
-// 5.6). Under the durable lifecycle, where no admission action writes rows,
+// automatic or operator, removes a block admission owns.
+// Under the durable lifecycle, where no admission action writes rows,
 // only an automatic block or unproven rows leave its action rows out. Among
 // the rows left, a mail spray row goes first, so a spray wave replaces its
 // own blocks before any other.

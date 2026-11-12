@@ -268,7 +268,7 @@ type BlockedEntry struct {
 	// and not restored into the kernel.
 	Unverified bool `json:"unverified,omitempty"`
 	// Automatic marks a timed row a legacy automatic block wrote: explicit
-	// provenance, where Source is read from the reason text (spec 6).
+	// provenance, where Source is read from the reason text.
 	// Admission rows carry ActionID instead. Older builds ignore it.
 	Automatic bool `json:"automatic,omitempty"`
 	// LoginSpray marks an automatic row a mail spray block wrote. These rows
@@ -3032,7 +3032,7 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 	if skipExisting && firewallStateHasBlocked(st, ip) {
 		// An automatic block never replaces a row an admission action
 		// wrote, even one whose element is gone or unproven: the owner
-		// retires it (design C8).
+		// retires it.
 		if row, _ := blockedStateEntry(st, ip); row.ActionID != "" {
 			return targetSet, key, true, "", nil
 		}

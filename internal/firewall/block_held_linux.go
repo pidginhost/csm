@@ -10,8 +10,8 @@ import (
 )
 
 // HeldBlockActions reports, for each verified admission block, whether
-// what it applied may remain in the kernel: retirement's answer reversed
-// (spec 5.4), with no state write. An element still at the address that
+// what it applied may remain in the kernel: retirement's answer reversed,
+// with no state write. An element still at the address that
 // no other action's verified row proves answers held, even after a
 // forward wall step makes the block's own row look expired, and so does
 // an address whose family the snapshot cannot read; only a removal

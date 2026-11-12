@@ -2,7 +2,7 @@
 
 package firewall
 
-// Tests for Task 9: inverted-lookup helpers applied to mail port-flood meters.
+// Tests for the inverted-lookup helpers applied to mail port-flood meters.
 //
 // Compile-verified on macOS; full execution requires Linux with net_admin.
 // Harness mirrors engine_conn_meter_exempt_linux_test.go.

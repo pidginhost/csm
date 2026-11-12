@@ -481,7 +481,7 @@ func TestBlockedEntryActionFieldsParticipateInSnapshotEquality(t *testing.T) {
 	}
 }
 
-// An unverified row is never an automatic victim (spec 5.4) and never
+// An unverified row is never an automatic victim and never
 // occupies a counted slot in the state fallback, even after its expiry.
 func TestLegacyEvictionSkipsUnverifiedRows(t *testing.T) {
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
@@ -502,7 +502,7 @@ func TestLegacyEvictionSkipsUnverifiedRows(t *testing.T) {
 
 // Without a readable ledger at startup nothing proves which rows of its
 // attempts the kernel enforces. They are restored as before, and, as with
-// a readable ledger, none is ever chosen to make room for a new block (P11).
+// a readable ledger, none is ever chosen to make room for a new block.
 func TestUnprovenBlockActionsAreNeverEvicted(t *testing.T) {
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	state := FirewallState{Blocked: []BlockedEntry{

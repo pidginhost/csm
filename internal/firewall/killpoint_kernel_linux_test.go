@@ -12,7 +12,7 @@ import (
 	"github.com/google/nftables"
 )
 
-// Kill point in the kernel (spec 5.4, design P10): a batch killed after
+// Kill point in the kernel: a batch killed after
 // the kernel took it, before its readback, leaves its element in the
 // kernel and its row unmarked. A new engine on the same state, once the
 // startup gate has marked the row, applies a ruleset without that element

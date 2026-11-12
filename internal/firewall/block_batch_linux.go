@@ -90,7 +90,7 @@ func (snap blockSnapshot) proves(row BlockedEntry, observed blockObservation, pr
 // HoldBlockBatches holds admission's member checks, batches, probes and
 // retirements while an apply-confirmed window is open: its rollback
 // restores the firewall from a snapshot and would erase the rows they
-// write (design C9). The read-only admission snapshot of a forecast still
+// write. The read-only admission snapshot of a forecast still
 // answers. It waits for a call in flight.
 func (e *Engine) HoldBlockBatches(held bool) {
 	e.mu.Lock()
@@ -241,7 +241,7 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 }
 
 // victimsLocked reports, per member, whether its victim is still the
-// block the ledger claimed, so the batch may remove it (spec 5.5): a
+// block the ledger claimed, so the batch may remove it: a
 // well-formed action at an address no member targets, named by no
 // earlier member, whose row there carries that action and expiry and
 // whose timed element snap proves live at that canonical address, or an
@@ -391,7 +391,7 @@ func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnap
 	return ""
 }
 
-// covers reports whether row lasts as long as member m (spec 5.16: only
+// covers reports whether row lasts as long as member m (only
 // the exact effect is already enforced). A shorter block holds the address
 // until it ends.
 func covers(row BlockedEntry, m BlockMember) bool { return CoversExpiry(row.ExpiresAt, m.ExpiresAt) }
@@ -518,7 +518,7 @@ func (snap blockSnapshot) occupants(out *BlockAdmission, now time.Time) {
 		if !row.ExpiresAt.After(now) {
 			continue
 		}
-		// A prefix encodes as at most two interval elements (spec 5.6).
+		// A prefix encodes as at most two interval elements.
 		out.Unclaimed += 2
 		if out.Drain >= 0 {
 			out.Drain = max(out.Drain, row.ExpiresAt.Sub(now))
@@ -671,7 +671,7 @@ func (e *Engine) readbackLocked(conn *nftables.Conn, set *nftables.Set) ([]nftab
 // runs the transaction is spared and its member alone fails set_full. A
 // kernel rejection, including the ENOENT of a victim removed before the
 // send, fails every member and restores the state; the owner retries with
-// new charged attempts (spec 5.5). Any other uncertainty leaves the members unknown, their rows
+// new charged attempts. Any other uncertainty leaves the members unknown, their rows
 // marked unverified. An error means nothing was written or sent.
 func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	if len(members) == 0 || len(members) > MaxBlockBatchMembers {

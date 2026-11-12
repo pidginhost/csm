@@ -90,7 +90,7 @@ func TestRemoveBlockActionRowsWriteFailureKeepsRows(t *testing.T) {
 	}
 }
 
-// Retirement asks the kernel first (spec 5.4, design P7). An attempt is
+// Retirement asks the kernel first. An attempt is
 // clear when its address has no element, or the element belongs to a
 // verified row of another action; its own row then goes, in one write for
 // the batch. An element still present otherwise keeps it held, as after a

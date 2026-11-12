@@ -6,7 +6,7 @@ import (
 )
 
 // RetiredActionState is the committed state an unknown block action retires
-// to as expired_unproven (spec 5.4): every member target is timed and expired,
+// to as expired_unproven: every member target is timed and expired,
 // and every row its Before and After states disagree on is a verified timed
 // block that has expired at at. Committed state keeps the rows both
 // states agree on. Any other action reports false and waits for an

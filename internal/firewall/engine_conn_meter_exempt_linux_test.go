@@ -12,7 +12,7 @@ import (
 	"github.com/mdlayher/netlink"
 )
 
-// Tests for Task 8: inverted-lookup helpers applied to connection meters.
+// Tests for the inverted-lookup helpers applied to connection meters.
 //
 // Compile-verified on macOS; full execution requires Linux with net_admin.
 // Harness mirrors engine_dos_exempt_linux_test.go + port_flood_linux_test.go.
@@ -187,8 +187,8 @@ func TestConnMeterNoExemptWhenSetNil(t *testing.T) {
 // TestSYNMeterHasNoExemptLookup verifies that the SYN flood meter rule does
 // NOT gain the dos_exempt_nets inverted lookup. The SYN meter already resets
 // register 1 with protocol+flag checks before the source-IP load, so adding
-// the lookup there would require a different register strategy. Task 8 leaves
-// meter_syn unmodified.
+// the lookup there would require a different register strategy, so
+// meter_syn stays unmodified.
 func TestSYNMeterHasNoExemptLookup(t *testing.T) {
 	exemptSet := &nftables.Set{Name: "dos_exempt_nets", ID: 42}
 	meterSYN := &nftables.Set{Name: "meter_syn", ID: 3}
@@ -211,7 +211,7 @@ func TestSYNMeterHasNoExemptLookup(t *testing.T) {
 }
 
 // TestUDPMeterHasNoExemptLookup verifies that the UDP flood meter rule does
-// NOT gain the dos_exempt_nets inverted lookup. Task 8 leaves meter_udp unmodified.
+// NOT gain the dos_exempt_nets inverted lookup. meter_udp stays unmodified.
 func TestUDPMeterHasNoExemptLookup(t *testing.T) {
 	exemptSet := &nftables.Set{Name: "dos_exempt_nets", ID: 42}
 	meterUDP := &nftables.Set{Name: "meter_udp", ID: 4}

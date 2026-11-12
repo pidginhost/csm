@@ -160,7 +160,7 @@ func TestCheckBlockBatchRefusesOnlyInvalidMembers(t *testing.T) {
 }
 
 // An address counts as already blocked only when a verified row and its
-// kernel element agree (spec 5.16): a permanent row with an untimed
+// kernel element agree: a permanent row with an untimed
 // element, or a timed row whose element has the time the row has left.
 // Any other occupancy waits for recovery; an expired row with no element
 // holds nothing.
@@ -215,7 +215,7 @@ func TestCheckBlockBatchNeedsProofOfAnExistingEffect(t *testing.T) {
 	}
 }
 
-// Only the exact effect counts as existing (spec 5.16): a proven block that
+// Only the exact effect counts as existing: a proven block that
 // ends before the member defers it until that block has ended.
 func TestCheckBlockBatchNeedsABlockThatCoversTheMember(t *testing.T) {
 	f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{

@@ -22,7 +22,7 @@ const leaseCheckpointFile = "lease.json"
 // read in and the time since that boot. Within one boot a restart resumes
 // at the checkpoint plus the time elapsed since it, whatever the wall clock
 // did meanwhile; a new boot proves no downtime and resumes at the
-// checkpoint itself (spec 5.4). Clock sampling latency can only shorten
+// checkpoint itself. Clock sampling latency can only shorten
 // restoration.
 type leaseCheckpoint struct {
 	Lease     time.Time     `json:"lease"`

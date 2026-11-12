@@ -10,7 +10,7 @@ import (
 	"github.com/google/nftables"
 )
 
-// Tests for dos_exempt_nets interval sets (Task 7).
+// Tests for dos_exempt_nets interval sets.
 //
 // Harness: mirrors engine_methods_linux_test.go.
 // createSets() queues messages into an nftables.Conn without calling Flush,

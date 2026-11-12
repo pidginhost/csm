@@ -19,8 +19,8 @@ type BlockBatchResult struct {
 	Refusals []BlockRefusal
 }
 
-// BlockBatchRequest runs automatic temporary blocks as one durable batch
-// (spec 5.5). Each member is checked on its own against one committed
+// BlockBatchRequest runs automatic temporary blocks as one durable batch.
+// Each member is checked on its own against one committed
 // snapshot and refused members are left out; the rest share one admission,
 // one kernel transaction and one outcome. A lone valid member runs as an
 // ordinary one-request action under its own ID. A repeated call naming a
@@ -99,7 +99,7 @@ func (e *Engine) BlockBatchRequest(header ActionRequest, members []ActionRequest
 // the batch unknown, holding every durable mutation until it is resolved.
 const blockBatchMinLifetime = blockReadbackSlack + 2*time.Second
 
-// validBlockBatchHeader holds a batch header to plan 1.5d-1's shape: an
+// validBlockBatchHeader holds a batch header to its required shape: an
 // automatic block with no target, link, lifetime or charge of its own.
 func validBlockBatchHeader(h ActionRequest) bool {
 	return validBlockAction(h.ID) && h.Operation == "block" && h.Automatic && h.Actor != "" && h.Source != "" && utf8.ValidString(h.Actor) && utf8.ValidString(h.ActorDetail) && utf8.ValidString(h.Source) &&
