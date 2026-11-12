@@ -9,46 +9,56 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+## [4.12.0] - 2026-11-13
+
+### Highlights
+
+- Realtime protection removes more webshells on its own: shells that run commands from the request body, files cleaning would empty, and files planted at WordPress core or plugin paths.
+- When a file CSM removed comes back, CSM alerts and responds again, and with process killing on it stops the writer and shell loops left by web requests.
+- Challenge pages now work on HTTPS sites on cPanel and on Apache without cPanel. Run `csm webserver-integration upgrade` once if `csm doctor challenge` warns about sites.
+- Visitors who pass a challenge are no longer hard-blocked after they leave, and passes are logged and counted.
+- Stalwart mail servers are supported: CSM detects password guessing, stolen logins and hacked mailboxes, and `csm stalwart setup` prepares the server.
+- A cracked mailbox password now suspends that mailbox's logins and outgoing mail under auto-response; the Email page lists suspensions with a Release button.
+- CSM is built with Go 1.27.4.
+
 ### Security
 
-- Challenge pages now work on Apache servers without cPanel after the setup steps, and doctor warns about sites missing challenge coverage.
 - Challenge pages now also appear on HTTPS sites on cPanel servers. Run csm webserver-integration upgrade once if csm doctor warns about HTTPS sites.
+- Challenge pages now work on Apache servers without cPanel after the setup steps, and doctor warns about sites missing challenge coverage.
 - Realtime PHP alerts that cannot be confirmed now get the scheduled scan's verdict right away, so a Critical file is removed within moments.
-- Scheduled PHP scans keep earlier alerts when a file cannot be read.
+- Realtime protection now quarantines PHP shells that run commands from the raw request body or sit after a backtick command, and scans report more of their variants.
+- Files that cleaning would leave empty, and files planted at WordPress core or plugin paths their release does not ship, are now quarantined instead.
+- A file CSM quarantined or cleaned now raises a Critical alert and gets the same response again when it comes back, including after a restart.
+- With process killing on, CSM now stops a process that writes back a file it removed, when a web request started it or it runs detached.
 - CSM now reports processes a web request left running in the background, and stops shell loops among them when process killing is on.
-- IMAP and POP3 password spray alerts now count upper and lower case spellings of a mailbox as one target.
-- Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
+- Realtime protection now checks files renamed or hard-linked into a site, where the kernel supports it.
+- CSM reports recent requests to suspected webshells, including removed files, and summarizes widely requested content without naming individual clients.
+- New and changed PHP files anywhere in a site, including WordPress core folders and links, now take priority in scheduled content scans.
+- Scheduled PHP scans keep earlier alerts when a file cannot be read.
 - A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
+- IMAP and POP3 password spray alerts now count upper and lower case spellings of a mailbox as one target.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
+- High mail volume alerts and the Web UI top senders list now count senders with quoted addresses and no longer count delivery failures as sent mail.
+- Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
 - Crafted or malformed cPanel session log entries can no longer fake or hide logins and password changes.
-- A dismissed malware finding now alerts again when the file's content changes.
-- Dismissing a finding whose file changed since the page loaded is refused, so the new content gets reviewed first.
-- CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
 - Realtime WHM login alerts and the tokenless WHM request alert for CVE-2026-41940 now fire on the lines cPanel writes to its own access log.
 - A user name containing a quote can no longer hide a cPanel or WHM request from realtime alerts.
 - Alerts and reputation checks for requests through cPanel service subdomains no longer block, score or exempt the unverified client address cPanel logged.
+- cPanel API failure alerts now cover every API and token endpoint, including encoded requests, and no longer count page requests from expired cPanel or webmail sessions.
+- cPanel API failures answered with 403 now alert even right after the account password changes.
+- A dismissed malware finding now alerts again when the file's content changes, and a dismissal is refused when the file changed after the page loaded.
 - `.htaccess` checks now report suspicious handler extensions listed after a `#` on the same line, which Apache still applies.
-- A file CSM quarantined or cleaned now alerts again when it comes back, instead of being held back as a repeat.
-- CSM now raises a Critical alert when a process writes back a file CSM quarantined or cleaned, and repeats that response.
-- With process killing on, CSM now stops a process that writes back a file it removed, when a web request started it or it runs detached.
 - CSM now raises a High alert while it skips unusable trusted proxy entries.
-- CSM keeps track of the files it removed across restarts, so a file written back after a restart still triggers the repeat response.
-- New and changed PHP files anywhere in a site, including WordPress core folders and links, now take priority in scheduled content scans.
-- Realtime protection now quarantines PHP shells that run commands sent in the raw request body, instead of only alerting.
-- Realtime protection now also quarantines confirmed PHP shells placed after a shell command in backticks.
-- Scheduled and on-demand scans now report PHP shells that run commands sent in the raw request body, and realtime catches more of their variants.
-- Files that cleaning would leave empty, and files planted at WordPress core or plugin paths their release does not ship, are now quarantined instead.
-- CSM reports recent requests to suspected webshells, including removed files, and summarizes widely requested content without naming individual clients.
-- Realtime protection now checks files renamed or hard-linked into a site, where the kernel supports it.
+- CSM is now built with Go 1.27.4, which fixes a crash in HTTP servers that limit request body size.
 
 ### Added
 
-- Challenge passes are now logged and counted in the challenge stats.
 - On Stalwart mail servers CSM now reads Stalwart's log to detect password guessing, stolen logins and hacked mailboxes, and blocks addresses Stalwart bans; map other listener ports in stalwart.ports. Run csm stalwart setup to see failed logins.
-- The firewall can limit which local users may connect to a port on this host; set it in firewall.local_port_locks.
 - New `csm stalwart setup` command prepares a Stalwart server: it logs failed logins, makes Stalwart's bans expire with CSM's blocks, and trusts webmail addresses behind CSM's port lock.
 - csm doctor warns when Stalwart trusts forwarded webmail addresses without CSM's port lock, and checks Stalwart's settings when given the admin login.
 - The Email page has a Suspended tab listing the mailboxes and accounts CSM suspended, with their live status and a Release button.
+- The firewall can limit which local users may connect to a port on this host; set it in firewall.local_port_locks.
+- Challenge passes are now logged and counted in the challenge stats.
 
 ### Changed
 
@@ -59,24 +69,35 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Ordinary PHP files, such as WP Toolkit and translation files, no longer raise suspicious file alerts for a word inside their names.
+#### Challenges
+
 - Visitors who pass a challenge are no longer blocked or named in distributed attack alerts for requests they already answered.
 - Certificate validation requests are no longer sent to the challenge page.
+
+#### Scanning
+
+- Ordinary PHP files, such as WP Toolkit and translation files, no longer raise suspicious file alerts for a word inside their names.
 - Japanese SEO and post spam alerts no longer fire on ordinary words that contain a spam keyword, such as in plugin translation files.
 - Deep scan findings for files that were rechecked and found clean now clear on large servers instead of staying listed indefinitely.
-- cPanel API failure alerts now cover every API and token endpoint, including encoded requests, and no longer count page requests from expired cPanel or webmail sessions.
+
+#### cPanel logins and alerts
+
 - API-created cPanel sessions and logins from the server itself no longer raise account hijack alerts or count toward multi-address login alerts.
-- On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
 - cPanel login checks now read session logs written without a time zone, so logins and multi-address logins on those servers are reported.
 - Realtime cPanel login alerts no longer report logins from the server itself or entries without a client address, matching the scheduled scan.
 - cPanel, WHM and webmail access alerts no longer fire on text in referers or user agents, and webmail alerts count only login attempts.
-- cPanel API failures answered with 403 now alert even right after the account password changes.
-- The web server hardening audit reads Apache continuations, section comments and include names correctly, and warns when its configuration cannot be read completely.
+
+#### Mail
+
 - Outbound mail from Stalwart's service account, or from users listed in `firewall.smtp_allow_users`, no longer raises a High direct SMTP egress finding.
-- High mail volume alerts and the Web UI top senders list now count senders with quoted addresses and no longer count delivery failures as sent mail.
 - BPF enforcement no longer blocks outbound mail from users listed in `firewall.smtp_allow_users`.
 - Restoring a mail message quarantined from a phishing finding now returns the whole message to the mail queue instead of failing, and a failed restore can be retried.
 - On servers whose Exim log adds a time zone or process ID, the deferral report now lists deferrals and outbound mail checks see delivered messages and real send times.
+
+#### Web server and settings
+
+- On nginx hosts, `web_server.config_dir` now also sets where CSM reads the nginx configuration, as documented.
+- The web server hardening audit reads Apache continuations, section comments and include names correctly, and warns when its configuration cannot be read completely.
 - Settings saves no longer fail when the edited setting is left blank in the configuration file.
 
 ## [4.11.0] - 2026-11-10
