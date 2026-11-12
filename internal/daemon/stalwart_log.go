@@ -127,7 +127,7 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 	switch ev.Name {
 	case "auth.failed", "auth.success":
 		session, ok := ev.Session()
-		if !ok {
+		if !ok || s.ports.Of(session.LocalPort) == stalwartlog.ProtoUnknown {
 			return nil
 		}
 		// Every login names its connection's sends, a loopback one included:

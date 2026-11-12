@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -112,21 +113,29 @@ func logHasEvent(path, name string) (bool, error) {
 	}
 	defer func() { _ = f.Close() }()
 	marker := "(" + name + ")"
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 64*1024)
-	for sc.Scan() {
-		if !strings.Contains(sc.Text(), marker) {
+	r := bufio.NewReaderSize(f, 64*1024)
+	discard := false
+	for {
+		line, prefix, err := r.ReadLine()
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		// Oversized records must not hide later logins or let their tail
+		// masquerade as a separate event.
+		if discard || prefix {
+			discard = prefix
 			continue
 		}
-		if ev, ok := stalwartlog.Parse(sc.Text()); ok && ev.Name == name {
+		if !bytes.Contains(line, []byte(marker)) {
+			continue
+		}
+		if ev, ok := stalwartlog.Parse(string(line)); ok && ev.Name == name {
 			return true, nil
 		}
 	}
-	// An over-long line stops the scan; what was read stays the answer.
-	if err := sc.Err(); err != nil && err != bufio.ErrTooLong {
-		return false, err
-	}
-	return false, nil
 }
 
 // tailLines returns up to n complete lines from the last maxBytes of path.

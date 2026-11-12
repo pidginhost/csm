@@ -2,6 +2,7 @@ package stalwartlog
 
 import (
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -39,6 +40,21 @@ func TestParseAuthSuccess(t *testing.T) {
 	want := Session{Listener: "imaps", LocalPort: 993, RemoteIP: netip.MustParseAddr("203.0.113.10"), RemotePort: 50123}
 	if !ok || s != want {
 		t.Fatalf("Session() = %+v, %v; want %+v", s, ok, want)
+	}
+}
+
+func TestParseLineEndings(t *testing.T) {
+	for _, line := range []string{
+		lineAuthSuccess, lineScanBan, lineQueued,
+		`2026-11-11T10:00:00Z INFO Authentication failed (auth.failed) listenerId = "smtp", localPort = 587, remoteIp = 203.0.113.10, remotePort = 50123, accountName = "user@example.com", reason = "Invalid credentials"`,
+		`2026-11-11T10:00:00Z INFO Stalwart started (server.startup)`,
+	} {
+		want := mustParse(t, line)
+		for _, ending := range []string{"\n", "\r\n"} {
+			if got, ok := Parse(line + ending); !ok || !reflect.DeepEqual(got, want) {
+				t.Errorf("Parse(%q) = %+v, %v; want %+v", line+ending, got, ok, want)
+			}
+		}
 	}
 }
 
@@ -82,6 +98,21 @@ func TestParseFirstKeyWins(t *testing.T) {
 	ev := mustParse(t, `2026-11-11T10:00:00Z INFO Authentication failed (auth.failed) listenerId = "smtp", localPort = 587, remoteIp = 203.0.113.10, remotePort = 1, remoteIp = 198.51.100.9`)
 	if got := ev.Fields["remoteIp"]; got != "203.0.113.10" {
 		t.Fatalf("remoteIp = %q, want the first value", got)
+	}
+}
+
+func TestParseQuotedEventAndSessionInjection(t *testing.T) {
+	line := `2026-11-11T10:00:00Z INFO Authentication failed (auth.failed) listenerId = "http", localPort = 8080, remoteIp = 203.0.113.10, remotePort = 50123, accountName = "x\" (security.scan-ban) localPort = 25, remoteIp = 198.51.100.9", reason = "invalid credentials"` + "\n"
+	ev := mustParse(t, line)
+	s, ok := ev.Session()
+	if ev.Name != "auth.failed" || !ok || s.LocalPort != 8080 || s.RemoteIP.String() != "203.0.113.10" {
+		t.Fatalf("quoted client data changed event or session: %+v, %+v, %v", ev, s, ok)
+	}
+	for _, first := range []string{"(null)", "[]", `"invalid"`} {
+		ev := mustParse(t, `2026-11-11T10:00:00Z INFO Authentication failed (auth.failed) localPort = 587, remotePort = 50123, remoteIp = `+first+`, remoteIp = 198.51.100.9`+"\n")
+		if s, ok := ev.Session(); ok {
+			t.Fatalf("duplicate replaced first remoteIp %s: %+v", first, s)
+		}
 	}
 }
 

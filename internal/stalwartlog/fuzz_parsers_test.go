@@ -10,6 +10,8 @@ var eventNameRe = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+$`)
 func FuzzParse(f *testing.F) {
 	for _, line := range []string{lineAuthSuccess, lineScanBan, lineQueued} {
 		f.Add(line)
+		f.Add(line + "\n")
+		f.Add(line + "\r\n")
 	}
 	f.Fuzz(func(t *testing.T, line string) {
 		ev, ok := Parse(line)

@@ -36,6 +36,7 @@ type Session struct {
 // Parse reads one log line. It reports false for anything that is not a
 // complete event in Stalwart's layout.
 func Parse(line string) (Event, bool) {
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 	stamp, rest, ok := strings.Cut(line, " ")
 	if !ok {
 		return Event{}, false

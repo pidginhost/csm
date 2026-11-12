@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -107,16 +108,16 @@ func TestResolvedFileReaderSwitchesOnlyAtEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := r.switchTarget(true); ok {
-		t.Fatal("switched with no newer file")
+	if path, err := r.switchTarget(true); path != "" || err != nil {
+		t.Fatalf("switch with no newer file = %q, %v", path, err)
 	}
 	newer := filepath.Join(dir, "stalwart.log.2026-11-11")
 	writeLog(t, newer, "")
-	if _, ok := r.switchTarget(false); ok {
+	if path, err := r.switchTarget(false); path != "" || err != nil {
 		t.Fatal("the minute ticker must not switch: the old file may hold unread lines")
 	}
-	if got, ok := r.switchTarget(true); !ok || got != newer {
-		t.Fatalf("switchTarget(atEOF) = %q, %v; want %q", got, ok, newer)
+	if got, err := r.switchTarget(true); err != nil || got != newer {
+		t.Fatalf("switchTarget(atEOF) = %q, %v; want %q", got, err, newer)
 	}
 }
 
@@ -127,9 +128,74 @@ func TestNewResolvedFileReaderPropagatesResolveError(t *testing.T) {
 	}
 }
 
+func TestResolvedFileReaderReportsRuntimeFailures(t *testing.T) {
+	for _, failure := range []string{"resolve", "open"} {
+		t.Run(failure, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				dir := t.TempDir()
+				oldPath := filepath.Join(dir, "stalwart.log.2026-11-10")
+				writeLog(t, oldPath, "")
+				nextPath := filepath.Join(dir, "stalwart.log.2026-11-11")
+				target, resolveErr := oldPath, error(nil)
+				var resolveMu sync.Mutex
+				r, err := NewResolvedFileReader(func() (string, error) {
+					resolveMu.Lock()
+					defer resolveMu.Unlock()
+					return target, resolveErr
+				}, NewQueue())
+				if err != nil {
+					t.Fatal(err)
+				}
+				gone := make(chan error, 4)
+				restored := make(chan struct{}, 4)
+				r.SetOnGone(func(err error) { gone <- err })
+				r.SetOnRestored(func() { restored <- struct{}{} })
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				out, err := r.Run(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				wantErr := fs.ErrNotExist
+				resolveMu.Lock()
+				if failure == "resolve" {
+					resolveErr, wantErr = fs.ErrPermission, fs.ErrPermission
+				} else {
+					target = nextPath
+				}
+				resolveMu.Unlock()
+				time.Sleep(2 * time.Second)
+				synctest.Wait()
+				if len(gone) != 0 {
+					t.Fatal("a transient failure reported unavailable before the grace period")
+				}
+				time.Sleep(defaultGoneGrace + 2*time.Second)
+				synctest.Wait()
+				if len(gone) != 1 {
+					t.Fatalf("unavailable callbacks = %d, want one", len(gone))
+				}
+				if err := <-gone; !errors.Is(err, wantErr) {
+					t.Fatalf("unavailable = %v, want %v", err, wantErr)
+				}
+				writeLog(t, nextPath, "recovered\n")
+				resolveMu.Lock()
+				target, resolveErr = nextPath, nil
+				resolveMu.Unlock()
+				time.Sleep(4 * time.Second)
+				synctest.Wait()
+				expectMailLine(t, out, "recovered\n")
+				if len(restored) != 1 || len(gone) != 0 {
+					t.Fatalf("restored=%d unavailable=%d, want one recovery and no repeated failure", len(restored), len(gone))
+				}
+			})
+		})
+	}
+}
+
 func TestPlainFileReaderNeverSwitches(t *testing.T) {
 	r := NewFileReader(filepath.Join(t.TempDir(), "maillog"), NewQueue())
-	if _, ok := r.switchTarget(true); ok {
+	if path, err := r.switchTarget(true); path != "" || err != nil {
 		t.Fatal("a fixed-path reader has no resolver")
 	}
 }

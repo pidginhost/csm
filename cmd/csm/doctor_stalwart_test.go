@@ -95,3 +95,19 @@ func TestStalwartDoctorNoFailedLogins(t *testing.T) {
 		t.Fatalf("with an auth.failed line: check = %+v, want ok", c)
 	}
 }
+
+func TestStalwartDoctorReadsPastOversizedLine(t *testing.T) {
+	sc := stalwartDoctorDir(t, "stalwart.log.2026-11-11", strings.Repeat("x", 128*1024), doctorAuthFailed)
+	c := stalwartCheckNamed(t, stalwartLogDoctorCheck(platform.MTAStalwart, sc, stalwartDoctorNow), "stalwart failed logins")
+	if c.Status != "ok" {
+		t.Fatalf("check = %+v, want the failed login after the oversized line to be found", c)
+	}
+}
+
+func TestStalwartDoctorIgnoresOversizedLineTail(t *testing.T) {
+	sc := stalwartDoctorDir(t, "stalwart.log.2026-11-11", strings.Repeat("x", 128*1024)+doctorAuthFailed, doctorAuthSuccess)
+	found, err := logHasEvent(filepath.Join(sc.LogDir, "stalwart.log.2026-11-11"), "auth.failed")
+	if err != nil || found {
+		t.Fatalf("oversized record tail counted as a login: found=%v, err=%v", found, err)
+	}
+}

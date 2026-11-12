@@ -42,7 +42,8 @@ type FileReader struct {
 	// (e.g. a syslog->journald migration) otherwise tails a dead fd
 	// silently; the callback lets the daemon surface a finding and mark the
 	// watcher unhealthy. onRestored fires after the path returns and the
-	// reader can use it again.
+	// reader can use it again. Resolved readers also report persistent
+	// failures to resolve or open their next target.
 	onGone     func(error)
 	onRestored func()
 	goneGrace  time.Duration
@@ -77,19 +78,23 @@ func NewResolvedFileReader(resolve func() (string, error), queue *Queue) (*FileR
 // switchTarget names the newer file a resolved reader moves to. Only a read
 // that stopped, at the end of the current file or on an error, may move: the
 // minute ticker can fire while the old file still holds unread lines.
-func (r *FileReader) switchTarget(atEOF bool) (string, bool) {
+func (r *FileReader) switchTarget(atEOF bool) (string, error) {
 	if r.resolve == nil || !atEOF {
-		return "", false
+		return "", nil
 	}
 	next, err := r.resolve()
-	if err != nil || next == r.path {
-		return "", false
+	if err != nil {
+		return "", err
 	}
-	return next, true
+	if next == r.path {
+		return "", nil
+	}
+	return next, nil
 }
 
 // SetOnGone installs a callback invoked once when the source path has been
-// missing for longer than the grace period. Must be called before Run.
+// missing, or a resolved target unavailable, for longer than the grace period.
+// Must be called before Run.
 func (r *FileReader) SetOnGone(fn func(error)) { r.onGone = fn }
 
 // SetOnRestored installs a callback invoked once after a previously-gone
@@ -97,7 +102,7 @@ func (r *FileReader) SetOnGone(fn func(error)) { r.onGone = fn }
 // before Run.
 func (r *FileReader) SetOnRestored(fn func()) { r.onRestored = fn }
 
-// recordStat advances the missing-source state machine from one stat result.
+// recordStat advances the missing-source state from a stat or resolution result.
 // It fires onGone once after the path is missing past the grace period and
 // arms the restore callback when the path returns.
 func (r *FileReader) recordStat(missing bool, missErr error) {
@@ -304,13 +309,25 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 	}
 
 	reopenOnRotate := func(atEOF bool) {
-		if path, ok := r.switchTarget(atEOF); ok {
+		// A resolved source moves only after draining its old file. A stat
+		// of that old file must not clear an unavailable new target either.
+		if r.resolve != nil && !atEOF {
+			return
+		}
+		path, resolveErr := r.switchTarget(atEOF)
+		if resolveErr != nil {
+			r.queue.file.outcome(fileOpenFault, true)
+			r.recordStat(true, resolveErr)
+			return
+		}
+		if path != "" {
 			prev := r.path
 			r.path = path
 			next, err := r.openRotated()
 			if err != nil {
 				r.path = prev
 				r.queue.file.outcome(fileOpenFault, true)
+				r.recordStat(true, err)
 				fmt.Fprintf(os.Stderr, "maillog file_reader %s open: %v\n", path, err)
 				return
 			}
@@ -323,7 +340,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 			// Track persistent disappearance so a source that vanishes
 			// mid-run (syslog->journald migration) surfaces instead of
 			// tailing a dead fd in silence.
-			r.recordStat(os.IsNotExist(err), err)
+			r.recordStat(r.resolve != nil || os.IsNotExist(err), err)
 			return
 		}
 		r.recordStat(false, nil)

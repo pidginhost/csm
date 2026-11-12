@@ -219,9 +219,7 @@ func senderProfileObserve(cfg *config.Config, user, ip string, recipients []stri
 		now = w.lastEvent
 	}
 	w.lastEvent = now
-	if ip != "" {
-		w.observeSource(now, ip, country)
-	}
+	w.observeSource(now, ip, country)
 	hourIPs := len(w.events)
 	hourCountries := w.countries
 
@@ -506,11 +504,13 @@ func (w *senderWindow) observeSource(now time.Time, ip, country string) {
 	}
 	// Store the last observation of each source, so repeated sends cannot
 	// fill the cap or displace another source's still-active evidence.
-	if len(kept) == senderMaxHourEvents {
-		copy(kept, kept[1:])
-		kept = kept[:len(kept)-1]
+	if ip != "" {
+		if len(kept) == senderMaxHourEvents {
+			copy(kept, kept[1:])
+			kept = kept[:len(kept)-1]
+		}
+		kept = append(kept, senderEvent{at: now, ip: ip})
 	}
-	kept = append(kept, senderEvent{at: now, ip: ip})
 	w.events = kept
 	if w.countries == nil {
 		w.countries = make(map[string]time.Time)

@@ -35,8 +35,8 @@ var stalwartPTR = func(ip string) string {
 
 // stalwartSessions remembers which account logged in on each connection.
 // Stalwart logs a queued message with the connection but not the account,
-// so the login on the same listener, client address and client port names
-// the sender.
+// so the login on the same listener, local port, client address and client
+// port names the sender.
 type stalwartSessions struct {
 	mu sync.Mutex
 	m  map[string]stalwartSession
@@ -52,7 +52,7 @@ func newStalwartSessions() *stalwartSessions {
 }
 
 func stalwartSessionKey(s stalwartlog.Session) string {
-	return s.Listener + "|" + s.RemoteIP.String() + "|" + strconv.Itoa(int(s.RemotePort))
+	return s.Listener + "|" + strconv.Itoa(int(s.LocalPort)) + "|" + s.RemoteIP.String() + "|" + strconv.Itoa(int(s.RemotePort))
 }
 
 func (s *stalwartSessions) size() int {
@@ -113,6 +113,9 @@ func (s *stalwartSessions) evictLocked(now time.Time) {
 // toward volume and recipients only.
 func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *config.Config) []alert.Finding {
 	st := d.stalwart
+	if st.ports.Of(s.LocalPort) == stalwartlog.ProtoUnknown {
+		return nil
+	}
 	smtp := st.ports.Of(s.LocalPort) == stalwartlog.ProtoSMTP
 	account, ok := st.sessions.account(stalwartSessionKey(s), ev.Time)
 	if !ok {

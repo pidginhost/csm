@@ -85,6 +85,42 @@ func TestStalwartQueueWithoutLoginIgnored(t *testing.T) {
 	}
 }
 
+func TestStalwartSendsKeepListenerPortsSeparate(t *testing.T) {
+	resetStalwartSendState(t)
+	stubStalwartPTR(t, "mail.example.net")
+	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
+	first := stalwartLoginAndSend(465, "203.0.113.40", "first@example.com", "first@example.com", "a@example.org")
+	second := stalwartLoginAndSend(587, "203.0.113.40", "second@example.com", "second@example.com", "b@example.org")
+	for i := range first {
+		first[i] = strings.ReplaceAll(first[i], `listenerId = "l465"`, `listenerId = "submission"`)
+		second[i] = strings.ReplaceAll(second[i], `listenerId = "l587"`, `listenerId = "submission"`)
+	}
+	feedStalwart(d, first[0], second[0])
+	got := feedStalwart(d, first[1], second[1])
+	if rate := findingsOf(got, "email_rate_warning"); len(rate) != 2 {
+		t.Fatalf("findings = %+v, want a separate rate warning for each account", got)
+	}
+	for _, account := range []string{"first@example.com", "second@example.com"} {
+		if day := senderDay(t, account); day == nil || day.Sends != 1 {
+			t.Fatalf("%s: sender day = %+v, want one send", account, day)
+		}
+	}
+}
+
+func TestStalwartSendsOnUnknownPortIgnored(t *testing.T) {
+	resetStalwartSendState(t)
+	d, _ := newStalwartAuthDaemon(t, stalwartSendConfig())
+	if got := feedStalwart(d, stalwartLoginAndSend(2525, "203.0.113.40", "user@example.com", "user@example.com", "a@example.org")...); len(got) != 0 {
+		t.Fatalf("unmapped listener produced findings: %+v", got)
+	}
+	if _, ok := senderWindows.Load("user@example.com"); ok {
+		t.Fatal("unmapped listener trained the sender profile")
+	}
+	if n := d.stalwart.sessions.size(); n != 0 {
+		t.Fatalf("unmapped listener retained %d sessions", n)
+	}
+}
+
 // Sites send through a loopback listener, and webmail sends through the HTTP
 // listener: both count toward volume and recipients only.
 func TestStalwartLocalSubmissionVolumeOnly(t *testing.T) {

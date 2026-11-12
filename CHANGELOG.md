@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Stalwart password-guessing alerts and automatic ban enforcement now cover failed logins and bans that previously went undetected.
 - Request text in ModSecurity logs can no longer change an alert's rule, site or attack confidence, so attackers cannot dodge repeat-offender firewall bans.
 - A mailbox whose password is cracked by brute force now has its logins and outgoing mail suspended under auto-response; a cracked cPanel account password holds the account's outgoing mail.
 - Mail subject credential alerts now detect credentials after quoted text and ignore matching text elsewhere in the message.
@@ -41,6 +42,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Stalwart sending alerts now keep accounts on different listener ports separate, ignore unmapped listeners, and discard expired location evidence for local and webmail sends.
+- Stalwart monitoring now warns when daily logs become unreadable, and diagnostics no longer overlook logged failed logins.
 - Deep scan findings for files that were rechecked and found clean now clear on large servers instead of staying listed indefinitely.
 - cPanel API failure alerts now cover every API and token endpoint, including encoded requests, and no longer count page requests from expired cPanel or webmail sessions.
 - API-created cPanel sessions and logins from the server itself no longer raise account hijack alerts or count toward multi-address login alerts.

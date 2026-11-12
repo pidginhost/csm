@@ -33,6 +33,29 @@ func TestSenderProfileObserveLocalSubmissionCountsVolumeOnly(t *testing.T) {
 	}
 }
 
+func TestSenderProfileLocalSendExpiresSources(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, map[string]string{"203.0.113.10": "DE", "203.0.113.11": "FR", "203.0.113.12": "BR"})
+	cfg := &config.Config{}
+	for _, ip := range []string{"203.0.113.10", "203.0.113.11", "203.0.113.12"} {
+		senderProfileObserve(cfg, "user@example.com", ip, []string{"a@example.org"}, senderTestNow)
+	}
+	now := senderTestNow.Add(senderHourWindow + senderDedupCooldown)
+	if got := senderProfileObserve(cfg, "user@example.com", "", []string{"a@example.org"}, now); len(got) != 0 {
+		t.Fatalf("local send raised a finding from expired sources: %+v", got)
+	}
+	v, ok := senderWindows.Load("user@example.com")
+	if !ok {
+		t.Fatal("missing sender profile")
+	}
+	w := v.(*senderWindow)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.events) != 0 || len(w.countries) != 0 {
+		t.Fatalf("expired sources remain: events=%v countries=%v", w.events, w.countries)
+	}
+}
+
 func TestCloudRelayObserveNeedsCloudPTR(t *testing.T) {
 	resetCloudRelayState()
 	cfg := &config.Config{}

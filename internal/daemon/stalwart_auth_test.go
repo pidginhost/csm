@@ -12,7 +12,7 @@ import (
 
 // stalwartLine builds a synthetic Stalwart event line on a listener port.
 func stalwartLine(at time.Time, event string, port int, ip, extra string) string {
-	return fmt.Sprintf(`%s INFO Synthetic event (%s) listenerId = "l%d", localPort = %d, remoteIp = %s, remotePort = 40000%s`,
+	return fmt.Sprintf(`%s INFO Synthetic event (%s) listenerId = "l%d", localPort = %d, remoteIp = %s, remotePort = 40000%s`+"\n",
 		at.UTC().Format(time.RFC3339), event, port, port, ip, extra)
 }
 

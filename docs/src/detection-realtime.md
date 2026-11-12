@@ -508,6 +508,8 @@ success wording in a failed login name does not qualify.
 
 On hosts where the `stalwart` service is the mail server and cPanel is absent, CSM reads Stalwart's daily log instead of the Postfix and Dovecot mail log. It follows the newest `stalwart.log.YYYY-MM-DD` file in `stalwart.log_dir` (default `/var/log/stalwart`), starting at the end of the current file. When Stalwart starts the next day's file, CSM reads the old file to its end and then the new one from its start. A missing directory or file raises `mail_log_source_unavailable`.
 
+The reader accepts newline-terminated text records, including quoted final values. If finding or opening the next daily log keeps failing, the watcher reports itself unavailable and retries. A readable previous day's log does not hide that failure.
+
 Each event is assigned a protocol from its listener port: 25, 465 and 587 are SMTP; 143 and 993 IMAP; 110 and 995 POP3; 4190 ManageSieve; 80, 443 and 8080 HTTP (JMAP and webmail). List other listeners in `stalwart.ports` as `PORT:PROTOCOL`. Events on an unmapped port are ignored.
 
 What CSM reads:
@@ -515,9 +517,11 @@ What CSM reads:
 - Failed and successful logins on SMTP listeners feed the SMTP brute-force tracker, and those on IMAP, POP3 and ManageSieve listeners feed the mail brute-force tracker. The same thresholds, findings, blocks and spray rules apply as on Postfix and Dovecot. Loopback, private and infrastructure addresses never count.
 - Failed logins on the HTTP listener raise `stalwart_webmail_bruteforce` at the mail brute-force threshold. Stalwart can log an address from a forwarded header there, so this finding never blocks. Stalwart's own throttling and bans still apply to it.
 - Authentication, abuse and scan bans Stalwart logs for an SMTP, IMAP, POP3 or ManageSieve listener raise `stalwart_ban`, which blocks the address for the auto-response block length. Stalwart's ban stays in place. A failed-login ban of an address a customer logged in from within the last 30 days, such as an office network with one stale password, is a High finding and is not blocked. Loiter bans, refused connections and bans on the HTTP listener or an unmapped port are ignored.
-- Authenticated sends are matched to the login on the same connection and feed the rate, sender profile and cloud-relay checks. Sends through a loopback listener, such as sites on the same server, and through the HTTP listener count toward volume and recipients only.
+- Authenticated sends are matched to the login on the same listener, local port, client address and client port, and feed the rate, sender profile and cloud-relay checks. Unmapped listeners do not contribute sends or login associations. Sends through a loopback listener, such as sites on the same server, and through the HTTP listener count toward volume and recipients only; previous address and country observations still expire from the rolling hour.
 
 Stalwart logs failed logins at debug level by default, so password guessing over SMTP, IMAP and POP3 is invisible until the `auth.failed` event is raised to info in Stalwart's logging settings. `csm doctor` reports whether the newest log holds failed logins, whether it is current, and whether its recent lines are in the layout CSM reads.
+
+The failed-login diagnostic skips oversized records and continues checking later records. Text inside an oversized record cannot count as a separate login.
 
 `stalwart_log_degraded` warns when an hour of log lines holds none in Stalwart's layout, as after an upgrade that changes it; when many authenticated SMTP sends in an hour cannot be matched to a login; and when the log stops growing for hours while Stalwart runs.
 
