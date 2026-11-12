@@ -222,6 +222,25 @@ func (fm *FileMonitor) reportUncoveredPlacementRoots(all, mounts []mountEntry) {
 	}
 }
 
+// reportUnmarkablePlacementRoots raises one Warning per start for the roots
+// whose filesystem this kernel cannot watch for placements: a kernel limit,
+// not a fault.
+func (fm *FileMonitor) reportUnmarkablePlacementRoots(all, skipped []mountEntry) {
+	var roots []string
+	for _, r := range fm.watchRoots {
+		if i := placementVisibleMount(all, r); i >= 0 && slices.Contains(skipped, all[i]) {
+			roots = append(roots, r.path)
+		}
+	}
+	if len(roots) == 0 {
+		return
+	}
+	csmlog.Warn("placement: kernel cannot watch these roots for moved or linked files", "roots", strings.Join(roots, ", "))
+	fm.sendAlert(alert.Warning, placementUnresolvedCheck,
+		fmt.Sprintf("Realtime protection cannot see files moved or linked into %d watch roots on this kernel", len(roots)),
+		fmt.Sprintf("This kernel cannot report renames and hard links on the filesystems of: %s. Files moved or linked there are checked by the deep scan.", strings.Join(roots, ", ")))
+}
+
 func deviceName(dev uint64) string {
 	return fmt.Sprintf("%d:%d", unix.Major(dev), unix.Minor(dev))
 }

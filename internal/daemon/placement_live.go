@@ -35,10 +35,17 @@ func StartPlacementMonitor(fm *FileMonitor, alertCh chan<- alert.Finding, cfg *c
 	if mon != nil {
 		return mon
 	}
-	// Both ran only under auto. A kernel with neither is expected on older
-	// hosts and is shown in status; an unexpected failure is a finding.
-	if bpfErr != nil && fidErr != nil && !placementUnsupported(bpfErr, fidErr) {
-		emitBPFUnavailableFinding(alertCh, "placement", bpf.BackendAuto, "", errors.Join(bpfErr, fidErr))
+	// A kernel without support is expected on older hosts and shows in
+	// status; an unexpected failure is a finding. Both ran only under auto.
+	switch {
+	case bpfErr != nil && fidErr != nil:
+		if !placementUnsupported(bpfErr, fidErr) {
+			emitBPFUnavailableFinding(alertCh, "placement", bpf.BackendAuto, "", errors.Join(bpfErr, fidErr))
+		}
+	case fidErr != nil:
+		if !errors.Is(fidErr, errPlacementFIDUnsupported) {
+			emitBPFUnavailableFinding(alertCh, "placement", bpf.BackendLegacy, "", fidErr)
+		}
 	}
 	// An explicit bpf choice already warned.
 	if !strings.EqualFold(strings.TrimSpace(cfg.Detection.PlacementBackend), bpf.BackendBPF) {

@@ -4,8 +4,10 @@ package daemon
 
 import (
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +39,7 @@ func TestFIDKeepsEachWatchedMountOfOneFilesystem(t *testing.T) {
 		}
 		return nil
 	}
-	if err = p.markFilesystemsWith(all, mark); err != nil {
+	if _, err = p.markFilesystemsWith(all, mark); err != nil {
 		t.Fatal(err)
 	}
 	if marks != 1 {
@@ -99,5 +101,84 @@ func TestFIDResolvesDirectoryPlacedAtWatchRoot(t *testing.T) {
 	}
 	if ev, ok, err = p.resolve(fidRecord{Mask: unix.FAN_MOVED_TO | unix.FAN_ONDIR, Name: "outside"}, fidMount{fd: fd, path: parent}, now); err != nil || ok {
 		t.Fatalf("outside directory was not filtered: %+v, %v, %v", ev, ok, err)
+	}
+}
+
+// twoRootsOneFilesystem returns a monitor watching two directories of one
+// filesystem, the first seen as a subtree bind and the second whole.
+func twoRootsOneFilesystem(t *testing.T) (*FileMonitor, []mountEntry, chan alert.Finding) {
+	t.Helper()
+	alerts := make(chan alert.Finding, 16)
+	fm := placementTestMonitor(alerts)
+	first, second := t.TempDir(), t.TempDir()
+	dev, err := statDevice(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm.watchRoots = []watchRootMark{{path: first, device: dev}, {path: second, device: dev}}
+	return fm, []mountEntry{
+		{Dev: dev, Root: "/shm", MountPoint: first},
+		{Dev: dev, Root: "/", MountPoint: second},
+	}, alerts
+}
+
+// A kernel that cannot mark one filesystem (tmpfs before file handles) loses
+// only the roots on it, and says so once.
+func TestFIDSkipsRootsOnFilesystemsWithoutHandles(t *testing.T) {
+	fm, all, alerts := twoRootsOneFilesystem(t)
+	p := newPlacementFID(fm, -1, make(map[unix.Fsid][]fidMount))
+	t.Cleanup(p.close)
+	calls := 0
+	mark := func(int, uint, uint64, int, string) error {
+		calls++
+		if calls == 1 {
+			return unix.ENODEV
+		}
+		return nil
+	}
+	skipped, err := p.markFilesystemsWith(all, mark)
+	if err != nil {
+		t.Fatalf("one unmarkable root failed the group: %v", err)
+	}
+	if len(skipped) != 1 || skipped[0] != all[0] {
+		t.Fatalf("skipped %+v, want the first mount", skipped)
+	}
+	var kept []fidMount
+	for _, mounts := range p.mounts {
+		kept = append(kept, mounts...)
+	}
+	if len(kept) != 1 || kept[0].path != all[1].MountPoint {
+		t.Fatalf("resolving through %+v, want only the marked root", kept)
+	}
+
+	p.reportCoverage(all, skipped)
+	found := unresolvedPlacementFindings(t, alerts)
+	if len(found) != 1 || found[0].Severity != alert.Warning ||
+		!strings.Contains(found[0].Details, all[0].MountPoint) || strings.Contains(found[0].Details, all[1].MountPoint) ||
+		!strings.Contains(found[0].Details, "deep scan") {
+		t.Fatalf("findings %+v, want one Warning naming only the skipped root", found)
+	}
+}
+
+func TestFIDWithNoMarkableRootLacksSupport(t *testing.T) {
+	for _, errno := range []unix.Errno{unix.ENODEV, unix.EOPNOTSUPP, unix.EXDEV} {
+		fm, all, _ := twoRootsOneFilesystem(t)
+		p := newPlacementFID(fm, -1, make(map[unix.Fsid][]fidMount))
+		_, err := p.markFilesystemsWith(all, func(int, uint, uint64, int, string) error { return errno })
+		if !errors.Is(err, errPlacementFIDUnsupported) || !errors.Is(err, errno) {
+			t.Errorf("%v on every root: %v, want missing kernel support", errno, err)
+		}
+		if len(p.mounts) != 0 {
+			t.Errorf("%v: kept %+v after skipping every root", errno, p.mounts)
+		}
+		p.close()
+	}
+	// Anything else still fails the whole group.
+	fm, all, _ := twoRootsOneFilesystem(t)
+	p := newPlacementFID(fm, -1, make(map[unix.Fsid][]fidMount))
+	t.Cleanup(p.close)
+	_, err := p.markFilesystemsWith(all, func(int, uint, uint64, int, string) error { return unix.EPERM })
+	if err == nil || errors.Is(err, errPlacementFIDUnsupported) {
+		t.Fatalf("EPERM mark: %v, want a plain failure", err)
 	}
 }

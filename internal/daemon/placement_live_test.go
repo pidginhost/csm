@@ -73,6 +73,7 @@ func TestStartPlacementMonitorSelection(t *testing.T) {
 		{"none", "none", nil, nil, "", bpf.BackendNone, "", 0, 1, ""},
 		{"legacy pins fanotify", "legacy", nil, nil, "legacy", bpf.BackendLegacy, "", 0, 0, "f"},
 		{"legacy without fanotify", "legacy", nil, noFID, "", bpf.BackendNone, "", 0, 1, "f"},
+		{"legacy with an unexpected fanotify error", "legacy", nil, unix.EPERM, "", bpf.BackendNone, "no live fallback active", alert.High, 1, "f"},
 		{"bpf strict never falls back", " BPF ", bpf.ErrUnsupported, nil, "", bpf.BackendNone, "no live fallback active", alert.High, 1, "b"},
 		{"unknown value runs auto", "potato", nil, nil, "bpf", bpf.BackendBPF, "", 0, 1, "b"},
 	}
@@ -132,9 +133,11 @@ func TestStartPlacementMonitorSelection(t *testing.T) {
 				return
 			}
 			if len(found) != 1 || found[0].Check != "bpf_unavailable" || found[0].Severity != tc.wantSev ||
-				!strings.Contains(found[0].Message, "for placement ") || !strings.Contains(found[0].Message, tc.wantFound) ||
-				!strings.Contains(found[0].Details, tc.bpfErr.Error()) {
-				t.Fatalf("findings %+v, want one bpf_unavailable %q naming the BPF error", found, tc.wantFound)
+				!strings.Contains(found[0].Message, "for placement ") || !strings.Contains(found[0].Message, tc.wantFound) {
+				t.Fatalf("findings %+v, want one bpf_unavailable %q", found, tc.wantFound)
+			}
+			if tc.bpfErr != nil && !strings.Contains(found[0].Details, tc.bpfErr.Error()) {
+				t.Errorf("finding details %q do not name the BPF error", found[0].Details)
 			}
 			if tc.fidErr != nil && !strings.Contains(found[0].Details, tc.fidErr.Error()) {
 				t.Errorf("finding details %q do not name the fanotify error", found[0].Details)

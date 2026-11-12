@@ -274,12 +274,21 @@ func startPlacementFID(_ context.Context, fm *FileMonitor) (*placementFID, error
 		p.close()
 		return nil, fmt.Errorf("read mountinfo: %w", err)
 	}
-	if err = p.markFilesystemsWith(all, unix.FanotifyMark); err != nil {
+	skipped, err := p.markFilesystemsWith(all, unix.FanotifyMark)
+	if err != nil {
 		p.close()
 		return nil, err
 	}
-	fm.reportUncoveredPlacementRoots(all, p.markedMounts(all))
+	p.reportCoverage(all, skipped)
 	return p, nil
+}
+
+// reportCoverage names the roots the running group cannot see: those on a
+// filesystem this kernel cannot mark (one Warning), and any root left out of
+// the marked mounts (a High each).
+func (p *placementFID) reportCoverage(all, skipped []mountEntry) {
+	p.fm.reportUnmarkablePlacementRoots(all, skipped)
+	p.fm.reportUncoveredPlacementRoots(all, append(p.markedMounts(all), skipped...))
 }
 
 // markedMounts returns the mounts the group resolves handles through. Today
@@ -306,13 +315,19 @@ func fidInitError(err error) error {
 	return fmt.Errorf("fanotify_init with directory handles: %w", err)
 }
 
-func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) error {
+// markFilesystemsWith marks the filesystem under every watch root. A root on
+// a filesystem this kernel cannot report handles for (tmpfs before 6.7 gives
+// ENODEV or EOPNOTSUPP; some btrfs subvolumes give EXDEV) is skipped and
+// returned; any other failure, or skipping every root, fails the group.
+func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) ([]mountEntry, error) {
+	var skipped []mountEntry
+	var skipErr error
 	seen := make(map[mountEntry]bool)
 	devices := make(map[unix.Fsid]uint64)
 	for _, r := range p.fm.watchRoots {
 		i := placementVisibleMount(all, r)
 		if i < 0 {
-			return fmt.Errorf("watch root %s has no visible mount on its recorded device", r.path)
+			return nil, fmt.Errorf("watch root %s has no visible mount on its recorded device", r.path)
 		}
 		m := all[i]
 		if seen[m] {
@@ -324,35 +339,45 @@ func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) erro
 		// open_by_handle_at reject an O_PATH descriptor with EBADF.
 		dirfd, err := unix.Open(anchor, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 		if err != nil {
-			return fmt.Errorf("open %s: %w", anchor, err)
+			return nil, fmt.Errorf("open %s: %w", anchor, err)
 		}
 		var st unix.Stat_t
 		if err = unix.Fstat(dirfd, &st); err != nil || uint64(st.Dev) != r.device {
 			_ = unix.Close(dirfd)
-			return fmt.Errorf("watch mount %s changed or could not be inspected: %v", anchor, err)
+			return nil, fmt.Errorf("watch mount %s changed or could not be inspected: %v", anchor, err)
 		}
 		var sfs unix.Statfs_t
 		if err = unix.Fstatfs(dirfd, &sfs); err != nil {
 			_ = unix.Close(dirfd)
-			return fmt.Errorf("statfs %s: %w", r.path, err)
+			return nil, fmt.Errorf("statfs %s: %w", r.path, err)
 		}
 		device, marked := devices[sfs.Fsid]
 		if marked && device != r.device {
 			_ = unix.Close(dirfd)
-			return fmt.Errorf("watch root %s shares a filesystem id with another device", r.path)
+			return nil, fmt.Errorf("watch root %s shares a filesystem id with another device", r.path)
 		}
-		p.mounts[sfs.Fsid] = append(p.mounts[sfs.Fsid], fidMount{fd: dirfd, path: anchor})
 		if !marked {
-			if err = mark(p.fd, FAN_MARK_ADD|FAN_MARK_FILESYSTEM, unix.FAN_MOVED_TO|unix.FAN_CREATE|unix.FAN_ONDIR, dirfd, ""); err != nil {
-				return fmt.Errorf("mark %s for placements: %w", r.path, err)
+			err = mark(p.fd, FAN_MARK_ADD|FAN_MARK_FILESYSTEM, unix.FAN_MOVED_TO|unix.FAN_CREATE|unix.FAN_ONDIR, dirfd, "")
+			if err != nil {
+				_ = unix.Close(dirfd)
+				err = fmt.Errorf("mark %s for placements: %w", r.path, err)
+				if !errors.Is(err, unix.ENODEV) && !errors.Is(err, unix.EOPNOTSUPP) && !errors.Is(err, unix.EXDEV) {
+					return nil, err
+				}
+				skipped, skipErr = append(skipped, m), err
+				continue
 			}
 			devices[sfs.Fsid] = r.device
 		}
+		p.mounts[sfs.Fsid] = append(p.mounts[sfs.Fsid], fidMount{fd: dirfd, path: anchor})
 	}
 	if len(p.mounts) == 0 {
-		return errors.New("no watch root to mark")
+		if skipErr != nil {
+			return nil, fmt.Errorf("%w: no watched filesystem accepts directory-entry marks: %w", errPlacementFIDUnsupported, skipErr)
+		}
+		return nil, errors.New("no watch root to mark")
 	}
-	return nil
+	return skipped, nil
 }
 
 func (p *placementFID) close() {
