@@ -70,6 +70,11 @@ const (
 	stalwartUser     = "stalwart"
 )
 
+// ErrNotReloaded means Stalwart stored the settings Apply wrote but did not
+// reload them. A later Inspect reads them as done, so the caller must tell
+// the operator to restart Stalwart.
+var ErrNotReloaded = errors.New("settings stored but not reloaded")
+
 // Inspect reads Stalwart's settings and plans each step. It writes nothing.
 func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 	levels, err := api.TracingLevels(ctx)
@@ -123,7 +128,7 @@ func (p *Plan) Apply(ctx context.Context, api API) ([]string, error) {
 	}
 	warnings, err := api.ReloadSettings(ctx)
 	if err != nil {
-		return nil, errors.Join(failed, fmt.Errorf("settings reload: %w", err))
+		return nil, errors.Join(failed, fmt.Errorf("%w: %w", ErrNotReloaded, err))
 	}
 	p.pendingReload = false
 	return warnings, failed
@@ -211,12 +216,12 @@ func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Liste
 		s.State, s.Detail = Done, "client addresses come from X-Forwarded-For (1 hop) behind CSM's port lock"
 	default:
 		s.State = Change
-		s.Detail = "client addresses are the web server's; take them from X-Forwarded-For (1 hop)"
+		s.Detail = "client addresses are the web server's; take them from X-Forwarded-For (1 hop). " + webServerHeader
 		if forwarded {
 			// More hops, or a header the web server does not set, lets the
 			// client choose the address Stalwart reads.
-			s.Detail = fmt.Sprintf("client addresses come from %s with %d hops, which a client can forge; take them from X-Forwarded-For (1 hop)",
-				h.ClientIPSource, h.ForwardedHops)
+			s.Detail = fmt.Sprintf("client addresses come from %s with %d hops, which a client can forge; take them from X-Forwarded-For (1 hop). %s",
+				h.ClientIPSource, h.ForwardedHops, webServerHeader)
 		}
 		s.apply = func(ctx context.Context, api API) error {
 			return api.SetHTTPSettings(ctx, safeForwarded)
@@ -224,6 +229,10 @@ func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Liste
 	}
 	return s
 }
+
+// webServerHeader is the condition setup cannot check: with one hop Stalwart
+// reads the last X-Forwarded-For entry, which must be the web server's own.
+const webServerHeader = "The web server must set the header itself, as nginx does with proxy_set_header X-Forwarded-For $remote_addr or $proxy_add_x_forwarded_for; without it a client chooses the address"
 
 // safeForwarded takes the address the web server, the only hop, appends.
 var safeForwarded = stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1}

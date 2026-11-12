@@ -26,10 +26,11 @@ const setupTestPassword = "s3cret-test"
 // setupFakeAPI is a Stalwart with nothing prepared and one loopback HTTP
 // listener on 8080.
 type setupFakeAPI struct {
-	http     stalwartapi.HTTPSettings
-	readErr  error
-	writeErr error
-	writes   []string
+	http      stalwartapi.HTTPSettings
+	readErr   error
+	writeErr  error
+	reloadErr error
+	writes    []string
 }
 
 func (f *setupFakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, error) {
@@ -62,7 +63,7 @@ func (f *setupFakeAPI) Listeners(context.Context) ([]stalwartapi.Listener, error
 func (f *setupFakeAPI) ProxyTrustedNetworks(context.Context) ([]string, error) { return nil, f.readErr }
 func (f *setupFakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	f.writes = append(f.writes, "reload")
-	return []string{"store: reloaded with a note"}, nil
+	return []string{"store: reloaded with a note"}, f.reloadErr
 }
 
 type setupHarness struct {
@@ -94,12 +95,13 @@ func newSetupHarness(t *testing.T) *setupHarness {
 	cfg.Stalwart.APIURL = "http://127.0.0.1:8080"
 	status := setupStatusJSON(t, health.AutomationStatus{FirewallManaged: true, FirewallLocalPortLocks: []int{8080}})
 	h.deps = stalwartSetupDeps{
-		loadConfig: func() (*config.Config, error) { return cfg, nil },
-		readStatus: func() ([]byte, error) { return status, nil },
-		detectMTA:  func() platform.MTAKind { return platform.MTAStalwart },
-		webUsers:   func() []string { return []string{"www-data"} },
-		getenv:     func(k string) string { return h.env[k] },
-		readFile:   os.ReadFile,
+		loadConfig:    func() (*config.Config, error) { return cfg, nil },
+		readStatus:    func() ([]byte, error) { return status, nil },
+		detectMTA:     func() platform.MTAKind { return platform.MTAStalwart },
+		webUsers:      func() []string { return []string{"www-data"} },
+		getenv:        func(k string) string { return h.env[k] },
+		readFile:      os.ReadFile,
+		checkListener: func(string) error { return nil },
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			h.gotURL, h.gotUser, h.gotPass = url, user, password
 			return h.api
@@ -302,5 +304,63 @@ func TestStalwartSetupRemoteCannotUseLocalLocks(t *testing.T) {
 	code, out := h.run("--url", "https://mail.example.org", "--dry-run")
 	if code != 0 || !strings.Contains(out, "webmail client addresses: skipped:") {
 		t.Fatal("remote listener trusted local firewall")
+	}
+}
+
+func TestStalwartSetupReloadFailureSaysRestart(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.reloadErr = errors.New("timeout")
+	code, out := h.run()
+	if code != 1 || !strings.Contains(out, "restart Stalwart") {
+		t.Fatalf("code %d, out %q; want 1 telling the operator to restart Stalwart", code, out)
+	}
+}
+
+func TestStalwartSetupRefusesForeignListener(t *testing.T) {
+	h := newSetupHarness(t)
+	h.deps.checkListener = func(string) error { return errors.New("port 8080 is held by uid 1001") }
+	code, out := h.run()
+	if code != 2 || h.gotUser != "" || !strings.Contains(out, "uid 1001") {
+		t.Fatalf("code %d, out %q, api contacted %v; want 2 before any login is sent", code, out, h.gotUser != "")
+	}
+}
+
+const procNetTCPFixture = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   997        0 1 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:1F90 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1001        0 2 1 0000000000000000 20 4 30 10 -1
+   2: 00000000:0019 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3 1 0000000000000000 100 0 0 10 0
+`
+
+func TestListenOwners(t *testing.T) {
+	got := listenOwners(strings.NewReader(procNetTCPFixture), 8080)
+	if !reflect.DeepEqual(got, []uint32{997}) {
+		t.Fatalf("owners of 8080 = %v, want only the listening socket's uid 997", got)
+	}
+	if got := listenOwners(strings.NewReader(procNetTCPFixture), 25); !reflect.DeepEqual(got, []uint32{0}) {
+		t.Fatalf("owners of 25 = %v", got)
+	}
+}
+
+func TestCheckStalwartListener(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/tcp", []byte(procNetTCPFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/tcp6", []byte("  sl header\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stalwartUID := func(names ...string) []uint32 { return []uint32{997} }
+	if err := checkStalwartListener(dir, "http://127.0.0.1:8080", stalwartUID); err != nil {
+		t.Fatalf("Stalwart's own listener refused: %v", err)
+	}
+	other := func(names ...string) []uint32 { return []uint32{996} }
+	if err := checkStalwartListener(dir, "http://127.0.0.1:8080", other); err == nil || !strings.Contains(err.Error(), "997") {
+		t.Fatalf("foreign listener: err = %v, want a refusal naming uid 997", err)
+	}
+	if err := checkStalwartListener(dir, "http://127.0.0.1:9090", stalwartUID); err == nil {
+		t.Fatal("a port nothing listens on was accepted")
+	}
+	if err := checkStalwartListener(dir, "https://mail.example.org", other); err != nil {
+		t.Fatalf("remote https address checked against local sockets: %v", err)
 	}
 }

@@ -127,6 +127,7 @@ func TestStalwartDoctorSettingsWithoutLogin(t *testing.T) {
 	called := false
 	checks := stalwartSettingsDoctorChecks(context.Background(), func(string) string { return "" },
 		func(string, string, string) stalwartsetup.API { called = true; return nil },
+		func(string) error { return nil },
 		config.StalwartConfig{APIURL: "http://127.0.0.1:8080"}, stalwartsetup.Inputs{})
 	if len(checks) != 1 || checks[0].Name != "stalwart settings" || checks[0].Status != "ok" {
 		t.Fatalf("checks = %+v, want one ok stalwart settings check", checks)
@@ -149,7 +150,7 @@ func TestStalwartDoctorSettingsFromPlan(t *testing.T) {
 					t.Fatalf("login = %q", user)
 				}
 				return api
-			}, sc, in)
+			}, func(string) error { return nil }, sc, in)
 	}
 	locked := stalwartsetup.Inputs{BlockExpiry: 24 * time.Hour, LockManaged: true, LockedPorts: []int{8080}}
 
@@ -215,10 +216,22 @@ func TestStalwartDoctorRedactsPlan(t *testing.T) {
 	h := newSetupHarness(t)
 	h.api.http.ClientIPSource = setupTestPassword
 	cfg, _ := h.deps.loadConfig()
-	got := stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, h.deps.newAPI, cfg.Stalwart, stalwartsetup.Inputs{})
+	got := stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, h.deps.newAPI, h.deps.checkListener, cfg.Stalwart, stalwartsetup.Inputs{})
 	for _, c := range got {
 		if strings.Contains(c.Message+c.Fix+c.Name, setupTestPassword) {
 			t.Fatal("password exposed by doctor")
 		}
+	}
+}
+
+func TestStalwartDoctorSettingsRefusesForeignListener(t *testing.T) {
+	env := map[string]string{"STALWART_USER": "admin", "STALWART_PASSWORD": setupTestPassword}
+	called := false
+	checks := stalwartSettingsDoctorChecks(context.Background(), func(k string) string { return env[k] },
+		func(string, string, string) stalwartsetup.API { called = true; return nil },
+		func(string) error { return errors.New("port 8080 is held by uid 1001") },
+		config.StalwartConfig{APIURL: "http://127.0.0.1:8080"}, stalwartsetup.Inputs{})
+	if called || len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, "uid 1001") {
+		t.Fatalf("checks = %+v, api contacted %v; want one warn and no login sent", checks, called)
 	}
 }

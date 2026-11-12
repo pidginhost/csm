@@ -26,13 +26,12 @@ func lockMatchForTest(port uint16) []expr.Any {
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
-		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
-		&expr.Bitwise{
-			SourceRegister: 1, DestRegister: 1, Len: 4,
-			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-			Xor:  binaryutil.NativeEndian.PutUint32(0),
-		},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+		// A connection-opening segment: SYN set, ACK clear. Matching the TCP
+		// flags rather than conntrack keeps the lock working where loopback
+		// traffic is not tracked.
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}},
 	}
 }
 

@@ -22,6 +22,7 @@ type fakeAPI struct {
 	readErr   error
 	writeErr  error
 	failOn    string
+	reloadErr error
 	calls     []string
 }
 
@@ -63,7 +64,10 @@ func (f *fakeAPI) ProxyTrustedNetworks(context.Context) ([]string, error) {
 	return f.proxy, f.read("ProxyTrustedNetworks")
 }
 func (f *fakeAPI) ReloadSettings(context.Context) ([]string, error) {
-	return []string{"w: reloaded"}, f.write("ReloadSettings")
+	if err := f.write("ReloadSettings"); err != nil {
+		return nil, err
+	}
+	return []string{"w: reloaded"}, f.reloadErr
 }
 
 func listener(name, proto string, binds ...string) stalwartapi.Listener {
@@ -376,5 +380,24 @@ func TestPlanOnlyUnknownHTTPBindIsNotDone(t *testing.T) {
 	p := inspect(t, api, fieldInputs())
 	if p.Steps[1].State != Skipped {
 		t.Fatal("unknown HTTP binding reported done")
+	}
+}
+
+// Trusting one hop is only sound when the web server sets the header
+// itself; the step says so.
+func TestPlanForwardedStepNamesWebServerHeader(t *testing.T) {
+	s := inspect(t, freshAPI(), fieldInputs()).Steps[1]
+	if s.State != Change || !strings.Contains(s.Detail, "proxy_set_header X-Forwarded-For") {
+		t.Fatalf("step 2 = %+v, want the web server requirement", s)
+	}
+}
+
+func TestPlanReloadFailureIsMarked(t *testing.T) {
+	api := freshAPI()
+	p := inspect(t, api, fieldInputs())
+	api.reloadErr = errors.New("timeout")
+	_, err := p.Apply(context.Background(), api)
+	if !errors.Is(err, ErrNotReloaded) {
+		t.Fatalf("err = %v, want ErrNotReloaded", err)
 	}
 }

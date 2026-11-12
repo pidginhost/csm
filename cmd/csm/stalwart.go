@@ -30,17 +30,21 @@ type stalwartSetupDeps struct {
 	webUsers   func() []string
 	getenv     func(string) string
 	readFile   func(string) ([]byte, error)
-	newAPI     func(url, user, password string) stalwartsetup.API
+	// checkListener refuses an API address another local user may be
+	// listening on.
+	checkListener func(url string) error
+	newAPI        func(url, user, password string) stalwartsetup.API
 }
 
 func defaultStalwartSetupDeps() stalwartSetupDeps {
 	return stalwartSetupDeps{
-		loadConfig: tryLoadConfigLite,
-		readStatus: func() ([]byte, error) { return sendControl(control.CmdStatus, nil) },
-		detectMTA:  platform.DetectMTA,
-		webUsers:   func() []string { return platform.Detect().WebServerUsers() },
-		getenv:     os.Getenv,
-		readFile:   os.ReadFile,
+		loadConfig:    tryLoadConfigLite,
+		readStatus:    func() ([]byte, error) { return sendControl(control.CmdStatus, nil) },
+		detectMTA:     platform.DetectMTA,
+		webUsers:      func() []string { return platform.Detect().WebServerUsers() },
+		getenv:        os.Getenv,
+		readFile:      os.ReadFile,
+		checkListener: defaultCheckStalwartListener,
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			return stalwartapi.New(url, user, password)
 		},
@@ -119,6 +123,10 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 		fmt.Fprintln(out, addressErr)
 		return 2
 	}
+	if listenerErr := deps.checkListener(url); listenerErr != nil {
+		fmt.Fprintf(out, "Not sending the admin login to %s: %v\n", url, listenerErr)
+		return 2
+	}
 	in := stalwartSetupInputs(cfg, deps)
 	if !stalwartapi.LocalURL(url) {
 		in.LockManaged = false
@@ -146,7 +154,12 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	warnings, err := plan.Apply(ctx, api)
 	if err != nil {
 		fmt.Fprintf(out, "Setup stopped at %s\n", redact(err.Error()))
-		fmt.Fprintln(out, "Some settings may have been stored. Resolve the error and reload settings in Stalwart before running setup again.")
+		if errors.Is(err, stalwartsetup.ErrNotReloaded) {
+			// A rerun reads the stored settings as done and sends no reload.
+			fmt.Fprintln(out, "Stalwart stored the settings but is not using them yet; restart Stalwart to apply them.")
+		} else {
+			fmt.Fprintln(out, "Some settings may have been stored. Resolve the error and reload settings in Stalwart before running setup again.")
+		}
 		return 1
 	}
 	printStalwartSteps(out, plan, true)

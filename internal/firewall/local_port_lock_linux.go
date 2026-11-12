@@ -79,12 +79,10 @@ func localPortLockMatch(port int) []expr.Any {
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
-		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
-		&expr.Bitwise{
-			SourceRegister: 1, DestRegister: 1, Len: 4,
-			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-			Xor:  binaryutil.NativeEndian.PutUint32(0),
-		},
-		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+		// SYN set and ACK clear opens a connection. The TCP flags, unlike
+		// conntrack state, still match where loopback traffic is untracked.
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}},
 	}
 }

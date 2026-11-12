@@ -194,7 +194,7 @@ Prepares a Stalwart mail server for CSM through its admin API. See [Preparing St
 
 | Command | Description |
 |---------|-------------|
-| `csm stalwart setup [--dry-run] [--password-file PATH] [--url URL]` | Make Stalwart log failed logins, end its bans with CSM's blocks, and take webmail client addresses from the web server behind CSM's port lock. Prints each step as `name: state: detail`. The admin login comes from `STALWART_USER` and `STALWART_PASSWORD`, or the first line of `--password-file`; it is never printed. `--url` overrides `stalwart.api_url`. Exits 1 when a setting is unsafe or a change failed, and 2 when the host is not a Stalwart host or the login is missing or refused. |
+| `csm stalwart setup [--dry-run] [--password-file PATH] [--url URL]` | Make Stalwart log failed logins, end its bans with CSM's blocks, and take webmail client addresses from the web server behind CSM's port lock. Prints each step as `name: state: detail`. The admin login comes from `STALWART_USER` and `STALWART_PASSWORD`, or the first line of `--password-file`; it is never printed. `--url` overrides `stalwart.api_url`. Before sending the login to an address on this host it checks that root or Stalwart's service user holds that port. Exits 1 when a setting is unsafe, Stalwart's settings cannot be read, or a change failed. Exits 2 on a usage or config error, an API address that is refused, a missing or refused login, a port held by another user, or a host that is not a Stalwart host. |
 
 ## Firewall
 

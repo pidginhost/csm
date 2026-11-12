@@ -52,7 +52,7 @@ func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	newAPI := func(url, user, password string) stalwartsetup.API { return stalwartapi.New(url, user, password) }
-	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, cfg.Stalwart, in)...)
+	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, defaultCheckStalwartListener, cfg.Stalwart, in)...)
 }
 
 // stalwartLogDoctorCheck reports, on a Stalwart host, whether CSM finds a
@@ -197,7 +197,7 @@ func tailLines(path string, n int, maxBytes int64) ([]string, error) {
 
 // stalwartSettingsDoctorChecks reports each setup step read-only. It needs
 // an admin login, which only the environment supplies.
-func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartsetup.API, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
+func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartsetup.API, checkListener func(url string) error, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
 	user, password := getenv("STALWART_USER"), getenv("STALWART_PASSWORD")
 	if user == "" || password == "" {
 		return []DoctorCheck{{Name: "stalwart settings", Status: "ok",
@@ -210,6 +210,11 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 			result[i].Fix = stalwartapi.Redact(result[i].Fix, user, password)
 		}
 	}()
+	if err := checkListener(sc.APIURL); err != nil {
+		return []DoctorCheck{{Name: "stalwart settings", Status: "warn",
+			Message: "Not checked; the admin login is not sent to " + sc.APIURL + ": " + err.Error(),
+			Fix:     "start Stalwart, or find what else listens on its admin port"}}
+	}
 	if !stalwartapi.LocalURL(sc.APIURL) {
 		in.LockManaged = false
 		in.LockedPorts = nil
