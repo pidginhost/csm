@@ -121,6 +121,9 @@ const (
 	MTAUnknown MTAKind = ""
 	MTAExim    MTAKind = "exim"
 	MTAPostfix MTAKind = "postfix"
+	// MTAStalwart is Stalwart mail server, which writes its own log and is
+	// detected only by its running service.
+	MTAStalwart MTAKind = "stalwart"
 )
 
 var (
@@ -146,6 +149,9 @@ func DetectMTA() MTAKind {
 	if postfixActive {
 		return MTAPostfix
 	}
+	if mtaServiceActive("stalwart") || mtaServiceActive("stalwart-mail") {
+		return MTAStalwart
+	}
 
 	eximInstalled := binaryInstalled([]string{"exim", "exim4"}, []string{
 		"/usr/sbin/exim",
@@ -164,6 +170,9 @@ func DetectMTA() MTAKind {
 	}
 	return MTAPostfix
 }
+
+// ServiceActive reports whether the systemd unit is active.
+func ServiceActive(unit string) bool { return mtaServiceActive(unit) }
 
 func pathExists(path string) bool {
 	_, err := mtaStat(path)

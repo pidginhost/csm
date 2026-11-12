@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/stalwartlog"
 )
 
 // WebUIToken is one entry in WebUI.Tokens. Scope must be "admin", "read" or
@@ -170,6 +171,15 @@ type MailLogsConfig struct {
 	Source string   `yaml:"source"`          // auto | file | journal
 	File   string   `yaml:"file,omitempty"`  // override platform default
 	Units  []string `yaml:"units,omitempty"` // for journal source
+}
+
+// StalwartConfig locates the Stalwart mail server log CSM reads on hosts
+// where Stalwart is the mail server. Ports maps listeners on non-standard
+// ports, as "PORT:PROTOCOL" with protocol smtp, imap, pop3, sieve or http.
+type StalwartConfig struct {
+	LogDir    string   `yaml:"log_dir"`
+	LogPrefix string   `yaml:"log_prefix"`
+	Ports     []string `yaml:"ports,omitempty"`
 }
 
 type Config struct {
@@ -1303,6 +1313,10 @@ type Config struct {
 	// the daemon to re-attach its reader, so the field is tagged restart.
 	MailLogs MailLogsConfig `yaml:"mail_logs,omitempty" hotreload:"restart"`
 
+	// Stalwart locates the Stalwart log on hosts where Stalwart is the mail
+	// server. The reader attaches at startup, so changes need a restart.
+	Stalwart StalwartConfig `yaml:"stalwart,omitempty" hotreload:"restart"`
+
 	// Updates controls the upstream release-availability poll surfaced
 	// in the Web UI top banner. The daemon never downloads or applies
 	// updates -- it only tells the operator that a newer version
@@ -2217,6 +2231,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		// Journal matches are exact, so other instances must be listed.
 		cfg.MailLogs.Units = []string{"postfix", "postfix@-", "dovecot"}
 	}
+	if cfg.Stalwart.LogDir == "" {
+		cfg.Stalwart.LogDir = "/var/log/stalwart"
+	}
+	if cfg.Stalwart.LogPrefix == "" {
+		cfg.Stalwart.LogPrefix = "stalwart.log"
+	}
 
 	if cfg.Updates.Interval == "" {
 		cfg.Updates.Interval = "24h"
@@ -2375,6 +2395,9 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, err
 	}
 	if err := validateMailLogs(cfg); err != nil {
+		return nil, err
+	}
+	if _, err := validateStalwartField(cfg); err != nil {
 		return nil, err
 	}
 	if err := validateMailBruteAccountKey(cfg); err != nil {
@@ -3008,6 +3031,16 @@ func validateMailLogsField(cfg *Config) (string, error) {
 	for i, unit := range cfg.MailLogs.Units {
 		if strings.TrimSpace(unit) == "" {
 			return "mail_logs.units", fmt.Errorf("mail_logs.units[%d]: empty unit", i)
+		}
+	}
+	return "", nil
+}
+
+func validateStalwartField(cfg *Config) (string, error) {
+	for i, entry := range cfg.Stalwart.Ports {
+		if _, err := stalwartlog.ParsePorts([]string{entry}); err != nil {
+			field := fmt.Sprintf("stalwart.ports[%d]", i)
+			return field, fmt.Errorf("%s: %w", field, err)
 		}
 	}
 	return "", nil

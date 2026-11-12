@@ -351,6 +351,13 @@ mail_logs:
   file: ""                              # optional path override for file source
   units: ["postfix", "postfix@-", "dovecot"]  # journal units for source=journal or auto fallback; postfix@- is the Debian/Ubuntu instance
 
+# --- Stalwart ---
+# Read only on hosts where the stalwart service is the mail server.
+stalwart:
+  log_dir: /var/log/stalwart            # where Stalwart writes stalwart.log.YYYY-MM-DD
+  log_prefix: stalwart.log              # file name before the date suffix
+  ports: []                             # non-standard listeners as PORT:PROTOCOL (smtp, imap, pop3, sieve, http), e.g. ["10465:smtp"]
+
 # --- State ---
 state_path: "/var/lib/csm/state"        # bbolt DB and state files
 

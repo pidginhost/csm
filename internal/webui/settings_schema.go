@@ -222,6 +222,19 @@ var settingsSections = []SettingsSection{
 		},
 	},
 	{
+		ID:       "stalwart",
+		Title:    "Stalwart mail server",
+		YAMLPath: "stalwart",
+		Icon:     "mail",
+		Group:    SectionGroupDetection,
+		Restart:  true,
+		Fields: []SettingsField{
+			{YAMLPath: "log_dir", Type: "string", Label: "Log directory", Placeholder: "/var/log/stalwart", Help: "Where Stalwart writes its daily log files.", FileOnly: true},
+			{YAMLPath: "log_prefix", Type: "string", Label: "Log file prefix", Placeholder: "stalwart.log", Help: "Name of the daily log files before the date suffix."},
+			{YAMLPath: "ports", Type: "[]string", Label: "Listener ports", Help: "Listener ports CSM cannot map by default, as PORT:PROTOCOL with protocol smtp, imap, pop3, sieve or http. One per line (e.g. 10465:smtp)."},
+		},
+	},
+	{
 		ID:       "suppressions",
 		Title:    "Suppressions",
 		YAMLPath: "suppressions",

@@ -126,3 +126,33 @@ func TestDetectMTAReportsUnknownWhenNoMTAInstalled(t *testing.T) {
 		t.Errorf("DetectMTA() = %q, want %q", got, MTAUnknown)
 	}
 }
+
+func TestDetectMTAStalwart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		active  map[string]bool
+		present map[string]bool
+		want    MTAKind
+	}{
+		{"stalwart", map[string]bool{"stalwart": true}, nil, MTAStalwart},
+		{"stalwart-mail", map[string]bool{"stalwart-mail": true}, nil, MTAStalwart},
+		{"exim wins", map[string]bool{"exim": true, "stalwart": true}, nil, MTAExim},
+		{"postfix wins", map[string]bool{"postfix": true, "stalwart": true}, nil, MTAPostfix},
+		{"cpanel wins", map[string]bool{"stalwart": true}, map[string]bool{"/usr/local/cpanel/version": true}, MTAExim},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withMTAProbes(t, nil, tc.present)
+			withActiveMTAService(t, tc.active)
+			if got := DetectMTA(); got != tc.want {
+				t.Errorf("DetectMTA() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServiceActiveUsesProbe(t *testing.T) {
+	withActiveMTAService(t, map[string]bool{"stalwart": true})
+	if !ServiceActive("stalwart") || ServiceActive("dovecot") {
+		t.Fatal("ServiceActive must report the probe's answer")
+	}
+}

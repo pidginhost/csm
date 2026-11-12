@@ -274,6 +274,7 @@ func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
 		"sentry",
 		"debug",
 		"mail_logs",
+		"stalwart",
 		"updates",
 		"incidents",
 	}

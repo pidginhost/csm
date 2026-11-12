@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -667,6 +668,9 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	if want := []string{"postfix", "postfix@-", "dovecot"}; !reflect.DeepEqual(cfg.MailLogs.Units, want) {
 		t.Errorf("mail_logs.units = %v, want %v", cfg.MailLogs.Units, want)
 	}
+	if cfg.Stalwart.LogDir != "/var/log/stalwart" || cfg.Stalwart.LogPrefix != "stalwart.log" || len(cfg.Stalwart.Ports) != 0 {
+		t.Errorf("stalwart = %+v, want the built-in defaults", cfg.Stalwart)
+	}
 
 	direct := cfg.Detection.DirectSMTPEgress
 	if cfg.Detection.VulnerablePluginScanning == nil || !*cfg.Detection.VulnerablePluginScanning {
@@ -1238,6 +1242,30 @@ mail_logs:
 `))
 	if err == nil {
 		t.Fatal("expected error for empty journal unit")
+	}
+}
+
+func TestStalwartDefaults(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Stalwart.LogDir != "/var/log/stalwart" || cfg.Stalwart.LogPrefix != "stalwart.log" {
+		t.Fatalf("stalwart defaults = %+v", cfg.Stalwart)
+	}
+}
+
+func TestValidateStalwartPorts(t *testing.T) {
+	_, err := LoadBytes([]byte("stalwart:\n  ports: [\"10465:smtp\", \"25:ftp\"]\n"))
+	if err == nil || !strings.Contains(err.Error(), "stalwart.ports[1]") {
+		t.Fatalf("bad port mapping: err = %v, want one naming stalwart.ports[1]", err)
+	}
+	cfg, err := LoadBytes([]byte("stalwart:\n  ports: [\"10465:smtp\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.Stalwart.Ports, []string{"10465:smtp"}) {
+		t.Fatalf("ports = %v", cfg.Stalwart.Ports)
 	}
 }
 
