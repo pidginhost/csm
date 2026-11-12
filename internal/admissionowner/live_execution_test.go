@@ -13,7 +13,7 @@ import (
 )
 
 // This package's tests exercise live execution; production keeps it off
-// until plan 1.4c-2b. A test that needs the production value says so with
+// until the admission owner is cut over. A test that needs the production value says so with
 // withLiveExecution.
 func init() { liveExecution = true }
 
@@ -26,10 +26,10 @@ func withLiveExecution(t *testing.T, on bool) {
 	t.Cleanup(func() { liveExecution = previous })
 }
 
-// Ruling C2: until live execution is turned on, an owner with an engine
+// Until live execution is turned on, an owner with an engine
 // previews its block picks under a live policy as an owner without one
 // does. Nothing reaches the engine but one read of the set a turn, which
-// budgets the previews (ruling T1), nothing reaches the panel, status says
+// budgets the previews, nothing reaches the panel, status says
 // it does not execute and its callback stage does not run.
 func TestOwnerPreviewsBlockPicksUnderALivePolicy(t *testing.T) {
 	withLiveExecution(t, false)
@@ -234,7 +234,7 @@ func TestOwnerExecutesOnlyUnderALivePolicy(t *testing.T) {
 	}
 }
 
-// Ruling C2: no configuration and no production code turns live execution
+// No configuration and no production code turns live execution
 // on. Only this package's tests set it.
 func TestOnlyTestsTurnOnLiveExecution(t *testing.T) {
 	declared := 0

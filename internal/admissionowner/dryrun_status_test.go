@@ -62,7 +62,7 @@ func TestOwnerStatusDoesNotExposeCachedForecast(t *testing.T) {
 	}
 }
 
-// Spec 3.8: an executable owner in dry run shows its session, the model's
+// An executable owner in dry run shows its session, the model's
 // fixed coverage, real against predicted temporary occupancy with the
 // modelled partitions of the automatic slots, the modelled ceiling, every
 // prediction counter including zeros, and its process counters. A
@@ -139,7 +139,7 @@ func TestOwnerDryRunStatusShowsModelLimits(t *testing.T) {
 	}
 }
 
-// Spec 3.8: each cause that stops a forecast is a fixed error code with
+// Each cause that stops a forecast is a fixed error code with
 // its time. A successful turn clears the code and keeps the time for
 // diagnosis; a new session clears both.
 func TestOwnerDryRunStatusNamesForecastErrors(t *testing.T) {
@@ -249,7 +249,7 @@ func TestOwnerDryRunStatusNamesASessionIDFailure(t *testing.T) {
 	}
 }
 
-// Spec 3.8, 6.4: leaving dry run shows an inactive forecast: no occupancy,
+// Leaving dry run shows an inactive forecast: no occupancy,
 // ceiling or counts, the last session kept for correlation, and process
 // counters that a mode flip never resets. Old examples are never shown as
 // occupancy. The model failure's own reset names the next session.
@@ -296,7 +296,7 @@ func TestOwnerDryRunStatusAfterLeavingDryRun(t *testing.T) {
 	}
 }
 
-// Spec 3.6, 3.8: a restart makes the comparison incomplete, since the
+// A restart makes the comparison incomplete, since the
 // last process's counts and examples may be lost; a first start does not.
 func TestOwnerDryRunStatusAfterARestart(t *testing.T) {
 	withTestRegistry(t)

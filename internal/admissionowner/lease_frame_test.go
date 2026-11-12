@@ -13,7 +13,7 @@ import (
 // After the wall clock is set back the engine's lease clock stays ahead
 // of it. A new block's expiry is set on the engine's clock, so the kernel
 // holds it for its whole lifetime rather than the lifetime less the step,
-// and a short block is not refused as already expired (spec 5.4, 5.5). A
+// and a short block is not refused as already expired. A
 // retry keeps the first expiry.
 func TestOwnerSetsExpiriesOnTheEngineLease(t *testing.T) {
 	p := withTestRegistry(t)
@@ -115,7 +115,7 @@ func TestOwnerLeaseFramePreviewUsesAdmissionTime(t *testing.T) {
 
 // After a step back the engine's lease clock leads admission time. A
 // verified block's episode ends when its kernel element expires, in
-// admission time: its expiry less the lead at apply (design C6). An address
+// admission time: its expiry less the lead at apply. An address
 // observed again after that opens a new episode and is blocked again,
 // rather than refused as already enforced for the length of the lead.
 func TestOwnerEndsAVerifiedEpisodeWhenItsBlockExpires(t *testing.T) {
@@ -151,7 +151,7 @@ func TestOwnerEndsAVerifiedEpisodeWhenItsBlockExpires(t *testing.T) {
 }
 
 // A rejected member's isolation ends with its block's lifetime in admission
-// time (design C6): after a step back a short block's isolation would
+// time: after a step back a short block's isolation would
 // otherwise outlast it by the lead.
 func TestOwnerIsolationEndsOnAdmissionTime(t *testing.T) {
 	p := withTestRegistry(t)

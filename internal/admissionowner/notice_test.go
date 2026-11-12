@@ -63,7 +63,7 @@ func criticalGap(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost) 
 	}
 }
 
-// Disposition C and handoffs O50-O51: due notices go out through the
+// Due notices go out through the
 // independent path as their registered checks, and each delivered count is
 // acknowledged with its record's first time. An acknowledgement that fails
 // after delivery is retried without delivering again; nothing is due again
@@ -93,7 +93,7 @@ func TestOwnerDeliversNoticesOnTheIndependentPath(t *testing.T) {
 	if len(notices) != 2 || !sink.lastPreview() {
 		t.Fatalf("notices = %+v (preview %v), want the withheld record and the Critical summary as previews", notices, sink.lastPreview())
 	}
-	// R10: legacy enforces while admission previews, so a gap is a
+	// Legacy enforces while admission previews, so a gap is a
 	// preview record, not an outage.
 	var keyed, summary int
 	for _, fd := range notices {
@@ -121,7 +121,7 @@ func TestOwnerDeliversNoticesOnTheIndependentPath(t *testing.T) {
 	}
 }
 
-// O51: a failed delivery leaves the records pending and reports through
+// A failed delivery leaves the records pending and reports through
 // queue health; the next delivery sends them.
 func TestOwnerNoticeDeliveryFailureIsVisible(t *testing.T) {
 	p := withTestRegistry(t)
@@ -145,7 +145,7 @@ func TestOwnerNoticeDeliveryFailureIsVisible(t *testing.T) {
 	}
 }
 
-// Ruling 9 and O52: when the ingress stops admitting, one Critical notice
+// When the ingress stops admitting, one Critical notice
 // goes out through the same path, naming the cause; it is sent again only
 // after admission resumed and stopped again. A failed send is retried.
 func TestOwnerAnnouncesAStoppedIngressOnce(t *testing.T) {

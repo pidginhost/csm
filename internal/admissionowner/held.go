@@ -16,7 +16,7 @@ const heldEvery = time.Minute
 // still held, and hands the answer to the ledger. A block two consecutive
 // answers no longer hold left early (an operator unblock, undo or flush,
 // or a lost kernel element): the ledger marks it gone and stops counting
-// its slot (spec 5.2, 5.6). A fault marks nothing and waits for the next
+// its slot. A fault marks nothing and waits for the next
 // check; like eviction cleanup it never fails the turn.
 func (o *Owner) observeHeld() error {
 	if !o.mayRetire() || monoNow().Before(o.heldAt) {

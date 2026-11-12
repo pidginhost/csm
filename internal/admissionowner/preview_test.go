@@ -77,7 +77,7 @@ func TestOwnerFixtureKeepsPreviewTurnsManual(t *testing.T) {
 // The owner serves what it drained as observe previews: each pick is
 // reserved and charged as live work would be, with the expiry the
 // configured response would use, and ends without running. Nothing stays
-// queued and nothing is applied (rulings R1, R2).
+// queued and nothing is applied.
 func TestOwnerPreviewsDrainedWork(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -105,8 +105,7 @@ func TestOwnerPreviewsDrainedWork(t *testing.T) {
 }
 
 // Work the ceiling cannot serve now waits, deferred, until the ledger's wake
-// time, converted with the admission clock's elapsed time (handoffs
-// O15-O17): the owner previews it at that time and not before.
+// time, converted with the admission clock's elapsed time: the owner previews it at that time and not before.
 func TestOwnerPreviewsDeferredWorkAtTheLedgerWakeTime(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -155,7 +154,7 @@ func TestOwnerPreviewsDeferredWorkAtTheLedgerWakeTime(t *testing.T) {
 }
 
 // A schedule the ledger refuses is the turn's error, not a stopped owner,
-// until a later turn succeeds; the turn is retried (C4).
+// until a later turn succeeds; the turn is retried.
 func TestOwnerReportsAFailedSchedule(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := withTestRegistry(t)
@@ -189,7 +188,7 @@ func TestOwnerReportsAFailedSchedule(t *testing.T) {
 
 // A preview turn that keeps failing is not retried every second: the next
 // two turns retry at once, each later attempt waits twice as long as the
-// one before, up to a minute as a held probe does (spec 5.16, C4), and a
+// one before, up to a minute as a held probe does, and a
 // turn that succeeds restores prompt retries.
 func TestOwnerBacksOffAFailingPreviewTurn(t *testing.T) {
 	p := withTestRegistry(t)

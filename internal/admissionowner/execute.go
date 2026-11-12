@@ -37,13 +37,13 @@ type BlockEngine interface {
 // errNoEngine holds execution while no firewall engine runs.
 var errNoEngine = errors.New("the firewall engine is not running")
 
-// Probe waits while execution is held (spec 5.16: 1 s doubling to 60 s).
+// Probe waits while execution is held (1 s doubling to 60 s).
 const (
 	firstProbeWait = time.Second
 	maxProbeWait   = time.Minute
 )
 
-// batchEvery spaces batch starts (spec 5.5: one a second at most).
+// batchEvery spaces batch starts (one a second at most).
 const batchEvery = time.Second
 
 // execPick is a block_ip pick of the turn with its candidate.
@@ -65,12 +65,12 @@ type pendingFinish struct {
 	victim admission.VictimOutcome
 	// lead is how far the engine's lease clock ran ahead of admission
 	// time when the member ran: its block ends that much earlier in
-	// admission time (design C6).
+	// admission time.
 	lead time.Duration
 }
 
 // refusalReasons are the admission reasons for the engine's refusals of a
-// member before it is reserved (spec 5.16): a full set or an unproven hold
+// member before it is reserved: a full set or an unproven hold
 // defers it; the rest end it without a charge. An existing effect ends
 // linked to its block (endExisting). A refusal missing here (a duplicate
 // address in the batch) leaves the pick queued for a later turn.
@@ -84,7 +84,7 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 	firewall.BlockRefusedAllowed:     admission.ReasonProtected,
 }
 
-// execute runs the turn's block picks as one batch (spec 5.5: one batch
+// execute runs the turn's block picks as one batch (one batch
 // start per turn, one in flight). The engine checks every member against
 // one snapshot before anything is reserved; the members it accepts are
 // reserved and charged, recorded as running with their intents, applied
@@ -154,7 +154,7 @@ func (o *Owner) execute(picks []execPick) error {
 		if refused {
 			continue
 		}
-		// While an apply fault is unproven the probe is one member (P8):
+		// While an apply fault is unproven the probe is one member:
 		// the other picks stay queued, untouched, for the batch after it
 		// applies. Refusals still end this turn.
 		if o.applyHold != nil && len(run) > 0 {
@@ -398,7 +398,7 @@ func (o *Owner) endRefused(p execPick, check firewall.BlockCheck) (bool, error) 
 }
 
 // gateVerdicts asks the panel about the turn's picks before anything is
-// reserved (spec 3.3, 4.1) and returns those ready to run: the picks with
+// reserved and returns those ready to run: the picks with
 // a default answer for this attempt. One read-only snapshot answers every
 // pick's local checks without giving any pick a slot, so a pick waiting
 // for its answer takes no room from a ready one. A refused or already
@@ -472,7 +472,7 @@ func answersMatch(answers []firewall.BlockAnswer, members []firewall.BlockMember
 	return true
 }
 
-// endAllowed ends a pick the panel allowed (D5): one verdict_allow refusal
+// endAllowed ends a pick the panel allowed: one verdict_allow refusal
 // with no reservation, attempt or charge. It is counted and logged once,
 // after the ending commits.
 func (o *Owner) endAllowed(p execPick, r verdictResult) error {
@@ -492,8 +492,8 @@ var logVerdictAllow = func(id admission.CandidateID, check string, r verdictResu
 		"candidate", string(id), "check", check, "ip", r.IP, "tenant", r.Tenant, "note", r.Note)
 }
 
-// ready reports whether automatic execution may run this turn (P8, spec
-// 5.16). Without an engine it is held. While held, one probe runs per wait:
+// ready reports whether automatic execution may run this turn.
+// Without an engine it is held. While held, one probe runs per wait:
 // state repair is followed by a read-only snapshot proof, including on an
 // idle turn. Apply faults keep their wait through a successful snapshot
 // and member check until an apply succeeds. A newly available engine can
@@ -580,7 +580,7 @@ func (o *Owner) publishExecutionHold() {
 }
 
 // isolate keeps a member the kernel rejected from failing healthy ones
-// again (P9, spec 5.5): while a pick's last batch was rejected, the turn
+// again: while a pick's last batch was rejected, the turn
 // runs that pick alone and leaves the others queued for later turns.
 // Only queued retries remain isolated; terminal, displaced and aged-out
 // candidates leave the index at the next successful queue publication.
@@ -628,7 +628,7 @@ func effectDisposition(e firewall.BlockEffect) admission.Disposition {
 }
 
 // endExisting ends a pick before it is reserved because a proven block
-// already enforces its effect, linked to that block (spec 5.16, 5.17).
+// already enforces its effect, linked to that block.
 func (o *Owner) endExisting(p execPick, link admission.EffectLink) error {
 	if _, err := terminateExistingLedger(o.ledger, p.pick.ID, link); err != nil {
 		return fmt.Errorf("ending pick %s: %w", p.pick.ID, err)

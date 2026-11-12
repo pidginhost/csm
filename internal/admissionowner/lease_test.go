@@ -13,7 +13,7 @@ import (
 // Every first attempt lasts at most the block expiry: a longer selected
 // lifetime, such as an incident's week, or a longer configured response is
 // cut to it, a shorter one stays short, and a retry keeps its first
-// attempt's expiry (spec 5.6). Without a positive block expiry nothing is
+// attempt's expiry. Without a positive block expiry nothing is
 // cut.
 func TestOwnerLeaseCapsFirstAttempts(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)

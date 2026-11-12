@@ -30,7 +30,7 @@ var noticeMessages = map[admission.NoticeKind]string{
 // ingress, through the daemon's independent health path. It runs on its
 // own goroutine, since delivery may wait on mail or a webhook, and alone
 // serializes reading, delivery and acknowledgement; the owner goroutine
-// makes the acknowledgement (handoffs O50-O52).
+// makes the acknowledgement.
 type sender struct {
 	o     *Owner
 	queue *queuehealth.Sampled
@@ -180,10 +180,10 @@ func (s *sender) observe() {
 }
 
 // announceStop sends one notice when the ingress stops admitting, naming
-// the cause the owner recorded (ruling 8, O52). The ledger may be the
+// the cause the owner recorded. The ledger may be the
 // damaged part, so nothing here writes it. It warns while legacy blocking
-// enforces and admission previews (R10); while the owner executes, a stop
-// stops automatic blocking and the notice is Critical (design C10).
+// enforces and admission previews; while the owner executes, a stop
+// stops automatic blocking and the notice is Critical.
 func (s *sender) announceStop() bool {
 	if s.pendingStop != nil && s.sendStop() {
 		return true
@@ -265,9 +265,9 @@ func (s *sender) deliver(retry *retryBackoff, findings []alert.Finding, preview 
 // noticeFinding is the record of one notice: its registered check, and in
 // its details the events no delivery covered, their key and their example
 // candidates. Legacy blocking enforces while admission previews, so a
-// preview record warns, whatever its kind's severity (R10). While the owner
+// preview record warns, whatever its kind's severity. While the owner
 // executes (live) a gap is an outage of automatic blocking: the record
-// carries its kind's severity and no preview prefix (design C10).
+// carries its kind's severity and no preview prefix.
 func noticeFinding(r admission.NoticeRecord, now time.Time, live bool) alert.Finding {
 	var b strings.Builder
 	fmt.Fprintf(&b, "events=%d first=%s last=%s", r.Unsent(), r.First.UTC().Format(time.RFC3339), r.Last.UTC().Format(time.RFC3339))

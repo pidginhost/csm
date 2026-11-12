@@ -50,7 +50,7 @@ func (s *actionSink) previews() []string {
 	return out
 }
 
-// Ruling R11: the owner counts every decision the new path makes on a
+// The owner counts every decision the new path makes on a
 // response by entry, check and kind, and writes one row per count each
 // hour to the action log, so the operator can set them against
 // the legacy path's actions.
@@ -502,7 +502,7 @@ func TestDecisionCountsKeepTheAdmissionHourFloor(t *testing.T) {
 	}
 }
 
-// Spec 3.5: a dry run counts each committed forecast ending as a dry_run
+// A dry run counts each committed forecast ending as a dry_run
 // decision with its prediction, a fixed field apart from the refusal
 // reason, so set_full never reads as a terminal reason. A pick waiting for
 // the engine is not counted until it ends.

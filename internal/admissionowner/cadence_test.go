@@ -44,7 +44,7 @@ func TestOwnerDefersBlocksWhileTheClockIsDegraded(t *testing.T) {
 	}
 }
 
-// One batch starts a second at most (spec 5.5). A turn sooner than that
+// One batch starts a second at most. A turn sooner than that
 // leaves block picks queued exactly as they were.
 func TestOwnerStartsOneBatchASecond(t *testing.T) {
 	p := withTestRegistry(t)
@@ -78,7 +78,7 @@ func TestOwnerStartsOneBatchASecond(t *testing.T) {
 }
 
 // With an engine, the first ready batch starts as soon as its drain
-// queues it (spec 5.5), not on the next schedule tick.
+// queues it, not on the next schedule tick.
 func TestOwnerRunsTheFirstReadyBatchAfterItsDrain(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -243,8 +243,8 @@ func TestOwnerFailedClockCannotExecuteWithCachedTime(t *testing.T) {
 	}
 }
 
-// An executable owner runs at most one turn per monotonic second (spec
-// 3.2), whatever made it due: a drain that queues work in the second of
+// An executable owner runs at most one turn per monotonic second,
+// whatever made it due: a drain that queues work in the second of
 // the last turn keeps the schedule due and runs no turn, even across
 // several groups, and the next second serves the work.
 func TestOwnerDrainRunsAtMostOneTurn(t *testing.T) {
@@ -321,7 +321,7 @@ func TestOwnerDrainRunsAtMostOneTurn(t *testing.T) {
 	}
 }
 
-// Spec 3.2: a forecast turn counts as a turn although it reserves nothing.
+// A forecast turn counts as a turn although it reserves nothing.
 // However often the schedule falls due, as received answers make it, a
 // second forecast turn waits for the next monotonic second.
 func TestOwnerRunsOneForecastTurnASecond(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// Bounds of the dry-run summary (spec 3.8).
+// Bounds of the dry-run summary.
 const (
 	// summaryEvery is the least time from a summary's first prediction to
 	// its delivery, and between two delivery attempts.

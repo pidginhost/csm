@@ -26,7 +26,7 @@ var (
 
 // deliverAudit writes pending audit rows to the action log, a batch at a
 // time with one durable write each, and acknowledges each row by its ID
-// and time only after its write (spec 5.5, O49, ruling R1). A failed or
+// and time only after its write. A failed or
 // unacknowledged write acknowledges nothing: the rows are written again,
 // with the same identity, and readers drop the copy. Rows this process wrote
 // whose consumers then failed are not written again before their ack, so a
@@ -118,7 +118,7 @@ func errorText(err error) string {
 // consumeApplied hands the applied block_ip rows among rows to the
 // configured consumer. Only a verified full-address block reaches it:
 // reservations, executions, failures, unknown outcomes and other kinds
-// never mark an address blocked (spec 5.5).
+// never mark an address blocked.
 func (o *Owner) consumeApplied(rows []admission.AuditRow) error {
 	if o.opts.Applied == nil {
 		return nil

@@ -169,7 +169,7 @@ func eventually(t testing.TB, what string, cond func() bool) {
 	}
 }
 
-// Spec 5.4 and O19-O24: a new ledger takes its first limit with the legacy
+// A new ledger takes its first limit with the legacy
 // hour's spend, the inventory, a new ingress generation and a published
 // snapshot before the owner returns, so nothing can be admitted before
 // them.
@@ -217,7 +217,7 @@ func TestOwnerUnknownLegacySpendStartsWithoutCredit(t *testing.T) {
 	}
 }
 
-// O13: a restart and a reload both record elapsed time under the saved
+// A restart and a reload both record elapsed time under the saved
 // limit before the new one applies. The legacy spend empties the general
 // bucket; half an hour on the same boot refills it to its cap at 200 per
 // hour, and the raised limit then only clips. Applying 2000 first would
@@ -289,7 +289,7 @@ func TestOwnerRetriesReloadAfterClockRecovery(t *testing.T) {
 	}
 }
 
-// O30: a clean stop commits a final checkpoint and closes the ingress
+// A clean stop commits a final checkpoint and closes the ingress
 // generation; a stop that never ran leaves it open, and the next start
 // counts it as interrupted.
 func TestOwnerStopClosesTheGeneration(t *testing.T) {
@@ -307,7 +307,7 @@ func TestOwnerStopClosesTheGeneration(t *testing.T) {
 	}
 }
 
-// O6: a refused clock reading stops admission visibly, and the next good
+// A refused clock reading stops admission visibly, and the next good
 // reading publishes a fresh snapshot.
 func TestOwnerTickFailureStopsAdmission(t *testing.T) {
 	f := newOwnerFixture(t)
@@ -367,7 +367,7 @@ func TestOwnerRetriesAFailedStart(t *testing.T) {
 	}
 }
 
-// O46: a failed inventory read keeps the committed inventory and says so;
+// A failed inventory read keeps the committed inventory and says so;
 // the next complete read replaces it.
 func TestOwnerKeepsTheInventoryOnAFailedRead(t *testing.T) {
 	f := newOwnerFixture(t)
@@ -399,7 +399,7 @@ func TestOwnerKeepsTheInventoryOnAFailedRead(t *testing.T) {
 	}
 }
 
-// O10: an idle owner keeps ticking, so elapsed time is credited and history
+// An idle owner keeps ticking, so elapsed time is credited and history
 // retires without any queued work.
 func TestOwnerTicksAnIdleLedger(t *testing.T) {
 	f := newOwnerFixture(t)
@@ -531,7 +531,7 @@ func TestOwnerSnapshotFailureStopsAdmission(t *testing.T) {
 
 // A ceiling changed by any config path, the web UI's live settings save
 // included, reaches the ledger on the next tick without a reload call, and
-// after a reading at the saved limit (O13): the legacy spend empties the
+// after a reading at the saved limit: the legacy spend empties the
 // general bucket, half an hour refills it at 200 an hour to its cap of 26,
 // and the raised limit only clips.
 func TestOwnerAppliesACeilingChangeOnTheNextTick(t *testing.T) {

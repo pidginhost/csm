@@ -15,7 +15,7 @@ import (
 type Asker func(ctx context.Context, ip, reason string) (verdict.Response, error)
 
 // ExecutionPolicy is one coherent reading of the configuration automatic
-// execution depends on (D11). Reading the settings one getter at a time
+// execution depends on. Reading the settings one getter at a time
 // could combine two reloads. The publisher numbers each reading: Epoch
 // grows with every change of these settings, including the callback's
 // endpoint and authentication and the response lifetimes the closures
@@ -32,7 +32,7 @@ type ExecutionPolicy struct {
 	CeilingSource  string
 	// Expiry is how long the response a candidate asks for lasts.
 	Expiry func(admission.Candidate) time.Duration
-	// BlockExpiry caps a new automatic response's lifetime (spec 5.6).
+	// BlockExpiry caps a new automatic response's lifetime.
 	// Earlier attempts keep their recorded absolute expiry.
 	BlockExpiry time.Duration
 	// AskVerdict asks the callback this policy configures, with the
@@ -84,9 +84,9 @@ func (p ExecutionPolicy) same(q ExecutionPolicy) bool {
 func (o *Owner) executable() bool { return o.opts.Blocks != nil }
 
 // liveExecution lets an executable owner run block picks under a live
-// policy. Until plan 1.4c-2b removes it, it stays false and such an owner
+// policy. Until the admission owner is cut over, it stays false and such an owner
 // previews them as an owner without an engine does; a dry-run policy still
-// forecasts (ruling C2). No configuration reaches it; this package's tests
+// forecasts. No configuration reaches it; this package's tests
 // turn it on to exercise execution.
 var liveExecution = false
 
@@ -208,8 +208,8 @@ func (o *Owner) expiry(c admission.Candidate) time.Duration {
 	return o.opts.Expiry(c)
 }
 
-// lease is the longest a response may last under the configuration
-// (spec 5.6): its block expiry, or no bound without one.
+// lease is the longest a response may last under the configuration:
+// its block expiry, or no bound without one.
 func (o *Owner) lease() time.Duration {
 	if o.executable() {
 		return o.policy.BlockExpiry

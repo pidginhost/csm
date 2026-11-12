@@ -60,7 +60,7 @@ func queuedFor(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, ac
 }
 
 // A turn inside the batch gate runs no block pick, so it must not spend
-// the scheduler's fair turns either (spec 5.3, 5.5): the next batch
+// the scheduler's fair turns either: the next batch
 // serves the scope whose turn came next, not the one served before.
 func TestOwnerTurnInsideTheBatchGateKeepsTheRotation(t *testing.T) {
 	p := withTestRegistry(t)

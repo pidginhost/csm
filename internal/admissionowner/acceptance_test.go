@@ -191,7 +191,7 @@ func runCommitScenario(t *testing.T, hook string, call int) commitRun {
 	return run
 }
 
-// Spec 3.5, 4.2, 6.1: a write that fails at any commit point of a dry-run
+// A write that fails at any commit point of a dry-run
 // turn stops the turn with that pick queued and installs nothing for it.
 // Retrying the turn ends every pick exactly once: the forecast, its
 // summary, examples and comparison counts, the durable outcomes and the
@@ -226,7 +226,7 @@ func TestOwnerForecastCountsOnceAcrossFailedCommits(t *testing.T) {
 	}
 }
 
-// Spec 3.6, 3.8: a forecast session that cannot be named holds the
+// A forecast session that cannot be named holds the
 // forecast. Its picks stay queued; nothing is asked, read from the engine
 // or written as an example, and no earlier session is resumed: after a
 // live epoch ended the first session, the next starts only with a fresh ID.
@@ -295,7 +295,7 @@ func TestOwnerSessionIDFailureHoldsTheForecast(t *testing.T) {
 	}
 }
 
-// Spec 2, 3.7: a dry-run publication while a live batch is applied cannot
+// A dry-run publication while a live batch is applied cannot
 // undo it. The turn finishes the batch's real outcomes under the live
 // policy and the reload waits for it; the next turn forecasts its pick
 // without reaching the engine again, from the ceiling that holds the
@@ -369,7 +369,7 @@ func TestOwnerFinishesADispatchedBatchAcrossAFlipToDryRun(t *testing.T) {
 	}
 }
 
-// Spec 4.3, 4.4: Stop while a dry run waits on the panel cancels the four
+// Stop while a dry run waits on the panel cancels the four
 // running calls and the queued jobs, and counts each once: a running call
 // is asked and cancelled, a queued job discarded unasked; none is an
 // answer. The picks stay queued with no forecast change, and a restarted
@@ -424,7 +424,7 @@ func TestOwnerStopDuringDryRunCallsKeepsCounts(t *testing.T) {
 	}
 }
 
-// Spec 4.3, 6.3: sweeping a full stage again and again, as its picks age
+// Sweeping a full stage again and again, as its picks age
 // out while the panel hangs, keeps it at 64 jobs and adds no goroutine.
 // Each job counts once: every call a worker started is asked and
 // cancelled, every other job is discarded unasked.

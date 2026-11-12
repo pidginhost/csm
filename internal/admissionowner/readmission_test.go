@@ -10,7 +10,7 @@ import (
 )
 
 // A block that returns in its episode after the first one left early
-// lasts no longer than the first would have (spec 5.2, 5.4): its member
+// lasts no longer than the first would have: its member
 // ends at the first block's expiry, not a full lifetime from now.
 func TestOwnerCapsAReadmissionAtTheFirstBlocksExpiry(t *testing.T) {
 	p := withTestRegistry(t)

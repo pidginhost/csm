@@ -79,7 +79,7 @@ func watchBatches(b *testing.B, o *Owner) *int {
 	return largest
 }
 
-// Spec 6.5: one dry-run turn over a fixed queue of 64 block picks with
+// One dry-run turn over a fixed queue of 64 block picks with
 // the callback off: a selection, one admission snapshot and 64 endings.
 // Each turn's picks are queued with the timer stopped. The forecast,
 // examples, summary and comparison stay within their bounds, and the turn
@@ -146,7 +146,7 @@ func BenchmarkForecastTurn(b *testing.B) {
 	}
 }
 
-// Spec 4.3, 6.5: turns over a fixed queue while the panel is saturated:
+// Turns over a fixed queue while the panel is saturated:
 // 64 jobs wait on four held calls and up to 64 more picks are selected each
 // turn, read once against the engine and left queued, unasked. No turn
 // ends, asks or adds anything, and no goroutine is started per pick.

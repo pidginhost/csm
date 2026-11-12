@@ -17,7 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
-// Bounds of the verdict stage (spec 4.3).
+// Bounds of the verdict stage.
 const (
 	verdictWorkers = 4
 	// verdictPending bounds the jobs queued, running or completed and not

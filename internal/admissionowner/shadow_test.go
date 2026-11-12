@@ -167,7 +167,7 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 }
 
 // The reserve is ceil(20%) of the automatic slots, and only work eligible
-// for a reserved lane takes it (spec 5.6). Of five slots general work
+// for a reserved lane takes it. Of five slots general work
 // takes four; eligible work then fits once more on its reserved lane and
 // occupies the reserved partition. Eligible work served on its reserved
 // lane uses its general turn once the reserve is full.
@@ -205,7 +205,7 @@ func TestShadowKeepsTheReserve(t *testing.T) {
 
 // Real automatic blocks, legacy imports and admission's own, occupy the
 // general partition; unclaimed entries shrink the set; an unlimited set is
-// the finite automatic capacity (spec 5.6).
+// the finite automatic capacity.
 func TestShadowCountsRealAutomaticOccupants(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -59,7 +59,7 @@ func ended(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, addr s
 	}
 }
 
-// Spec 5.5 and design P14: a verified block's consumers see its applied
+// A verified block's consumers see its applied
 // row after the action log write and before the acknowledgement, and only
 // that row: reservations, executions, failures, unknown outcomes and other
 // kinds never reach them. A failed consumer acknowledges nothing, so the

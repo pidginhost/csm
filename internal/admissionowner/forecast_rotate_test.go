@@ -27,7 +27,7 @@ func scopedRank(t *testing.T, n byte, ip string, tier admission.Tier, scope stri
 // before. The new block takes the victim's partition and records its own
 // scope, application and elapsed time; the victim's address is answered
 // until the victim's expiry. A requester at its share rotates only its
-// own scope's block, and a renewal never rotates (spec 5.2, 5.6).
+// own scope's block, and a renewal never rotates.
 func TestShadowRotatesAnEqualTierBlockAfterTheHold(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
 	// Limit 3: two general slots and one reserved.
@@ -78,7 +78,7 @@ func TestShadowRotatesAnEqualTierBlockAfterTheHold(t *testing.T) {
 // requester that the cursor leaves without a share waits, and one that a
 // waiting scope does not crowd out reclaims another scope's borrowing.
 // Each turn that shares the set moves the cursor once; one with a free
-// slot leaves it (spec 5.6).
+// slot leaves it.
 func TestShadowSharesTheSetFromTheSessionCursor(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
 	adm := firewall.BlockAdmission{Limit: 3}
@@ -116,7 +116,7 @@ func TestShadowSharesTheSetFromTheSessionCursor(t *testing.T) {
 
 // A forecast block that strictly higher work replaces answers its address
 // until the block's expiry, keeping the later expiry of two, as a rotated
-// one does; a replaced import is remembered by name only (spec 5.2).
+// one does; a replaced import is remembered by name only.
 func TestShadowAnswersTheAddressesItRemoves(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
 	imp := firewall.BlockImport{ID: "eff_" + strings.Repeat("ab", 16), IP: "192.0.2.60", ExpiresAt: shadowT0.Add(30 * time.Minute)}
@@ -200,9 +200,9 @@ func rotationOwner(t *testing.T) (*Owner, *admission.Producer, *ownerFixture) {
 }
 
 // A forecast pick of a fresh episode rotates the oldest equal-tier block
-// out of the full partition once its hold passed, as live admission would
-// (operator ruling T1). The rotated address is answered: its next
-// generation waits as equal_tier_wait rather than rotate (spec 5.2).
+// out of the full partition once its hold passed, as live admission would.
+// The rotated address is answered: its next
+// generation waits as equal_tier_wait rather than rotate.
 func TestOwnerForecastRotatesAfterTheHold(t *testing.T) {
 	o, p, f := rotationOwner(t)
 	written := watchExamples(t, o)
@@ -271,7 +271,7 @@ func TestOwnerForecastRotatesOnlyFreshWork(t *testing.T) {
 
 // A pick that waits behind an equal-tier block ends as equal_tier_wait
 // without a call, as a full set does; a pick that finds room is asked
-// first (spec 3.3).
+// first.
 func TestOwnerForecastEqualTierWaitAsksNothing(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)

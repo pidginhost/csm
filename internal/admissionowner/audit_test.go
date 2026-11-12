@@ -55,7 +55,7 @@ func withTestRegistryBasis(t testing.TB, basis admission.Basis) *admission.Produ
 }
 
 // queued publishes one root of the given severity and queues a candidate
-// on it, as the routing that 1.4c adds will.
+// on it, as the response routing will.
 func queued(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity) (admission.CandidateID, time.Time) {
 	t.Helper()
 	return queuedAt(t, o, p, host, sev, "192.0.2.10")
@@ -181,7 +181,7 @@ func (s *auditSink) set(err error) {
 	s.err = err
 }
 
-// Spec 5.5, handoff O49 and ruling R1: the audit rows go to the action log
+// The audit rows go to the action log
 // in one durable write and are acknowledged only after it, each by its ID
 // and time. A failed write acknowledges nothing; a write whose
 // acknowledgement was lost is repeated with the same identity, so readers
@@ -244,8 +244,8 @@ func TestOwnerDeliversAuditRowsDurably(t *testing.T) {
 	}
 }
 
-// O51 for the outbox: a stalled delivery reports through queue health, and
-// the next delivery clears it.
+// A stalled outbox delivery reports through queue health, and the next
+// delivery clears it.
 func TestOwnerReportsStalledAuditDelivery(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
