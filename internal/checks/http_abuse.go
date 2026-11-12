@@ -182,8 +182,9 @@ type domlogStats struct {
 	scannerEnabled        bool
 	// passes holds when each address last passed a challenge, read once per
 	// scan.
-	passes    map[string]time.Time
-	passesSet bool
+	passes     map[string]time.Time
+	passesSet  bool
+	passCutoff time.Time
 }
 
 func newDomlogStats() *domlogStats {
@@ -267,14 +268,23 @@ func (s *domlogStats) trustedFor(cfg *config.Config) clientaddr.Trusted {
 	return s.trusted
 }
 
-// answeredBefore reports whether ip passed a challenge at or after at, which
-// makes a line logged at at part of what the challenge answered.
+// answeredBefore reports whether a line was answered by a pass or is older
+// than the retained pass history. Unknown timestamps still count.
 func (s *domlogStats) answeredBefore(ip string, at time.Time) bool {
 	if !s.passesSet {
-		s.passes, s.passesSet = challengePasses(), true
+		s.passes, s.passCutoff = challengePasses()
+		s.passesSet = true
+	}
+	if at.IsZero() {
+		return false
+	}
+	// While passes are tracked, evidence cannot outlive them: otherwise a
+	// quiet site's next request revives the lines an expired pass answered.
+	if !s.passCutoff.IsZero() && !at.After(s.passCutoff) {
+		return true
 	}
 	passed, ok := s.passes[ip]
-	return ok && !at.IsZero() && !at.After(passed)
+	return ok && !at.After(passed)
 }
 
 // scan updates counters for one parsed record. cfg may be nil
@@ -355,10 +365,10 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 				s.domains[ip] = set
 			}
 			set[rec.Domain] = struct{}{}
-			if wpLoginHit {
+			if wpLoginHit && !answered {
 				s.recordAbuseDomain("wp_login_bruteforce", ip, rec.Domain)
 			}
-			if xmlrpcHit {
+			if xmlrpcHit && !answered {
 				s.recordAbuseDomain("xmlrpc_abuse", ip, rec.Domain)
 			}
 			if userEnumHit {

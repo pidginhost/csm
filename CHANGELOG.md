@@ -54,7 +54,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Visitors who pass a challenge page are no longer hard-blocked half an hour after they leave.
+- Visitors who pass a challenge are no longer blocked or named in distributed attack alerts for requests they already answered.
 - Japanese SEO and post spam alerts no longer fire on ordinary words that contain a spam keyword, such as in plugin translation files.
 - Deep scan findings for files that were rechecked and found clean now clear on large servers instead of staying listed indefinitely.
 - cPanel API failure alerts now cover every API and token endpoint, including encoded requests, and no longer count page requests from expired cPanel or webmail sessions.

@@ -26,7 +26,16 @@ func (db *DB) PutChallengePass(ip string, at time.Time) error {
 		if err != nil {
 			return err
 		}
-		return b.Put(parsed.To16(), val[:])
+		key := parsed.To16()
+		// Completions persist after releasing the challenge-list lock, so
+		// a slower earlier completion must not shorten a later pass.
+		if prev := b.Get(key); len(prev) == 8 {
+			previous := time.Unix(0, int64(binary.BigEndian.Uint64(prev))) // #nosec G115 -- stored unix nanos bit pattern
+			if !at.After(previous) {
+				return nil
+			}
+		}
+		return b.Put(key, val[:])
 	})
 }
 

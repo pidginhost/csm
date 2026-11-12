@@ -78,14 +78,23 @@ at once. The block still applies.
 
 Each pass is logged as `CHALLENGE-PASS: <ip> passed (<method>)` and counted
 in `csm_challenge_passed_total` and the `passed` field of the challenge stats.
-CSM remembers passes for 7 days, across restarts:
+CSM remembers passes for 7 days, across restarts, and expires stored passes
+during normal operation:
 
 - A challenge that times out within 4 hours of the address's last pass
-  expires without a block. The visitor proved a browser and left; a returning
-  browser is waved through by its verification cookie for the same 4 hours.
+  expires without a block. A returning browser is waved through by its
+  verification cookie for the same 4 hours.
 - WordPress login, XML-RPC and user enumeration counts read each site's last
   log lines, which on a quiet site can be days old. Lines an address logged
-  before its last pass no longer count against it; newer ones do.
+  before or at its last pass no longer count against it or attribute a
+  distributed attack to that site; newer ones do. While the challenge service
+  is active, these counts also ignore lines older than the pass retention
+  period, so forgotten passes cannot revive answered requests. Lines without
+  a readable timestamp still count because CSM cannot establish their age.
+
+A pass does not exempt an address from new challenges or hard-block checks.
+A client without a valid verification cookie must solve a new challenge when
+routed again, including during the timeout grace period.
 
 ### Bind address
 

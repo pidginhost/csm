@@ -3,6 +3,7 @@ package challenge
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,16 +13,54 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/store"
 )
 
 type fakePassStore struct {
-	mu    sync.Mutex
-	puts  map[string]time.Time
-	known map[string]time.Time
+	mu      sync.Mutex
+	puts    map[string]time.Time
+	known   map[string]time.Time
+	reads   int
+	readErr error
+}
+
+func TestPassMaintenancePrunesStoreWithoutRestart(t *testing.T) {
+	l := NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+	db, openErr := store.Open(t.TempDir())
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := l.SetPassStore(db); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for ip, at := range map[string]time.Time{
+		"203.0.113.70": now.Add(-PassMemory - time.Hour),
+		"203.0.113.71": now.Add(-time.Hour),
+	} {
+		if err := db.PutChallengePass(ip, at); err != nil {
+			t.Fatal(err)
+		}
+		l.passes[ip] = at
+	}
+	l.ExpiredEntries()
+	got, err := db.ChallengePasses(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !got["203.0.113.71"].Equal(now.Add(-time.Hour)) {
+		t.Fatalf("persisted passes did not expire during runtime: %v", got)
+	}
+	if len(l.passes) != 1 {
+		t.Fatalf("in-memory passes did not expire: %v", l.passes)
+	}
 }
 
 func (f *fakePassStore) ChallengePasses(time.Time) (map[string]time.Time, error) {
-	return f.known, nil
+	f.reads++
+	return f.known, f.readErr
 }
 
 func (f *fakePassStore) PutChallengePass(ip string, at time.Time) error {
@@ -60,7 +99,8 @@ func TestMarkPassedRecordsOnlyAListedAddress(t *testing.T) {
 	if l.MarkPassed(ip) {
 		t.Fatal("one pass was counted twice")
 	}
-	if _, ok := l.Passes()[ip]; !ok {
+	passes, _ := l.Passes()
+	if _, ok := passes[ip]; !ok {
 		t.Fatal("the pass is not remembered")
 	}
 	if _, ok := store.puts[ip]; !ok {
@@ -105,12 +145,12 @@ func TestSetPassStoreRestoresRememberedPasses(t *testing.T) {
 	now := time.Now()
 	err := l.SetPassStore(&fakePassStore{known: map[string]time.Time{
 		"203.0.113.73": now.Add(-time.Hour),
-		"203.0.113.74": now.Add(-passMemory - time.Hour),
+		"203.0.113.74": now.Add(-PassMemory - time.Hour),
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	passes := l.Passes()
+	passes, _ := l.Passes()
 	if _, ok := passes["203.0.113.73"]; !ok {
 		t.Fatal("a recent pass was not restored")
 	}
@@ -150,7 +190,7 @@ func TestSolvedChallengeIsCountedAsAPass(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/challenge/verify", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.RemoteAddr = ip + ":50000"
+	req.RemoteAddr = "[::ffff:" + ip + "]:50000"
 	before := challengePassedCounter().With(passMethodPoW).Value()
 	rr := httptest.NewRecorder()
 	s.handleVerify(rr, req)
@@ -158,10 +198,57 @@ func TestSolvedChallengeIsCountedAsAPass(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
 	}
-	if _, ok := list.Passes()[ip]; !ok {
+	passes, _ := list.Passes()
+	if _, ok := passes[ip]; !ok {
 		t.Fatal("solved challenge was not remembered as a pass")
+	}
+	list.Add(ip, "new evidence", time.Hour)
+	get := httptest.NewRequest(http.MethodGet, "/challenge", nil)
+	get.RemoteAddr = req.RemoteAddr
+	page := httptest.NewRecorder()
+	s.handleChallenge(page, get)
+	if page.Code != http.StatusOK || !list.Contains(ip) || strings.Contains(page.Body.String(), "Verified - redirecting") {
+		t.Fatalf("a solver without its cookie bypassed the next challenge: status=%d pending=%v", page.Code, list.Contains(ip))
 	}
 	if got := challengePassedCounter().With(passMethodPoW).Value() - before; got != 1 {
 		t.Fatalf("csm_challenge_passed_total{method=pow} delta = %v, want 1", got)
+	}
+}
+
+func TestPassMemoryKeepsNewestCompletion(t *testing.T) {
+	l, _ := newPassList(t)
+	const ip = "203.0.113.70"
+	now := time.Now()
+	l.Add(ip, "first", time.Hour)
+	l.remove(ip, now)
+	l.Add(ip, "second", time.Hour)
+	l.remove(ip, now.Add(-time.Minute))
+	passes, _ := l.Passes()
+	if got := passes[ip]; !got.Equal(now) {
+		t.Fatalf("pass regressed to %v", got)
+	}
+}
+
+func TestPassMaintenanceRetriesFailuresAndLimitsSweeps(t *testing.T) {
+	l, ps := newPassList(t)
+	ps.readErr = errors.New("store unavailable")
+	before := ps.reads
+	l.ExpiredEntries()
+	if ps.reads != before+1 {
+		t.Fatal("runtime maintenance did not try the store")
+	}
+	ps.readErr = nil
+	l.ExpiredEntries()
+	if ps.reads != before+2 {
+		t.Fatal("failed cleanup was not retried")
+	}
+	l.ExpiredEntries()
+	if ps.reads != before+2 {
+		t.Fatal("successful cleanup repeated on every tick")
+	}
+	l.lastPassPrune = time.Now().Add(-2 * time.Hour)
+	l.ExpiredEntries()
+	if ps.reads != before+3 {
+		t.Fatal("cleanup never ran again after its interval")
 	}
 }

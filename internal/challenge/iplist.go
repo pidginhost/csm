@@ -56,7 +56,7 @@ type ExpiredEntry struct {
 // PassStore keeps challenge passes across restarts.
 type PassStore interface {
 	PutChallengePass(ip string, at time.Time) error
-	// ChallengePasses returns the passes recorded after cutoff.
+	// ChallengePasses returns passes after cutoff and deletes older ones.
 	ChallengePasses(cutoff time.Time) (map[string]time.Time, error)
 }
 
@@ -65,12 +65,12 @@ const (
 	// block. The bypass cookie waves a returning browser through for as long,
 	// so a timeout inside it means the visitor left, not that it failed.
 	passEscalationGrace = verifyCookieTTL
-	// passMemory is how long a pass is remembered. Login, XML-RPC and
+	// PassMemory is how long a pass is remembered. Login, XML-RPC and
 	// enumeration counts read each site's last log lines, which on a quiet
 	// site can be days old; an address's lines from before its pass stop
-	// counting while the pass is remembered.
-	// shortcut: lines older than this still count again, upgrade if quiet sites keep week-old lines in their window.
-	passMemory = 7 * 24 * time.Hour
+	// counting while the pass is remembered. Those counters must also
+	// discard older lines so forgetting a pass cannot revive its evidence.
+	PassMemory = 7 * 24 * time.Hour
 )
 
 // IPList manages the set of IPs that should see challenge pages.
@@ -81,10 +81,11 @@ type IPList struct {
 	nginxReload func() error
 	ips         map[string]challengeEntry
 	// passes holds when each address last passed a challenge.
-	passes    map[string]time.Time
-	passStore PassStore
-	mu        sync.Mutex
-	gate      PortGate
+	passes        map[string]time.Time
+	passStore     PassStore
+	lastPassPrune time.Time
+	mu            sync.Mutex
+	gate          PortGate
 }
 
 // NewIPList creates an IP list writer for the webserver-facing map at
@@ -103,7 +104,7 @@ func NewIPList(mapPath string) *IPList {
 // remembers. On a read error the earlier passes stay unknown; the list and
 // future passes still work.
 func (l *IPList) SetPassStore(ps PassStore) error {
-	cutoff := time.Now().Add(-passMemory)
+	cutoff := time.Now().Add(-PassMemory)
 	known, err := ps.ChallengePasses(cutoff)
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -116,18 +117,19 @@ func (l *IPList) SetPassStore(ps PassStore) error {
 	return err
 }
 
-// Passes returns when each address last passed, for passes still remembered.
-func (l *IPList) Passes() map[string]time.Time {
-	cutoff := time.Now().Add(-passMemory)
+// Passes returns remembered passes and their retention cutoff together,
+// so a scan cannot retain evidence longer than this snapshot retains passes.
+func (l *IPList) Passes() (map[string]time.Time, time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-PassMemory)
 	out := make(map[string]time.Time, len(l.passes))
 	for ip, at := range l.passes {
 		if at.After(cutoff) {
 			out[ip] = at
 		}
 	}
-	return out
+	return out, cutoff
 }
 
 // SetPortGate attaches a PortGate so every Add/Remove also opens or
@@ -215,7 +217,7 @@ func (l *IPList) remove(ip string, passedAt time.Time) bool {
 		return false
 	}
 	delete(l.ips, ip)
-	if !passedAt.IsZero() {
+	if !passedAt.IsZero() && passedAt.After(l.passes[ip]) {
 		l.passes[ip] = passedAt
 	}
 	changed := l.flush()
@@ -265,7 +267,7 @@ func (l *IPList) ExpiredEntries() []ExpiredEntry {
 	l.mu.Lock()
 	now := time.Now()
 	graceStart := now.Add(-passEscalationGrace)
-	forgetBefore := now.Add(-passMemory)
+	forgetBefore := now.Add(-PassMemory)
 	for ip, at := range l.passes {
 		if !at.After(forgetBefore) {
 			delete(l.passes, ip)
@@ -287,8 +289,23 @@ func (l *IPList) ExpiredEntries() []ExpiredEntry {
 		changed = l.flush()
 	}
 	reload := l.nginxReload
+	ps := l.passStore
+	prune := ps != nil && now.Sub(l.lastPassPrune) >= time.Hour
+	if prune {
+		l.lastPassPrune = now
+	}
 	l.mu.Unlock()
 	l.reloadNginx(changed, reload)
+	// Reuse the store's time-based cleanup during normal maintenance, not
+	// only at startup. Never evict a live pass to make room for another IP.
+	if prune {
+		if _, err := ps.ChallengePasses(forgetBefore); err != nil {
+			fmt.Fprintf(os.Stderr, "challenge: expire passes: %v\n", err)
+			l.mu.Lock()
+			l.lastPassPrune = time.Time{}
+			l.mu.Unlock()
+		}
+	}
 	return expired
 }
 
