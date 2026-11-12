@@ -36,3 +36,31 @@ func FuzzApacheLogFormat(f *testing.F) {
 		}
 	})
 }
+
+// Request values cannot become trusted through a prefix, string boundary
+// or disabled escaping, whatever format suffix the fuzzer supplies.
+func FuzzNginxLogFormat(f *testing.F) {
+	for _, seed := range []string{"$remote_addr - $remote_user", "${http_x}", "$", "${", "{\"ip\":\"$remote_addr\"}", "$a\n$b c"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, format string) {
+		nginxFormatLogsClientValue("http", "default", nil, format)
+		nginxFormatLogsClientValue("stream", "default", nil, format)
+		if value, ok := nginxFormatLogsClientValue("http", "default", nil, "  $http_x_client ", format); ok && !value {
+			t.Fatalf("request client field classified direct: %q", format)
+		}
+		if value, ok := nginxFormatLogsClientValue("http", "default", nil, "[$http_x_client] ", format); ok && !value {
+			t.Fatalf("bracketed request client classified direct: %q", format)
+		}
+		if value, ok := nginxFormatLogsClientValue("http", "none", nil, "$remote_addr $request_body ", format); ok && !value {
+			t.Fatalf("unescaped request value classified direct: %q", format)
+		}
+		if value, ok := nginxFormatLogsClientValue("stream", "default", nil, "$request_time ", format); ok && !value {
+			t.Fatalf("HTTP-only name in stream = direct, want request value: %q", format)
+		}
+		custom := map[string]bool{"realip_remote_addr": true}
+		if value, ok := nginxFormatLogsClientValue("http", "default", custom, "$realip_remote_addr ", format); ok && !value {
+			t.Fatalf("user-defined peer spelling classified direct: %q", format)
+		}
+	})
+}

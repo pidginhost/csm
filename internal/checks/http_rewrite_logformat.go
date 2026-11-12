@@ -549,3 +549,95 @@ func (l *apacheLogFormats) clientValue() *apacheLogFormat {
 	}
 	return nil
 }
+
+// nginxSafeLogVariables write the connection's peer or a value the server
+// sets.
+var nginxSafeLogVariables = map[string]bool{
+	"remote_addr": true, "realip_remote_addr": true,
+	"remote_port": true, "realip_remote_port": true, "server_addr": true,
+	"server_port": true, "server_name": true, "hostname": true,
+	"time_local": true, "time_iso8601": true, "msec": true, "pid": true,
+	"connection": true, "connection_requests": true, "status": true,
+	"body_bytes_sent": true, "bytes_sent": true, "request_length": true,
+	"request_time": true, "pipe": true, "nginx_version": true,
+}
+
+// A name that is built in to HTTP may be a user variable in stream.
+func nginxSafeLogVariable(module, name string) bool {
+	if !nginxSafeLogVariables[name] {
+		return false
+	}
+	if module == "http" {
+		return true
+	}
+	switch name {
+	case "remote_addr", "realip_remote_addr", "remote_port", "realip_remote_port",
+		"server_addr", "server_port", "server_name", "hostname", "time_local",
+		"time_iso8601", "msec", "pid", "connection", "status", "bytes_sent", "nginx_version":
+		return true
+	}
+	return false
+}
+
+// nginxFormatLogsClientValue keeps output-field state across arguments,
+// but parses each argument's variables separately, as nginx does. Without
+// escaping, a later request value can inject a fresh log line.
+func nginxFormatLogsClientValue(module, escape string, custom map[string]bool, formats ...string) (value, ok bool) {
+	if escape != "default" && escape != "json" && escape != "none" {
+		return false, false
+	}
+	field, start, guarded := 0, true, false
+	for _, format := range formats {
+		for i := 0; i < len(format); {
+			c := format[i]
+			switch c {
+			case '$':
+				j := i + 1
+				braced := j < len(format) && format[j] == '{'
+				if braced {
+					j++
+				}
+				k := j
+				for k < len(format) && (format[k] == '_' || format[k] >= '0' && format[k] <= '9' ||
+					format[k] >= 'a' && format[k] <= 'z' || format[k] >= 'A' && format[k] <= 'Z') {
+					k++
+				}
+				if k == j || braced && (k == len(format) || format[k] != '}') {
+					return false, false
+				}
+				if strings.EqualFold(format[j:k], "binary_remote_addr") {
+					return false, false
+				}
+				name := strings.ToLower(format[j:k])
+				if (custom[name] || !nginxSafeLogVariable(module, name)) && (escape == "none" || field == 0 && !guarded) {
+					value = true
+				}
+				switch name {
+				case "server_name", "hostname", "remote_port", "realip_remote_port", "server_port":
+					// These can be empty; the next token may still be first.
+				default:
+					start = false
+				}
+				if braced {
+					k++
+				}
+				i = k
+			case '\n':
+				field, start, guarded = 0, true, false
+				i++
+			case ' ':
+				if !start {
+					field++
+				}
+				start, guarded = true, false
+				i++
+			default:
+				if start && !logWhitespace(c) {
+					guarded, start = !addressStartByte(c), false
+				}
+				i++
+			}
+		}
+	}
+	return value, true
+}

@@ -77,7 +77,8 @@ type rewriteSources struct {
 // DetectHTTPRewrite reads the host web server's configuration from disk: an
 // Apache RemoteIPHeader or RemoteIPProxyProtocol, mod_cloudflare or
 // mod_rpaf, an nginx set_real_ip_from, or LiteSpeed's client IP from
-// header, in any scope.
+// header, in any scope; failing those, a log format that writes a request
+// value where CSM reads the client.
 func DetectHTTPRewrite(info platform.Info) HTTPRewrite {
 	src := rewriteSources{server: info.WebServer}
 	switch info.WebServer {
@@ -130,7 +131,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 		unknown = "no Apache configuration file was found"
 	}
 	if src.nginxConfig != "" {
-		directive, file, complete := nginxRealIPRewrite(src.nginxConfig)
+		directive, file, complete := nginxClientAddressRewrite(src.nginxConfig)
 		if directive != "" {
 			r.State, r.Directive, r.File = RewriteActive, directive, file
 			return r
@@ -211,14 +212,128 @@ func apacheClientAddressRewrite(path string) (directive, file string, complete b
 	return directive, file, complete && valid && !malformed && !logs.malformed
 }
 
-// nginxRealIPRewrite returns the first set_real_ip_from, which turns on
-// nginx's realip rewrite from real_ip_header or its X-Real-IP default, its
-// file, and whether the whole tree was read.
-func nginxRealIPRewrite(path string) (directive, file string, complete bool) {
+// nginxClientAddressRewrite returns the first set_real_ip_from, which
+// turns on nginx's realip rewrite from real_ip_header or its X-Real-IP
+// default; failing that, the first log_format an access_log writes that
+// logs a request value where CSM reads the client. It also returns the
+// file and whether the tree and its format framing could be read. HTTP
+// and stream have separate namespaces; only HTTP has built-in combined.
+func nginxClientAddressRewrite(path string) (directive, file string, complete bool) {
 	directives, complete := nginxDirectives(path)
+	type format struct {
+		directive nginxDirective
+		value     bool
+	}
+	type key struct{ module, name string }
+	formats := make(map[key][]format)
+	seen := make(map[key]bool)
+	var used []key
+	// Optional modules can leave their variable names available for user
+	// definitions. A familiar spelling alone does not prove a peer value.
+	custom := make(map[string]map[string]bool)
+	for _, d := range directives {
+		var target string
+		switch d.Name {
+		case "map", "split_clients":
+			if len(d.Args) != 2 {
+				complete = false
+				continue
+			}
+			target = d.Args[1]
+		case "set", "auth_request_set", "perl_set":
+			if len(d.Args) != 2 {
+				complete = false
+				continue
+			}
+			target = d.Args[0]
+		case "geo":
+			if len(d.Args) > 2 {
+				complete = false
+				continue
+			}
+			target = "$geo"
+			if len(d.Args) > 0 {
+				target = d.Args[len(d.Args)-1]
+			}
+		default:
+			continue
+		}
+		if !strings.HasPrefix(target, "$") || len(target) == 1 {
+			complete = false
+			continue
+		}
+		if custom[d.Module] == nil {
+			custom[d.Module] = make(map[string]bool)
+		}
+		custom[d.Module][strings.ToLower(target[1:])] = true
+	}
 	for _, d := range directives {
 		if d.Name == "set_real_ip_from" {
 			return strings.Join(append([]string{d.Name}, d.Args...), " "), d.File, complete
+		}
+		if d.Name != "log_format" && d.Name != "access_log" {
+			continue
+		}
+		if d.Module != "http" && d.Module != "stream" {
+			complete = false
+			continue
+		}
+		switch d.Name {
+		case "log_format":
+			if len(d.Args) < 2 {
+				complete = false
+				continue
+			}
+			exact := key{d.Module, d.Args[0]}
+			if seen[exact] || d.Module == "http" && d.Args[0] == "combined" {
+				complete = false
+			}
+			seen[exact] = true
+			args, escape := d.Args[1:], "default"
+			if strings.HasPrefix(args[0], "escape=") {
+				escape = strings.TrimPrefix(args[0], "escape=")
+				args = args[1:]
+			}
+			value, ok := nginxFormatLogsClientValue(d.Module, escape, custom[d.Module], args...)
+			if !ok {
+				complete = false
+				continue
+			}
+			name := key{d.Module, strings.ToLower(d.Args[0])}
+			formats[name] = append(formats[name], format{d, value})
+		case "access_log":
+			if len(d.Args) == 0 {
+				complete = false
+				continue
+			}
+			if d.Args[0] == "off" {
+				if len(d.Args) != 1 {
+					complete = false
+				}
+				continue
+			}
+			if len(d.Args) == 1 {
+				// Only the HTTP module supplies an implicit combined format.
+				if d.Module != "http" {
+					complete = false
+				}
+				continue
+			}
+			name := key{d.Module, strings.ToLower(d.Args[1])}
+			if name.module == "http" && name.name == "combined" {
+				continue
+			}
+			used = append(used, name)
+		}
+	}
+	for _, name := range used {
+		if len(formats[name]) == 0 {
+			complete = false
+		}
+		for _, f := range formats[name] {
+			if f.value {
+				return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete
+			}
 		}
 	}
 	return "", "", complete
