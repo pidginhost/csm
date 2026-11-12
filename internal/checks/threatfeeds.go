@@ -391,6 +391,24 @@ func RemoveStoredTemporaryBlock(sdb *store.DB, ip string) error {
 	return err
 }
 
+// DropAutoBlockThreatRow removes the auto-block threat row for ip after an
+// operator unblock. Operator permanent blocks are left in place: a
+// firewall-only unblock must not silently clear a deliberate block. A stale
+// auto-block row that outlived the firewall block would let ip_reputation
+// re-flag the IP into a new block loop, so both the persisted row and the
+// in-memory temporary copy go.
+func DropAutoBlockThreatRow(ip string) {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		ip = parsed.String()
+	}
+	if sdb := store.Global(); sdb != nil {
+		_ = RemoveStoredTemporaryBlock(sdb, ip)
+	}
+	if tdb := GetThreatDB(); tdb != nil {
+		tdb.RemoveTemporary(ip)
+	}
+}
+
 // RemovePermanent removes an IP from the permanent blocklist and in-memory DB.
 func (db *ThreatDB) RemovePermanent(ip string) {
 	db.writeMu.Lock()

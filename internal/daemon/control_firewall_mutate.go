@@ -9,26 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
-	"github.com/pidginhost/csm/internal/store"
 )
-
-// dropAutoBlockThreatRow removes the auto-block threat row for ip after an
-// operator unblock. Operator permanent blocks are left in place: a
-// firewall-only unblock must not silently clear a deliberate block. Under
-// older builds a stale auto-block row could outlive the firewall block and
-// ip_reputation would re-flag the IP into a new block loop. Clearing the
-// persisted row when present and the in-memory temp copy stops that.
-func dropAutoBlockThreatRow(ip string) {
-	if parsed := net.ParseIP(ip); parsed != nil {
-		ip = parsed.String()
-	}
-	if sdb := store.Global(); sdb != nil {
-		_ = checks.RemoveStoredTemporaryBlock(sdb, ip)
-	}
-	if tdb := checks.GetThreatDB(); tdb != nil {
-		tdb.RemoveTemporary(ip)
-	}
-}
 
 // Single-IP firewall mutation handlers. Each validates args, guards on
 // c.d.fwEngine != nil, calls the matching engine method, and returns a
@@ -96,7 +77,7 @@ func (c *ControlListener) handleFirewallUnblock(argsRaw json.RawMessage) (any, e
 	if err := c.d.fwEngine.UnblockIP(args.IP); err != nil {
 		return nil, fmt.Errorf("unblock %s: %w", args.IP, err)
 	}
-	dropAutoBlockThreatRow(args.IP)
+	checks.DropAutoBlockThreatRow(args.IP)
 	msg := fmt.Sprintf("Unblocked %s", args.IP)
 	// A blocked subnet covering the address keeps dropping it whatever
 	// happens to the per-IP element; say so instead of reporting success.

@@ -17,25 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/platform"
-	"github.com/pidginhost/csm/internal/store"
 )
-
-// dropAutoBlockThreatRow removes the auto-block threat row for ip after an
-// operator unblock. Operator permanent blocks are left in place: a
-// firewall-only unblock must not silently clear a deliberate block. Under
-// older builds a stale auto-block row could outlive the firewall block and
-// ip_reputation would re-flag the IP into a new block loop.
-func dropAutoBlockThreatRow(ip string) {
-	if parsed := net.ParseIP(ip); parsed != nil {
-		ip = parsed.String()
-	}
-	if sdb := store.Global(); sdb != nil {
-		_ = checks.RemoveStoredTemporaryBlock(sdb, ip)
-	}
-	if tdb := checks.GetThreatDB(); tdb != nil {
-		tdb.RemoveTemporary(ip)
-	}
-}
 
 type firewallAllowView struct {
 	IP     string `json:"ip"`
@@ -713,7 +695,7 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	dropAutoBlockThreatRow(req.IP)
+	checks.DropAutoBlockThreatRow(req.IP)
 
 	// 2. Also remove covering subnet blocks that CSM added automatically. A
 	// subnet an operator blocked, or whose automatic ownership is unproven,

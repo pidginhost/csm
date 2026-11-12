@@ -64,12 +64,12 @@ func TestDropAutoBlockThreatRowWithoutStoreClearsTemporaryOnly(t *testing.T) {
 	tdb.AddTemporary("203.0.113.9", "web_attack", time.Hour)
 	tdb.AddPermanent("203.0.113.10", "operator block")
 
-	dropAutoBlockThreatRow("203.0.113.9")
+	checks.DropAutoBlockThreatRow("203.0.113.9")
 	if src, ok := tdb.Lookup("203.0.113.9"); ok {
 		t.Fatalf("temporary threat survived storeless unblock: source=%q", src)
 	}
 
-	dropAutoBlockThreatRow("203.0.113.10")
+	checks.DropAutoBlockThreatRow("203.0.113.10")
 	if _, ok := tdb.Lookup("203.0.113.10"); !ok {
 		t.Fatal("operator threat was removed by storeless unblock")
 	}
@@ -86,7 +86,7 @@ func TestMappedUnblockClearsTimedOperatorThreat(t *testing.T) {
 	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
 	const ip = "192.0.2.131"
 	checks.GetThreatDB().AddOperatorTemporary(ip, "operator block", 24*time.Hour)
-	dropAutoBlockThreatRow("::ffff:192.0.2.131")
+	checks.DropAutoBlockThreatRow("::ffff:192.0.2.131")
 	if _, ok := sdb.GetPermanentBlock(ip); ok {
 		t.Fatal("mapped unblock left persistent operator evidence")
 	}

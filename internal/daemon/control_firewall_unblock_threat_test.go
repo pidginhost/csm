@@ -34,7 +34,7 @@ func TestDropAutoBlockThreatRowClearsAutoBlockOnly(t *testing.T) {
 		t.Fatal("operator IP should flag before unblock")
 	}
 
-	dropAutoBlockThreatRow("192.0.2.10")
+	checks.DropAutoBlockThreatRow("192.0.2.10")
 
 	if src, ok := tdb.Lookup("192.0.2.10"); ok {
 		t.Fatalf("auto-block IP still flagged after unblock: source=%q", src)
@@ -44,7 +44,7 @@ func TestDropAutoBlockThreatRowClearsAutoBlockOnly(t *testing.T) {
 	}
 
 	// Unblocking an operator-blocked IP must not clear its permanent row.
-	dropAutoBlockThreatRow("192.0.2.12")
+	checks.DropAutoBlockThreatRow("192.0.2.12")
 	if _, ok := tdb.Lookup("192.0.2.12"); !ok {
 		t.Fatal("operator IP unflagged by unblock")
 	}
@@ -64,12 +64,12 @@ func TestDropAutoBlockThreatRowWithoutStoreClearsTemporaryOnly(t *testing.T) {
 	tdb.AddTemporary("192.0.2.20", "web_attack", time.Hour)
 	tdb.AddPermanent("192.0.2.21", "operator block")
 
-	dropAutoBlockThreatRow("192.0.2.20")
+	checks.DropAutoBlockThreatRow("192.0.2.20")
 	if src, ok := tdb.Lookup("192.0.2.20"); ok {
 		t.Fatalf("temporary threat survived storeless unblock: source=%q", src)
 	}
 
-	dropAutoBlockThreatRow("192.0.2.21")
+	checks.DropAutoBlockThreatRow("192.0.2.21")
 	if _, ok := tdb.Lookup("192.0.2.21"); !ok {
 		t.Fatal("operator threat was removed by storeless unblock")
 	}
@@ -86,7 +86,7 @@ func TestMappedUnblockClearsTimedOperatorThreat(t *testing.T) {
 	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
 	const ip = "192.0.2.131"
 	checks.GetThreatDB().AddOperatorTemporary(ip, "operator block", 24*time.Hour)
-	dropAutoBlockThreatRow("::ffff:192.0.2.131")
+	checks.DropAutoBlockThreatRow("::ffff:192.0.2.131")
 	if _, ok := sdb.GetPermanentBlock(ip); ok {
 		t.Fatal("mapped unblock left persistent operator evidence")
 	}
