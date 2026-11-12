@@ -49,9 +49,10 @@ Kernel notification loss still relies on the next deep scan. Shutdown drains
 the queue under a fixed time budget: events still waiting when it expires are
 released without being scanned; files still on disk are covered by the next
 deep scan. Both budgets are checked between scans, so a scan or directory
-read already in progress must still finish before shutdown completes. A rename-only
-arrival without a usable close-write event is also first examined
-by the rolling content scan; the watcher does not subscribe to rename events.
+read already in progress must still finish before shutdown completes. A file
+renamed or hard-linked into a watched tree, or a directory moved into one,
+raises no close-write event at its new path. The
+[placement monitor](#files-moved-or-linked-into-a-site) covers those.
 
 Realtime YARA scans hand the worker a sealed memory-backed copy of the
 captured bytes, whatever their size, without reopening the event path for
@@ -220,6 +221,69 @@ previously observed code always override inert-content filtering.
 - Process info enrichment (PID, command, UID)
 - Auto-quarantine on high-confidence realtime signature matches (category, size, entropy, and hex/execution validation)
 - Auto-quarantine on confirmed PHP request-to-execution flows and executable packed payloads, using the stable file version that was inspected
+
+## Files Moved or Linked Into a Site
+
+A file written elsewhere and then renamed or hard-linked into a site raises no
+close-write event at its new path. The placement monitor reports these files.
+Each one goes through the same admission, analysis and response as a write at
+that path, including quarantine of confirmed shells, whatever the file's age.
+The monitor opens the new path without following a symlink and analyzes only
+the file the kernel reported; a different file found at that path is never
+analyzed in its place. A placed file keeps the PID of the process that moved
+it, so restore detection still sees a process that writes a file elsewhere
+and renames it over a path CSM quarantined.
+
+`detection.placement_backend` selects how the monitor sees placements. It
+takes effect after a restart.
+
+- `bpf` uses BPF LSM rename and link hooks. It sees renames, including both
+  sides of a rename exchange, hard links, including a temporary file
+  published with `linkat`, and directories moved in. It needs a BPF-tagged
+  build and a kernel that can attach BPF LSM programs. Chosen explicitly, it
+  has no fallback.
+- `legacy` uses a second fanotify group that reports directory entries, on
+  kernel 5.9 or newer. It sees files and directories moved in, and new
+  entries, which include hard links and temporary files published with
+  `linkat`. A new file that its own close-write already analyzed is not
+  analyzed twice.
+- `auto` (default) tries `bpf`, then `legacy`, then runs without a backend.
+- `none` turns the monitor off. Placed files are left to the deep scan.
+
+Without a backend the daemon logs a startup warning that files moved or
+linked into watched trees are checked only by the deep scan. The status
+response names the selection under `backends.placement` (`bpf`, `legacy` or
+`none`), and `csm doctor` shows it as the `backend: placement` check. That
+check warns on `none` unless the config chose it. `GET /api/v1/capabilities`
+lists `bpf-file-placement` while the BPF backend runs. A failed start raises
+`bpf_unavailable`, as for the other BPF monitors, except on a kernel that
+supports neither backend, which shows `none` without a finding.
+
+A directory moved into a watched tree is walked, because its files raised no
+events of their own. Each file gets the same identity check and analysis as
+a placed file. The walk never follows symlinks, runs on its own worker, waits
+for analyzer room so live writes keep priority, and works through a large
+tree in bounded passes. When realtime cannot finish a directory, because it
+holds too many entries, too many moved-in directories are waiting, the
+analyzers stay busy for a whole pass, or entries cannot be read, it raises
+one High `placed_dir_incomplete_realtime` naming the directory. The next deep
+scan covers the files it did not check.
+
+`placement_unresolved_realtime` reports what the monitor cannot see. It is
+High for a moved or linked file whose path realtime could not resolve, such
+as a path deeper or longer than realtime protection follows, and for a watch
+root the running backend cannot see. One Warning per start names the roots on
+a filesystem this kernel cannot watch for placements. The deep scan covers
+those files. A kernel queue overflow in the `legacy` backend raises
+`fanotify_kernel_overflow`.
+
+A PHP file saved under an atomic-save temporary name and then renamed to its
+final name is not scanned twice. A recent clean scan is reused only when the
+file's content, size, modification time, permissions and owner match that
+scan, its final name gets the same analysis, and no setting or rule changed
+since. Executable files and files too large for a complete read are always
+analyzed. Queue health for the monitor appears under `bpf.placement` and
+`placement.dir_walk` in [protection queue health](api.md#protection-queue-health).
 
 ## Sensitive System File Watcher
 

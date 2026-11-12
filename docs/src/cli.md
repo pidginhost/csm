@@ -95,6 +95,11 @@ While the firewall is disabled, queued automatic blocks pass the check, which
 says the blocks are not applied and whether dry run is on.
 The same evidence appears in `csm status --json` and the HTTP status response.
 
+Each started live monitor also gets a `backend: <feature>` check naming the
+backend it runs on, such as `backend: placement`. A monitor on `none` passes
+when its `detection.<feature>_backend` is `none` and warns otherwise, with a
+pointer to the startup log.
+
 ## Backup & restore
 
 | Command | Description |

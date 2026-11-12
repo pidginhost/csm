@@ -209,6 +209,9 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  `queues` reports named protection queues, including depth,
                                  capacity, running work, recent and cumulative drops, and lag.
                                  A degraded queue changes `status` and `security_posture`.
+                                 `backends` names the backend each started live monitor
+                                 selected (`af_alg`, `connection_tracker`, `exec_monitor`,
+                                 `sensitive_files`, `placement`): `bpf`, `legacy` or `none`.
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
                                  `uptime_seconds` is the time since the daemon started.
@@ -676,6 +679,16 @@ and buffered output left after the reader stops. A received event remains
 running until evaluation and delivery to the finding queue finish, including
 events intentionally filtered during evaluation. Kernel ring occupancy and
 reservation failures are separate from these userspace measurements.
+`bpf.placement.output`, `bpf.placement.kernel` and
+`bpf.placement.unresolved` report whichever
+[placement backend](detection-realtime.md#files-moved-or-linked-into-a-site)
+runs: placements waiting for a worker, placements the kernel lost, and
+placements whose path could not be resolved. The `legacy` backend adds
+`bpf.placement.create_settle` for new files waiting for their own
+close-write. A full queue drops and counts; the deep scan covers dropped
+files. `placement.dir_walk` reports directories moved into a watched tree
+that wait for their walk, counted in directories. Evicted directories and
+walks cut short count as lost and raise `placed_dir_incomplete_realtime`.
 `bpf.execution.docroot` reports up to 1,024 non-root process starts waiting
 for a check of a program in a document root. One worker resolves the running
 image before reading and scanning it. All non-root starts enter this queue
