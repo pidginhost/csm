@@ -249,3 +249,37 @@ func TestPostremovePreservesDisabledApacheSiteInclude(t *testing.T) {
 		})
 	}
 }
+
+// cPanel keeps including the per-site file once it has existed, and Apache
+// refuses a RewriteMap whose map is gone. Package removal must leave the
+// inert placeholder there before it deletes the maps.
+func TestPostremoveDisablesTheCPanelSiteSnippet(t *testing.T) {
+	root := t.TempDir()
+	site := filepath.Join(root, "etc/apache2/conf.d/userdata/csm-challenge.conf")
+	maps := filepath.Join(root, "var/cache/csm/challenge_ips.txt")
+	for _, p := range []string{site, maps} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(site, []byte("# csm-managed-version: 9\nRewriteEngine On\nRewriteMap csm_chal \"txt:/var/cache/csm/challenge_ips.txt\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(maps, []byte("# map\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runPostremoveChallengeFunction(t, postremoveChallengeFunction(t, root), "remove_challenge_snippets")
+	if err != nil {
+		t.Fatalf("removal failed: %v: %s", err, output)
+	}
+	body, err := os.ReadFile(site)
+	if err != nil {
+		t.Fatalf("cPanel site file removed; its required include would fail: %v", err)
+	}
+	if strings.Contains(string(body), "RewriteMap") || !strings.HasPrefix(string(body), "# csm-managed-version: ") {
+		t.Fatalf("cPanel site file still active after removal: %q", body)
+	}
+	if _, err := os.Stat(maps); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("map kept after its references were disabled: %v", err)
+	}
+}

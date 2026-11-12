@@ -46,10 +46,12 @@ remove_challenge_snippets() {
     local nginx_snippet=/etc/nginx/conf.d/csm-challenge.conf snippet
     local removal_failed=0 grep_status nginx_ref nginx_in_use
     local nginx_file_list nginx_scan_failed
-    local site=/var/cache/csm/apache-challenge-site.conf header tmp
-    # Operator sites retain a required Include. Leave an inert managed file
-    # so Apache can still start, without changing any operator configuration.
-    if [ -e "$site" ] || [ -L "$site" ]; then
+    local site header tmp
+    # Sites keep including these files (cPanel's include needs a match, plain
+    # Apache names the file), and Apache refuses a RewriteMap whose map is
+    # gone. Leave an inert managed file without touching operator files.
+    for site in /var/cache/csm/apache-challenge-site.conf /etc/apache2/conf.d/userdata/csm-challenge.conf; do
+        [ -e "$site" ] || [ -L "$site" ] || continue
         if [ -f "$site" ] && [ ! -L "$site" ] && IFS= read -r header < "$site" && [[ "$header" =~ ^\#\ csm-managed-version:\ [1-9][0-9]*$ ]]; then
             tmp=$(mktemp "${site}.remove.XXXXXX") || tmp=""
             if [ -n "$tmp" ] &&
@@ -65,7 +67,7 @@ remove_challenge_snippets() {
             echo "WARNING: $site is not a managed regular file; leaving challenge maps in place" >&2
             removal_failed=1
         fi
-    fi
+    done
     for snippet in \
         /etc/apache2/conf.d/csm_challenge.conf \
         /etc/apache2/conf.d/csm-challenge.conf \
