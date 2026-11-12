@@ -185,26 +185,33 @@ func (fm *FileMonitor) placementFromRaw(raw PlacementRawEvent, mounts []mountEnt
 	}, true
 }
 
-// reportUnresolvedPlacement keys its cooldown on the device, not the names:
-// a writer can make every placement unresolvable.
 func (fm *FileMonitor) reportUnresolvedPlacement(dev uint64, raw PlacementRawEvent) {
+	fm.reportUnresolvedOnDevice(dev, func() string {
+		names := make([]string, 0, len(raw.Components)+1)
+		names = append(names, "...")
+		for i := len(raw.Components) - 1; i >= 0; i-- {
+			names = append(names, raw.Components[i])
+		}
+		reason := "the filesystem has no whole mount to resolve the path under"
+		if raw.Truncated {
+			reason = "the path is deeper or longer than realtime protection follows"
+		}
+		return fmt.Sprintf("Realtime protection did not check it because %s. Nearest names: %s; inode %d on that device, placed by PID %d. The next deep scan covers it.",
+			reason, strings.Join(names, "/"), raw.Ino, raw.PID)
+	})
+}
+
+// reportUnresolvedOnDevice keys its cooldown on the device, not the names:
+// a writer can make every placement unresolvable. details runs only when
+// the finding is sent.
+func (fm *FileMonitor) reportUnresolvedOnDevice(dev uint64, details func() string) {
 	device := deviceName(dev)
 	if !fm.shouldAlert(placementUnresolvedCheck, "dev "+device) {
 		return
 	}
-	names := make([]string, 0, len(raw.Components)+1)
-	names = append(names, "...")
-	for i := len(raw.Components) - 1; i >= 0; i-- {
-		names = append(names, raw.Components[i])
-	}
-	reason := "the filesystem has no whole mount to resolve the path under"
-	if raw.Truncated {
-		reason = "the path is deeper or longer than realtime protection follows"
-	}
 	fm.sendAlert(alert.High, placementUnresolvedCheck,
 		fmt.Sprintf("Realtime protection could not resolve the path of a file or directory moved or linked on device %s", device),
-		fmt.Sprintf("Realtime protection did not check it because %s. Nearest names: %s; inode %d on that device, placed by PID %d. The next deep scan covers it.",
-			reason, strings.Join(names, "/"), raw.Ino, raw.PID))
+		details())
 }
 
 // reportUncoveredPlacementRoots names roots that the running backend's

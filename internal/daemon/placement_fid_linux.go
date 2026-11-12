@@ -230,6 +230,8 @@ func (fm *FileMonitor) noteClosedWrite(dev, ino uint64, path string) {
 type fidMount struct {
 	fd   int
 	path string
+	// dev keys the unresolved-placement cooldown, as the BPF path does.
+	dev uint64
 }
 
 // placementFID reports placements through a second fanotify group that
@@ -381,7 +383,7 @@ func (p *placementFID) markFilesystemsWith(all []mountEntry, mark markFunc) ([]m
 			}
 			devices[sfs.Fsid] = r.device
 		}
-		p.mounts[sfs.Fsid] = append(p.mounts[sfs.Fsid], fidMount{fd: dirfd, path: anchor})
+		p.mounts[sfs.Fsid] = append(p.mounts[sfs.Fsid], fidMount{fd: dirfd, path: anchor, dev: r.device})
 	}
 	if len(p.mounts) == 0 {
 		if skipErr != nil {
@@ -484,6 +486,12 @@ func (p *placementFID) dispatch(buf []byte, now time.Time) {
 			ev, ok, err := p.resolve(rec, m, now)
 			if err != nil {
 				p.unresolved.Lose(now, 1)
+				// A systematic failure, such as a refused open_by_handle_at,
+				// would otherwise hide every placement on this filesystem.
+				p.fm.reportUnresolvedOnDevice(m.dev, func() string {
+					return fmt.Sprintf("Realtime protection did not check entry %q in %s because it could not open the directory or the entry: %v. Placed by PID %d. The next deep scan covers it.",
+						rec.Name, m.path, err, rec.PID)
+				})
 				continue
 			}
 			if ok {

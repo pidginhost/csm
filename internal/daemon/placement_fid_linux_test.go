@@ -381,3 +381,46 @@ func TestFIDInitErrorMarksMissingKernelSupport(t *testing.T) {
 		t.Errorf("EPERM classified as missing kernel support: %v", err)
 	}
 }
+
+// A directory handle that will not open for a reason other than a removed
+// entry hides every placement on that filesystem, so it is reported once per
+// device cooldown; a removed directory is ordinary churn and stays silent.
+func TestFIDResolveErrorRaisesUnresolvedFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     error
+		dropped uint64
+		alerts  int
+	}{
+		{"permission", unix.EPERM, 2, 1},
+		{"stale handle", unix.ESTALE, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			alerts := make(chan alert.Finding, 8)
+			fm := placementTestMonitor(alerts)
+			p := newTestPlacementFID(t, fm)
+			p.mounts = map[unix.Fsid][]fidMount{{Val: [2]int32{7, 9}}: {{fd: -1, path: t.TempDir(), dev: unix.Mkdev(8, 3)}}}
+			p.openDir = func(int, unix.FileHandle, int) (int, error) { return -1, tc.err }
+			rec := fidEventRecord(unix.FAN_MOVED_TO, fidInfoRecord(unix.FAN_EVENT_INFO_TYPE_DFID_NAME, dfidNameBody(8, []byte{1, 2, 3, 4, 5, 6, 7, 8}, "x.php")))
+			now := time.Now()
+			p.dispatch(rec, now)
+			p.dispatch(rec, now)
+
+			if got := p.QueueStatuses(now)["unresolved"].DroppedTotal; got != tc.dropped {
+				t.Fatalf("unresolved losses %d, want %d", got, tc.dropped)
+			}
+			var got []alert.Finding
+			for len(alerts) > 0 {
+				got = append(got, <-alerts)
+			}
+			if len(got) != tc.alerts {
+				t.Fatalf("findings %+v, want %d", got, tc.alerts)
+			}
+			for _, f := range got {
+				if f.Check != placementUnresolvedCheck || f.Severity != alert.High || !strings.Contains(f.Message, "8:3") {
+					t.Fatalf("finding %+v", f)
+				}
+			}
+		})
+	}
+}
