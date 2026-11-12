@@ -158,12 +158,11 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 	return named == len(e.times)
 }
 
+// normalizeMailAuthAccount is the tracker key for a mailbox: trimmed and
+// lower-cased like the SMTP tracker's, so every spelling of one mailbox is
+// one target and a spray cannot split across case variants.
 func normalizeMailAuthAccount(account string) string {
-	local, domain, ok := strings.Cut(account, "@")
-	if !ok || local == "" || domain == "" {
-		return account
-	}
-	return local + "@" + strings.ToLower(domain)
+	return strings.ToLower(strings.TrimSpace(account))
 }
 
 // slowConfinedToEstablishedGood reports whether every mailbox the slow-window
