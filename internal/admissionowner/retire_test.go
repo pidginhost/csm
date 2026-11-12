@@ -634,7 +634,7 @@ func TestOwnerRetirementRetryUsesElapsedTime(t *testing.T) {
 
 // A prolonged rollback cannot turn the degraded retry into a wake that
 // disappears: it backs off from one second, doubling, and recovery is
-// found on the next wake without a new arrival (M2).
+// found on the next wake without a new arrival.
 func TestOwnerRetirementKeepsDegradedWakes(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)

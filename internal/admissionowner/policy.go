@@ -39,7 +39,7 @@ type ExecutionPolicy struct {
 	// client's own validation.
 	AskVerdict Asker
 	// Allows reports whether the configuration still allows the response
-	// a queued candidate asks for (admission-gates section 8, row 1).
+	// a queued candidate asks for.
 	Allows func(admission.Candidate) bool
 }
 
@@ -84,10 +84,10 @@ func (p ExecutionPolicy) same(q ExecutionPolicy) bool {
 func (o *Owner) executable() bool { return o.opts.Blocks != nil }
 
 // liveExecution lets an executable owner run block picks under a live
-// policy. Until the admission owner is cut over, it stays false and such an owner
-// previews them as an owner without an engine does; a dry-run policy still
-// forecasts. No configuration reaches it; this package's tests
-// turn it on to exercise execution.
+// policy. It stays false while legacy blocking still enforces, so the same
+// observation cannot trigger both legacy and admission execution. A live
+// policy previews block picks; a dry-run policy still forecasts. No
+// configuration reaches it; only this package's tests enable it.
 var liveExecution = false
 
 // executing reports whether block picks run live: an engine, live
@@ -184,7 +184,7 @@ func (o *Owner) refreshPolicy() error {
 }
 
 // syncPreviews tells the ledger whether observe previews answer their
-// episodes: they do unless the owner forecasts (section 8, row 3).
+// episodes: they do unless the owner forecasts.
 func (o *Owner) syncPreviews() {
 	if o.ledger != nil {
 		o.ledger.PreviewsAnswer(!o.forecasting())

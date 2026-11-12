@@ -253,9 +253,9 @@ func TestOwnerRechecksProtectionAfterTheCallback(t *testing.T) {
 	}
 }
 
-// The changes the design makes to legacy on purpose, each named
-// after the legacy fixture whose behaviour changes, with the owner's
-// expected behaviour. Concurrent calls, aggregated examples and notices,
+// These cases assert the owner's intentional differences from legacy
+// behaviour, each named after the corresponding legacy fixture.
+// Concurrent calls, aggregated examples and notices,
 // fresh requests for a retry and discarding old answers on reload are
 // pinned by TestOwnerBoundsVerdictCalls, TestOwnerSummarizesADryRunMinute,
 // TestOwnerAsksAgainForARetry and TestOwnerRetiresVerdictsOnANewEpoch.

@@ -135,8 +135,9 @@ type Options struct {
 	// Caps are the firewall's containment capabilities block targets fit.
 	Caps func() admission.Caps
 	// Blocks returns the firewall engine that runs block_ip picks, or nil
-	// while none runs. Without Blocks every pick is a preview: production
-	// passes none until cutover.
+	// while none runs. Without a provider every pick is a preview. With
+	// one, the policy and liveExecution guard decide whether block picks
+	// forecast, preview or execute.
 	Blocks func() BlockEngine
 	// Policy reads the published execution policy. An owner with
 	// Blocks binds to it at every turn and reload, and does not start

@@ -192,8 +192,8 @@ func proveEpisodes(tx *bolt.Tx) error {
 // line as a verified effect does. Previews answer while admission only
 // previews, so a comparison follows the episode. A forecasting owner turns
 // them off: an address previewed before its session is forecast again on
-// its next observation (section 8, row 3). Challenge lines always follow
-// their previews, which no forecast models.
+// its next observation. Challenge lines always follow their previews,
+// which no forecast models.
 func (l *AdmissionLedger) PreviewsAnswer(on bool) { l.previewsEnd.Store(!on) }
 
 // takeEpisode names a new episode from the ledger's sequence.

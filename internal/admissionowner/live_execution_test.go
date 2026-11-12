@@ -13,8 +13,8 @@ import (
 )
 
 // This package's tests exercise live execution; production keeps it off
-// until the admission owner is cut over. A test that needs the production value says so with
-// withLiveExecution.
+// while legacy blocking still enforces. A test that needs the production
+// value selects it with withLiveExecution.
 func init() { liveExecution = true }
 
 // withLiveExecution sets liveExecution for one test. Call it before the

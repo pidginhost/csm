@@ -446,9 +446,9 @@ func TestOwnerHandoffDoesNotWaitForTheOwner(t *testing.T) {
 	}
 }
 
-// A response acts on the address its evidence attributes; a
-// scan root never widens to a prefix (5.13). Another target is refused and
-// the hourly row names the mismatch.
+// A response acts on the address its evidence attributes; a scan root
+// never widens to a prefix. Another target is refused and the hourly row
+// names the mismatch.
 func TestOwnerRefusesATargetItsEvidenceDoesNotName(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
