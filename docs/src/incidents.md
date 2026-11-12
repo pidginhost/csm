@@ -970,7 +970,9 @@ Attribution gaps:
 | `webmail_bruteforce` | ignored | attacker-side |  |
 | `webmail_login_realtime` | ignored | informational |  |
 | `webshell` | malware artifact |  |  |
+| `webshell_caller` | ignored | attacker-side |  |
 | `webshell_content_realtime` | security event |  |  |
+| `webshell_path_public` | ignored | informational |  |
 | `webshell_realtime` | security event |  |  |
 | `whm_account_action` | ignored | informational |  |
 | `whm_login_realtime` | ignored | informational |  |

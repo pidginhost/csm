@@ -939,6 +939,8 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"http_claimed_bot_unverified":    "Unverified Claimed Bot",
 			"http_ua_spoof":                  "HTTP UA Spoof",
 			"http_distributed_flood":         "Distributed HTTP Flood",
+			"webshell_caller":                "Webshell Caller",
+			"webshell_path_public":           "Flagged File Requested Publicly",
 			"exim_frozen_realtime":           "Frozen Message",
 			"email_suspicious_geo":           "Suspicious Geo Login",
 			"email_rate_critical":            "Email Rate Critical",

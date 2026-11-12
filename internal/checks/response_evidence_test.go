@@ -108,6 +108,7 @@ var notAddressEvidence = map[string]string{
 	"php_shield_webshell":           "HTTP client of a shielded script; may be an ordinary visitor",
 	"smtp_account_spray":            "most recent of many sources of a per-mailbox summary",
 	"webmail_login_realtime":        "authenticated customer login",
+	"webshell_caller":               "HTTP client of a flagged file; may be a visitor sent there by a page",
 	"whm_login_realtime":            "authenticated login",
 	"whm_password_change_noninfra":  "no response policy; candidate for a reviewed compromise decision",
 	"whm_unauth_scripts_realtime":   "unauthenticated WHM script probe; visibility only",
@@ -378,8 +379,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding.
-	if len(producers) != 73 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 73 producers", len(producers))
+	if len(producers) != 74 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 74 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

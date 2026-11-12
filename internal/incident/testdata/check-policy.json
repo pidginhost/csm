@@ -466,6 +466,8 @@
       "waf_attack_blocked",
       "webmail_bruteforce",
       "webmail_login_realtime",
+      "webshell_caller",
+      "webshell_path_public",
       "whm_login_realtime",
       "whm_unauth_scripts_realtime",
       "wp_login_bruteforce",

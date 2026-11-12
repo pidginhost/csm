@@ -72,13 +72,14 @@ const (
 //
 // Aggregates per-IP counts across ALL domains -- catches attackers who
 // distribute requests across many sites to stay under per-site thresholds.
-func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPBruteForce(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	window := cfg.Thresholds.BruteForceWindow
 	if window <= 0 {
 		window = 5000
 	}
 
 	stats := newDomlogStats()
+	stats.callers = loadWebshellCallers(store)
 	hostInfo := platform.Detect()
 	var centralPath string
 	var centralRecords []syslogRecord

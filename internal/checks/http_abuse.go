@@ -163,6 +163,9 @@ type domlogStats struct {
 	// and reads as a trusted chain.
 	forwarded map[string]map[string]bool
 
+	// callers collects requests for flagged files; nil when none is flagged.
+	callers *webshellCallers
+
 	// trusted is the trust list scan resolves clients against, parsed from
 	// cfg once per scan like the thresholds below.
 	trusted    clientaddr.Trusted
@@ -281,6 +284,7 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		removeChallengeIP(ip)
 		return
 	}
+	s.callers.record(rec, ip, s.scanTime)
 	// The record the counters below name. Its address is the HTTP peer only
 	// when no trusted proxy chain supplied it; stamp reads a count with any
 	// chained record as a trusted chain.
@@ -529,6 +533,7 @@ func (s *domlogStats) emitLegacy(cfg *config.Config) []alert.Finding {
 // running through emit), then http_request_flood, then http_ua_spoof.
 func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	out := s.emitLegacy(cfg)
+	out = append(out, s.callers.emit()...)
 
 	if cfg != nil && cfg.Thresholds.HTTPFloodThreshold > 0 {
 		for ip, count := range s.httpReqs {
