@@ -23,6 +23,10 @@ const (
 		`[uri "/q"] [unique_id "179443541352.069988"] [ref "o0,5v9,5"], client: 203.0.113.61, server: example.com, request: "GET /q?a=probe HTTP/1.1", host: "example.com"`
 	ruleTestLiteSpeed = `2026-11-11 10:00:00.000000 [INFO] [100] [T0] [203.0.113.62:50000-1#APVH_example.com:443] [MODSEC] mod_security rule [id "214930"] ` +
 		`at [/etc/apache2/conf.d/modsec_vendor_configs/comodo_litespeed/30_Apps_OtherApps.conf:12] triggered!`
+	// LiteSpeed's Apache-style lines name the matched data logdata, not data.
+	ruleTestLiteSpeedApache = `[Wed Nov 11 10:00:00.000001 2026] [error] [client 203.0.113.63] ModSecurity: Access denied with code 403, ` +
+		`[Rule: 'TX:EXTENSION' '@within .bak/ .old/'] [id "920440"] [rev "1"] [msg "URL file extension is restricted by policy"] ` +
+		`[logdata ".bak/"] [severity "CRITICAL"] [tag "attack-protocol"] [hostname "192.0.2.10"] [uri "/site.bak"] [unique_id "AAAA"]`
 )
 
 func TestErrorLogRuleReadsServerFields(t *testing.T) {
@@ -45,6 +49,8 @@ func TestErrorLogRuleReadsServerFields(t *testing.T) {
 		// there cannot open a field.
 		{"v2 escaped client quotes", ruleTestV2, v2},
 		{"litespeed", ruleTestLiteSpeed, LogRule{ID: "214930", File: "/etc/apache2/conf.d/modsec_vendor_configs/comodo_litespeed/30_Apps_OtherApps.conf"}},
+		{"litespeed apache style with logdata", ruleTestLiteSpeedApache, LogRule{ID: "920440", Msg: "URL file extension is restricted by policy",
+			Tags: []string{"attack-protocol"}, Hostname: "192.0.2.10", URI: "/site.bak"}},
 		{"v2 without data or severity",
 			`[Wed Nov 11 10:00:00.000001 2026] [security2:error] [pid 100:tid 101] [client 203.0.113.60:50000] ModSecurity: Warning. Operator GE matched 5 at TX:inbound_anomaly_score. ` +
 				`[file "/etc/modsecurity/rules/RESPONSE-980-CORRELATION.conf"] [line "92"] [id "980130"] [msg "Inbound Anomaly Score Exceeded"] [ver "OWASP_CRS/3.3.8"] ` +
@@ -120,6 +126,9 @@ func TestErrorLogRuleRefusesClientFormedFields(t *testing.T) {
 		// The real line has no msg; one placed before the rule's id is client text.
 		{"v2 variable name adds a message", v2(`probe"] [msg "Inbound Anomaly Score Exceeded"]`)},
 		{"v2 variable name adds a file", v2(`probe"] [file "/x/REQUEST-920-PROTOCOL-ENFORCEMENT.conf"]`)},
+		{"litespeed logdata names a host", strings.Replace(ruleTestLiteSpeedApache, `[logdata ".bak/"]`, `[logdata ".bak/"] [hostname "victim.example.net"]`, 1)},
+		{"litespeed logdata adds a tag", strings.Replace(ruleTestLiteSpeedApache, `[logdata ".bak/"]`, `[logdata ".bak/"] [tag "attack-sqli"]`, 1)},
+		{"litespeed message adds logdata", strings.Replace(ruleTestLiteSpeedApache, `policy"]`, `policy"] [logdata "x"]`, 1)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got, ok := ErrorLogRule(tt.line); ok {
