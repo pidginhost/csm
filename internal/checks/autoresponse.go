@@ -70,7 +70,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 	for i, f := range findings {
 		// Only act on specific high-confidence critical checks
 		switch f.Check {
-		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution", RemovedFileRestoredCheck:
+		case "fake_kernel_thread", "suspicious_process", "php_suspicious_execution", RemovedFileRestoredCheck, DetachedWebProcessCheck:
 		default:
 			continue
 		}
@@ -81,7 +81,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		// signal the same process again.
 		findings[i].AutoProcessResponseEvaluated = true
 
-		if f.Check == RemovedFileRestoredCheck {
+		if f.Check == RemovedFileRestoredCheck || f.Check == DetachedWebProcessCheck {
 			// The parents go first so a loop cannot start another writer.
 			// Recheck origin and terminal inside the process handle too:
 			// a captured process can exec or acquire a terminal before this.

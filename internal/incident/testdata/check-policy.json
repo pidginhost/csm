@@ -235,6 +235,7 @@
       "rpm_integrity",
       "self_deleting_dropper_overflow",
       "removed_file_restored_realtime",
+      "detached_web_process",
       "self_deleting_dropper_realtime",
       "signature_match_realtime",
       "signature_update_rescan_queued",

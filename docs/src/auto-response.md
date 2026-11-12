@@ -6,7 +6,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 
 | Action | Description |
 |--------|-------------|
-| **Kill processes** | Fake kernel threads, reverse shells, GSocket, and loops that write back a file CSM removed. Never kills root or system processes. |
+| **Kill processes** | Fake kernel threads, reverse shells, GSocket, loops that write back a file CSM removed, and processes a web request left running in the background. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
 | **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |

@@ -287,6 +287,7 @@ var runnerFindingNames = map[string][]string{
 	"sshd_config":          {"sshd_config_change"},
 	"ssl_certs":            {"ssl_cert_issued"},
 	"suspicious_processes": {"docroot_binary_exec", "suspicious_process"},
+	"detached_processes":   {DetachedWebProcessCheck},
 	"symlink_attacks":      {"symlink_attack"},
 	"uid0_accounts":        {"uid0_account"},
 	"user_outbound":        {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},
@@ -474,6 +475,7 @@ func criticalChecks() []namedCheck {
 	return []namedCheck{
 		{"fake_kernel_threads", CheckFakeKernelThreads},
 		{"suspicious_processes", CheckSuspiciousProcesses},
+		{"detached_processes", CheckDetachedWebProcesses},
 		{"php_processes", CheckPHPProcesses},
 		{"shadow_changes", CheckShadowChanges},
 		{"uid0_accounts", CheckUID0Accounts},
