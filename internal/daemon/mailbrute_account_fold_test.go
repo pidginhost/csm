@@ -30,14 +30,14 @@ func TestMailAccountSprayFoldsMailboxSpellings(t *testing.T) {
 }
 
 func TestNormalizeMailAuthAccountMatchesSMTPFold(t *testing.T) {
-	for in, want := range map[string]string{
-		"Alice@Example.COM":  "alice@example.com",
-		" bob@example.net\t": "bob@example.net",
-		"CPUSER":             "cpuser",
-		"":                   "",
+	for _, tt := range []struct{ in, want string }{
+		{"Alice@Example.COM", "alice@example.com"},
+		{" bob@example.net\t", "bob@example.net"},
+		{"CPUSER", "cpuser"},
+		{"", ""},
 	} {
-		if got := normalizeMailAuthAccount(in); got != want {
-			t.Errorf("normalizeMailAuthAccount(%q) = %q, want %q", in, got, want)
+		if got := normalizeMailAuthAccount(tt.in); got != tt.want {
+			t.Errorf("normalizeMailAuthAccount(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
