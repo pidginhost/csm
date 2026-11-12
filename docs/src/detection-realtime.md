@@ -229,11 +229,14 @@ A file written elsewhere and then renamed or hard-linked into a site raises no
 close-write event at its new path. The placement monitor reports these files.
 Each one goes through the same admission, analysis and response as a write at
 that path, including quarantine of confirmed shells, whatever the file's age.
-The monitor opens the new path without following a symlink and analyzes only
-the file the kernel reported; a different file found at that path is never
-analyzed in its place. A placed file keeps the PID of the process that moved
-it, so restore detection still sees a process that writes a file elsewhere
-and renames it over a path CSM quarantined.
+The monitor rejects a symlink at the final path component and verifies the
+file's identity before analysis. With `bpf`, that identity comes from the
+kernel event. With `legacy`, the event identifies the parent directory and
+entry name; CSM records the file's identity when it resolves that entry. A
+replacement made before that lookup can be analyzed, but a replacement made
+after it fails the identity check. The event keeps the placing process's PID
+for restore detection; `legacy` cannot prove that process placed a replacement
+found during lookup.
 
 `detection.placement_backend` selects how the monitor sees placements. It
 takes effect after a restart.

@@ -685,10 +685,13 @@ reservation failures are separate from these userspace measurements.
 runs: placements waiting for a worker, placements the kernel lost, and
 placements whose path could not be resolved. The `legacy` backend adds
 `bpf.placement.create_settle` for new files waiting for their own
-close-write. A full queue drops and counts; the deep scan covers dropped
-files. `placement.dir_walk` reports directories moved into a watched tree
-that wait for their walk, counted in directories. Evicted directories and
-walks cut short count as lost and raise `placed_dir_incomplete_realtime`.
+close-write. When this queue fills, its oldest entry is sent for early analysis
+and counted as a drop from the settle queue. Pending entries discarded at
+shutdown also count as drops. A full output queue drops placements instead;
+the deep scan covers those files. `placement.dir_walk` reports directories
+moved into a watched tree that wait for their walk, counted in directories.
+Evicted directories and walks cut short count as lost and raise
+`placed_dir_incomplete_realtime`.
 `bpf.execution.docroot` reports up to 1,024 non-root process starts waiting
 for a check of a program in a document root. One worker resolves the running
 image before reading and scanning it. All non-root starts enter this queue
