@@ -208,6 +208,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "suspicious_file", Category: CategoryMalware, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "suspicious_php_content", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "suspicious_process", Category: CategoryMalware, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
+	{Name: DetachedWebProcessCheck, Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "webshell", Category: CategoryMalware, Correlation: CorrelationMalwareArtifact, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "webshell_content_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
 	{Name: "webshell_realtime", Category: CategoryMalware, Correlation: CorrelationSecurityEvent},
