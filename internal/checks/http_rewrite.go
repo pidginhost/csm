@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -75,8 +77,10 @@ type rewriteSources struct {
 }
 
 // DetectHTTPRewrite reads the host web server's configuration from disk: an
-// Apache RemoteIPHeader or RemoteIPProxyProtocol, an nginx set_real_ip_from,
-// or LiteSpeed's client IP from header, in any scope.
+// Apache RemoteIPHeader or RemoteIPProxyProtocol, mod_cloudflare or
+// mod_rpaf, an nginx set_real_ip_from, or LiteSpeed's client IP from
+// header, in any scope; failing those, a log format that writes a request
+// value where CSM reads the client.
 func DetectHTTPRewrite(info platform.Info) HTTPRewrite {
 	src := rewriteSources{server: info.WebServer}
 	switch info.WebServer {
@@ -107,17 +111,17 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	}
 	unknown := ""
 	if src.lswsConfig != "" {
-		value, err := lswsClientIPFromHeader(src.lswsConfig)
+		directive, err := lswsClientAddressRewrite(src.lswsConfig)
 		switch {
-		case value != "":
-			r.State, r.Directive, r.File = RewriteActive, "useIpInProxyHeader "+value, src.lswsConfig
+		case directive != "":
+			r.State, r.Directive, r.File = RewriteActive, directive, src.lswsConfig
 			return r
 		case err != nil:
 			unknown = err.Error()
 		}
 	}
 	if src.apacheConfig != "" {
-		directive, file, complete := apacheRemoteIPRewrite(src.apacheConfig)
+		directive, file, complete := apacheClientAddressRewrite(src.apacheConfig, src.server == platform.WSLiteSpeed)
 		if directive != "" {
 			r.State, r.Directive, r.File = RewriteActive, directive, file
 			return r
@@ -129,7 +133,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 		unknown = "no Apache configuration file was found"
 	}
 	if src.nginxConfig != "" {
-		directive, file, complete := nginxRealIPRewrite(src.nginxConfig)
+		directive, file, complete := nginxClientAddressRewrite(src.nginxConfig)
 		if directive != "" {
 			r.State, r.Directive, r.File = RewriteActive, directive, file
 			return r
@@ -146,24 +150,77 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	return r
 }
 
-// apacheRemoteIPRewrite returns the first mod_remoteip directive that
-// replaces the client address, its file, and whether the whole tree was
-// read. A rewrite directive Apache would refuse leaves the tree unknown.
-func apacheRemoteIPRewrite(path string) (directive, file string, complete bool) {
+// apacheClientAddressRewrite returns the first directive that replaces the
+// client address, its file, and whether the whole tree was read: a
+// mod_remoteip header or PROXY protocol, a loaded or configured
+// mod_cloudflare, or an enabled mod_rpaf (0.6 or 0.8 names); failing
+// those, a log format that writes a request value where CSM reads the
+// client. A rewrite or format directive Apache would refuse leaves the
+// tree unknown.
+func apacheClientAddressRewrite(path string, liteSpeed bool) (directive, file string, complete bool) {
 	lines, complete := assembleApacheConfigWithStatus(path)
 	malformed := false
-	valid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, _ apacheLineContext) {
+	logs := apacheLogFormats{liteSpeed: liteSpeed}
+	valid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, ctx apacheLineContext) {
 		if directive != "" {
 			return
 		}
+		fields, resolved := apacheMacroFields(fields, ctx)
+		if !resolved {
+			// A macro parameter can name any directive.
+			malformed = true
+			return
+		}
+		logs.add(line, fields, ctx)
+		is := func(names ...string) bool {
+			for _, n := range names {
+				if strings.EqualFold(fields[0], n) {
+					return true
+				}
+			}
+			return false
+		}
 		switch {
-		case strings.EqualFold(fields[0], "RemoteIPHeader"):
-			if len(fields) != 2 {
+		case is("RemoteIPHeader", "CloudFlareRemoteIPHeader"):
+			if len(fields) != 2 || is("CloudFlareRemoteIPHeader") && fields[1] == "" {
 				malformed = true
 				return
 			}
 			directive, file = strings.Join(fields, " "), line.File
-		case strings.EqualFold(fields[0], "RemoteIPProxyProtocol"):
+		case is("CloudFlareRemoteIPTrustedProxy"):
+			if len(fields) < 2 || fields[1] == "" {
+				malformed = true
+				return
+			}
+			for _, proxy := range fields[1:] {
+				// Apache's ITERATE handler stops at an empty quoted argument.
+				if proxy == "" {
+					break
+				}
+				if !apacheCloudflareProxyKnown(proxy) {
+					malformed = true
+					return
+				}
+			}
+			directive, file = strings.Join(fields, " "), line.File
+		case is("DenyAllButCloudFlare"):
+			if len(fields) != 1 {
+				malformed = true
+				return
+			}
+			// This also implies mod_cloudflare's default address rewrite.
+			directive, file = strings.Join(fields, " "), line.File
+		case is("LoadModule"):
+			// Only Apache can resolve its Define and environment values.
+			if len(fields) != 3 || fields[1] == "" || fields[2] == "" || apacheArgumentHasVariable(fields[1]) {
+				malformed = true
+				return
+			}
+			if fields[1] == "cloudflare_module" {
+				// mod_cloudflare trusts its built-in Cloudflare ranges once loaded.
+				directive, file = strings.Join(fields, " "), line.File
+			}
+		case is("RemoteIPProxyProtocol", "RPAF_Enable", "RPAFenable"):
 			switch {
 			case len(fields) == 2 && strings.EqualFold(fields[1], "On"):
 				directive, file = strings.Join(fields, " "), line.File
@@ -172,27 +229,208 @@ func apacheRemoteIPRewrite(path string) (directive, file string, complete bool) 
 			}
 		}
 	})
-	return directive, file, complete && valid && !malformed
+	if directive == "" {
+		if f := logs.clientValue(); f != nil {
+			directive, file = f.directive, f.file
+		}
+	}
+	return directive, file, complete && valid && !malformed && !logs.malformed
 }
 
-// nginxRealIPRewrite returns the first set_real_ip_from, which turns on
-// nginx's realip rewrite from real_ip_header or its X-Real-IP default, its
-// file, and whether the whole tree was read.
-func nginxRealIPRewrite(path string) (directive, file string, complete bool) {
+// apacheCloudflareProxyKnown follows APR's numeric subnet syntax. Hostnames
+// and variables need Apache's own resolution, so cannot prove a valid setting.
+func apacheCloudflareProxyKnown(value string) bool {
+	ip, mask, hasMask := strings.Cut(value, "/")
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		// APR also accepts one to four decimal octets, with an optional final
+		// dot, as an implicit IPv4 network, but only without an explicit mask.
+		if hasMask || ip == "" || len(ip) > len("255.255.255.255") || strings.Trim(ip, "0123456789.") != "" {
+			return false
+		}
+		octets := strings.Split(strings.TrimSuffix(ip, "."), ".")
+		if len(octets) > 4 {
+			return false
+		}
+		for _, octet := range octets {
+			n, parseErr := strconv.Atoi(octet)
+			if parseErr != nil || n > 255 {
+				return false
+			}
+		}
+		return true
+	}
+	if addr.Is4In6() || addr.Zone() != "" {
+		return false
+	}
+	if !hasMask {
+		return true
+	}
+	// APR uses strtol for prefix lengths and accepts a dotted IPv4 mask,
+	// including non-contiguous masks. A zero prefix length is rejected.
+	bits, err := strconv.Atoi(strings.TrimLeft(mask, " \t\r\n\v\f"))
+	if err == nil && bits > 0 && bits <= addr.BitLen() {
+		return true
+	}
+	netmask, err := netip.ParseAddr(mask)
+	return err == nil && addr.Is4() && netmask.Is4()
+}
+
+// nginxClientAddressRewrite returns the first set_real_ip_from, which
+// turns on nginx's realip rewrite from real_ip_header or its X-Real-IP
+// default; failing that, the first log_format an access_log writes that
+// logs a request value where CSM reads the client. It also returns the
+// file and whether the tree and its format framing could be read. HTTP
+// and stream have separate namespaces; only HTTP has built-in combined.
+func nginxClientAddressRewrite(path string) (directive, file string, complete bool) {
 	directives, complete := nginxDirectives(path)
+	type format struct {
+		directive nginxDirective
+		value     bool
+	}
+	type key struct{ module, name string }
+	formats := map[key]format{{"http", "combined"}: {}}
+	seen := make(map[key]bool)
+	var used []format
+	// Optional modules can leave their variable names available for user
+	// definitions. A familiar spelling alone does not prove a peer value.
+	custom := make(map[string]map[string]bool)
+	for _, d := range directives {
+		if nginxDataContext(d.Context) {
+			continue
+		}
+		var target string
+		switch d.Name {
+		case "map", "split_clients":
+			if len(d.Args) != 2 {
+				complete = false
+				continue
+			}
+			target = d.Args[1]
+		case "set", "auth_request_set", "perl_set":
+			if len(d.Args) != 2 {
+				complete = false
+				continue
+			}
+			target = d.Args[0]
+		case "geo":
+			if len(d.Args) > 2 {
+				complete = false
+				continue
+			}
+			target = "$geo"
+			if len(d.Args) > 0 {
+				target = d.Args[len(d.Args)-1]
+			}
+		default:
+			continue
+		}
+		if !strings.HasPrefix(target, "$") || len(target) == 1 {
+			complete = false
+			continue
+		}
+		if custom[d.Module] == nil {
+			custom[d.Module] = make(map[string]bool)
+		}
+		custom[d.Module][strings.ToLower(target[1:])] = true
+	}
 	for _, d := range directives {
 		if d.Name == "set_real_ip_from" {
 			return strings.Join(append([]string{d.Name}, d.Args...), " "), d.File, complete
+		}
+		if nginxDataContext(d.Context) {
+			continue
+		}
+		if d.Name != "log_format" && d.Name != "access_log" {
+			continue
+		}
+		if d.Module != "http" && d.Module != "stream" || d.Block {
+			complete = false
+			continue
+		}
+		switch d.Name {
+		case "log_format":
+			if len(d.Args) < 2 || d.Context != d.Module {
+				complete = false
+				continue
+			}
+			exact := key{d.Module, d.Args[0]}
+			if seen[exact] || d.Module == "http" && d.Args[0] == "combined" {
+				complete = false
+				continue
+			}
+			seen[exact] = true
+			args, escape := d.Args[1:], "default"
+			if strings.HasPrefix(args[0], "escape=") {
+				escape = strings.TrimPrefix(args[0], "escape=")
+				args = args[1:]
+			}
+			value, ok := nginxFormatLogsClientValue(d.Module, escape, custom[d.Module], args...)
+			if !ok {
+				complete = false
+				continue
+			}
+			name := key{d.Module, lowerASCII(d.Args[0])}
+			// nginx permits case variants but binds to the first ASCII
+			// case-insensitive match already declared at the use site.
+			if _, exists := formats[name]; !exists {
+				formats[name] = format{d, value}
+			}
+		case "access_log":
+			contextOK := d.Context == d.Module || d.Context == "server"
+			if d.Module == "http" {
+				contextOK = contextOK || d.Context == "location" || d.Context == "if" || d.Context == "limit_except"
+			}
+			if len(d.Args) == 0 || !contextOK {
+				complete = false
+				continue
+			}
+			if d.Args[0] == "off" {
+				if len(d.Args) != 1 {
+					complete = false
+				}
+				continue
+			}
+			if len(d.Args) == 1 {
+				// Only the HTTP module supplies an implicit combined format.
+				if d.Module != "http" {
+					complete = false
+				}
+				continue
+			}
+			name := key{d.Module, lowerASCII(d.Args[1])}
+			if f, exists := formats[name]; exists {
+				used = append(used, f)
+			} else {
+				complete = false
+			}
+		}
+	}
+	for _, f := range used {
+		if f.value {
+			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete
 		}
 	}
 	return "", "", complete
 }
 
-// lswsClientIPFromHeader returns LiteSpeed's useIpInProxyHeader value when
-// it is on, "" when it is off or unset. Anything but one well-formed
-// httpServerConfig document with at most one plain setting is an error.
-// A completed active setting is returned even if later XML is unreadable.
-func lswsClientIPFromHeader(path string) (string, error) {
+// These blocks use their own entry handlers, not nginx directive lookup.
+func nginxDataContext(context string) bool {
+	switch context {
+	case "map", "geo", "split_clients", "types":
+		return true
+	}
+	return false
+}
+
+// lswsClientAddressRewrite returns the first LiteSpeed setting that logs a
+// replaced or request-chosen client address: useIpInProxyHeader when it is
+// on, or a logFormat that writes a request value where CSM reads the
+// client; "" when there is none. Anything but one well-formed
+// httpServerConfig document with at most one useIpInProxyHeader and
+// readable formats is an error. A completed active setting is returned
+// even if later XML is unreadable.
+func lswsClientAddressRewrite(path string) (string, error) {
 	f, err := osFS.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("the LiteSpeed configuration %s could not be read: %w", path, err)
@@ -203,8 +441,9 @@ func lswsClientIPFromHeader(path string) (string, error) {
 		return active, fmt.Errorf("the LiteSpeed configuration %s %s", path, why)
 	}
 	dec := xml.NewDecoder(f)
-	var value strings.Builder
-	depth, roots, settings, inSetting := 0, 0, 0, false
+	var value, format strings.Builder
+	depth, roots, settings := 0, 0, 0
+	inSetting, inFormat := false, false
 	for {
 		tok, err := dec.Token()
 		if errors.Is(err, io.EOF) {
@@ -218,16 +457,23 @@ func lswsClientIPFromHeader(path string) (string, error) {
 			if inSetting {
 				return invalid("nests an element in useIpInProxyHeader")
 			}
+			if inFormat {
+				return invalid("nests an element in logFormat")
+			}
 			if depth == 0 {
 				if roots++; roots > 1 || t.Name.Local != "httpServerConfig" {
 					return invalid("is not one httpServerConfig document")
 				}
 			}
-			if t.Name.Local == "useIpInProxyHeader" {
+			switch t.Name.Local {
+			case "useIpInProxyHeader":
 				if settings++; settings > 1 {
 					return invalid("sets useIpInProxyHeader more than once")
 				}
 				inSetting = true
+			case "logFormat":
+				format.Reset()
+				inFormat = true
 			}
 			depth++
 		case xml.CharData:
@@ -237,25 +483,36 @@ func lswsClientIPFromHeader(path string) (string, error) {
 			if inSetting {
 				value.Write(t)
 			}
+			if inFormat {
+				format.Write(t)
+			}
 		case xml.EndElement:
 			depth--
 			if inSetting {
-				if v := strings.TrimSpace(value.String()); v != "" && v != "0" {
-					active = v
+				if v := strings.TrimSpace(value.String()); v != "" && v != "0" && active == "" {
+					active = "useIpInProxyHeader " + v
 				}
 			}
-			inSetting = false
+			if inFormat {
+				v := strings.TrimSpace(format.String())
+				logged, ok := liteSpeedFormatLogsClientValue(v, false)
+				if !ok {
+					return invalid("has a logFormat it cannot read")
+				}
+				if logged && active == "" {
+					active = "logFormat " + v
+				}
+			}
+			inSetting, inFormat = false, false
 		}
 	}
 	if roots != 1 {
 		return invalid("is not one httpServerConfig document")
 	}
-	v := strings.TrimSpace(value.String())
-	switch {
-	case settings == 0 || v == "0":
-		return "", nil
-	case v == "":
-		return invalid("sets an empty useIpInProxyHeader")
+	if settings == 1 && active == "" {
+		if v := strings.TrimSpace(value.String()); v == "" {
+			return invalid("sets an empty useIpInProxyHeader")
+		}
 	}
-	return v, nil
+	return active, nil
 }
