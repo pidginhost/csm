@@ -257,7 +257,7 @@ type placementFID struct {
 
 func newPlacementFID(fm *FileMonitor, fd int, mounts map[unix.Fsid][]fidMount) *placementFID {
 	return &placementFID{
-		fd: fd, mounts: mounts, roots: slices.Clone(fm.watchRoots), fm: fm, handle: fm.handlePlacement,
+		fd: fd, mounts: mounts, roots: slices.Clone(fm.watchRoots), fm: fm, handle: fm.handleResolvedPlacement,
 		out:        queuehealth.NewChannel[placementEvent](256, time.Minute),
 		creates:    newCreateSettler(fidPendingCap),
 		openDir:    unix.OpenByHandleAt,
@@ -411,8 +411,8 @@ func (p *placementFID) QueueStatuses(now time.Time) map[string]queuehealth.Statu
 	}
 }
 
-// Run reads until ctx ends. Records resolve on this goroutine; handlePlacement
-// runs on the shared workers, which may wait on a pending rename.
+// Run reads until ctx ends. Records resolve on this goroutine; the placement
+// handler runs on the shared workers.
 func (p *placementFID) Run(ctx context.Context) {
 	p.fm.placementCreates.Store(p.creates)
 	waitWorkers := startPlacementWorkers(ctx, p.fm, p.out.Items(), func(ev placementEvent) (placementEvent, bool) { return ev, true }, p.handle)
@@ -558,21 +558,28 @@ func (p *placementFID) withinWatchRoots(path string) bool {
 	return false
 }
 
-// route holds creates for their own close-write and queues the rest. A full
-// output queue drops and counts, as the BPF ring reader does.
+// route holds creates for their own close-write and queues the rest.
 func (p *placementFID) route(ev placementEvent, now time.Time) {
 	if ev.Kind == placementCreate {
 		if released, ok := p.creates.add(ev, now); ok {
-			p.out.TrySend(released)
+			p.send(released)
 		}
 		return
 	}
-	p.out.TrySend(ev)
+	p.send(ev)
 }
 
 func (p *placementFID) expire(now time.Time) {
 	for _, ev := range p.creates.expire(now) {
-		p.out.TrySend(ev)
+		p.send(ev)
+	}
+}
+
+// send queues ev for the workers. A full queue counts the drop and hands ev
+// to overflow recovery, as the BPF ring reader does.
+func (p *placementFID) send(ev placementEvent) {
+	if !p.out.TrySend(ev) {
+		p.fm.recoverDroppedPlacement(ev)
 	}
 }
 

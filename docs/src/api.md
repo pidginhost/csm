@@ -687,9 +687,11 @@ placements whose path could not be resolved. The `legacy` backend adds
 `bpf.placement.create_settle` for new files waiting for their own
 close-write. When this queue fills, its oldest entry is sent for early analysis
 and counted as a drop from the settle queue. Pending entries discarded at
-shutdown also count as drops. A full output queue drops placements instead;
-the deep scan covers those files. `placement.dir_walk` reports directories
-moved into a watched tree that wait for their walk, counted in directories.
+shutdown also count as drops. A full output queue counts the placements it
+refuses as drops and hands them to overflow recovery, which rescans the
+directory a file landed in and walks a moved-in directory.
+`placement.dir_walk` reports directories moved into a watched tree that wait
+for their walk, counted in directories.
 Evicted directories and walks cut short count as lost and raise
 `placed_dir_incomplete_realtime`.
 `bpf.execution.docroot` reports up to 1,024 non-root process starts waiting

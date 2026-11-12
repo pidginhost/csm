@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,10 +19,25 @@ import (
 // fakePlacementSource stands in for the ring reader: a bounded queue that
 // drops when full and closes when its context ends, like bpf.Reader.
 type fakePlacementSource struct {
-	q    *queuehealth.Channel[PlacementRawEvent]
-	errs chan error
-	done chan struct{}
+	q      *queuehealth.Channel[PlacementRawEvent]
+	errs   chan error
+	done   chan struct{}
+	onDrop func(PlacementRawEvent)
 }
+
+// send queues raw as the ring reader does: a full queue hands it to the
+// drop hook.
+func (f *fakePlacementSource) send(raw PlacementRawEvent) bool {
+	if f.q.TrySend(raw) {
+		return true
+	}
+	if f.onDrop != nil {
+		f.onDrop(raw)
+	}
+	return false
+}
+
+func (f *fakePlacementSource) OnDrop(fn func(PlacementRawEvent)) { f.onDrop = fn }
 
 func newFakePlacementSource(capacity int) *fakePlacementSource {
 	return &fakePlacementSource{q: queuehealth.NewChannel[PlacementRawEvent](capacity, time.Minute), errs: make(chan error), done: make(chan struct{})}
@@ -191,5 +207,47 @@ func TestPlacementKeepsTheRingReadTime(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("event never reached a worker")
+	}
+}
+
+// A rename flood fills the output queue. Placements it refuses go to overflow
+// recovery instead of being lost: a file's directory is rescanned in
+// placement mode, a moved-in directory is queued for its walk.
+func TestPlacementBPFFullOutputQueueRecoversPlacements(t *testing.T) {
+	entered := make(chan placementEvent, placementWorkers)
+	gate := make(chan struct{})
+	p, src, _ := startFakePlacementBackend(t, 1, func(ev placementEvent) {
+		entered <- ev
+		<-gate
+	})
+	defer close(gate)
+	for range placementWorkers {
+		src.send(placedRaw("busy.php"))
+		<-entered
+	}
+	if !src.send(placedRaw("queued.php")) {
+		t.Fatal("empty queue refused an event")
+	}
+	file := placedRaw("dropped.php")
+	file.Components = []string{"dropped.php", "site", "user"}
+	dir := placedRaw("plugin")
+	dir.IsDir, dir.Ino, dir.Components = true, 12, []string{"plugin", "plugins", "user"}
+	if src.send(file) || src.send(dir) {
+		t.Fatal("full queue accepted an event")
+	}
+	p.fm.reconcileMu.Lock()
+	work, recorded := p.fm.reconcileDirs["/home/user/site"]
+	p.fm.reconcileMu.Unlock()
+	if !recorded || !work.placements {
+		t.Fatalf("dropped file's directory recorded=%v placements=%v, want a placement rescan", recorded, work.placements)
+	}
+	p.fm.placedDirMu.Lock()
+	walks := slices.Clone(p.fm.placedDirs)
+	p.fm.placedDirMu.Unlock()
+	if len(walks) != 1 || walks[0].path != "/home/user/plugins/plugin" || walks[0].ino != 12 {
+		t.Fatalf("queued walks %+v, want the dropped directory", walks)
+	}
+	if out := p.QueueStatuses(time.Now())["output"]; out.DroppedTotal != 2 {
+		t.Fatalf("output queue status %+v, want both drops counted", out)
 	}
 }

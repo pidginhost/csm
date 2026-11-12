@@ -13,7 +13,8 @@ import (
 
 // placementWorkers bounds the goroutines blocked in handlePlacement, which
 // waits up to its retry budget for a pending rename. A backend's reader
-// never waits on them: a full output queue drops and counts the event.
+// never waits on them: a full output queue counts the event and hands it to
+// overflow recovery.
 const placementWorkers = 4
 
 // startPlacementWorkers drains events with placementWorkers goroutines until

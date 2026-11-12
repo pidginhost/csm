@@ -266,6 +266,11 @@ for an unexpected reason, and a Warning when `auto` falls back to `legacy`. A
 kernel that supports neither backend under `auto`, or lacks the `legacy`
 backend when it is chosen explicitly, shows `none` without a finding.
 
+Placements that arrive faster than the monitor can check them are not lost.
+Those that do not fit its queue go to the same recovery as a full analyzer
+queue: CSM rescans the directory each file landed in, whatever the files'
+age, and queues a moved-in directory for its walk.
+
 A directory moved into a watched tree is walked, because its files raised no
 events of their own. Each file gets the same identity check and analysis as
 a placed file. The walk never follows symlinks, runs on its own worker, waits

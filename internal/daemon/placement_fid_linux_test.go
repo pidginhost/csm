@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // capturedCreate is one FAN_CREATE record from a FAN_REPORT_DFID_NAME group
@@ -423,5 +425,77 @@ func TestFIDResolveErrorRaisesUnresolvedFinding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A rename flood fills the output queue. Placements it refuses go to overflow
+// recovery instead of being lost: a file's directory is rescanned in
+// placement mode, a moved-in directory is queued for its walk. That holds for
+// creates the settle cap pushes out and for creates whose window ends.
+func TestFIDFullOutputQueueRecoversPlacements(t *testing.T) {
+	fm := placementTestMonitor(make(chan alert.Finding, 16))
+	p := newTestPlacementFID(t, fm)
+	p.out = queuehealth.NewChannel[placementEvent](1, time.Minute)
+	p.creates = newCreateSettler(1)
+	now := time.Now()
+	p.route(placementEvent{Path: "/home/user/queued.php", Dev: 1, Ino: 10, Kind: placementRename}, now)
+	p.route(placementEvent{Path: "/home/user/a/moved.php", Dev: 1, Ino: 11, Kind: placementRename}, now)
+	p.route(placementEvent{Path: "/home/user/b/plugin", Dev: 1, Ino: 12, IsDir: true, Kind: placementRename}, now)
+	p.route(placementEvent{Path: "/home/user/c/first.php", Dev: 1, Ino: 13, Kind: placementCreate}, now)
+	// The settle cap pushes the first create out at once.
+	p.route(placementEvent{Path: "/home/user/d/second.php", Dev: 1, Ino: 14, Kind: placementCreate}, now)
+	p.expire(now.Add(fidCreateSettle))
+
+	fm.reconcileMu.Lock()
+	var rescans []string
+	for dir, work := range fm.reconcileDirs {
+		if work.placements {
+			rescans = append(rescans, dir)
+		}
+	}
+	fm.reconcileMu.Unlock()
+	slices.Sort(rescans)
+	if want := []string{"/home/user/a", "/home/user/c", "/home/user/d"}; !slices.Equal(rescans, want) {
+		t.Fatalf("placement rescans %v, want %v", rescans, want)
+	}
+	fm.placedDirMu.Lock()
+	walks := slices.Clone(fm.placedDirs)
+	fm.placedDirMu.Unlock()
+	if len(walks) != 1 || walks[0].path != "/home/user/b/plugin" || walks[0].ino != 12 {
+		t.Fatalf("queued walks %+v, want the dropped directory", walks)
+	}
+	if out := p.QueueStatuses(now)["output"]; out.DroppedTotal != 4 {
+		t.Fatalf("output queue status %+v, want four drops counted", out)
+	}
+}
+
+// The fanotify backend reads the identity from the entry after the event, so
+// a mismatch is a replacement made since, which no wait undoes. Its workers
+// must never sleep on the retries the BPF backend needs.
+func TestFIDPlacementNeverWaitsOnIdentityRetries(t *testing.T) {
+	setPlacementRetryDelays(t, time.Hour)
+	dir := t.TempDir()
+	reported, path := filepath.Join(dir, "reported.php"), filepath.Join(dir, "x.php")
+	for _, name := range []string{reported, path} {
+		if err := os.WriteFile(name, []byte("<?php echo 1;"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ev := placementOf(t, reported, 0)
+	ev.Path = path
+	fm := placementTestMonitor(make(chan alert.Finding, 4))
+	p := newTestPlacementFID(t, fm)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handle(ev)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fanotify placement waited on identity retries")
+	}
+	if stats := fm.EventStats(); stats.PlacementUnverified != 1 || stats.Received != 0 {
+		t.Fatalf("stats = %+v, want one unverified placement", stats)
 	}
 }

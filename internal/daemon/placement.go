@@ -45,14 +45,26 @@ var errPlacementUnverified = errors.New("placed file not found with the reported
 var placementRetryDelays = [...]time.Duration{50 * time.Millisecond, 200 * time.Millisecond}
 
 // handlePlacement runs a placed-in file through the same admission, analysis
-// and response as a write at that path.
+// and response as a write at that path. It waits out a rename or link the
+// kernel reported before it took effect.
 func (fm *FileMonitor) handlePlacement(ev placementEvent) {
+	fm.verifyPlacement(ev, placementRetryDelays[:])
+}
+
+// handleResolvedPlacement is handlePlacement for a backend that read the
+// identity from the entry after the event: a mismatch is a replacement made
+// since, which no wait undoes.
+func (fm *FileMonitor) handleResolvedPlacement(ev placementEvent) {
+	fm.verifyPlacement(ev, nil)
+}
+
+func (fm *FileMonitor) verifyPlacement(ev placementEvent, retryDelays []time.Duration) {
 	// Recovery copies keep their original names; analysing them repeats
 	// detections CSM already acted on.
 	if checks.InQuarantine(ev.Path) {
 		return
 	}
-	fd, isDir, err := openPlacedFile(ev.Path, ev.Dev, ev.Ino)
+	fd, isDir, err := openPlacedFile(ev.Path, ev.Dev, ev.Ino, retryDelays)
 	if err != nil {
 		fm.placementUnverified.Add(1)
 		return
@@ -63,6 +75,17 @@ func (fm *FileMonitor) handlePlacement(ev placementEvent) {
 		return
 	}
 	fm.handlePlacedFile(fd, ev.PID, ev.At)
+}
+
+// recoverDroppedPlacement hands a placement a full backend queue refused to
+// overflow recovery: a rescan of a file's directory in placement mode, or the
+// walk of a moved-in directory, which the rescan does not descend into.
+func (fm *FileMonitor) recoverDroppedPlacement(ev placementEvent) {
+	if ev.IsDir {
+		fm.queuePlacedDir(ev.Path, ev.Dev, ev.Ino, ev.PID, ev.At)
+		return
+	}
+	fm.recordDroppedEvent(fileEvent{path: ev.Path, mask: eventPlacedIn})
 }
 
 // handlePlacedFile takes ownership of fd, a regular file whose identity the
@@ -101,16 +124,16 @@ func (fm *FileMonitor) analyzedUnchanged(ev fileEvent) bool {
 // openPlacedFile opens path without following a final symlink and returns the
 // descriptor only when it is the regular file or directory the kernel
 // reported. A different inode at the path is never analysed in its place.
-func openPlacedFile(path string, dev, ino uint64) (fd int, isDir bool, err error) {
+func openPlacedFile(path string, dev, ino uint64, retryDelays []time.Duration) (fd int, isDir bool, err error) {
 	for attempt := 0; ; attempt++ {
 		fd, isDir, retry, err := openPlacedOnce(path, dev, ino)
 		if err == nil {
 			return fd, isDir, nil
 		}
-		if !retry || attempt == len(placementRetryDelays) {
+		if !retry || attempt == len(retryDelays) {
 			return -1, false, fmt.Errorf("%w: %s: %v", errPlacementUnverified, path, err)
 		}
-		time.Sleep(placementRetryDelays[attempt])
+		time.Sleep(retryDelays[attempt])
 	}
 }
 

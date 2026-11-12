@@ -21,6 +21,7 @@ import (
 type placementSource interface {
 	Start(context.Context) func()
 	Events() <-chan queuehealth.Work[PlacementRawEvent]
+	OnDrop(func(PlacementRawEvent))
 	Errors() <-chan error
 	QueueStatuses(time.Time) map[string]queuehealth.Status
 }
@@ -122,6 +123,7 @@ func (p *placementBPF) QueueStatuses(now time.Time) map[string]queuehealth.Statu
 }
 
 func (p *placementBPF) Run(ctx context.Context) {
+	p.source.OnDrop(p.recoverDropped)
 	stopReader := p.source.Start(ctx)
 	waitWorkers := startPlacementWorkers(ctx, p.fm, p.source.Events(), p.resolve, p.handle)
 	// The reader closes its error channel once ctx ends and it has stopped.
@@ -145,4 +147,12 @@ func (p *placementBPF) resolve(raw PlacementRawEvent) (placementEvent, bool) {
 		p.unresolved.Lose(time.Now(), 1)
 	}
 	return ev, ok
+}
+
+// recoverDropped runs on the reader goroutine for an event the full output
+// queue refused. Resolving a path is a join, cheap enough to do there.
+func (p *placementBPF) recoverDropped(raw PlacementRawEvent) {
+	if ev, ok := p.resolve(raw); ok {
+		p.fm.recoverDroppedPlacement(ev)
+	}
 }
