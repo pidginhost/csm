@@ -139,6 +139,11 @@ type Daemon struct {
 	mailboxes        mailboxResolver // nil off cPanel
 	dovecotSessions  *dovecotSessionVerdicts
 	authBackend      *authBackendHealth
+
+	// stalwart is the Stalwart log state; nil unless this host's mail server
+	// is Stalwart.
+	stalwart *stalwartState
+
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
 	// attempt is not counted twice.
@@ -2280,7 +2285,11 @@ func (d *Daemon) startLogWatchers() {
 		d.startEximFrozenDedupPersistence()
 	}
 
-	d.startMailLogReader(hostInfo.MailLogPath(), d.handleMailLine)
+	if useStalwartReader(platform.DetectMTA()) {
+		d.startStalwartLogReader(d.cfg)
+	} else {
+		d.startMailLogReader(hostInfo.MailLogPath(), d.handleMailLine)
+	}
 
 	// Only receive PHP Shield events if enabled AND actually installed. A stale
 	// php_shield.enabled flag (e.g. after an upgrade wiped /opt/csm) would
@@ -2805,9 +2814,15 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 }
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
+	return d.dispatchLogLine(checks.ProducerMailLog, line, handler)
+}
+
+// dispatchLogLine runs handler on one positioned line and enqueues its
+// findings, each stamped with producer and the line's position.
+func (d *Daemon) dispatchLogLine(producer admission.ProducerID, line maillog.Line, handler ObservedLineHandler) bool {
 	var obs alert.Observation
 	if line.Position.Stream != "" {
-		obs = alert.Observation{Producer: string(checks.ProducerMailLog), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
+		obs = alert.Observation{Producer: string(producer), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
 	}
 	findings := handler(line.Message, obs, d.currentCfg())
 	for i, f := range findings {

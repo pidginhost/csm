@@ -46,6 +46,7 @@ var componentLabels = map[string]string{
 	"afalg":             "AF_ALG kernel monitor",
 	"phprelay":          "PHP relay watcher",
 	"maillog":           "Mail log",
+	"stalwart_log":      "Stalwart log",
 	"email_av_spool":    "Email AV spool",
 	"forwarder":         "Forwarder watcher",
 	"pamlistener":       "PAM listener",
