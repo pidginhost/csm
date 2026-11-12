@@ -968,7 +968,7 @@ cloudflare:
   refresh_hours: 6                      # how often to refresh Cloudflare IPs (default: 6)
 
 # --- Threat Intel ---
-c2_blocklist: []                        # known C2 server IPs to block permanently
+c2_blocklist: []                        # known C2 server IPs; connections with them are blocked
 backdoor_ports: [4444,5555,55553,55555,31337]  # ports indicating backdoor activity
 
 # --- Update check ---

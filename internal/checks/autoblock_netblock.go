@@ -273,7 +273,7 @@ func netblockCounts(cfg *config.Config, h *netblockHistory, current map[string]b
 		// Exempt IPs do not contribute toward the netblock threshold so that
 		// a cluster of blocked addresses inside an operator-declared DoS-exempt
 		// range cannot inadvertently auto-block that range as a subnet.
-		if cidr == "" || cidrIntersectsDOSExempt(cfg, cidr) {
+		if cidr == "" || cidrIntersectsDOSExempt(cfg, cidr) || c2Listed(cfg, ip) {
 			continue
 		}
 		// Ended blocks that an earlier subnet block already answered must

@@ -249,8 +249,9 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 
 	// Permanent block escalation: promote after N temp blocks within the
 	// interval. Every source counts - a challenge-timeout or central-intel
-	// block is the same repeat-offender evidence as a scan block.
-	if cfg.AutoResponse.PermBlock {
+	// block is the same repeat-offender evidence as a scan block. A listed
+	// C2 server is no offender.
+	if cfg.AutoResponse.PermBlock && !c2Listed(cfg, req.IP) {
 		// Load fills the default and validation rejects anything lower, so
 		// this only catches a Config assembled in code.
 		count := cfg.AutoResponse.PermBlockCount

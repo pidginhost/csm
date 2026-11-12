@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 
@@ -236,10 +237,26 @@ func AdmissionPolicy(check string) (string, admission.Policy, bool) {
 // destination, a customer login or an advisory is never blocked for it.
 func AddressEvidence(check string, sev alert.Severity) bool {
 	_, pol, ok := AdmissionPolicy(check)
-	if !ok || pol.Family == admission.FamilyNone {
+	if !ok || pol.Family == admission.FamilyNone || pol.Family.Destination() {
 		return false
 	}
 	return admissionSeverity(sev) >= pol.MinSeverity
+}
+
+// c2Listed reports whether ip is on c2_blocklist: where local processes
+// connect, never a source of attacks, so its blocks are never escalation
+// evidence, whatever finding asked for them.
+func c2Listed(cfg *config.Config, ip string) bool {
+	addr := net.ParseIP(ip)
+	if cfg == nil || addr == nil {
+		return false
+	}
+	for _, listed := range cfg.C2Blocklist {
+		if l := net.ParseIP(listed); l != nil && l.Equal(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsRetiredThreatScoreFinding reports a finding of local_threat_score, which

@@ -42,6 +42,11 @@ IPv4 spray blocks into range evidence. Saved spray blocks absent from the
 kernel do not count as active blocks. If block metadata cannot be read,
 subnet escalation waits while individual block attempts continue.
 
+Blocks of an address on `c2_blocklist` never count toward subnet escalation
+or permanent promotion, whatever finding asked for them: a listed
+command-and-control server is where local processes connect, not a source
+of attacks. Other blocked addresses in its subnet still count.
+
 ### Process termination
 
 An eligible finding receives one automatic termination evaluation across scan
@@ -557,8 +562,8 @@ Central intelligence and incident auto-blocking act on an address only when
 a finding names it as an attacker. The remote end of an outbound connection,
 a customer login, and advisories such as ModSecurity warnings or visitors of
 a mail-sending script do not count, even when another finding raised the
-incident's severity. A listed command-and-control server is the exception:
-blocking it is the reviewed response to a local process connecting to it.
+incident's severity. That includes a listed command-and-control server: the
+C2 connection check blocks it itself.
 
 ### Known-customer block alert
 
