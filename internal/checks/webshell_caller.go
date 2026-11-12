@@ -1,7 +1,9 @@
 package checks
 
 import (
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -73,4 +75,43 @@ func webshellCallerTarget(path string, roots *DocrootIndex) bool {
 		}
 	}
 	return true
+}
+
+// requestedFile returns the flagged file a request for uri on the site at
+// docroot runs. The request path is compared as the web server resolves it:
+// decoded once, without its query, with a script's trailing path info cut and
+// a directory answered by its index.
+func requestedFile(docroot, uri string, flagged map[string]bool) (string, bool) {
+	if len(flagged) == 0 || !strings.HasPrefix(uri, "/") {
+		return "", false
+	}
+	if i := strings.IndexAny(uri, "?#"); i >= 0 {
+		uri = uri[:i]
+	}
+	decoded, err := url.PathUnescape(uri)
+	if err != nil || strings.IndexByte(decoded, 0) >= 0 {
+		return "", false
+	}
+	clean := path.Clean(decoded)
+	if clean == "/" {
+		return "", false
+	}
+	file := docroot
+	for _, part := range strings.Split(clean[1:], "/") {
+		file += "/" + part
+		// A directory can carry a script's name, so every script-named
+		// prefix is a candidate, not only the first.
+		if contenttype.IsExecutablePHPName(strings.ToLower(part)) {
+			if _, ok := flagged[file]; ok {
+				return file, true
+			}
+		}
+	}
+	if strings.HasSuffix(decoded, "/") {
+		file += "/index.php"
+		if _, ok := flagged[file]; ok {
+			return file, true
+		}
+	}
+	return "", false
 }

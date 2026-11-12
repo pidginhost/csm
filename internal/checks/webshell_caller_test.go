@@ -115,3 +115,44 @@ func TestWebshellFlaggedFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestedFile(t *testing.T) {
+	const docroot = "/home/alice/public_html"
+	const shell = docroot + "/x/shell.php"
+	const index = docroot + "/a/b/index.php"
+	flagged := map[string]bool{index: false, shell: true}
+
+	tests := []struct {
+		uri  string
+		want string
+	}{
+		{"/x/shell.php", shell},
+		{"/x/shell.php?cmd=id", shell},
+		{"/x/shell.php#frag", shell},
+		{"/x/shell.php/anything/else", shell},
+		{"/x//shell.php", shell},
+		{"/x/./y/../shell.php", shell},
+		{"/x/%73hell.php", shell},
+		{"/x/shell%2Ephp", shell},
+		{"/x/%2573hell.php", ""},
+		{"/a/b/", index},
+		{"/a/b/?x=1", index},
+		{"/a/b", ""},
+		{"/a/b/index.php", index},
+		{"/", ""},
+		{"", ""},
+		{"/../../etc/passwd", ""},
+		{"/x/shell.php%00.jpg", ""},
+		{"/x/%zz", ""},
+		{"http://example.com/x/shell.php", ""},
+		{"/x/SHELL.PHP", ""},
+		{"/other/shell.php", ""},
+		{"/x/shell.phpx", ""},
+	}
+	for _, tt := range tests {
+		got, ok := requestedFile(docroot, tt.uri, flagged)
+		if got != tt.want || ok != (tt.want != "") {
+			t.Errorf("requestedFile(%q) = (%q, %v), want %q", tt.uri, got, ok, tt.want)
+		}
+	}
+}
