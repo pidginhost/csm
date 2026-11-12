@@ -241,6 +241,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			}
 			// Cleaning is one response attempt. A failed cleaner leaves the file
 			// and any backup for review; it must not escalate to removing the file.
+			var wholeFile CleanResult
 			if clean {
 				if restored && filepath.Base(path) == ".htaccess" {
 					result := cleanHtaccessFileIdentified(path, info)
@@ -273,14 +274,18 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 					}
 					return nil
 				}
+				wholeFile = result
 			}
 			qPath := newQuarantinePath(quarantineDir, path)
 			meta := quarantineMetadata(path, info, f.Message)
 			meta.FindingID = alert.FindingID(f)
 			var err error
-			if restored {
+			switch {
+			case restored:
 				err = quarantineRestoredTarget(path, qPath, info, meta, removed)
-			} else {
+			case wholeFile.WholeFile:
+				err = quarantineVersionedTargetFD(path, qPath, wholeFile.wholeFileInfo, meta, -1, wholeFile.wholeFileContent)
+			default:
 				err = quarantineTarget(path, qPath, info, meta)
 			}
 			warning := ""

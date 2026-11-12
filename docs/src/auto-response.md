@@ -125,8 +125,9 @@ primitive, or that executable PHP unwraps and runs encoded content, enter this
 file-response gate immediately. Quarantine holds an exclusive Linux lease on the
 open file that produced the finding until that file is removed. It refuses while
 another process has the file open or is running it, and when the content or path
-identity changes. Other quarantines do not take this lease, so they can still
-move a file that is open or running. Comment-only matches, URL-only droppers,
+identity changes. Whole-file malware identified by the cleaner uses this
+lease too. Other quarantines do not take this lease, so they can still move
+a file that is open or running. Comment-only matches, URL-only droppers,
 filename-only checks, tail-window matches and YARA-only findings remain
 available for review without an automatic move.
 
@@ -155,12 +156,15 @@ Manual full scans leave cleaner refusals for review instead of reporting a
 failed remediation. `csm clean` also distinguishes a refusal from an action
 failure; both return a nonzero exit status when the file was not cleaned.
 
-WordPress core, plugin and theme files are cleaned in place, except in two
-cases where they are quarantined whole: when removing the matched code would
-leave no code or page output, and when the official release of that core or
-wordpress.org plugin version does not ship the file. The release check uses the
-checksums the realtime file monitor has cached; without them, cleaning decides.
-`csm clean` refuses a file that is malicious throughout.
+WordPress core, plugin and theme files are cleaned in place unless CSM can
+prove the original file consists entirely of recognized malicious statements.
+An empty cleaner result alone is not that proof: uncertain cases remain
+untouched for review. Whole-file quarantine rechecks the original content
+under the same protection used for other verified file responses; a changed
+file stays in place. Missing release entries remain unknown because local
+additions, mixed upgrade trees and writable version headers cannot establish
+that a file has no site code. `csm clean` refuses whole-file malware and
+uncertain empty results.
 
 Automatic permission fixes dismiss the original finding after a successful fix
 or after confirming its unsafe permission is already gone. A confirmation alone

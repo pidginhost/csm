@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func writeListingFile(t *testing.T, path, content string) {
@@ -51,8 +54,8 @@ func TestPackageListingCoreDirectories(t *testing.T) {
 	}{
 		{"wp-includes/load.php", true, true},
 		{"wp-admin/index.php", true, true},
-		{"wp-includes/Text/Diff/Renderer/index.php", false, true},
-		{"wp-admin/includes/x.php", false, true},
+		{"wp-includes/Text/Diff/Renderer/index.php", false, false},
+		{"wp-admin/includes/x.php", false, false},
 		// Core does not own the install's root or wp-content: users and
 		// plugins add files there.
 		{"custom.php", false, false},
@@ -90,8 +93,8 @@ func TestPackageListingRereadsAChangedVersion(t *testing.T) {
 	root := coreInstall(t, c, "6.9.4")
 	path := filepath.Join(root, "wp-includes", "new-in-7.php")
 	writeListingFile(t, path, "<?php")
-	if _, known := c.PackageListing(path); !known {
-		t.Fatal("setup: cached release unknown")
+	if listed, known := c.PackageListing(path); listed || known {
+		t.Fatal("absent file must remain unknown")
 	}
 	writeListingFile(t, filepath.Join(root, "wp-includes", "version.php"), "<?php\n$wp_version = '7.0';\n")
 	if listed, known := c.PackageListing(path); listed || known {
@@ -116,8 +119,8 @@ func TestPackageListingPlugins(t *testing.T) {
 		if rel != "test-plugin.php" {
 			writeListingFile(t, path, "<?php")
 		}
-		if listed, known := c.PackageListing(path); listed != want || !known {
-			t.Errorf("%s: listed=%t known=%t, want %t true", rel, listed, known, want)
+		if listed, known := c.PackageListing(path); listed != want || known != want {
+			t.Errorf("%s: listed=%t known=%t, want %t %t", rel, listed, known, want, want)
 		}
 	}
 
@@ -138,5 +141,96 @@ func TestPackageListingThemesAreUnknown(t *testing.T) {
 	writeListingFile(t, path, "<?php")
 	if listed, known := c.PackageListing(path); listed || known {
 		t.Fatalf("theme file: listed=%t known=%t, want unknown", listed, known)
+	}
+}
+
+// A missing manifest entry is not evidence that a tenant file has no site
+// code: updates can copy files before replacing their version header, and
+// local extensions need not be present in the upstream archive.
+func TestPackageListingAbsenceIsUnknown(t *testing.T) {
+	c := stoppedCache(t)
+	root := coreInstall(t, c, "6.9.4")
+	for _, rel := range []string{
+		"wp-includes/new-release.php",
+		"wp-content/themes/site/wp-includes/template.php",
+		"wp-content/upgrade/core/wordpress/wp-includes/new-release.php",
+		"custom.php",
+	} {
+		path := filepath.Join(root, rel)
+		writeListingFile(t, path, "<?php echo 'site';")
+		if listed, known := c.PackageListing(path); listed || known {
+			t.Errorf("%s: listed=%t known=%t, want unknown", rel, listed, known)
+		}
+	}
+	plugin := filepath.Join(root, "wp-content/plugins/test-plugin")
+	writeListingFile(t, filepath.Join(plugin, "test-plugin.php"), "<?php\n/*\nPlugin Name: Test\nVersion: 1.0.0\n*/\n")
+	c.setPluginChecksums("test-plugin", "1.0.0", map[string]string{"test-plugin.php": "x"})
+	path := filepath.Join(plugin, "extension.php")
+	writeListingFile(t, path, "<?php echo 'site';")
+	if listed, known := c.PackageListing(path); listed || known {
+		t.Fatalf("tenant-controlled plugin identity: listed=%t known=%t, want unknown", listed, known)
+	}
+}
+
+func TestPackageListingRejectsStagedAndIncompleteReleases(t *testing.T) {
+	c := stoppedCache(t)
+	root := coreInstall(t, c, "6.9.4", "wp-includes/load.php")
+	path := filepath.Join(root, "wp-includes/load.php")
+	if listed, known := c.PackageListing(path); !listed || !known {
+		t.Fatal("setup: installed file must be listed")
+	}
+	writeListingFile(t, filepath.Join(root, "wp-includes/version.php"), "<?php\n$wp_version = '")
+	if listed, known := c.PackageListing(path); listed || known {
+		t.Fatal("partial version header reused a cached installation version")
+	}
+	staged := filepath.Join(root, "wp-content/upgrade/core/wordpress")
+	writeListingFile(t, filepath.Join(staged, "wp-includes/version.php"), "<?php\n$wp_version = '6.9.4';\n")
+	path = filepath.Join(staged, "wp-includes/load.php")
+	if v := c.Describe(path); !v.Staged || v.Verdict != VerdictReady {
+		t.Fatalf("setup: expected a cached staged release: %+v", v)
+	}
+	if listed, known := c.PackageListing(path); listed || known {
+		t.Fatal("staged core file treated as installed")
+	}
+	plugin := filepath.Join(root, "wp-content/upgrade/test-plugin.1/test-plugin")
+	writeListingFile(t, filepath.Join(plugin, "test-plugin.php"), "<?php\n/*\nPlugin Name: Test\nVersion: 1.0.0\n*/\n")
+	c.setPluginChecksums("test-plugin", "1.0.0", map[string]string{"test-plugin.php": "x"})
+	path = filepath.Join(plugin, "test-plugin.php")
+	if v := c.Describe(path); !v.Staged || v.Verdict != VerdictReady {
+		t.Fatalf("setup: expected a cached staged plugin: %+v", v)
+	}
+	if listed, known := c.PackageListing(path); listed || known {
+		t.Fatal("staged plugin file treated as installed")
+	}
+}
+
+func TestPackageListingRejectsFIFOHeader(t *testing.T) {
+	c := stoppedCache(t)
+	root := t.TempDir()
+	header := filepath.Join(root, "wp-includes/version.php")
+	if err := os.MkdirAll(filepath.Dir(header), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(header, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan [2]bool, 1)
+	go func() {
+		listed, known := c.PackageListing(filepath.Join(root, "wp-includes/template.php"))
+		done <- [2]bool{listed, known}
+	}()
+	select {
+	case result := <-done:
+		if result != [2]bool{} {
+			t.Fatalf("special header supplied release: %v", result)
+		}
+	case <-time.After(time.Second):
+		writer, err := os.OpenFile(header, os.O_WRONLY|unix.O_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = writer.Close()
+		<-done
+		t.Fatal("release lookup blocked on a tenant-controlled header")
 	}
 }

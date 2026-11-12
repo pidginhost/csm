@@ -32,9 +32,11 @@ type CleanResult struct {
 	// Refused marks a safety refusal without changing the customer file.
 	// It consumes attempt capacity but does not indicate a broken action.
 	Refused bool
-	// WholeFile marks a refusal because removing the matched code would
-	// leave nothing of the file: it is malware whole and must be quarantined.
-	WholeFile bool
+	// WholeFile marks a refusal backed by a proof that the original bytes
+	// contain only recognized malicious statements, with no site content.
+	WholeFile        bool
+	wholeFileInfo    os.FileInfo
+	wholeFileContent []byte
 }
 
 var (
@@ -170,8 +172,15 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 	if cleanLeavesNothing(content) {
 		audit.rec.Result = actionlog.Refused
 		result.Refused = true
-		result.WholeFile = true
-		result.Error = "the whole file is malicious code - quarantine it instead of cleaning"
+		result.Error = "cleaning would leave no site code; manual review required"
+		// Line and block removals can swallow adjacent site code. Only a
+		// separate proof over the original bytes may authorize quarantine.
+		if cleanPHPContainsOnly(string(data), true) {
+			result.WholeFile = true
+			result.wholeFileInfo = target.Info
+			result.wholeFileContent = data
+			result.Error = "the whole file is malicious code - quarantine it instead of cleaning"
+		}
 		return result
 	}
 
@@ -408,8 +417,8 @@ func cleanReplacementMode(mode os.FileMode) os.FileMode {
 }
 
 // packageListingFunc reports whether the official WordPress core or plugin
-// release that path belongs to ships it; known is false without that
-// release's file list.
+// release that path belongs to ships it. A known absence requires trusted
+// installation provenance; a tenant-selected release cannot supply it.
 type packageListingFunc func(path string) (listed, known bool)
 
 // packageListing is unset until the daemon provides its checksum cache.
@@ -425,8 +434,8 @@ func SetPackageListing(fn func(path string) (listed, known bool)) {
 	packageListing.Store(&listing)
 }
 
-// notShippedByRelease reports a file planted at a package path: its release
-// is known and does not contain it, so nothing of the site lives in it.
+// notShippedByRelease accepts only a definitive absence from the provider.
+// Cached WordPress manifests report misses as unknown.
 func notShippedByRelease(path string) bool {
 	listing := packageListing.Load()
 	if listing == nil {
@@ -439,11 +448,11 @@ func notShippedByRelease(path string) bool {
 // ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned
 // (surgical removal) instead of quarantined (full removal).
 // WP core files and plugin files are better cleaned - removing them breaks the site.
-// Unknown standalone files (droppers, webshells) should be quarantined, and so
-// are files planted at core or plugin paths that the official release does
-// not ship.
+// Unknown standalone files (droppers, webshells) should be quarantined.
+// Package paths stay with the cleaner unless the provider can prove the
+// file does not belong to the installed site; manifest misses alone cannot.
 func ShouldCleanInsteadOfQuarantine(path string) bool {
-	// WP core files - clean the files the release ships
+	// Keep core paths with the cleaner whenever membership is uncertain.
 	if strings.Contains(path, "/wp-includes/") || strings.Contains(path, "/wp-admin/") {
 		return !notShippedByRelease(path)
 	}
@@ -464,21 +473,60 @@ func ShouldCleanInsteadOfQuarantine(path string) bool {
 // file: no PHP code and no page output, only PHP tags, comments, statement
 // separators and whitespace.
 func cleanLeavesNothing(content string) bool {
-	regions := phpCodeRegions(content)
-	if len(regions) != len(content) {
-		return false
-	}
-	// The mask keeps PHP code and blanks everything else: what it blanked is
-	// PHP tags or output the site serves.
-	outside := []byte(content)
-	for i := range outside {
-		if regions[i] == content[i] {
-			outside[i] = ' '
+	return cleanPHPContainsOnly(content, false)
+}
+
+// These complete statements contain only a decoded literal payload or a
+// temporary-file include. Anything with variables, other expressions or
+// additional statements needs review if the cleaner would remove everything.
+var cleanWholeFileStatement = regexp.MustCompile(`(?i)^(?:@?eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(\s*(?:"[a-z0-9+/=]+"|'[a-z0-9+/=]+')\s*\)\s*\)|@include\s*\(\s*(?:"/(?:tmp|var/tmp|dev/shm)/[a-z0-9_./-]+"|'/(?:tmp|var/tmp|dev/shm)/[a-z0-9_./-]+')\s*\))\s*;`)
+
+// cleanPHPContainsOnly recognizes a deliberately narrow PHP grammar. A
+// detector's masked code is insufficient proof of no output: masking loses
+// tag positions, and short-tag execution depends on the site's PHP settings.
+func cleanPHPContainsOnly(content string, payloads bool) bool {
+	inPHP, matched := false, false
+	for i := 0; i < len(content); {
+		if isPHPSpace(content[i]) {
+			i++
+			continue
+		}
+		if !inPHP {
+			if i+5 > len(content) || !strings.EqualFold(content[i:i+5], "<?php") ||
+				i+5 < len(content) && !isPHPOpenTagSpace(content[i+5]) {
+				return false
+			}
+			inPHP = true
+			i += 5
+			continue
+		}
+		switch {
+		case strings.HasPrefix(content[i:], "?>"):
+			inPHP = false
+			i += 2
+		case strings.HasPrefix(content[i:], "/*"):
+			end := strings.Index(content[i+2:], "*/")
+			if end < 0 {
+				return false
+			}
+			i += end + 4
+		case isPHPLineCommentStart(content, i):
+			i = skipPHPLineComment(content, i)
+		case content[i] == ';':
+			i++
+		default:
+			if !payloads {
+				return false
+			}
+			span := cleanWholeFileStatement.FindStringIndex(content[i:])
+			if span == nil {
+				return false
+			}
+			matched = true
+			i += span[1]
 		}
 	}
-	output := strings.NewReplacer("<?php", "", "<?=", "", "<?", "", "?>", "").Replace(strings.ToLower(string(outside)))
-	code := strings.ReplaceAll(PHPExecutableCode(content), ";", "")
-	return strings.TrimSpace(output) == "" && strings.TrimSpace(code) == ""
+	return !payloads || matched
 }
 
 // removeIncludeInjections removes @include lines that load malicious files.

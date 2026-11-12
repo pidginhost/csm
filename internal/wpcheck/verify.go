@@ -442,42 +442,43 @@ func (c *Cache) IsVerifiedPluginFile(fd int, path string) bool {
 	return v.Kind == KindPlugin && c.resolve(fd, v) == VerdictVerified
 }
 
-// PackageListing reports whether the official release of the WordPress core
-// or wordpress.org plugin that path belongs to ships a file at that path.
-// known is false when that release's file list is not cached, and for core
-// paths outside wp-admin and wp-includes, where sites add their own files.
+// PackageListing reports positive membership in a cached WordPress release.
+// Absence is unknown: tenant-written headers cannot prove the installed
+// release, updates can mix releases, and sites can add their own files. A
+// manifest miss must never authorize removal of possible site code.
 func (c *Cache) PackageListing(path string) (listed, known bool) {
-	v := c.Describe(path)
-	if v.Verdict != VerdictReady || v.Staged {
+	// Response lookups use cached manifests only. Describe may fetch data
+	// and reuse an installation version while its header is being replaced.
+	if root, _ := detectStagedPluginRoot(path); root != "" {
 		return false, false
 	}
-	switch v.Kind {
-	case KindPlugin:
-		_, listed = c.lookupPluginChecksum(v.Slug, v.Version, v.Rel)
-		return listed, true
-	case KindCore:
-		if !strings.HasPrefix(v.Rel, "wp-admin/") && !strings.HasPrefix(v.Rel, "wp-includes/") {
-			return false, false
-		}
-		if _, ok := c.lookupChecksum(v.Version, v.Locale, v.Rel); ok {
-			return true, true
-		}
-		// A core update rewrites version.php before the new release's files
-		// land; judge the file against the release the install now declares.
-		version, locale, err := ReadVersionFile(v.Root)
+	if root, slug := detectInstalledPluginRoot(path); root != "" {
+		version, err := ReadPluginVersion(root, slug)
 		if err != nil {
 			return false, false
 		}
-		if version == v.Version && locale == v.Locale {
-			return false, true
-		}
-		c.setRoot(v.Root, version, locale)
-		if !c.hasChecksums(version, locale) {
-			c.startBackgroundFetch(version, locale)
-			return false, false
-		}
-		_, listed = c.lookupChecksum(version, locale, v.Rel)
-		return listed, true
+		_, listed = c.lookupPluginChecksum(slug, version, RelativePath(root, path))
+		return listed, listed
 	}
-	return false, false
+	if strings.Contains(path, "/wp-content/themes/") {
+		return false, false
+	}
+	root := DetectWPRoot(path)
+	if root == "" {
+		return false, false
+	}
+	rel := RelativePath(root, path)
+	if !strings.HasPrefix(rel, "wp-admin/") && !strings.HasPrefix(rel, "wp-includes/") {
+		return false, false
+	}
+	data, err := readPackageHeader(filepath.Join(root, "wp-includes/version.php"))
+	if err != nil {
+		return false, false
+	}
+	version, locale, err := ParseVersionContent(data)
+	if err != nil {
+		return false, false
+	}
+	_, listed = c.lookupChecksum(version, locale, rel)
+	return listed, listed
 }

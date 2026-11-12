@@ -1665,3 +1665,19 @@ func FuzzProcParentAndTTY(f *testing.F) {
 		}
 	})
 }
+
+func FuzzWholeFilePHPProof(f *testing.F) {
+	for _, seed := range []string{wholeFileShell, "<?php ?>?>", "<? echo 'site'; ?>", "<?php echo <<<PAGE\n?>\nPAGE;", "<?php /* unfinished"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, content string) {
+		empty := cleanLeavesNothing(content)
+		payload := cleanPHPContainsOnly(content, true)
+		if empty && payload {
+			t.Fatal("empty content also proved to contain a payload")
+		}
+		if cleanPHPContainsOnly("site output"+content, true) || cleanLeavesNothing("site output"+content) {
+			t.Fatal("literal output was discarded")
+		}
+	})
+}
