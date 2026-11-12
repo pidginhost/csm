@@ -140,7 +140,8 @@ func isMailAuthAttackCheck(check string) bool {
 		"smtp_account_spray",
 		"smtp_bruteforce",
 		"smtp_probe_abuse",
-		"smtp_subnet_spray":
+		"smtp_subnet_spray",
+		"stalwart_webmail_bruteforce":
 		return true
 	default:
 		return false

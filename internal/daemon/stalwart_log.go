@@ -29,12 +29,13 @@ type stalwartLogStats struct {
 
 // stalwartState is what the Stalwart log handler keeps between lines.
 type stalwartState struct {
-	ports stalwartlog.Ports
-	stats stalwartLogStats
+	ports   stalwartlog.Ports
+	stats   stalwartLogStats
+	webmail *stalwartWebmailTracker
 }
 
 func newStalwartState(ports stalwartlog.Ports, start time.Time) *stalwartState {
-	s := &stalwartState{ports: ports}
+	s := &stalwartState{ports: ports, webmail: newStalwartWebmailTracker()}
 	s.stats.lastLine.Store(start.Unix())
 	return s
 }
@@ -89,17 +90,26 @@ func (d *Daemon) startStalwartLogReader(cfg *config.Config) {
 
 // handleStalwartLine parses one Stalwart log line. Lines outside Stalwart's
 // layout and events CSM does not use produce nothing.
-func (d *Daemon) handleStalwartLine(line string, _ alert.Observation, _ *config.Config) []alert.Finding {
+func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	s := d.stalwart
 	if s == nil {
 		return nil
 	}
 	s.stats.read.Add(1)
 	s.stats.lastLine.Store(time.Now().Unix())
-	if _, ok := stalwartlog.Parse(line); !ok {
+	ev, ok := stalwartlog.Parse(line)
+	if !ok {
 		return nil
 	}
 	s.stats.parsed.Add(1)
+	switch ev.Name {
+	case "auth.failed", "auth.success":
+		session, ok := ev.Session()
+		if !ok {
+			return nil
+		}
+		return d.stalwartAuth(ev, session, obs, cfg)
+	}
 	return nil
 }
 
