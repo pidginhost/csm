@@ -240,6 +240,30 @@ func (i *Installer) Install() (Result, error) {
 		return res, nil
 	}
 
+	// A second rebuild is not a rollback: it can fail or regenerate the same
+	// bad configuration. Save the exact active file before changing anything.
+	var configBefore []byte
+	var configMode os.FileMode
+	if rebuild {
+		configBefore, err = i.ReadAt(site.sites.SiteConfigPath())
+		if err == nil {
+			statAt := i.StatAt
+			if statAt == nil {
+				statAt = os.Stat
+			}
+			var info os.FileInfo
+			info, err = statAt(site.sites.SiteConfigPath())
+			if err == nil {
+				configMode = info.Mode().Perm()
+			}
+		}
+		if err != nil {
+			res.Status = "fail"
+			res.Message = "save site configuration: " + err.Error()
+			return res, err
+		}
+	}
+
 	if !current {
 		if err := i.WriteAt(i.Handler.SnippetPath(), rendered, 0o644); err != nil {
 			res.Status = "fail"
@@ -262,8 +286,9 @@ func (i *Installer) Install() (Result, error) {
 			errs = append(errs, i.restoreLegacySnippet(legacyBytes))
 		}
 		if rebuilt {
-			// Regenerate from the restored files so httpd.conf matches them.
-			errs = append(errs, site.sites.RebuildSiteIncludes())
+			if err := i.WriteAt(site.sites.SiteConfigPath(), configBefore, configMode); err != nil {
+				errs = append(errs, fmt.Errorf("rollback site configuration: %w", err))
+			}
 		}
 		return errors.Join(errs...)
 	}
@@ -293,14 +318,15 @@ func (i *Installer) Install() (Result, error) {
 	}
 
 	if rebuild {
+		// Even a failed command may have replaced httpd.conf.
+		rebuilt = true
 		if err := site.sites.RebuildSiteIncludes(); err != nil {
 			err = errors.Join(err, rollback())
 			res.Status = "fail"
 			res.Message = err.Error()
 			return res, err
 		}
-		rebuilt = true
-		site.active = true
+		site.active, site.activeErr = site.sites.SiteIncludeActive()
 	}
 
 	if verr := i.Handler.Validate(); verr != nil {
@@ -317,8 +343,19 @@ func (i *Installer) Install() (Result, error) {
 			res.Message = "reload: " + err.Error()
 			return res, err
 		}
-		// Only reload after both files are back to their previous content.
-		_ = i.Handler.Reload()
+		if rebuilt {
+			if err := i.Handler.Validate(); err != nil {
+				err = errors.Join(rerr, fmt.Errorf("rollback configtest: %w", err))
+				res.Message = err.Error()
+				return res, err
+			}
+		}
+		// Only reload after all changed files are back to their previous content.
+		if err := i.Handler.Reload(); err != nil {
+			err = errors.Join(rerr, fmt.Errorf("recovery reload: %w", err))
+			res.Message = err.Error()
+			return res, err
+		}
 		res.Message = "reload: " + rerr.Error() + " (rolled back)"
 		return res, rerr
 	}
@@ -339,7 +376,7 @@ func (i *Installer) Install() (Result, error) {
 		res.Message += "; site snippet " + site.path + " written"
 	}
 	if rebuilt {
-		res.Message += "; httpd.conf rebuilt so HTTPS sites read it"
+		res.Message += "; httpd.conf rebuilt"
 	}
 	res.Message += site.pendingNote()
 	res.FollowUp = i.Handler.PostInstallInstructions()
@@ -378,8 +415,16 @@ func (i *Installer) SiteCoverage() (applicable, active bool, path string, err er
 	if sites == nil {
 		return false, false, "", nil
 	}
+	path = sites.SiteSnippetPath()
+	body, readErr := i.ReadAt(path)
+	if errors.Is(readErr, os.ErrNotExist) || bytes.Equal(body, []byte(disabledSiteSnippet)) {
+		return true, false, path, nil
+	}
+	if readErr != nil {
+		return true, false, path, readErr
+	}
 	active, err = sites.SiteIncludeActive()
-	return true, active && err == nil, sites.SiteSnippetPath(), err
+	return true, active && err == nil, path, err
 }
 
 // siteSnippets returns the handler's per-site include support, or nil.
@@ -470,7 +515,7 @@ func (i *Installer) Status() (Result, error) {
 			res.Message = fmt.Sprintf("legacy snippet %s still present; run `csm webserver-integration upgrade`", i.LegacySnippetPath)
 		}
 	}
-	if sites := i.siteSnippets(); sites != nil && res.Status == "ok" {
+	if sites := i.siteSnippets(); sites != nil && ver <= TemplateVersion && (res.Status == "ok" || res.Status == "stale") {
 		path := sites.SiteSnippetPath()
 		res.SitePath = path
 		_, exists, siteVer, err := i.readManaged(path)
@@ -480,6 +525,9 @@ func (i *Installer) Status() (Result, error) {
 			return res, err
 		}
 		switch {
+		case siteVer > TemplateVersion:
+			res.Status = "ok"
+			res.Message = "site snippet is newer than this binary; leaving both snippets unchanged"
 		case !exists || (siteVer > 0 && siteVer < TemplateVersion):
 			res.Status = "stale"
 			res.Message = fmt.Sprintf("site snippet %s missing or old; run `csm webserver-integration upgrade`", path)
@@ -507,7 +555,10 @@ func classifyStatus(exists bool, onDisk, shipped int) (status, message string) {
 	}
 }
 
-// Remove deletes the snippet, runs configtest to confirm the webserver
+// disabledSiteSnippet remains managed so a later install can replace it.
+const disabledSiteSnippet = "# csm-managed-version: 1\n# Challenge redirects disabled; keep this file for cPanel's required include.\n"
+
+// Remove disables the snippets, runs configtest to confirm the webserver
 // is happy without it, and reloads. Mirrors the install rollback
 // discipline: if removing the file makes configtest fail, restore the
 // original and exit non-zero.
@@ -525,12 +576,7 @@ func (i *Installer) Remove() (Result, error) {
 		return res, err
 	}
 	res.OnDiskVer = prevVer
-	if !prevExists {
-		res.Status = "no-op"
-		res.Message = "snippet not present"
-		return res, nil
-	}
-	if prevVer == 0 {
+	if prevExists && prevVer == 0 {
 		res.Status = "fail"
 		res.Message = ErrManualEdits.Error() + ": refusing to delete an operator-edited file"
 		return res, ErrManualEdits
@@ -555,35 +601,66 @@ func (i *Installer) Remove() (Result, error) {
 			return res, ErrManualEdits
 		}
 	}
-	restoreAll := func() {
-		_ = i.restore(prevBytes, prevExists)
-		if siteExists {
-			_ = i.restoreAt(sitePath, siteBytes, true)
+	res.SitePath = sitePath
+	changeSite := siteExists && !bytes.Equal(siteBytes, []byte(disabledSiteSnippet))
+	if !prevExists && !changeSite {
+		res.Status = "no-op"
+		res.Message = "challenge redirects not installed"
+		return res, nil
+	}
+	serverRemoved, siteWritten := false, false
+	restoreAll := func() error {
+		var errs []error
+		if serverRemoved {
+			errs = append(errs, i.restore(prevBytes, true))
 		}
+		if siteWritten {
+			errs = append(errs, i.restoreAt(sitePath, siteBytes, true))
+		}
+		return errors.Join(errs...)
 	}
-	if err := i.RemoveAt(i.Handler.SnippetPath()); err != nil {
-		res.Status = "fail"
-		res.Message = "delete: " + err.Error()
-		return res, err
-	}
-	if siteExists {
-		if err := i.RemoveAt(sitePath); err != nil {
-			restoreAll()
+	if prevExists {
+		if err := i.RemoveAt(i.Handler.SnippetPath()); err != nil {
 			res.Status = "fail"
-			res.Message = "delete site snippet: " + err.Error()
+			res.Message = "delete: " + err.Error()
 			return res, err
 		}
+		serverRemoved = true
+	}
+	if changeSite {
+		// cPanel uses Include, not IncludeOptional. Keep a comment-only
+		// match so removing the last snippet cannot break server startup.
+		if err := i.WriteAt(sitePath, []byte(disabledSiteSnippet), 0o644); err != nil {
+			err = errors.Join(err, restoreAll())
+			res.Status = "fail"
+			res.Message = "disable site snippet: " + err.Error()
+			return res, err
+		}
+		siteWritten = true
 	}
 	if verr := i.Handler.Validate(); verr != nil {
-		restoreAll()
+		verr = errors.Join(verr, restoreAll())
 		res.Status = "fail"
 		res.Message = "configtest after remove: " + verr.Error()
 		return res, verr
 	}
 	if rerr := i.Handler.Reload(); rerr != nil {
-		restoreAll()
-		_ = i.Handler.Reload()
 		res.Status = "fail"
+		if err := restoreAll(); err != nil {
+			err = errors.Join(rerr, err)
+			res.Message = "reload: " + err.Error()
+			return res, err
+		}
+		if err := i.Handler.Validate(); err != nil {
+			err = errors.Join(rerr, fmt.Errorf("rollback configtest: %w", err))
+			res.Message = err.Error()
+			return res, err
+		}
+		if err := i.Handler.Reload(); err != nil {
+			err = errors.Join(rerr, fmt.Errorf("recovery reload: %w", err))
+			res.Message = err.Error()
+			return res, err
+		}
 		res.Message = "reload: " + rerr.Error() + " (rolled back)"
 		return res, rerr
 	}

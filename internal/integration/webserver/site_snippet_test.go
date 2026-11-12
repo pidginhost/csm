@@ -14,6 +14,7 @@ import (
 type fakeSiteHandler struct {
 	fakeHandler
 	sitePath   string
+	configPath string
 	siteBody   string
 	active     bool
 	rebuildErr error
@@ -21,6 +22,7 @@ type fakeSiteHandler struct {
 }
 
 func (h *fakeSiteHandler) SiteSnippetPath() string { return h.sitePath }
+func (h *fakeSiteHandler) SiteConfigPath() string  { return h.configPath }
 func (h *fakeSiteHandler) SiteTemplate() string    { return h.siteBody }
 func (h *fakeSiteHandler) SiteIncludeActive() (bool, error) {
 	return h.active, nil
@@ -40,11 +42,16 @@ func newSiteInstaller(t *testing.T, active bool) (*Installer, *fakeSiteHandler) 
 	h := &fakeSiteHandler{
 		fakeHandler: fakeHandler{kind: "apache", path: filepath.Join(dir, "csm-challenge.conf"), body: "RewriteEngine On\n"},
 		sitePath:    filepath.Join(dir, "userdata", "csm-challenge.conf"),
+		configPath:  filepath.Join(dir, "httpd.conf"),
 		siteBody:    "RewriteEngine On\nRewriteRule ^ - [L]\n",
 		active:      active,
 	}
+	if err := os.WriteFile(h.configPath, []byte("# original config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	i := newTestInstaller(t, &h.fakeHandler)
 	i.Handler = h
+	i.WriteAt = atomicWrite
 	return i, h
 }
 
@@ -148,7 +155,7 @@ func TestStatusIsStaleWhenTheSiteSnippetIsMissing(t *testing.T) {
 	}
 }
 
-func TestRemoveDeletesTheSiteSnippet(t *testing.T) {
+func TestRemoveDisablesTheSiteSnippet(t *testing.T) {
 	i, h := newSiteInstaller(t, true)
 	if _, err := i.Install(); err != nil {
 		t.Fatal(err)
@@ -156,8 +163,8 @@ func TestRemoveDeletesTheSiteSnippet(t *testing.T) {
 	if res, err := i.Remove(); err != nil || res.Status != "ok" {
 		t.Fatalf("Remove = %+v, %v", res, err)
 	}
-	if _, err := os.Stat(h.sitePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("site snippet left behind by Remove")
+	if body, err := os.ReadFile(h.sitePath); err != nil || string(body) != disabledSiteSnippet {
+		t.Fatalf("site snippet was not disabled: %q, %v", body, err)
 	}
 }
 

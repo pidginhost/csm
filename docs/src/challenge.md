@@ -355,7 +355,21 @@ present. `csm webserver-integration install` and `upgrade` run that rebuild
 once when needed, inside the same configtest-then-reload run. The daemon's
 startup refresh writes the file but never rebuilds `httpd.conf`; HTTPS sites
 are then covered after cPanel's next rebuild, and `csm doctor challenge`
-warns until they are.
+warns until they are. Coverage checks inspect each HTTPS site block and
+require the per-site snippet to be present.
+
+If a rebuild, configtest, or reload fails, the installer restores the
+previous snippets and the saved `httpd.conf`, including its permissions.
+It does not run a second rebuild during recovery. A failed restore or
+recovery configtest prevents a recovery reload and reports the failure.
+
+`csm webserver-integration remove` disables both redirects even if one
+snippet is missing. It leaves a managed, comment-only per-site snippet:
+cPanel's required wildcard include must still match a file for the web
+server to start. Removal never rebuilds `httpd.conf`. Installing again
+replaces the placeholder with the redirect rule. Automatic startup
+refreshes leave both snippets alone if either has a newer template version
+than the running binary.
 
 The snippets are rendered from the effective CSM config. Apache and LSWS
 read their RewriteMap from `/var/cache/csm/challenge_ips.txt`; Nginx reads

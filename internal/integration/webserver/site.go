@@ -1,10 +1,10 @@
 package webserver
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -14,6 +14,8 @@ import (
 type siteIncluder interface {
 	SiteSnippetPath() string
 	SiteTemplate() string
+	// SiteConfigPath is the generated configuration changed by a rebuild.
+	SiteConfigPath() string
 	// SiteIncludeActive reports whether the site blocks read the include.
 	SiteIncludeActive() (bool, error)
 	// RebuildSiteIncludes regenerates the web server configuration so its
@@ -32,7 +34,7 @@ const (
 // Port-80 blocks inherit the server-scope snippet; HTTPS blocks do not, so
 // the rule also goes in the per-site include. cPanel adds that include to
 // every block only when it regenerates httpd.conf with a file present.
-// Methods are safe on a nil receiver, which means no per-site include.
+// SiteSnippetPath returns an empty path on a nil receiver to opt out.
 type cpanelSites struct {
 	httpdConf string
 	runner    cmdRunner
@@ -51,13 +53,53 @@ func (c *cpanelSites) SiteSnippetPath() string {
 
 func (c *cpanelSites) SiteTemplate() string { return cpanelSiteTemplate }
 
+func (c *cpanelSites) SiteConfigPath() string { return c.httpdConf }
+
 func (c *cpanelSites) SiteIncludeActive() (bool, error) {
 	// #nosec G304 -- fixed cPanel httpd.conf path, or a test's temp file.
 	data, err := os.ReadFile(c.httpdConf)
 	if err != nil {
 		return false, err
 	}
-	return bytes.Contains(data, []byte(cpanelSiteInclude)), nil
+	return cpanelHTTPSIncludes(string(data)), nil
+}
+
+// cPanel emits its sites inline. A global include, a commented example, or
+// an HTTP-only include does not establish coverage of the HTTPS sites.
+func cpanelHTTPSIncludes(conf string) bool {
+	inSite, tls, included, found := false, false, false, false
+	for _, line := range strings.Split(conf, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "<virtualhost":
+			inSite, tls, included = true, false, false
+			for _, addr := range fields[1:] {
+				if strings.HasSuffix(strings.TrimSuffix(addr, ">"), ":443") {
+					tls = true
+				}
+			}
+		case "</virtualhost>":
+			if inSite && tls {
+				if !included {
+					return false
+				}
+				found = true
+			}
+			inSite = false
+		case "sslengine":
+			if inSite && len(fields) == 2 && strings.EqualFold(fields[1], "on") {
+				tls = true
+			}
+		case "include", "includeoptional":
+			if inSite && len(fields) == 2 && strings.Trim(fields[1], "\"'") == "/etc/apache2/conf.d/userdata/*.conf" {
+				included = true
+			}
+		}
+	}
+	return found && !inSite
 }
 
 func (c *cpanelSites) RebuildSiteIncludes() error {
