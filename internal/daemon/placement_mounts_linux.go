@@ -235,7 +235,7 @@ func (fm *FileMonitor) reportUnresolvedOnDevice(dev uint64, details func() strin
 		return
 	}
 	fm.sendAlert(alert.High, placementUnresolvedCheck,
-		fmt.Sprintf("Realtime protection could not resolve the path of a file or directory moved or linked on device %s", device),
+		fmt.Sprintf("Realtime protection could not resolve the path of a file or directory placed on device %s", device),
 		details())
 }
 
@@ -276,8 +276,12 @@ func (fm *FileMonitor) reportUnmarkablePlacementRoots(all, skipped []mountEntry,
 		return
 	}
 	csmlog.Warn("placement: kernel cannot watch these roots for moved or linked files", "roots", strings.Join(roots, ", "))
+	noun := "watch roots"
+	if len(roots) == 1 {
+		noun = "watch root"
+	}
 	fm.sendAlert(alert.Warning, placementUnresolvedCheck,
-		fmt.Sprintf("Realtime protection cannot see files moved or linked into %d watch roots on this kernel", len(roots)),
+		fmt.Sprintf("Realtime protection cannot see files moved or linked into %d %s on this kernel", len(roots), noun),
 		fmt.Sprintf("This kernel cannot report renames and hard links on the filesystems of: %s. Files moved or linked there are checked by the deep scan.", strings.Join(roots, ", ")))
 }
 

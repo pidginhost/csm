@@ -401,7 +401,8 @@ func TestFIDResolveErrorRaisesUnresolvedFinding(t *testing.T) {
 			p := newTestPlacementFID(t, fm)
 			p.mounts = map[unix.Fsid][]fidMount{{Val: [2]int32{7, 9}}: {{fd: -1, path: t.TempDir(), dev: unix.Mkdev(8, 3)}}}
 			p.openDir = func(int, unix.FileHandle, int) (int, error) { return -1, tc.err }
-			rec := fidEventRecord(unix.FAN_MOVED_TO, fidInfoRecord(unix.FAN_EVENT_INFO_TYPE_DFID_NAME, dfidNameBody(8, []byte{1, 2, 3, 4, 5, 6, 7, 8}, "x.php")))
+			// A create, not a move: the finding must not say how it got there.
+			rec := fidEventRecord(unix.FAN_CREATE, fidInfoRecord(unix.FAN_EVENT_INFO_TYPE_DFID_NAME, dfidNameBody(8, []byte{1, 2, 3, 4, 5, 6, 7, 8}, "x.php")))
 			now := time.Now()
 			p.dispatch(rec, now)
 			p.dispatch(rec, now)
@@ -417,7 +418,7 @@ func TestFIDResolveErrorRaisesUnresolvedFinding(t *testing.T) {
 				t.Fatalf("findings %+v, want %d", got, tc.alerts)
 			}
 			for _, f := range got {
-				if f.Check != placementUnresolvedCheck || f.Severity != alert.High || !strings.Contains(f.Message, "8:3") {
+				if f.Check != placementUnresolvedCheck || f.Severity != alert.High || !strings.Contains(f.Message, "file or directory placed on device 8:3") {
 					t.Fatalf("finding %+v", f)
 				}
 			}

@@ -241,7 +241,7 @@ func TestFIDSkipsRootsOnFilesystemsWithoutHandles(t *testing.T) {
 
 	p.reportCoverage(all, skipped)
 	found := unresolvedPlacementFindings(t, alerts)
-	if len(found) != 1 || found[0].Severity != alert.Warning ||
+	if len(found) != 1 || found[0].Severity != alert.Warning || !strings.Contains(found[0].Message, " 1 watch root on ") ||
 		!strings.Contains(found[0].Details, all[0].MountPoint) || strings.Contains(found[0].Details, all[1].MountPoint) ||
 		!strings.Contains(found[0].Details, "deep scan") {
 		t.Fatalf("findings %+v, want one Warning naming only the skipped root", found)
