@@ -72,7 +72,6 @@ type setupHarness struct {
 	gotURL  string
 	gotUser string
 	gotPass string
-	gotIn   *stalwartsetup.Inputs
 }
 
 func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
