@@ -127,9 +127,10 @@ const (
 )
 
 var (
-	mtaLookPath      = exec.LookPath
-	mtaStat          = os.Stat
-	mtaServiceActive = systemdMTAServiceActive
+	mtaLookPath       = exec.LookPath
+	mtaStat           = os.Stat
+	mtaServiceActive  = systemdMTAServiceActive
+	mtaServiceEnabled = systemdMTAServiceEnabled
 )
 
 // DetectMTA reports the delivery agent rather than whichever package happens
@@ -150,6 +151,12 @@ func DetectMTA() MTAKind {
 		return MTAPostfix
 	}
 	if mtaServiceActive("stalwart") || mtaServiceActive("stalwart-mail") {
+		return MTAStalwart
+	}
+	// CSM can start while Stalwart is still starting or restarting; an
+	// enabled unit still names the mail server once Exim and Postfix are
+	// not running.
+	if mtaServiceEnabled("stalwart") || mtaServiceEnabled("stalwart-mail") {
 		return MTAStalwart
 	}
 
@@ -184,6 +191,13 @@ func systemdMTAServiceActive(unit string) bool {
 	defer cancel()
 	// #nosec G204 -- callers pass only the literal MTA unit names above.
 	return exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run() == nil
+}
+
+func systemdMTAServiceEnabled(unit string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// #nosec G204 -- callers pass only the literal MTA unit names above.
+	return exec.CommandContext(ctx, "systemctl", "is-enabled", "--quiet", unit).Run() == nil
 }
 
 // binaryInstalled reports whether any of the named binaries is on PATH or at
