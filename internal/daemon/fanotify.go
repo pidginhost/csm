@@ -316,7 +316,9 @@ type FileMonitor struct {
 	// EventStats; the process-wide metrics count the same events.
 	placementUnverified atomic.Int64
 	placementSkipped    atomic.Int64
-	recent              *recentAnalyses
+	// recent is nil unless a placement backend runs: nothing else reads it,
+	// and keeping it costs a read and hash per analysis.
+	recent *recentAnalyses
 	// placementCreates holds the running fanotify placement backend's
 	// creates until their own close-write settles them; nil otherwise.
 	placementCreates atomic.Pointer[createSettler]
@@ -703,7 +705,6 @@ func newFileMonitorCore(cfg *config.Config, alertCh chan<- alert.Finding) *FileM
 		webRootPatterns:     checks.PHPConfigRealtimeRootPatterns(cfg),
 		accountRootPatterns: checks.AccountHomePatterns(),
 		docRootPatterns:     checks.RealtimeDocumentRootPatterns(cfg),
-		recent:              newRecentAnalyses(recentAnalysisCap, recentAnalysisTTL),
 	}
 
 	wpCache := wpcheck.NewCache(cfg.StatePath)

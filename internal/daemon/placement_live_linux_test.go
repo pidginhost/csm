@@ -119,3 +119,20 @@ func TestPlacementBackendJoinsBeforeFileMonitorCanDrain(t *testing.T) {
 		t.Fatalf("placement backend did not stop before the analyzer queue closed: %+v", probe)
 	}
 }
+
+// Remembering an analysis reads and hashes the file. Only a placement backend
+// ever asks for one, so a monitor without a backend keeps none.
+func TestAnalysesAreRememberedOnlyWithAPlacementBackend(t *testing.T) {
+	fm := newFileMonitorCore(&config.Config{StatePath: t.TempDir()}, make(chan alert.Finding, 8))
+	if fm.recent != nil {
+		t.Fatal("monitor without a placement backend remembers analyses")
+	}
+	b := &stopProbeBackend{fm: fm, started: make(chan struct{})}
+	fm.runPlacement(b)
+	<-b.started
+	if fm.recent == nil {
+		t.Fatal("placement backend runs without remembered analyses")
+	}
+	close(fm.stopCh)
+	fm.drainAndClose()
+}
