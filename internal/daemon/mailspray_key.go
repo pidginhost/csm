@@ -17,7 +17,7 @@ const maxSprayMailboxBytes = 254
 // logged for that mailbox. Names are client-chosen, so the key is bounded.
 // It is idempotent: a cut that lands after a space drops that space.
 func normalizeSprayMailbox(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
+	s = normalizeMailAuthAccount(s)
 	if len(s) > maxSprayMailboxBytes {
 		n := maxSprayMailboxBytes
 		for n > 0 && !utf8.RuneStart(s[n]) {

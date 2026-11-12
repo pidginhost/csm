@@ -10,15 +10,17 @@ import (
 // padding the client or the log used.
 func TestNormalizeSprayMailbox(t *testing.T) {
 	for in, want := range map[string]string{
-		" User@Example.COM ":  "user@example.com",
-		" User@Example.COM. ": "user@example.com",
-		"user@example.com..":  "user@example.com..",
-		"user@example..com.":  "user@example..com.",
-		"user@.":              "user@.",
-		"user.":               "user.",
-		"CPUSER":              "cpuser",
-		"":                    "",
-		" \t ":                "",
+		" User@Example.COM ":    "user@example.com",
+		" User@Example.COM. ":   "user@example.com",
+		"user@example.com..":    "user@example.com..",
+		"user@example..com.":    "user@example..com.",
+		"user@.":                "user@.",
+		"user.":                 "user.",
+		"CPUSER":                "cpuser",
+		"\u0130nfo@Example.COM": "\u0130nfo@example.com",
+		"\u212aate@example.com": "\u212aate@example.com",
+		"":                      "",
+		" \t ":                  "",
 	} {
 		if got := normalizeSprayMailbox(in); got != want {
 			t.Errorf("normalizeSprayMailbox(%q) = %q, want %q", in, got, want)
