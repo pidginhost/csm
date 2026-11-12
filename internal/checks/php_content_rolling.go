@@ -295,15 +295,12 @@ func (clock rollingChangeClock) update(cur *store.ScanCursorRecord) {
 	through := cur.ChangedThrough
 	if !cur.ChangedClock.IsZero() {
 		delta := clock.wall.Sub(cur.ChangedClock)
-		if clock.boot != "" && cur.ChangedBootID != "" {
-			if clock.boot != cur.ChangedBootID || clock.uptime < cur.ChangedUptime {
-				// A reboot can reset the wall clock by an arbitrary amount. Revisit
-				// metadata without depending on the clean-content cache surviving it.
-				through = time.Unix(0, 1)
-			} else {
-				delta -= time.Duration((clock.uptime - cur.ChangedUptime) * float64(time.Second))
-			}
+		if clock.boot != "" && clock.boot == cur.ChangedBootID && clock.uptime >= cur.ChangedUptime {
+			delta -= time.Duration((clock.uptime - cur.ChangedUptime) * float64(time.Second))
 		}
+		// After a reboot only the wall clocks compare: one now behind the last
+		// pass rewinds the bound below. Rereading every file instead would
+		// leave new files waiting behind that backlog for days.
 		// procfs uptime is rounded; the overlap absorbs subsecond jitter.
 		if delta < -time.Second {
 			through = through.Add(delta)

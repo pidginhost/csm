@@ -485,3 +485,74 @@ func TestChangedNewSymlinkCannotBorrowOldTargetTime(t *testing.T) {
 		t.Fatal("new PHP symlink evaded priority scanning using its old target's ctime")
 	}
 }
+
+type rebootClockOS struct {
+	openCountOS
+	uptime float64
+	boot   string
+}
+
+func (o rebootClockOS) ReadFile(path string) ([]byte, error) {
+	switch path {
+	case "/proc/uptime":
+		return []byte(fmt.Sprintf("%f 0", o.uptime)), nil
+	case "/proc/sys/kernel/random/boot_id":
+		return []byte(o.boot), nil
+	}
+	return o.openCountOS.ReadFile(path)
+}
+
+// A reboot loses the uptime reference, not the files' history. Rereading every
+// file after each reboot would leave new files waiting behind that backlog for
+// days; only a wall clock now behind the last pass rewinds the bound.
+func TestChangedPassAfterARebootReadsOnlyNewChanges(t *testing.T) {
+	fx := newChangedFixture(t, 1, "alice")
+	wall := time.Now()
+	previous := phpContentNow
+	phpContentNow = func() time.Time { return wall }
+	t.Cleanup(func() { phpContentNow = previous })
+	withMockOS(t, rebootClockOS{openCountOS: fx.os, uptime: 10000, boot: "boot-a"})
+	changedPassForTest(t, fx, context.Background(), 10, "alice")
+	// Change times are coarse: keep the next write past the zero-margin bound.
+	time.Sleep(20 * time.Millisecond)
+
+	wall = wall.Add(10 * time.Minute)
+	withMockOS(t, rebootClockOS{openCountOS: fx.os, uptime: 60, boot: "boot-b"})
+	planted := "/home/alice/public_html/assets/lib/after-reboot.php"
+	fx.write(t, planted, rollingDormantPHP)
+	before := map[string]int{}
+	for _, name := range []string{"a00.php", "a01.php", "a02.php", "a03.php"} {
+		before[name] = fx.os.count("/home/alice/public_html/assets/lib/" + name)
+	}
+
+	if got := changedPassForTest(t, fx, context.Background(), 10, "alice"); !findsPath(got, planted) {
+		t.Fatal("a file planted after the reboot was not read")
+	}
+	for name, n := range before {
+		if after := fx.os.count("/home/alice/public_html/assets/lib/" + name); after != n {
+			t.Errorf("unchanged %s reread after a reboot: opens %d -> %d", name, n, after)
+		}
+	}
+}
+
+// A clock that comes back behind the watermark resets it to the new time, so
+// files written after the reboot are read.
+func TestChangedPassAfterARebootWithTheClockBehindTheWatermark(t *testing.T) {
+	fx := newChangedFixture(t, 1, "alice")
+	rollingChangedMargin = 2 * time.Minute
+	wall := time.Now().Add(time.Hour)
+	previous := phpContentNow
+	phpContentNow = func() time.Time { return wall }
+	t.Cleanup(func() { phpContentNow = previous })
+	withMockOS(t, rebootClockOS{openCountOS: fx.os, uptime: 10000, boot: "boot-a"})
+	changedPassForTest(t, fx, context.Background(), 10, "alice")
+
+	// The machine came back with its clock an hour behind the last pass.
+	wall = time.Now()
+	withMockOS(t, rebootClockOS{openCountOS: fx.os, uptime: 60, boot: "boot-b"})
+	planted := "/home/alice/public_html/assets/lib/after-reboot.php"
+	fx.write(t, planted, rollingDormantPHP)
+	if got := changedPassForTest(t, fx, context.Background(), 10, "alice"); !findsPath(got, planted) {
+		t.Fatal("a clock set back across a reboot hid a new file")
+	}
+}

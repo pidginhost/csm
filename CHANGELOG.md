@@ -27,9 +27,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - CSM now raises a Critical alert when a process writes back a file CSM quarantined or cleaned, and repeats that response.
 - With process killing on, CSM now stops a process that writes back a file it removed, when a web request started it or it runs detached.
 - CSM now raises a High alert while it skips unusable trusted proxy entries.
-- New and changed PHP files now take priority during site content scans, including files in WordPress core folders.
-- Changed PHP scans now finish large backlogs and retry unreadable files without starving other accounts after clock corrections.
-- New PHP links now receive priority scans even when their targets are old.
+- New and changed PHP files anywhere in a site, including WordPress core folders and links, now take priority in scheduled content scans.
 - Realtime protection now quarantines PHP shells that run commands sent in the raw request body, instead of only alerting.
 - Realtime protection now also quarantines confirmed PHP shells placed after a shell command in backticks.
 - Scheduled and on-demand scans now report PHP shells that run commands sent in the raw request body, and realtime catches more of their variants.
