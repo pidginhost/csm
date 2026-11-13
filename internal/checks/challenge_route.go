@@ -174,6 +174,14 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	// hostnames and the host's own addresses.
 	infra := config.EffectiveFirewallConfig(cfg).InfraIPs
 	protector, _ := getIPBlocker().(blockProtector)
+	// A direct finding anywhere in the batch keeps its address escalating,
+	// whichever of its findings is listed first.
+	escalates := make(map[string]bool)
+	for _, f := range findings {
+		if f.SourceIP != "" && !f.ProxiedClient && isChallengeableCheck(f.Check) && f.Check != "http_claimed_bot_unverified" {
+			escalates[f.SourceIP] = true
+		}
+	}
 
 	for _, f := range findings {
 		if f.AutoIPResponseEvaluated || !CheckResponseEnabled(cfg, f.Check) {
@@ -223,7 +231,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		// A client only a trusted proxy forwarded sends no packets here and
 		// the challenge map matches the connecting address, so its challenge
 		// can only time out: that timeout is no reason to block it.
-		nonEscalating := f.Check == "http_claimed_bot_unverified" || f.ProxiedClient
+		nonEscalating := f.Check == "http_claimed_bot_unverified" || f.ProxiedClient && !escalates[ip]
 		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root, nonEscalating)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)

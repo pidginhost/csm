@@ -164,9 +164,9 @@ type domlogStats struct {
 	// supplied for any counted record: such a count is not the HTTP peer's
 	// and reads as a trusted chain.
 	forwarded map[string]map[string]bool
-	// direct marks, by the same key, the addresses a record named as its
-	// own connecting peer.
-	direct map[string]map[string]bool
+	// seenDirect marks the addresses any record named as its own connecting
+	// peer, whatever it counted toward: such an address is a packet source.
+	seenDirect map[string]bool
 
 	// callers collects requests for flagged files; nil when none is flagged.
 	callers *webshellCallers
@@ -223,13 +223,6 @@ func uaObservationKey(kind uaKind) string { return "ua:" + itoa(int(kind)) }
 // or not it can be the finding's observation.
 func (s *domlogStats) markForwarded(key, ip string, direct bool) {
 	if direct {
-		if s.direct == nil {
-			s.direct = make(map[string]map[string]bool)
-		}
-		if s.direct[key] == nil {
-			s.direct[key] = make(map[string]bool)
-		}
-		s.direct[key][ip] = true
 		return
 	}
 	if s.forwarded == nil {
@@ -266,10 +259,10 @@ func (s *domlogStats) stamp(f *alert.Finding, key string) {
 	r := s.newest[key][f.SourceIP]
 	r.stamp(f, ProducerDomlogScan)
 	// A forwarded client keeps its kind without a record. It is a proxied
-	// client only when no counted record came from the address itself.
+	// client only when no record in the scan came from the address itself.
 	if s.forwarded[key][f.SourceIP] {
 		f.Attribution = admission.AttributionTrustedHTTPChain
-		f.ProxiedClient = !s.direct[key][f.SourceIP]
+		f.ProxiedClient = !s.seenDirect[f.SourceIP]
 	}
 }
 
@@ -331,6 +324,12 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 	// when no trusted proxy chain supplied it; stamp reads a count with any
 	// chained record as a trusted chain.
 	direct := !client.Chained
+	if direct {
+		if s.seenDirect == nil {
+			s.seenDirect = make(map[string]bool)
+		}
+		s.seenDirect[ip] = true
+	}
 	var r scanRecord
 	if rec.ref.stream != "" {
 		r = scanned(rec.ref, rec.Time)
@@ -726,7 +725,7 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 		// they do not count toward the scanner profile itself.
 		if s.uaCat[ip][uaKindClaimedBotPending] > 0 && s.forwarded[uaObservationKey(uaKindClaimedBotPending)][ip] {
 			f.Attribution = admission.AttributionTrustedHTTPChain
-			f.ProxiedClient = !s.direct[uaObservationKey(uaKindClaimedBotPending)][ip]
+			f.ProxiedClient = !s.seenDirect[ip]
 		}
 		out = append(out, f)
 	}

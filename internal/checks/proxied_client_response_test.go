@@ -84,9 +84,16 @@ func TestChallengeRouteNeverEscalatesAChainClient(t *testing.T) {
 		// One forwarded request beside direct ones reads as a chain for
 		// admission, but the address also connects here itself.
 		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.50", Message: "WordPress brute force from 203.0.113.50", Attribution: admission.AttributionTrustedHTTPChain},
+		// A proxied count listed first must not hide a direct finding for
+		// the same address later in the batch.
+		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.51", Message: "WordPress brute force from 203.0.113.51", Attribution: admission.AttributionTrustedHTTPChain, ProxiedClient: true},
+		{Check: "wp_user_enumeration", Severity: alert.High, SourceIP: "203.0.113.51", Message: "User enumeration from 203.0.113.51", Attribution: admission.AttributionHTTPPeer},
 	})
-	if len(actions) != 3 || !mock.ips["203.0.113.48"] || !mock.ips["203.0.113.49"] || !mock.ips["203.0.113.50"] {
-		t.Fatalf("routed %v with %d actions, want all three addresses", mock.ips, len(actions))
+	if len(actions) != 4 || !mock.ips["203.0.113.48"] || !mock.ips["203.0.113.49"] || !mock.ips["203.0.113.50"] || !mock.ips["203.0.113.51"] {
+		t.Fatalf("routed %v with %d actions, want all four addresses", mock.ips, len(actions))
+	}
+	if mock.nonEscalating["203.0.113.51"] {
+		t.Error("a direct finding later in the batch must keep the address escalating")
 	}
 	if !mock.nonEscalating["203.0.113.48"] {
 		t.Error("a chain client's challenge timeout must not escalate to a block")
@@ -96,6 +103,25 @@ func TestChallengeRouteNeverEscalatesAChainClient(t *testing.T) {
 	}
 	if mock.nonEscalating["203.0.113.50"] {
 		t.Error("a forwarded request beside direct ones must not spare the address its escalation")
+	}
+}
+
+// A direct request for any other key in the same scan makes the address a
+// packet source, so a forwarded count for it is no proxied client.
+func TestDomlogDirectRequestOnAnyKeyIsNoProxiedClient(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"192.0.2.10"}
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, fmt.Sprintf(`192.0.2.10 - - [09/Nov/2026:12:01:%02d +0000] "POST /wp-login.php HTTP/1.1" 200 100 "-" "Mozilla/5.0" "203.0.113.80"`, i))
+	}
+	for i := 0; i < 6; i++ {
+		lines = append(lines, domlogTestLine("203.0.113.80", 30+i, "GET", fmt.Sprintf("/?author=%d", i+1), 200, "Mozilla/5.0"))
+	}
+	_, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
+	f := oneScanFinding(t, findings, "wp_login_bruteforce")
+	if f.Attribution != admission.AttributionTrustedHTTPChain || f.ProxiedClient {
+		t.Fatalf("forwarded count beside direct requests read as %s, proxied %v; want a chain that is no proxied client", f.Attribution, f.ProxiedClient)
 	}
 }
 

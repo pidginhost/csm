@@ -405,7 +405,8 @@ func TestDomlogScannerBotRoutingCannotVouchForPeer(t *testing.T) {
 			} else {
 				wantPeerMints(t, f)
 			}
-			wantProxied := tc.proxiedProbes && (!tc.pending || tc.forwarded)
+			// Direct browser assets make the address a packet source.
+			wantProxied := tc.proxiedProbes && tc.forwarded
 			if f.ProxiedClient != wantProxied {
 				t.Errorf("ProxiedClient = %v, want %v", f.ProxiedClient, wantProxied)
 			}
