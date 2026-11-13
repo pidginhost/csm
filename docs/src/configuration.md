@@ -1450,6 +1450,8 @@ The accepts come right after `infra_ips` and before the blocked address, blocked
 
 Entries from `conf.d` fragments are added to the ones in `csm.yaml`. A change takes effect on `csm firewall restart`. `csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback, and the Web UI firewall page shows entries from the live daemon config with its port exceptions. After a firewall restart or rollback, that page can differ from the applied policy; use the CLI to inspect the engine configuration. Hosts that support the key report the `firewall.tcp_in_allow.v1` capability.
 
+The Web UI port exception count includes each configured source and port pair alongside manually added exceptions, matching its allowed list.
+
 For a single address on one host without a config change, `csm firewall allow-port` still works. That allow is a soft one: it sits after the blocklists, so an operator block overrides it.
 
 ## firewall.protocol_allow

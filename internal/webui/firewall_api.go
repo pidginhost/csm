@@ -77,6 +77,11 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	portAllowCount := len(state.PortAllowed)
+	for _, rule := range cfg.TCPInAllow {
+		portAllowCount += len(rule.Sources)
+	}
+
 	result := map[string]interface{}{
 		"enabled":              cfg.Enabled,
 		"ipv6":                 cfg.IPv6,
@@ -100,7 +105,7 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		"allowed_count":        allowPermanent + allowTemporary,
 		"allow_permanent":      allowPermanent,
 		"allow_temporary":      allowTemporary,
-		"port_allow_count":     len(state.PortAllowed),
+		"port_allow_count":     portAllowCount,
 		"infra_ips":            cfg.InfraIPs,
 		"infra_count":          len(cfg.InfraIPs),
 		"port_flood_rules":     len(cfg.PortFlood),
