@@ -250,8 +250,8 @@ var settingsSections = []SettingsSection{
 		Group:    SectionGroupAlerting,
 		Restart:  false,
 		Fields: []SettingsField{
-			{YAMLPath: "upcp_window_start", Type: "string", Label: "UPCP window start (HH:MM)", Feature: "cpanel"},
-			{YAMLPath: "upcp_window_end", Type: "string", Label: "UPCP window end (HH:MM)", Feature: "cpanel"},
+			{YAMLPath: "upcp_window_start", Type: "string", Label: "UPCP window start (HH:MM)"},
+			{YAMLPath: "upcp_window_end", Type: "string", Label: "UPCP window end (HH:MM)"},
 			{YAMLPath: "known_api_tokens", Type: "[]string", Label: "Known API tokens (hashed)", Feature: "cpanel"},
 			{YAMLPath: "ignore_paths", Type: "[]string", Label: "Ignore paths"},
 			{YAMLPath: "suppress_webmail_alerts", Type: "bool", Label: "Suppress webmail login alerts"},

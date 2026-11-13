@@ -12,7 +12,7 @@ import (
 )
 
 var cpanelOnlySettingsFields = map[string][]string{
-	"suppressions":  {"upcp_window_start", "upcp_window_end", "known_api_tokens", "suppress_cpanel_login_alerts"},
+	"suppressions":  {"known_api_tokens", "suppress_cpanel_login_alerts"},
 	"auto_response": {"block_cpanel_logins"},
 }
 
@@ -149,5 +149,17 @@ func TestSettingsSaveRejectsHiddenField(t *testing.T) {
 	disk, _ := os.ReadFile(cfgPath)
 	if !strings.Contains(string(disk), "block_cpanel_logins: true") {
 		t.Error("hidden field was changed on disk")
+	}
+}
+
+// The UPCP window also quiets /etc/shadow change alerts, which every host
+// raises, so it stays editable everywhere.
+func TestUPCPWindowSettingsShownOnEveryHost(t *testing.T) {
+	full, _ := LookupSettingsSection("suppressions")
+	off, _ := filterSettingsSection(full, map[string]bool{})
+	for _, path := range []string{"upcp_window_start", "upcp_window_end"} {
+		if lookupSchemaField(off, path) == nil {
+			t.Errorf("%s hidden off cPanel", path)
+		}
 	}
 }

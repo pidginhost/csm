@@ -55,6 +55,9 @@ type featureState struct {
 	featureNow     func() time.Time
 	featureMu      sync.Mutex
 	featureCache   featureSnapshot
+	// featureRefreshing is set while one caller re-detects; the others
+	// keep the previous snapshot instead of waiting on systemd.
+	featureRefreshing bool
 }
 
 func (s *Server) platformSnapshot() featureSnapshot {
@@ -63,10 +66,15 @@ func (s *Server) platformSnapshot() featureSnapshot {
 		now = s.featureNow()
 	}
 	s.featureMu.Lock()
-	defer s.featureMu.Unlock()
-	if c := s.featureCache; c.features != nil && now.Sub(c.at) < featureTTL {
+	c := s.featureCache
+	if c.features != nil && (now.Sub(c.at) < featureTTL || s.featureRefreshing) {
+		s.featureMu.Unlock()
 		return c
 	}
+	s.featureRefreshing = c.features != nil
+	s.featureMu.Unlock()
+
+	// Detection runs unlocked: it can wait on systemd for seconds.
 	var info platform.Info
 	var mta platform.MTAKind
 	if s.detectPlatform != nil {
@@ -74,8 +82,12 @@ func (s *Server) platformSnapshot() featureSnapshot {
 	} else {
 		info, mta = hostPlatform()
 	}
-	s.featureCache = featureSnapshot{at: now, panel: info.Panel, mta: mta, features: uiFeatures(info, mta)}
-	return s.featureCache
+	snap := featureSnapshot{at: now, panel: info.Panel, mta: mta, features: uiFeatures(info, mta)}
+	s.featureMu.Lock()
+	s.featureCache = snap
+	s.featureRefreshing = false
+	s.featureMu.Unlock()
+	return snap
 }
 
 // features returns the feature flags for this host. The map is shared;

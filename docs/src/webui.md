@@ -129,8 +129,8 @@ The dashboard shows only what the host supports. Email Security appears when
 Exim, Postfix or Stalwart is detected; a mail server started after CSM shows
 up within five minutes. Its Queue, Held mail, Suspended, Forwarders and
 Provider delays tabs, the antivirus lines of the Protection card, cPHulk
-actions on the Firewall page, and the Email AV, cPanel login, UPCP window and
-known API token settings need cPanel and are not shown elsewhere. Hidden
+actions on the Firewall page, the dashboard's Email AV chip, and the Email AV,
+cPanel login and known API token settings need cPanel and are not shown elsewhere. Hidden
 settings keep the values they have in `csm.yaml`.
 
 On Email Security, failed refreshes mark protection status as unavailable

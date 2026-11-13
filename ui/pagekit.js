@@ -25,8 +25,44 @@ const SHARED = RUNTIME.concat(['toast.js', 'csm-ui.js', 'prefs.js', 'table.js'])
 // templateBody returns a page template's "content" block with the Go
 // template directives removed, so a test runs the page script against the
 // markup it ships with. Conditional blocks keep both branches.
-function templateBody(name) {
-    const text = fs.readFileSync(path.join(TEMPLATE_DIR, name + '.html'), 'utf8');
+// ALL_FEATURES is a cPanel host: every platform feature on, so a page shows
+// all it can. A test of another host passes its own map, such as
+// { mail: true } for a Postfix server.
+const ALL_FEATURES = Object.freeze({
+    cpanel: true, mail: true, mailQueue: true, mailHeld: true, mailForwarders: true,
+    mailDeferrals: true, mailSuspensions: true, emailAV: true, cphulk: true
+});
+
+// resolveFeatures keeps the branch of each {{if feature "name"}} block the
+// features select, as the server does when it renders the page. Other
+// template actions are left for the caller.
+function resolveFeatures(text, features) {
+    const re = /\{\{-?\s*(if|range|with|block|define|else|end)\b([^}]*)\}\}/g;
+    const stack = [];
+    let out = '', last = 0, m;
+    const live = () => stack.every(f => !f.gated || f.keep);
+    while ((m = re.exec(text))) {
+        if (live()) out += text.slice(last, m.index);
+        last = re.lastIndex;
+        const word = m[1], top = stack[stack.length - 1];
+        const feat = word === 'if' && /^\s*feature\s+"(\w+)"\s*$/.exec(m[2]);
+        if (feat) {
+            stack.push({ gated: true, keep: features[feat[1]] === true });
+        } else if (word === 'else' && top && top.gated) {
+            top.keep = !top.keep;
+        } else if (word === 'end' && top && top.gated) {
+            stack.pop();
+        } else {
+            if (word === 'end') stack.pop();
+            else if (word !== 'else') stack.push({ gated: false });
+            if (live()) out += m[0];
+        }
+    }
+    return out + text.slice(last);
+}
+
+function templateBody(name, features = ALL_FEATURES) {
+    const text = resolveFeatures(fs.readFileSync(path.join(TEMPLATE_DIR, name + '.html'), 'utf8'), features);
     const start = text.indexOf('{{define "content"}}');
     if (start < 0) throw new Error('pagekit: ' + name + '.html has no content block');
     const re = /\{\{-?\s*(\w+)?[^}]*\}\}/g;
@@ -81,7 +117,7 @@ function jsonResponse(status, body) {
 
 function loadPage(bodyHTML, scripts, options = {}) {
     const shell = '<meta name="csrf-token" content="test-csrf">' +
-        '<script id="csm-config" type="application/json">' + JSON.stringify(options.config || {}) + '</script>' +
+        '<script id="csm-config" type="application/json">' + JSON.stringify(Object.assign({ features: ALL_FEATURES }, options.config)) + '</script>' +
         '<div id="csm-connection-lost" class="d-none"></div>' +
         '<div id="csm-toast-container"></div>' + bodyHTML;
     const window = createWindow(shell, { url: options.url });
@@ -156,4 +192,4 @@ function items(list, extra) {
     return Object.assign({ items: list, total: list.length }, extra || {});
 }
 
-module.exports = { loadPage, settle, jsonResponse, templateBody, items, SHARED, RUNTIME };
+module.exports = { loadPage, settle, jsonResponse, templateBody, items, SHARED, RUNTIME, ALL_FEATURES };

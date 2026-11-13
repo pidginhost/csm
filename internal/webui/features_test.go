@@ -28,6 +28,7 @@ func setTestPlatform(s *Server, panel platform.Panel, mta platform.MTAKind) {
 	}
 	s.featureMu.Lock()
 	s.featureCache = featureSnapshot{}
+	s.featureRefreshing = false
 	s.featureMu.Unlock()
 }
 
@@ -143,5 +144,50 @@ func TestCoreExposesFeatureHelper(t *testing.T) {
 	}
 	if !strings.Contains(string(js), "CSM.feature = function") {
 		t.Error("csm-core.js does not define CSM.feature")
+	}
+}
+
+// A slow detection (systemd answering late) must not hold up page renders:
+// while one request re-detects, the others keep the previous answer.
+func TestServerFeaturesServeStaleWhileRefreshing(t *testing.T) {
+	s := newTestServer(t, "tok")
+	now := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
+	s.featureNow = func() time.Time { return now }
+	entered, release := make(chan struct{}), make(chan struct{})
+	first := true
+	s.detectPlatform = func() (platform.Info, platform.MTAKind) {
+		if first {
+			first = false
+			return platform.Info{}, platform.MTAUnknown
+		}
+		close(entered)
+		<-release
+		return platform.Info{}, platform.MTAPostfix
+	}
+	if s.feature("mail") {
+		t.Fatal("mail on before a mail server exists")
+	}
+	now = now.Add(featureTTL + time.Second)
+
+	refreshed := make(chan bool)
+	go func() { refreshed <- s.feature("mail") }()
+	<-entered
+
+	got := make(chan bool)
+	go func() { got <- s.feature("mail") }()
+	select {
+	case v := <-got:
+		if v {
+			t.Error("stale read returned the value still being detected")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second caller waited on the detection in progress")
+	}
+	close(release)
+	if !<-refreshed {
+		t.Error("the refreshing caller did not get the new value")
+	}
+	if !s.feature("mail") {
+		t.Error("the new value was not cached")
 	}
 }

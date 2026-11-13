@@ -343,6 +343,8 @@
         } else {
             parts.push('Mail flowing. ' + num(t.rejected) + ' spam rejected and ' + num(t.tagged) + ' tagged ' + words + '.');
         }
+        // A host with no Queue tab gets no queue sentence either.
+        if (!CSM.feature('mailQueue')) return parts.join(' ');
         var q = ov.queue || {};
         if (q.unavailable) parts.push('Queue size unknown.');
         else if (!q.size) parts.push('Queue empty.');
