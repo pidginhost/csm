@@ -11,7 +11,7 @@ import (
 // selectQueueReporter picks the queue-composition source for the host. Only
 // cPanel/exim is wired; other platforms get the empty reporter.
 func selectQueueReporter() intel.QueueReporter {
-	if platform.Detect().IsCPanel() {
+	if cpanelMailBackend(platform.Detect()) {
 		return intel.NewEximQueueSource()
 	}
 	return intel.EmptyQueueReporter{}
@@ -20,7 +20,7 @@ func selectQueueReporter() intel.QueueReporter {
 // selectQueueFlusher picks the backscatter-flush executor for the host. Only
 // cPanel/exim is wired; other platforms expose the route as unavailable.
 func selectQueueFlusher() intel.QueueFlusher {
-	if platform.Detect().IsCPanel() {
+	if cpanelMailBackend(platform.Detect()) {
 		return intel.NewEximQueueFlusher()
 	}
 	return nil

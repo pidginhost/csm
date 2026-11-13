@@ -28,7 +28,7 @@ const forwardQuarantineDir = adapter.QuarantineDir
 // selectForwardHeld returns the held-forward store for the host. Only
 // cPanel/exim writes held copies; other platforms have none.
 func selectForwardHeld() heldForwardStore {
-	if platform.Detect().IsCPanel() {
+	if cpanelMailBackend(platform.Detect()) {
 		return quarantine.New(forwardQuarantineDir)
 	}
 	return nil

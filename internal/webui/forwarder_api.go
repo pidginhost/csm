@@ -51,7 +51,7 @@ type forwardersResponse struct {
 // enumeration is wired; other platforms get the empty source until their
 // adapters land (Phase 3).
 func selectForwarderSource() inventory.Source {
-	if platform.Detect().IsCPanel() {
+	if cpanelMailBackend(platform.Detect()) {
 		return inventory.NewCPanelSource()
 	}
 	return inventory.EmptySource{}
@@ -61,7 +61,7 @@ func selectForwarderSource() inventory.Source {
 // wired; elsewhere the delete route answers as unavailable. eximLookPath and
 // eximRun run any command, not only exim.
 func selectForwarderRemover() *inventory.CPanelRemover {
-	if platform.Detect().IsCPanel() {
+	if cpanelMailBackend(platform.Detect()) {
 		return inventory.NewCPanelRemover(eximLookPath, eximRun)
 	}
 	return nil

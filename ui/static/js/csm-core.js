@@ -17,6 +17,13 @@ var CSM = CSM || {};
 
 (function() {
 
+// Whether this host supports a named feature (cPanel, a mail server, the
+// mail queue, ...). The server decides; pages hide what is off.
+CSM.feature = function(name) {
+    var f = CSM_CONFIG && CSM_CONFIG.features;
+    return !!(f && f[name] === true);
+};
+
 // The CSRF token for state-changing requests, from <meta name="csrf-token">.
 CSM.csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
