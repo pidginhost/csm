@@ -49,11 +49,15 @@ Then run: nginx -t && systemctl reload nginx`
 const nginxConfigtestTimeout = 15 * time.Second
 
 func (h *nginxHandler) Validate() error {
-	ctx, cancel := context.WithTimeout(context.Background(), nginxConfigtestTimeout)
-	defer cancel()
+	// The availability probe must not consume nginx's configtest budget.
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(ctx, nginxConfigtestTimeout)
+		defer cancel()
+		return h.cmdRunner.Run(ctx, name, args...)
+	}
 	// nginx -t opens its log files for writing, which the
 	// daemon's read-only service sandbox refuses.
-	out, err := systemdrun.Run(ctx, h.lookPath, h.cmdRunner.Run,
+	out, err := systemdrun.Run(context.Background(), h.lookPath, run,
 		systemdrun.Options{Pipe: true, RuntimeMax: nginxConfigtestTimeout}, "nginx", "-t")
 	if err != nil {
 		return fmt.Errorf("nginx configtest failed: %v\n%s", err, out)

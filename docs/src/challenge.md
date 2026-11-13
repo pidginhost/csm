@@ -447,6 +447,12 @@ On every run, the installer:
    configtest output. The webserver is never reloaded with a broken
    config.
 
+Nginx config validation runs outside the daemon's read-only sandbox via
+`systemd-run`, so it can open its logs. The availability probe and the
+configtest each get a separate 15-second command timeout. If the probe
+fails or times out, or `systemd-run` is absent, CSM tries `nginx -t`
+directly. A failed configtest is reported without retrying it.
+
 The snippet header carries a version marker; `upgrade` is a no-op when
 the on-disk content matches the rendered template and no legacy snippet
 remains to retire. Hand-edited files
