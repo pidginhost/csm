@@ -8,8 +8,11 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/sourcewalk"
 )
@@ -44,17 +47,17 @@ func stampSiteKey(rel string, decl ast.Decl) string {
 var stampMechanisms = map[string]string{
 	// A framed-line handler's findings are stamped by the watcher or the
 	// line dispatcher that called it.
-	"log watcher":  "TestLogWatcherStampsObservation,TestAccessLogWatchersNameTheirProducer,TestModSecWatcherNamesItsProducer,TestMailLogDispatchStampsObservation,TestDispatchLogLineStampsProducer",
+	"log watcher":  "TestLogWatcherStampsObservation,TestFixedLogSpecsNameTheirProducers,TestAccessLogWatchersNameTheirProducer,TestModSecWatcherNamesItsProducer,TestMailLogDispatchStampsObservation,TestDispatchLogLineStampsProducer",
 	"pam listener": "TestPAMFailureCarriesItsObservation",
 	// The realtime sshd reader and the follow scan stamp what this builder
 	// returns; its store-less tail caller, like the FTP one, stamps nothing.
-	"ssh login readers":   "TestSSHLoginScanStampsObservation,TestLogWatcherStampsObservation",
+	"ssh login readers":   "TestSSHLoginScanStampsObservation,TestLogWatcherStampsObservation,TestFixedLogSpecsNameTheirProducers",
 	"ftp scan":            "TestFTPBruteforceNamesItsNewestFailure",
 	"cpanel scan":         "TestAPIAuthFailureScanNamesItsNewestFailure,TestWebmailScanNamesItsNewestAttempt",
 	"domlog scan":         "TestDomlogScanNamesEachFindingsNewestRecord,TestDomlogForwardedFindingNamesItsChainWithoutARecord",
 	"modsec audit scan":   "TestModSecAuditScanNamesItsNewestDenial",
-	"reputation scan":     "TestReputationFindingNamesItsSighting",
-	"connection scan":     "TestC2ConnectionStampsOutboundOnly",
+	"reputation scan":     "TestReputationFindingNamesItsSighting,TestCachedReputationFindingNamesItsSighting",
+	"connection scan":     "TestC2ConnectionStampsOutboundOnly,TestC2ConnectionStampsSocketObservation",
 	"exim history scan":   "TestEximHistoryScanNamesItsNewestSend",
 	"php relay spool":     "TestPath6_AdmissionRefusesTheHeaderAddress",
 	"store-less fallback": "exempt: runs only without a state store; the daemon and every runner caller pass one",
@@ -183,23 +186,33 @@ func TestPublishedFindingsNameTheirStamp(t *testing.T) {
 	}
 }
 
-// testFunctionNames returns the Test functions in every _test.go file under
-// internal/ and cmd/.
+// testFunctionNames inventories all build variants, as the producer walk
+// does, but ignores fixtures and helpers that go test would never run.
 func testFunctionNames(t *testing.T, root string) map[string]bool {
 	t.Helper()
 	names := map[string]bool{}
 	for _, top := range []string{"internal", "cmd"} {
 		dir := filepath.Join(root, top)
 		err := filepath.WalkDir(dir, sourcewalk.IgnoreVanished(dir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+			if err != nil {
 				return err
+			}
+			ignored := strings.HasPrefix(d.Name(), ".") || strings.HasPrefix(d.Name(), "_")
+			if d.IsDir() {
+				if ignored || d.Name() == "testdata" || d.Name() == "vendor" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if ignored || !strings.HasSuffix(path, "_test.go") {
+				return nil
 			}
 			f, perr := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
 			if perr != nil {
 				return perr
 			}
 			for _, decl := range f.Decls {
-				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Test") {
+				if fn, ok := decl.(*ast.FuncDecl); ok && isStampProofTest(f, fn) {
 					names[fn.Name.Name] = true
 				}
 			}
@@ -210,4 +223,39 @@ func testFunctionNames(t *testing.T, root string) map[string]bool {
 		}
 	}
 	return names
+}
+
+func isStampProofTest(file *ast.File, fn *ast.FuncDecl) bool {
+	if fn.Recv != nil || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "Test") ||
+		fn.Type.TypeParams.NumFields() != 0 || fn.Type.Params.NumFields() != 1 || fn.Type.Results.NumFields() != 0 {
+		return false
+	}
+	if suffix := strings.TrimPrefix(fn.Name.Name, "Test"); suffix != "" {
+		r, _ := utf8.DecodeRuneInString(suffix)
+		if unicode.IsLower(r) {
+			return false
+		}
+	}
+	arg, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || path != "testing" {
+			continue
+		}
+		alias := "testing"
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		if id, ok := arg.X.(*ast.Ident); ok && alias == "." {
+			return id.Name == "T"
+		}
+		if sel, ok := arg.X.(*ast.SelectorExpr); ok {
+			pkg, ok := sel.X.(*ast.Ident)
+			return ok && pkg.Name == alias && sel.Sel.Name == "T"
+		}
+	}
+	return false
 }
