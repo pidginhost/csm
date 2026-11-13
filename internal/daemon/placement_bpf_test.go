@@ -72,6 +72,7 @@ func startFakePlacementBackend(t *testing.T, capacity int, handle func(placement
 		fm:         placementTestMonitor(alerts),
 		handle:     handle,
 		mounts:     []mountEntry{{Dev: unix.Mkdev(259, 3), Root: "/", MountPoint: "/home"}},
+		roots:      []watchRootMark{{path: "/home"}},
 		unresolved: queuehealth.New(0, time.Minute),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,6 +99,7 @@ func TestPlacementBPFChecksEveryWholeMount(t *testing.T) {
 	handled := make(chan placementEvent, 2)
 	p, src, _ := startFakePlacementBackend(t, 4, func(ev placementEvent) { handled <- ev })
 	p.mounts = append(p.mounts, mountEntry{Dev: p.mounts[0].Dev, Root: "/", MountPoint: "/srv/sites"})
+	p.roots = append(p.roots, watchRootMark{path: "/srv/sites"})
 	raw := placedRaw("x.php")
 	raw.At = time.Now()
 	src.q.TrySend(raw)
@@ -287,5 +289,44 @@ func TestPlacementBPFFullOutputQueueRecoversPlacements(t *testing.T) {
 	}
 	if out := p.QueueStatuses(time.Now())["output"]; out.DroppedTotal != 2 {
 		t.Fatalf("output queue status %+v, want both drops counted", out)
+	}
+}
+
+// The kernel filter is per device, so a full queue also refuses renames far
+// from any watch root. Recovery room is for the watched trees: a file inside
+// one, a directory inside one, or a directory that holds one.
+func TestPlacementBPFRecoversOnlyWithinWatchRoots(t *testing.T) {
+	p, _, _ := startFakePlacementBackend(t, 4, func(placementEvent) {})
+	p.mounts = []mountEntry{{Dev: unix.Mkdev(259, 3), Root: "/", MountPoint: "/"}}
+	p.roots = []watchRootMark{{path: "/home"}, {path: "/srv/sites/shop"}}
+	dropped := func(isDir bool, leafFirst ...string) {
+		raw := placedRaw("")
+		raw.IsDir, raw.Components = isDir, leafFirst
+		p.recoverDropped(raw)
+	}
+	dropped(false, "x.php", "site", "user", "home")
+	dropped(false, "ibdata1", "mysql", "lib", "var")
+	dropped(false, "x.php", "user", "home2")
+	dropped(true, "plugin", "user", "home")
+	dropped(true, "input", "spool", "var")
+	dropped(true, "sites", "srv")
+
+	p.fm.reconcileMu.Lock()
+	var rescans []string
+	for dir := range p.fm.reconcileDirs {
+		rescans = append(rescans, dir)
+	}
+	p.fm.reconcileMu.Unlock()
+	if want := []string{"/home/user/site"}; !slices.Equal(rescans, want) {
+		t.Errorf("directories queued for a rescan %v, want %v", rescans, want)
+	}
+	p.fm.placedDirMu.Lock()
+	var walks []string
+	for _, dir := range p.fm.placedDirs {
+		walks = append(walks, dir.path)
+	}
+	p.fm.placedDirMu.Unlock()
+	if want := []string{"/home/user/plugin", "/srv/sites"}; !slices.Equal(walks, want) {
+		t.Errorf("directories queued for a walk %v, want %v", walks, want)
 	}
 }

@@ -550,12 +550,7 @@ func (p *placementFID) resolve(rec fidRecord, mount fidMount, at time.Time) (ev 
 }
 
 func (p *placementFID) withinWatchRoots(path string) bool {
-	for _, r := range p.roots {
-		if pathWithin(path, r.path) {
-			return true
-		}
-	}
-	return false
+	return placementWithinRoots(p.roots, path, false)
 }
 
 // route holds creates for their own close-write and queues the rest.

@@ -269,7 +269,9 @@ backend when it is chosen explicitly, shows `none` without a finding.
 Placements that do not fit the monitor's queue go to the same recovery as a
 full analyzer queue: CSM rescans the directory each file landed in, whatever
 the files' age, and queues a moved-in directory for its walk. BPF recovery allows the
-rename or link to finish before completing a rescan or starting a walk.
+rename or link to finish before completing a rescan or starting a walk, and
+covers placements in the watched trees only: a file or directory inside a
+watch root, or a directory that holds one.
 Recovery queues remain bounded; evictions and unfinished work count as drops.
 
 When a watched filesystem has several whole-filesystem mounts, BPF checks
