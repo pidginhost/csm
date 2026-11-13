@@ -4,7 +4,7 @@
     <div class="csm-page-header mb-3">
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-firewall-check"></i>&nbsp;Firewall</h1>
-            <div class="csm-page-header__subtitle">Inspect and manage dynamic blocks, allow rules, subnet bans, and cPanel lockout cleanup.</div>
+            <div class="csm-page-header__subtitle">{{if feature "cphulk"}}Inspect and manage dynamic blocks, allow rules, subnet bans, and cPanel lockout cleanup.{{else}}Inspect and manage dynamic blocks, allow rules and subnet bans.{{end}}</div>
         </div>
         <div class="csm-page-header__actions">
             <button class="btn btn-ghost-secondary btn-sm" id="firewall-refresh-btn" title="Re-pull firewall state from the daemon">
@@ -57,7 +57,7 @@
                     </div>
                 </form>
                 <div id="lookup-result" class="csm-firewall-result text-muted">
-                    Enter an IP to check direct blocks, subnet coverage, and cPanel lockout status.
+                    {{if feature "cphulk"}}Enter an IP to check direct blocks, subnet coverage, and cPanel lockout status.{{else}}Enter an IP to check direct blocks and subnet coverage.{{end}}
                 </div>
             </div>
         </div>
@@ -237,7 +237,7 @@
                         </select>
                     </div>
                     <div class="col-md-2 col-xl-4">
-                        <div class="text-muted small">Safer response actions are available per row: clear state without whitelisting, clear and allow for 24h, permanent whitelist, or cPHulk-only cleanup.</div>
+                        <div class="text-muted small">Safer response actions are available per row: clear state without whitelisting, clear and allow for 24h, {{if feature "cphulk"}}permanent whitelist, or cPHulk-only cleanup{{else}}or permanent whitelist{{end}}.</div>
                     </div>
                 </div>
             </div>

@@ -402,7 +402,7 @@ function loadBlocked() {
                 h += '<a class="dropdown-item fw-inspect-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-search me-2"></i>Inspect</a>';
                 h += '<a class="dropdown-item fw-clear-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-eraser me-2"></i>Clear only</a>';
                 h += '<a class="dropdown-item fw-temp-whitelist-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-clock-check me-2"></i>Clear and allow 24h</a>';
-                h += '<a class="dropdown-item fw-cphulk-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-door-exit me-2"></i>Flush cPHulk only</a>';
+                if (CSM.feature('cphulk')) h += '<a class="dropdown-item fw-cphulk-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-door-exit me-2"></i>Flush cPHulk only</a>';
                 h += '</div></div>';
                 h += '<button class="btn btn-sm btn-outline-secondary fw-unblock-btn me-1" data-ip="' + CSM.esc(ips[i].ip) + '">Unblock</button>';
                 h += '<button class="btn btn-sm btn-outline-warning fw-whitelist-btn" data-ip="' + CSM.esc(ips[i].ip) + '">Whitelist</button>';
@@ -687,7 +687,7 @@ function renderIPDetails(ip, targetEl) {
         details += '<div class="subheader mb-2">Firewall</div>';
         details += '<div class="small"><strong>Permanent:</strong> ' + formatReason(data.permanent, 'No') + '</div>';
         details += '<div class="small mt-2"><strong>Temporary:</strong> ' + formatReason(data.temporary, 'No') + '</div>';
-        details += '<div class="small mt-2"><strong>cPHulk:</strong> ' + (data.cphulk ? 'Yes' : 'No') + '</div>';
+        if (CSM.feature('cphulk')) details += '<div class="small mt-2"><strong>cPHulk:</strong> ' + (data.cphulk ? 'Yes' : 'No') + '</div>';
         details += '</div></div>';
         details += '<div class="col-md-6"><div class="border rounded p-3 h-100">';
         details += '<div class="subheader mb-2">GeoIP</div>';
@@ -702,7 +702,7 @@ function renderIPDetails(ip, targetEl) {
         }
         details += '<button class="btn btn-outline-secondary btn-sm lookup-clear-btn" data-ip="' + CSM.esc(ip) + '">Clear only</button>';
         details += '<button class="btn btn-outline-warning btn-sm lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
-        details += '<button class="btn btn-outline-primary btn-sm lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
+        if (CSM.feature('cphulk')) details += '<button class="btn btn-outline-primary btn-sm lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
         details += '<button class="btn btn-outline-warning btn-sm lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
         details += '<a class="btn btn-ghost-secondary btn-sm" href="/threat?ip=' + encodeURIComponent(ip) + '" title="Reputation, attack history and score for this IP"><i class="ti ti-spy"></i>&nbsp;Threat Intel</a>';
         details += '</div>';
@@ -758,7 +758,7 @@ function unblockIP(ip) {
 }
 
 function unbanEverywhere(ip) {
-    CSM.confirm('Unban ' + ip + ' from CSM and cPHulk?').then(function() {
+    CSM.confirm('Unban ' + ip + (CSM.feature('cphulk') ? ' from CSM and cPHulk?' : ' from CSM?')).then(function() {
         CSM.post('/api/v1/firewall/unban', { ip: ip }).then(function(data) {
             var msg = 'Removed lockouts for ' + ip;
             if (data.subnet_removed) msg += ' (also removed subnet ' + data.subnet_removed + ')';
@@ -1067,7 +1067,7 @@ if (bulkUnblockBtn) {
             CSM.toast('Too many IPs selected (' + ips.length + '); the bulk limit is 500. Narrow the filter or page and repeat.', 'error');
             return;
         }
-        CSM.confirm('Unblock ' + ips.length + ' selected IP(s)?\n\nThis also clears their auto-block threat rows and cPHulk history.').then(function() {
+        CSM.confirm('Unblock ' + ips.length + ' selected IP(s)?\n\nThis also clears their auto-block threat rows' + (CSM.feature('cphulk') ? ' and cPHulk history.' : '.')).then(function() {
             CSM.post('/api/v1/unblock-bulk', { ips: ips }).then(function(data) {
                 var succeeded = data.succeeded || 0;
                 var total = data.total || ips.length;

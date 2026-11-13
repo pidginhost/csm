@@ -166,3 +166,76 @@ func TestEmailDeepLinkFallsBackToOverview(t *testing.T) {
 		t.Error("tabFromURL no longer falls back to overview for a tab that is not rendered")
 	}
 }
+
+func TestCpanelWordingFollowsPlatform(t *testing.T) {
+	s := newTestServer(t, "tok")
+	cases := []struct {
+		page   string
+		cpanel string
+		other  string
+	}{
+		{"firewall", "Inspect and manage dynamic blocks, allow rules, subnet bans, and cPanel lockout cleanup.", "Inspect and manage dynamic blocks, allow rules and subnet bans."},
+		{"firewall", "Enter an IP to check direct blocks, subnet coverage, and cPanel lockout status.", "Enter an IP to check direct blocks and subnet coverage."},
+		{"findings", "Run every security check on a single cPanel account.", "Run every security check on a single account."},
+		{"findings", `for="scan-account">cPanel account</label>`, `for="scan-account">Account</label>`},
+		{"incident", "for a source IP or cPanel account.", "for a source IP or account."},
+	}
+	for _, c := range cases {
+		setTestPlatform(s, platform.PanelCPanel, platform.MTAExim)
+		if out := renderRealPage(t, s, c.page); !strings.Contains(out, c.cpanel) || strings.Contains(out, c.other) {
+			t.Errorf("%s on cPanel: want %q only", c.page, c.cpanel)
+		}
+		setTestPlatform(s, platform.PanelNone, platform.MTAPostfix)
+		out := renderRealPage(t, s, c.page)
+		if !strings.Contains(out, c.other) {
+			t.Errorf("%s off cPanel: missing %q", c.page, c.other)
+		}
+	}
+	// Off cPanel no page names cPanel or cPHulk in its markup.
+	setTestPlatform(s, platform.PanelNone, platform.MTAPostfix)
+	for _, page := range []string{"firewall", "findings", "incident", "email"} {
+		out := renderRealPage(t, s, page)
+		// The config block lists check labels by name; markup starts after it.
+		if i := strings.Index(out, "</head>"); i >= 0 {
+			out = out[i:]
+		}
+		for _, word := range []string{"cPanel", "cPHulk"} {
+			if strings.Contains(out, word) {
+				t.Errorf("%s off cPanel still says %s", page, word)
+			}
+		}
+	}
+}
+
+// cPHulk exists only on cPanel: its buttons and its place in the confirm
+// texts depend on the cphulk feature.
+func TestFirewallCphulkUIIsFeatureGated(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, marker := range []string{`fw-cphulk-btn" href`, `lookup-cphulk-btn" data-ip`, `<strong>cPHulk:</strong>`} {
+		found := false
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.Contains(line, marker) {
+				continue
+			}
+			found = true
+			if !strings.HasPrefix(strings.TrimSpace(line), "if (CSM.feature('cphulk')) ") {
+				t.Errorf("line with %s is not behind the cphulk feature: %s", marker, strings.TrimSpace(line))
+			}
+		}
+		if !found {
+			t.Errorf("marker %s not found", marker)
+		}
+	}
+	for _, want := range []string{
+		"CSM.feature('cphulk') ? ' from CSM and cPHulk?' : ' from CSM?'",
+		"CSM.feature('cphulk') ? ' and cPHulk history.' : '.'",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("firewall.js missing %s", want)
+		}
+	}
+}

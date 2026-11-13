@@ -125,7 +125,7 @@
         </div>
         <div id="incident-content">
             <div class="card-body text-muted py-4">
-                <div class="mb-2 fw-bold text-center">Search across finding history, incident timelines, and UI audit log for a source IP or cPanel account.</div>
+                <div class="mb-2 fw-bold text-center">Search across finding history, incident timelines, and UI audit log for a source IP or {{if feature "cpanel"}}cPanel account{{else}}account{{end}}.</div>
                 <ul class="small mb-2 ps-4">
                     <li><strong>Finding history</strong> -- raw findings stored in bbolt. Rotates aggressively on busy hosts; older entries fall off first.</li>
                     <li><strong>Incident timelines</strong> -- structured per-incident events that survive even when the underlying findings have rotated out of history.</li>

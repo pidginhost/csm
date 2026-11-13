@@ -10,7 +10,7 @@
             </div>
         </div>
         <div class="csm-page-header__actions">
-            <button type="button" class="btn btn-primary btn-sm" id="open-scan-modal" data-bs-toggle="modal" data-bs-target="#scan-account-modal" title="Run all security checks on a single cPanel account">
+            <button type="button" class="btn btn-primary btn-sm" id="open-scan-modal" data-bs-toggle="modal" data-bs-target="#scan-account-modal" title="Run all security checks on a single {{if feature "cpanel"}}cPanel account{{else}}account{{end}}">
                 <i class="ti ti-radar-2"></i>&nbsp;Scan account
             </button>
             <div class="btn-group btn-group-sm" id="group-mode-toggle" role="group" aria-label="Findings view mode">
@@ -171,10 +171,10 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="text-muted small">Run every security check on a single cPanel account. Results open in the Findings list filtered to that account.</p>
+                    <p class="text-muted small">Run every security check on a single {{if feature "cpanel"}}cPanel account{{else}}account{{end}}. Results open in the Findings list filtered to that account.</p>
                     <form id="scan-form" class="row g-2 align-items-end">
                         <div class="col">
-                            <label class="form-label" for="scan-account">cPanel account</label>
+                            <label class="form-label" for="scan-account">{{if feature "cpanel"}}cPanel account{{else}}Account{{end}}</label>
                             <input type="text" id="scan-account" list="account-list" class="form-control font-monospace" placeholder="username" autocomplete="off">
                             <datalist id="account-list"></datalist>
                         </div>
