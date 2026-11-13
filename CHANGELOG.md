@@ -15,6 +15,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Central intelligence, incident blocking and subnet or permanent block escalation no longer treat a listed command-and-control server as an attacker; only the C2 check blocks it, when auto_response.block_ips is on.
 - Automatic response forecasts now also refuse web findings when an Apache log file is named through a variable CSM cannot resolve.
 
+### Fixed
+
+- On newer kernels CSM no longer reports its firewall rules as modified, or its port locks as missing, when nothing changed.
+
 ## [4.12.0] - 2026-11-13
 
 ### Highlights

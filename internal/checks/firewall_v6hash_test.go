@@ -194,3 +194,22 @@ func nftRulesetWithSetBody(setBody, elements string) string {
 	}
 }`
 }
+
+// Checks run without the daemon hash the listing themselves: a moving element
+// count is not a rule change, a changed size is.
+func TestNftRulesetStructureHashIgnoresSetElementCounts(t *testing.T) {
+	listing := func(size string) []byte {
+		return []byte("table inet csm {\n\tset meter_syn {\n\t\ttype ipv4_addr\n\t\t" + size + "\n\t\tflags dynamic,timeout\n\t}\n}\n")
+	}
+	base := nftRulesetStructureHash(listing("size 65535"))
+	for _, same := range []string{"size 65535\t# count 28", "size 65535 # count 0"} {
+		if nftRulesetStructureHash(listing(same)) != base {
+			t.Fatalf("%q changed the structure hash", same)
+		}
+	}
+	for _, changed := range []string{"size 100\t# count 28", "size 65535\t# count 28 extra", "comment \"size 65535 # count 2\""} {
+		if nftRulesetStructureHash(listing(changed)) == base {
+			t.Fatalf("%q kept the structure hash", changed)
+		}
+	}
+}

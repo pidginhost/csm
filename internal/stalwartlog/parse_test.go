@@ -201,3 +201,23 @@ func TestParseUnicodeEscapes(t *testing.T) {
 		}
 	}
 }
+
+// The rejected-login layouts Stalwart 1.0 writes: remoteIp near the end, the
+// account absent when the domain is unknown, and no id on SMTP.
+func TestParseAuthFailedLayouts(t *testing.T) {
+	for _, tc := range []struct {
+		line    string
+		port    uint16
+		account string
+	}{
+		{`2026-11-13T06:09:54Z INFO Authentication failed (auth.failed) listenerId = "imaps", localPort = 993, remotePort = 38562, accountName = "nobody@example.com", reason = "Account not found", remoteIp = 203.0.113.10, id = "A002"`, 993, "nobody@example.com"},
+		{`2026-11-13T06:09:54Z INFO Authentication failed (auth.failed) listenerId = "imaps", localPort = 993, remotePort = 38562, domain = "invalid.example", reason = "Domain not found", remoteIp = 203.0.113.10, id = "A002"`, 993, ""},
+		{`2026-11-13T06:09:54Z INFO Authentication failed (auth.failed) listenerId = "submissions", localPort = 465, remotePort = 38562, accountName = "nobody@example.com", reason = "Account not found", remoteIp = 2001:db8::10`, 465, "nobody@example.com"},
+	} {
+		ev := mustParse(t, tc.line)
+		s, ok := ev.Session()
+		if ev.Name != "auth.failed" || !ok || s.LocalPort != tc.port || ev.Fields["accountName"] != tc.account {
+			t.Fatalf("%s\nparsed as %+v, session %+v (%v)", tc.line, ev, s, ok)
+		}
+	}
+}
