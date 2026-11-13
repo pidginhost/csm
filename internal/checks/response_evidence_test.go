@@ -344,6 +344,7 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 type addressProducer struct {
 	checks []string // resolved check names
 	where  string
+	fn     string // enclosing declaration, as stampSiteKey names it
 }
 
 // TestAddressProducersAreClassified walks every production Finding literal
@@ -534,7 +535,7 @@ func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string
 						unresolved = append(unresolved, rel)
 						continue
 					}
-					producers = append(producers, addressProducer{checks: names, where: rel})
+					producers = append(producers, addressProducer{checks: names, where: rel, fn: stampSiteKey(rel, decl)})
 				}
 			}
 		}
