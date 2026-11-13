@@ -1680,6 +1680,65 @@ func FuzzWholeFilePHPProof(f *testing.F) {
 	})
 }
 
+// FuzzC2SocketDestination varies the inode field and the executable a
+// listed connection's process names. The target stays the kernel row's
+// remote address, only a positive decimal inode names an observation, and
+// process text never adds a line to the finding.
+func FuzzC2SocketDestination(f *testing.F) {
+	for _, seed := range [][2]string{
+		{"12345", "/usr/bin/x"}, {"0", "/x"}, {"+12345", "/x"}, {"-1", "/x"},
+		{"18446744073709551616", "/x"}, {"", "/x"}, {"12a45", "/x"},
+		{"12345", "/tmp/.x/beacon\nforged"}, {"12345", "\"quoted\"\r\n"}, {"007", ""},
+	} {
+		f.Add(seed[0], seed[1])
+	}
+	cfg := &config.Config{C2Blocklist: []string{"203.0.113.9"}}
+	f.Fuzz(func(t *testing.T, inode, exe string) {
+		// Keep the row's framing fixed: whitespace would split field 9.
+		inode = strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return 'x'
+			}
+			return r
+		}, inode)
+		table := procTCPHeader + "1: 010200C0:C350 097100CB:01BB 01 00000000:00000000 00:00000000 00000000 1001 0 " + inode + "\n"
+		withMockOS(t, &mockOS{
+			readFile: func(path string) ([]byte, error) {
+				switch path {
+				case "/proc/net/tcp":
+					return []byte(table), nil
+				case "/proc/sys/kernel/random/boot_id":
+					return []byte("4b5f6e0c-1d2e-4f3a-9b8c-7d6e5f4a3b2c\n"), nil
+				}
+				return nil, fmt.Errorf("no %s", path)
+			},
+			glob: func(string) ([]string, error) { return []string{"/proc/4242/fd/3"}, nil },
+			readlink: func(path string) (string, error) {
+				if path == "/proc/4242/exe" {
+					return exe, nil
+				}
+				return "socket:[" + inode + "]", nil
+			},
+		})
+		var c2 []alert.Finding
+		for _, finding := range CheckOutboundConnections(t.Context(), cfg, nil) {
+			if finding.Check == "c2_connection" {
+				c2 = append(c2, finding)
+			}
+		}
+		if len(c2) != 1 || c2[0].SourceIP != "203.0.113.9" {
+			t.Fatalf("findings %+v, want one naming the kernel row's remote address", c2)
+		}
+		n, err := strconv.ParseUint(inode, 10, 64)
+		if stamped := c2[0].Observation.Cursor != ""; stamped != (err == nil && n > 0) || (stamped && c2[0].Observation.Cursor != inode) {
+			t.Fatalf("inode %q stamped %+v", inode, c2[0].Observation)
+		}
+		if strings.ContainsAny(c2[0].Details, "\r\n") {
+			t.Fatalf("details %q hold a raw line break", c2[0].Details)
+		}
+	})
+}
+
 func FuzzRequestedFile(f *testing.F) {
 	const docroot = "/home/alice/public_html"
 	flagged := map[string]bool{docroot + "/x/shell.php": true, docroot + "/a/b/index.php": false}

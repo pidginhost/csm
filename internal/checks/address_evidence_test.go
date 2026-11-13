@@ -19,9 +19,9 @@ func TestAddressEvidence(t *testing.T) {
 		{"xmlrpc_abuse", alert.High, true},
 		{"wp_login_bruteforce", alert.Critical, true},
 		{"ip_reputation", alert.High, true},
-		// The listed C2 server is the destination, and blocking it is the
-		// reviewed response.
-		{"c2_connection", alert.Critical, true},
+		// The listed C2 server is a destination. The C2 check blocks it
+		// itself; other responses never take it as an attacker.
+		{"c2_connection", alert.Critical, false},
 		{"backdoor_port_outbound", alert.Critical, false},
 		{"bad_asn_outbound", alert.High, false},
 		{"backdoor_port", alert.Critical, false},

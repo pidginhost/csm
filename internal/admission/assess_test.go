@@ -79,6 +79,9 @@ func TestAssessClasses(t *testing.T) {
 			{p: tp.mail, check: "mail_brute", target: "192.0.2.1", age: 3 * time.Hour, cursor: "m"}}, ClassC3, false, true},
 		{"direct compromise", []rootSpec{{p: tp.mail, check: "mail_takeover", target: "192.0.2.1", age: time.Minute, cursor: "m"}}, ClassC3, true, false},
 		{"direct compromise with support", []rootSpec{{p: tp.mail, check: "mail_takeover", target: "192.0.2.1", age: time.Minute, cursor: "m"}, ssh(time.Minute, "a")}, ClassC3, true, false},
+		{"destination compromise", []rootSpec{{p: tp.network, check: "c2", target: "192.0.2.1", age: time.Minute, cursor: "12345"}}, ClassC3, true, false},
+		{"destination never corroborates", []rootSpec{ssh(time.Minute, "a"),
+			{p: tp.network, check: "c2", target: "192.0.2.1", age: 20 * time.Hour, cursor: "12345"}}, ClassC2, false, false},
 	}
 	for _, tc := range cases {
 		var roots []Evidence

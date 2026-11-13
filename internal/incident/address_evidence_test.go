@@ -13,7 +13,7 @@ import (
 // cannot import: checks depends on incident.
 func registryEvidence(check string, sev alert.Severity) bool {
 	switch check {
-	case "xmlrpc_abuse", "wp_login_bruteforce", "modsec_csm_block_escalation", "modsec_block_escalation", "c2_connection",
+	case "xmlrpc_abuse", "wp_login_bruteforce", "modsec_csm_block_escalation", "modsec_block_escalation",
 		"email_compromised_account", "ftp_bruteforce", "mail_bruteforce":
 		return true
 	case "mail_account_compromised":
@@ -118,9 +118,7 @@ func TestAutoBlockKeepsAddressWithEvidence(t *testing.T) {
 		}},
 		{"account timeline", []alert.Finding{
 			{Check: "webshell", Severity: alert.Critical, TenantID: "acct2"},
-			// The listed C2 server is a destination whose block is the
-			// reviewed response.
-			{Check: "c2_connection", Severity: alert.High, TenantID: "acct2", SourceIP: ip},
+			{Check: "ftp_bruteforce", Severity: alert.High, TenantID: "acct2", SourceIP: ip},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,7 +192,7 @@ func TestAddressEvidencePendingFindingsSurviveImmediateOpen(t *testing.T) {
 	}{
 		{"key", alert.Finding{Check: "xmlrpc_abuse", Severity: alert.High, SourceIP: ip},
 			alert.Finding{Check: "email_php_relay_abuse", Severity: alert.Critical, SourceIP: ip}},
-		{"account", alert.Finding{Check: "c2_connection", Severity: alert.High, TenantID: "acct", SourceIP: ip},
+		{"account", alert.Finding{Check: "ftp_bruteforce", Severity: alert.High, TenantID: "acct", SourceIP: ip},
 			alert.Finding{Check: "webshell", Severity: alert.Critical, TenantID: "acct"}},
 	} {
 		for _, stale := range []bool{false, true} {
@@ -241,12 +239,12 @@ func TestAddressEvidenceTransitionPersistsBeforeReload(t *testing.T) {
 	}
 	id := feed(t, c, now,
 		alert.Finding{Check: "email_php_relay_abuse", Severity: alert.High, SourceIP: ip},
-		alert.Finding{Check: "c2_connection", Severity: alert.High, SourceIP: ip},
+		alert.Finding{Check: "ftp_bruteforce", Severity: alert.High, SourceIP: ip},
 	)
 	if cap.len() != 0 || writes != 2 {
 		t.Errorf("blocks=%d writes=%d, want no blocks and immediate persistence of new evidence", cap.len(), writes)
 	}
-	feed(t, c, now, alert.Finding{Check: "c2_connection", Severity: alert.High, SourceIP: ip})
+	feed(t, c, now, alert.Finding{Check: "ftp_bruteforce", Severity: alert.High, SourceIP: ip})
 	if writes != 2 {
 		t.Errorf("repeated attestation bypassed bookkeeping debounce: writes=%d, want 2", writes)
 	}

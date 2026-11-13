@@ -58,10 +58,6 @@ func acceptanceMint(p acceptanceProducers, check string, sev admission.Severity,
 	return acceptanceMintFor(p, check, sev, "192.0.2.10", cursor, observed)
 }
 
-func acceptanceMintAt(p acceptanceProducers, check string, sev admission.Severity, address string) (admission.Evidence, admission.Target, error) {
-	return acceptanceMintFor(p, check, sev, address, "1", time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
-}
-
 func acceptanceMintFor(p acceptanceProducers, check string, sev admission.Severity, address, cursor string, observed time.Time) (admission.Evidence, admission.Target, error) {
 	target, err := admission.CanonicalAddress(address, admission.Caps{})
 	if err != nil {
@@ -136,7 +132,12 @@ func TestAdmissionAcceptanceRefusesHighMailCompromise(t *testing.T) {
 // and is direct C3 evidence.
 func TestAdmissionAcceptanceC2ConnectionProducer(t *testing.T) {
 	data := procTCPHeader + tcpLine("0", hexAddr(192, 0, 2, 100, 54321), hexAddr(203, 0, 113, 9, 443), "01")
-	withMockOS(t, &mockOS{readFile: func(string) ([]byte, error) { return []byte(data), nil }})
+	withMockOS(t, &mockOS{readFile: func(path string) ([]byte, error) {
+		if path == "/proc/sys/kernel/random/boot_id" {
+			return []byte("4b5f6e0c-1d2e-4f3a-9b8c-7d6e5f4a3b2c\n"), nil
+		}
+		return []byte(data), nil
+	}})
 	findings := CheckOutboundConnections(context.Background(), &config.Config{C2Blocklist: []string{"203.0.113.9"}, BackdoorPorts: []int{}}, nil)
 	var c2 []alert.Finding
 	for _, f := range findings {
@@ -147,11 +148,30 @@ func TestAdmissionAcceptanceC2ConnectionProducer(t *testing.T) {
 	if len(c2) != 1 || c2[0].Severity != alert.Critical || c2[0].SourceIP != "203.0.113.9" {
 		t.Fatalf("c2 findings %+v, want one Critical naming the destination", c2)
 	}
-	e, target, err := acceptanceMintAt(acceptanceProducer(t), "c2_connection", admission.SeverityCritical, c2[0].SourceIP)
+	// The scanner's own stamp, not a fixture observation, is minted.
+	producer, in, err := AdmissionEvidence(c2[0])
+	if err != nil || producer != ProducerConnectionScan || in.Attribution != admission.AttributionSocketDestination || in.Observation.Cursor != "12345" {
+		t.Fatalf("AdmissionEvidence = %q, %+v, %v; want the connection scan's socket", producer, in, err)
+	}
+	reg, err := admission.NewRegistry(AdmissionPolicy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a, err := admission.Assess(target, []admission.Evidence{e}, e.ObservedAt()); err != nil || !a.DirectC3 {
+	var row ProducerEntry
+	for _, entry := range producerTable {
+		if entry.Spec.ID == ProducerConnectionScan {
+			row = entry
+		}
+	}
+	p, err := reg.Register(row.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := p.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := admission.Assess(in.Target, []admission.Evidence{e}, e.ObservedAt()); err != nil || !a.DirectC3 {
 		t.Fatalf("assessment %+v err %v, want direct C3", a, err)
 	}
 }

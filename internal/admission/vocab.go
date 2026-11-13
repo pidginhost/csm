@@ -95,7 +95,8 @@ const (
 	FamilySSH
 	// FamilyFTP: FTP authentication.
 	FamilyFTP
-	// FamilyNetwork: local socket observations of connections.
+	// FamilyNetwork: local socket observations of connections this host
+	// opened. Its address is a destination, never a source of traffic.
 	FamilyNetwork
 	// FamilyReputation: external intel about a locally sighted address.
 	FamilyReputation
@@ -120,11 +121,16 @@ func (f Family) String() string {
 // attack itself.
 func (f Family) LocalAttack() bool {
 	switch f {
-	case FamilyHTTP, FamilyPanel, FamilyMail, FamilySSH, FamilyFTP, FamilyNetwork:
+	case FamilyHTTP, FamilyPanel, FamilyMail, FamilySSH, FamilyFTP:
 		return true
 	}
 	return false
 }
+
+// Destination reports whether an address of f is the far end of a
+// connection this host opened. It proves compromise on this host, not that
+// the address sent anything here, so it corroborates nothing else.
+func (f Family) Destination() bool { return f == FamilyNetwork }
 
 // Independent reports whether evidence of f can corroborate a root of a
 // different family.
@@ -170,8 +176,9 @@ func (b Basis) Class() (Class, bool) {
 }
 
 // ValidPolicy reports whether a family and basis may appear together in a
-// check's policy. Intel needs a reputation or derived family; local and
-// compromise evidence must be a local attack observation.
+// check's policy. Intel needs a reputation or derived family; local evidence
+// must be a local attack observation, and compromise evidence one of those
+// or a destination.
 func ValidPolicy(f Family, b Basis) error {
 	if !f.Valid() || !b.Valid() {
 		return fmt.Errorf("unknown family %d or basis %d", uint8(f), uint8(b))
@@ -183,7 +190,7 @@ func ValidPolicy(f Family, b Basis) error {
 		return fmt.Errorf("family %s and basis %s must both be none or both be set", f, b)
 	case b == BasisIntel && f != FamilyReputation && f != FamilyDerived:
 		return fmt.Errorf("intel basis needs a reputation or derived family, not %s", f)
-	case b != BasisIntel && !f.LocalAttack():
+	case b != BasisIntel && !f.LocalAttack() && (b != BasisCompromise || !f.Destination()):
 		return fmt.Errorf("%s basis needs a local attack family, not %s", b, f)
 	}
 	return nil

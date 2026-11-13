@@ -2,18 +2,38 @@ package checks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckOutboundConnections(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	findings, sockets := scanOutboundConnections(cfg, store)
+	for inode, process := range socketProcesses(ctx, sockets) {
+		for _, i := range sockets[inode] {
+			findings[i].Details += ", " + process
+		}
+	}
+	return findings
+}
+
+// A socket snapshot and its first-seen update must stay ordered across scans.
+// Process lookup happens after saving so it cannot delay another snapshot.
+var c2ScanMu sync.Mutex
+
+func scanOutboundConnections(cfg *config.Config, store *state.Store) ([]alert.Finding, map[string][]int) {
+	c2ScanMu.Lock()
+	defer c2ScanMu.Unlock()
+
 	var findings []alert.Finding
 
 	// Parse /proc/net/tcp for established connections
@@ -22,10 +42,23 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 	// rem_address = IP:port of the remote end
 	data, err := osFS.ReadFile("/proc/net/tcp")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
+	lines := strings.Split(string(data), "\n")
+	listeners := collectListenSockets(lines, false)
+	// Separate boots; sampled inode reuse keeps its earlier sighting.
+	bootID, _ := osFS.ReadFile("/proc/sys/kernel/random/boot_id")
+	boot := strings.TrimSpace(string(bootID))
+	stream := ""
+	if boot != "" {
+		stream = alert.SocketStream(boot)
+	}
+	now := time.Now()
+	firstSeen := loadC2SocketsSeen(store, boot)
+	seen := make(map[string]int64)
+	sockets := make(map[string][]int)
 
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
@@ -53,23 +86,65 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 		localAddr := fields[1]
 		remoteAddr := fields[2]
 
-		_, localPort := parseHexAddr(localAddr)
+		localIP, localPort := parseHexAddr(localAddr)
 		remoteIP, remotePort := parseHexAddr(remoteAddr)
 
 		if remoteIP == "" || remoteIP == "127.0.0.1" || remoteIP == "0.0.0.0" {
 			continue
 		}
+		var inode string
+		if len(fields) >= 10 {
+			if n, err := strconv.ParseUint(fields[9], 10, 64); err == nil && n > 0 {
+				inode = fields[9]
+			}
+		}
 
-		// Check remote IP against C2 blocklist
+		// Check remote IP against C2 blocklist. A local port with a listener
+		// may be the accept side, or a process listening on its own source
+		// port to look like one: it still reports, but is no outbound evidence.
 		for _, blocked := range cfg.C2Blocklist {
 			if remoteIP == blocked {
-				findings = append(findings, alert.Finding{
+				outbound := !listeners.has(net.ParseIP(localIP), localPort)
+				details := fmt.Sprintf("Local socket: %s:%d", localIP, localPort)
+				identity := fmt.Sprintf("%s:%d>%s:%d", localIP, localPort, remoteIP, remotePort)
+				if inode != "" {
+					details += ", socket inode " + inode
+					identity += " inode " + inode
+				}
+				if uidKnown {
+					details += fmt.Sprintf(", uid %d", uid)
+					identity += fmt.Sprintf(" uid %d", uid)
+				}
+				if !outbound {
+					details += ", local port also listening"
+				}
+				f := alert.Finding{
 					Severity: alert.Critical,
 					Check:    "c2_connection",
 					Message:  fmt.Sprintf("Connection to known C2 IP: %s:%d", remoteIP, remotePort),
-					Details:  fmt.Sprintf("Local port: %d", localPort),
+					Details:  details,
 					SourceIP: remoteIP,
-				})
+					// Details carry process and listener text that can change
+					// while the same connection stays open.
+					DedupKey: identity,
+				}
+				if stream != "" && inode != "" {
+					// A later scan of the same socket rereads the same
+					// observation: it keeps the time first seen.
+					at, known := firstSeen[inode]
+					if !known {
+						at = now.UnixNano()
+					}
+					seen[inode] = at
+					if outbound {
+						f.Observation = alert.Observation{Producer: string(ProducerConnectionScan), Stream: stream, Cursor: inode, ObservedAt: time.Unix(0, at).UTC()}
+						f.Attribution = admission.AttributionSocketDestination
+					}
+				}
+				if inode != "" {
+					sockets[inode] = append(sockets[inode], len(findings))
+				}
+				findings = append(findings, f)
 			}
 		}
 
@@ -118,8 +193,89 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 			}
 		}
 	}
+	saveC2SocketsSeen(store, boot, seen)
 
-	return findings
+	return findings, sockets
+}
+
+// c2SocketsSeenKey keeps when the C2 scan first saw each matched socket of
+// the current boot, so a scan after a restart names the same observation.
+const c2SocketsSeenKey = "_c2_sockets_seen"
+
+type c2SocketsSeen struct {
+	Boot string           `json:"boot"`
+	Seen map[string]int64 `json:"seen"`
+}
+
+func loadC2SocketsSeen(store *state.Store, boot string) map[string]int64 {
+	if store == nil || boot == "" {
+		return nil
+	}
+	raw, ok := store.GetRaw(c2SocketsSeenKey)
+	if !ok {
+		return nil
+	}
+	var saved c2SocketsSeen
+	if json.Unmarshal([]byte(raw), &saved) != nil || saved.Boot != boot {
+		return nil
+	}
+	return saved.Seen
+}
+
+// saveC2SocketsSeen keeps only this scan's matched inodes. Reuse after an
+// absent scan gets a new time, which cannot replace retained evidence.
+func saveC2SocketsSeen(store *state.Store, boot string, seen map[string]int64) {
+	if store == nil {
+		return
+	}
+	if len(seen) == 0 {
+		if _, ok := store.GetRaw(c2SocketsSeenKey); ok {
+			store.DeleteRaw(c2SocketsSeenKey)
+		}
+		return
+	}
+	data, err := json.Marshal(c2SocketsSeen{Boot: boot, Seen: seen})
+	if err != nil {
+		return
+	}
+	store.SetRaw(c2SocketsSeenKey, string(data))
+}
+
+// socketProcesses names a process holding each socket inode in want, best
+// effort: the first process found, with its executable when readable.
+func socketProcesses(ctx context.Context, want map[string][]int) map[string]string {
+	found := make(map[string]string)
+	if len(want) == 0 {
+		return found
+	}
+	fds, _ := osFS.Glob("/proc/*/fd/*")
+	for _, fd := range fds {
+		if ctx.Err() != nil || len(found) == len(want) {
+			break
+		}
+		pid := strings.Split(strings.TrimPrefix(fd, "/proc/"), "/")[0]
+		if _, err := strconv.ParseUint(pid, 10, 32); err != nil {
+			continue
+		}
+		target, err := osFS.Readlink(fd)
+		if err != nil {
+			continue
+		}
+		inode, ok := strings.CutPrefix(target, "socket:[")
+		if !ok {
+			continue
+		}
+		inode, ok = strings.CutSuffix(inode, "]")
+		if _, wanted := want[inode]; !ok || !wanted || found[inode] != "" {
+			continue
+		}
+		process := "process " + pid
+		if exe, err := osFS.Readlink("/proc/" + pid + "/exe"); err == nil {
+			process += " " + strconv.Quote(exe)
+		}
+		found[inode] = process
+	}
+	return found
 }
 
 // IsInfraIP reports whether ip is infrastructure the daemon must never act

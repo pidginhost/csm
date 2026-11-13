@@ -185,7 +185,7 @@ func TestFamilyProperties(t *testing.T) {
 		FamilyMail:       {true, true},
 		FamilySSH:        {true, true},
 		FamilyFTP:        {true, true},
-		FamilyNetwork:    {true, true},
+		FamilyNetwork:    {false, false},
 		FamilyReputation: {false, true},
 		FamilyDerived:    {false, false},
 	}
@@ -222,6 +222,8 @@ func TestValidPolicy(t *testing.T) {
 		{uint8(FamilySSH), uint8(BasisIntel)},
 		{uint8(FamilyReputation), uint8(BasisLocal)},
 		{uint8(FamilyDerived), uint8(BasisCompromise)},
+		{uint8(FamilyNetwork), uint8(BasisLocal)},
+		{uint8(FamilyNetwork), uint8(BasisIntel)},
 		{uint8(familyEnd), uint8(BasisLocal)},
 		{uint8(FamilyHTTP), uint8(basisEnd)},
 	}

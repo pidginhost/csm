@@ -18,6 +18,7 @@ var testPolicies = map[string]Policy{
 	"mail_takeover":  {Family: FamilyMail, Basis: BasisCompromise, Attribution: Attributions(AttributionPeer)},
 	"reputation":     {Family: FamilyReputation, Basis: BasisIntel, Attribution: Attributions(AttributionDerived)},
 	"threat_score":   {Family: FamilyDerived, Basis: BasisIntel, Attribution: Attributions(AttributionDerived)},
+	"c2":             {Family: FamilyNetwork, Basis: BasisCompromise, Attribution: Attributions(AttributionSocketDestination)},
 	"login_audit":    {},
 }
 
@@ -28,6 +29,8 @@ func testKind(check string) Attribution {
 		return AttributionHTTPPeer
 	case FamilyReputation, FamilyDerived:
 		return AttributionDerived
+	case FamilyNetwork:
+		return AttributionSocketDestination
 	}
 	return AttributionPeer
 }
@@ -43,8 +46,8 @@ func testLookup(check string) (string, Policy, bool) {
 var t0 = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
 type testProducers struct {
-	reg                                         *Registry
-	ssh, http, mail, reputation, derived, spare *Producer
+	reg                                                  *Registry
+	ssh, http, mail, reputation, derived, spare, network *Producer
 }
 
 func newTestProducers(t testing.TB) testProducers {
@@ -68,6 +71,7 @@ func newTestProducers(t testing.TB) testProducers {
 	tp.mail = must(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_brute", "mail_takeover"}, Claims: []ClaimKind{ClaimAccount}, Attribution: peer})
 	tp.reputation = must(ProducerSpec{ID: "reputation_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"reputation"}, Claims: []ClaimKind{ClaimAccount}, Attribution: derived})
 	tp.derived = must(ProducerSpec{ID: "threat_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"threat_score"}, Attribution: derived})
+	tp.network = must(ProducerSpec{ID: "connection_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"c2"}, Attribution: Attributions(AttributionSocketDestination)})
 	tp.spare = must(ProducerSpec{ID: "incident", Entry: EntryIncident, Observation: ObservationEventSeq, Checks: []string{"ssh_brute"}, Attribution: peer})
 	// A range entry wraps the SSH fixture check, so a subnet response may
 	// name a prefix holding its root.

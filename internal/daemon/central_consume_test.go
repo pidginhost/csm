@@ -364,6 +364,7 @@ func TestPlanCentralActionRequiresAddressEvidence(t *testing.T) {
 	}{
 		{"bad_asn_outbound", alert.High, false},
 		{"backdoor_port_outbound", alert.Critical, false},
+		{"c2_connection", alert.Critical, false},
 		{"cpanel_login_realtime", alert.Critical, false},
 		{"modsec_warning_realtime", alert.High, false},
 		{"mail_account_compromised", alert.High, false},

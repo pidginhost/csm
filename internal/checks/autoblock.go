@@ -864,13 +864,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			historyChanged = true
 		}
 		subnetCounts := netblockCounts(cfg, history, current, blocker, now, window)
-		// The cause is the newest block that counted; IPv4 spray blocks never do.
+		// The cause is the newest block that counted; IPv4 spray blocks and
+		// listed C2 servers never do.
 		subnetCauses := make(map[string]blockedIP)
 		subnetBlocked := make(map[string]bool)
 		for _, b := range netblockRows {
 			cidr := subnetEscalationCIDR(b.IP)
 			prior := subnetCauses[cidr]
-			if cidr != "" && b.FindingID != "" && countsTowardNetblock(b) && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
+			if cidr != "" && b.FindingID != "" && countsTowardNetblock(b) && !c2Listed(cfg, b.IP) && (prior.FindingID == "" || b.BlockedAt.After(prior.BlockedAt) || (b.BlockedAt.Equal(prior.BlockedAt) && b.FindingID > prior.FindingID)) {
 				subnetCauses[cidr] = b
 			}
 		}
