@@ -726,6 +726,7 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 		// they do not count toward the scanner profile itself.
 		if s.uaCat[ip][uaKindClaimedBotPending] > 0 && s.forwarded[uaObservationKey(uaKindClaimedBotPending)][ip] {
 			f.Attribution = admission.AttributionTrustedHTTPChain
+			f.ProxiedClient = !s.direct[uaObservationKey(uaKindClaimedBotPending)][ip]
 		}
 		out = append(out, f)
 	}

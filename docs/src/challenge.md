@@ -74,6 +74,7 @@ verification succeeds. A client named only by a trusted proxy's
 X-Forwarded-For header is the other exception: its requests reach this host
 from the proxy, so neither the challenge page nor a firewall block reaches
 it, and its entry expires without escalation.
+Counts that include direct requests still allow timeout escalation.
 
 A timeout block of an address that recently logged in as a customer sends
 the [known-customer block alert](auto-response.md#known-customer-block-alert)
