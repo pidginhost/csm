@@ -340,11 +340,7 @@ func requestedFile(docroot, uri string, flagged map[string]bool) (string, bool) 
 	if i := strings.IndexAny(uri, "?#"); i >= 0 {
 		uri = uri[:i]
 	}
-	// Encoded slashes depend on the vhost's AllowEncodedSlashes policy.
-	// Without that policy, decoding them could name a different file.
-	if strings.Contains(strings.ToLower(uri), "%2f") {
-		return "", false
-	}
+	// An encoded slash is decoded too: LiteSpeed runs the file that path names.
 	decoded, err := url.PathUnescape(uri)
 	if err != nil || strings.IndexByte(decoded, 0) >= 0 {
 		return "", false

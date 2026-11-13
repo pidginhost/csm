@@ -444,8 +444,21 @@ func TestRequestedFileNormalization(t *testing.T) {
 		{"/../x/shell.php", ""},
 		{"/a/../../x/shell.php", ""},
 		{"/%2e%2e/x/shell.php", ""},
-		{"/x%2fshell.php", ""},
-		{"/x%2Fshell.php", ""},
+		{"/x%2fshell.php", callerShell},
+		{"/x%2Fshell.php", callerShell},
+		{"/x/shell.php%2Fanything", callerShell},
+		{"/a%2F..%2Fx/shell.php", callerShell},
+		{"/a%2f%2e%2e%2fx/shell.php", callerShell},
+		{"/x/shell.php%2F..%2Fsafe.php", ""},
+		{"/x%252Fshell.php", ""},
+		{"/..%2Fx/shell.php", ""},
+		{"/a%2F..%2F..%2Fx/shell.php", ""},
+		{"/a/b%2F", callerDocroot + "/a/b/index.php"},
+		{"/a%2fb%2f?next=%2F", callerDocroot + "/a/b/index.php"},
+		{"/a/b%252F", ""},
+		{"/a/b?next=%2F", ""},
+		{"/a/b%2F%2e", callerDocroot + "/a/b/index.php"},
+		{"/a/b/c%2F..", callerDocroot + "/a/b/index.php"},
 		{"/a/b/.", callerDocroot + "/a/b/index.php"},
 		{"/a/b/c/..", callerDocroot + "/a/b/index.php"},
 		{"/a/b/%2e", callerDocroot + "/a/b/index.php"},
@@ -454,6 +467,50 @@ func TestRequestedFileNormalization(t *testing.T) {
 		if got != tt.want || ok != (tt.want != "") {
 			t.Errorf("%q: got (%q, %v), want %q", tt.uri, got, ok, tt.want)
 		}
+	}
+}
+
+func TestWebshellCallerEncodedSlashRequests(t *testing.T) {
+	const ip = "192.0.2.10"
+	for _, tt := range []struct {
+		name    string
+		status  int
+		removed bool
+	}{
+		{"served", 200, false},
+		{"rejected probe", 404, false},
+		{"removed shell", 404, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			status := tt.status
+			callers := aliceCallers(map[string]bool{callerShell: tt.removed})
+			requests := []callerRequest{
+				aliceRequest(ip, 1, "GET", "/x%2Fshell.php", status),
+				aliceRequest(ip, 2, "POST", "/x%2fshell.php", status),
+				aliceRequest(ip, 3, "POST", "/x/shell.php%2Finfo", status),
+				aliceRequest(ip, 4, "GET", "/x%252Fshell.php", status),
+				aliceRequest(ip, 5, "GET", "/x/shell.php%2F..%2Fsafe.php", status),
+			}
+			got := scanCallers(t, &config.Config{}, nopBotClassifier{}, callers, requests...)
+			if len(got) != 1 {
+				t.Fatalf("findings = %+v, want one caller", got)
+			}
+			f := got[0]
+			if f.Check != "webshell_caller" || f.SourceIP != ip || f.Domain != "example.com" || f.TenantID != "alice" {
+				t.Fatalf("wrong caller attribution: %+v", f)
+			}
+			if !strings.HasPrefix(f.Details, "3 requests (2 POST), newest ") {
+				t.Errorf("wrong request counts: %q", f.Details)
+			}
+			for _, want := range []string{callerShell, "POST /x/shell.php%2Finfo " + itoa(status)} {
+				if !strings.Contains(f.Details, want) {
+					t.Errorf("details %q lack %q", f.Details, want)
+				}
+			}
+			if strings.Contains(f.Details, "(removed)") != tt.removed {
+				t.Errorf("wrong removal label: %q", f.Details)
+			}
+		})
 	}
 }
 
