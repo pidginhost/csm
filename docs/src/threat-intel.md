@@ -250,8 +250,10 @@ below that score it still uses the challenge path. A live block also
 requires an active firewall, `auto_response.enabled: true`,
 `auto_response.block_ips: true` and `auto_response.dry_run: false`, and
 remains subject to the normal block protections. Dry-run records what
-would have been blocked. Central data alone never blocks. `action: off`
-pulls the list without taking central-driven actions.
+would have been blocked. Central data alone never blocks. An
+`ip_reputation` match is outside intelligence too, so it never counts as
+the local finding for either action. `action: off` pulls the list without
+taking central-driven actions.
 
 `auth_target` names the report target whose node key signs each download.
 The central abuse database refuses unsigned downloads. The target must use

@@ -190,7 +190,9 @@ restart. Existing blocks are unchanged.
 Automatic incident blocks use the address-evidence gate without a separate
 exclusion list. Advisory events alone never attest an address, but can raise
 an incident's severity after an earlier attestation, even when that event
-left a trimmed timeline. Retained evidence in existing incidents follows
+left a trimmed timeline. An `ip_reputation` match never attests either: an
+incident it opens blocks only after a local attack finding from the same
+address joins it. Retained evidence in existing incidents follows
 this rule on the next finding after upgrade. The existing incident and spray
 blocking settings still govern the action.
 

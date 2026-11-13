@@ -171,8 +171,11 @@ func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporti
 	// The local finding is the corroboration, so it must name the address
 	// as an attacker. A response record, a health finding, the remote end
 	// of an outbound connection, a customer login or an advisory does not.
+	// A trusted proxy carries every visitor behind it, so it is never
+	// challenged or blocked for one of them.
 	ip := f.SourceIP
-	if ip == "" || !checks.CheckResponseEnabled(d.currentCfg(), f.Check) || !checks.AddressEvidence(f.Check, f.Severity) {
+	cfg := d.currentCfg()
+	if ip == "" || !checks.CheckResponseEnabled(cfg, f.Check) || !checks.AddressEvidence(f.Check, f.Severity) || checks.IsTrustedProxy(ip, cfg) {
 		return centralQueuedAction{}, false
 	}
 	entry, found := store.Lookup(ip)
@@ -195,7 +198,9 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 	if check == "" {
 		check = a.rootFinding.Check
 	}
-	if !checks.CheckResponseEnabled(d.currentCfg(), check) {
+	cfg := d.currentCfg()
+	// A reload may have trusted this address while its action was queued.
+	if !checks.CheckResponseEnabled(cfg, check) || checks.IsTrustedProxy(a.ip, cfg) {
 		return nil
 	}
 	switch a.decision {

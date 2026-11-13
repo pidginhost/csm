@@ -345,16 +345,22 @@ func TestDomlogScannerDenominatorCannotVouchForPeer(t *testing.T) {
 func TestDomlogScannerBotRoutingCannotVouchForPeer(t *testing.T) {
 	const ip = "203.0.113.72"
 	for _, tc := range []struct {
-		name         string
-		pending      bool
-		forwarded    bool
-		assetsFirst  bool
-		separateLogs bool
+		name          string
+		proxiedProbes bool
+		pending       bool
+		forwarded     bool
+		assetsFirst   bool
+		separateLogs  bool
 	}{
 		{name: "forwarded assets last", pending: true, forwarded: true},
 		{name: "forwarded assets first", pending: true, forwarded: true, assetsFirst: true},
 		{name: "forwarded assets separate log", pending: true, forwarded: true, separateLogs: true},
 		{name: "direct assets", pending: true},
+		{name: "proxied probes direct assets", pending: true, proxiedProbes: true},
+		{name: "proxied probes direct assets first", pending: true, proxiedProbes: true, assetsFirst: true},
+		{name: "proxied probes direct assets separate log", pending: true, proxiedProbes: true, separateLogs: true},
+		{name: "all proxied", pending: true, proxiedProbes: true, forwarded: true},
+		{name: "proxied probes no pending bots", proxiedProbes: true},
 		{name: "no pending bots", forwarded: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -365,7 +371,11 @@ func TestDomlogScannerBotRoutingCannotVouchForPeer(t *testing.T) {
 			}
 			var probes, assets []string
 			for i := 0; i < 10; i++ {
-				probes = append(probes, domlogTestLine(ip, i, "GET", fmt.Sprintf("/probe-%d", i), 404, ua))
+				probe := domlogTestLine(ip, i, "GET", fmt.Sprintf("/probe-%d", i), 404, ua)
+				if tc.proxiedProbes {
+					probe = forwardedVia(probe, ip)
+				}
+				probes = append(probes, probe)
 				line := domlogTestLine(ip, 20+i, "GET", "/style.css", 200, "Mozilla/5.0")
 				if tc.forwarded {
 					line = forwardedVia(line, ip)
@@ -390,10 +400,25 @@ func TestDomlogScannerBotRoutingCannotVouchForPeer(t *testing.T) {
 				t.Fatalf("scanner detection changed: %+v", f)
 			}
 			wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, paths[probeFile], logs[probeFile], newest), domlogTestTime(9))
-			if tc.pending && tc.forwarded {
+			if tc.proxiedProbes || tc.pending && tc.forwarded {
 				wantChainRefused(t, f)
 			} else {
 				wantPeerMints(t, f)
+			}
+			// Direct browser assets make the address a packet source.
+			wantProxied := tc.proxiedProbes && tc.forwarded
+			if f.ProxiedClient != wantProxied {
+				t.Errorf("ProxiedClient = %v, want %v", f.ProxiedClient, wantProxied)
+			}
+			mock := &mockIPList{ips: make(map[string]bool)}
+			old := challengeIPList
+			SetChallengeIPList(mock)
+			t.Cleanup(func() { SetChallengeIPList(old) })
+			cfg.Challenge.Enabled = true
+			actions := ChallengeRouteIPs(cfg, []alert.Finding{f})
+			if len(actions) != 1 || !mock.ips[ip] || mock.nonEscalating[ip] != wantProxied {
+				t.Fatalf("challenge actions = %d, present = %v, non-escalating = %v; want one challenge, non-escalating %v",
+					len(actions), mock.ips[ip], mock.nonEscalating[ip], wantProxied)
 			}
 		})
 	}
@@ -518,7 +543,7 @@ func domlogFixtures() map[string]domlogFixture {
 func TestDomlogScanForwardedCountsHaveNoKind(t *testing.T) {
 	const ip = "203.0.113.65"
 	for name, fx := range domlogFixtures() {
-		for _, variant := range []string{"direct", "forwarded", "mixed"} {
+		for _, variant := range []string{"direct", "forwarded", "mixed", "direct oldest"} {
 			t.Run(name+"/"+variant, func(t *testing.T) {
 				cfg := &config.Config{}
 				cfg.WebServer.TrustedProxies = []string{domlogProxy}
@@ -532,7 +557,7 @@ func TestDomlogScanForwardedCountsHaveNoKind(t *testing.T) {
 				var lines []string
 				for i := 0; i < fx.n; i++ {
 					line := fx.line(ip, i)
-					if variant == "forwarded" || variant == "mixed" && i == 0 {
+					if variant == "forwarded" || variant == "mixed" && i == 0 || variant == "direct oldest" && i > 0 {
 						line = forwardedVia(line, ip)
 					}
 					lines = append(lines, line)
@@ -553,6 +578,9 @@ func TestDomlogScanForwardedCountsHaveNoKind(t *testing.T) {
 					t.Fatalf("%s findings %+v, want one for %s", fx.check, findings, ip)
 				}
 				wantScanObservation(t, got[0], ProducerDomlogScan, lineRef(t, path, lines, fx.n-1), domlogTestTime(fx.n-1))
+				if got[0].ProxiedClient != (variant == "forwarded") {
+					t.Fatalf("ProxiedClient = %v, want %v", got[0].ProxiedClient, variant == "forwarded")
+				}
 				if variant == "direct" {
 					wantPeerMints(t, got[0])
 				} else {

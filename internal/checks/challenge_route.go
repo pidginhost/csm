@@ -174,6 +174,16 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	// hostnames and the host's own addresses.
 	infra := config.EffectiveFirewallConfig(cfg).InfraIPs
 	protector, _ := getIPBlocker().(blockProtector)
+	// A direct finding anywhere in the batch keeps its address escalating,
+	// whichever of its findings is listed first.
+	escalates := make(map[string]bool)
+	for _, f := range findings {
+		if !f.ProxiedClient && isChallengeableCheck(f.Check) && f.Check != "http_claimed_bot_unverified" {
+			if ip := extractIPFromFinding(f); ip != "" {
+				escalates[ip] = true
+			}
+		}
+	}
 
 	for _, f := range findings {
 		if f.AutoIPResponseEvaluated || !CheckResponseEnabled(cfg, f.Check) {
@@ -208,7 +218,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		if isInfraIP(ip, infra) || ip == "127.0.0.1" || (protector != nil && protector.BlockProtected(ip)) {
+		if isInfraIP(ip, infra) || ip == "127.0.0.1" || (protector != nil && protector.BlockProtected(ip)) || IsTrustedProxy(ip, cfg) {
 			continue
 		}
 
@@ -220,7 +230,11 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root)
+		// A client only a trusted proxy forwarded sends no packets here and
+		// the challenge map matches the connecting address, so its challenge
+		// can only time out: that timeout is no reason to block it.
+		nonEscalating := f.Check == "http_claimed_bot_unverified" || f.ProxiedClient && !escalates[ip]
+		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root, nonEscalating)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -240,8 +254,8 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	return actions
 }
 
-func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence) {
-	if check == "http_claimed_bot_unverified" {
+func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence, nonEscalating bool) {
+	if nonEscalating {
 		challengeIPList.AddNonEscalating(ip, reason, duration)
 		return
 	}

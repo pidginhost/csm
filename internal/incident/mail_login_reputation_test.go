@@ -23,14 +23,14 @@ func TestMailLoginReputationIsMailboxBruteforce(t *testing.T) {
 }
 
 // Incident kinds must not change the reportable abuse set or hide incident
-// blocks from the attacker side of the digest.
+// blocks from the attacker side of the digest. The reputation match alone
+// opens the incident but blocks nothing: only the local brute force that
+// joins it names the address.
 func TestMailLoginReputationReportingAndDigest(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		AddressEvidence: func(check string, sev alert.Severity) bool {
-			return check == "ip_reputation" || registryEvidence(check, sev)
-		},
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled: true, BlockAtSeverity: "critical",
 		},
@@ -39,6 +39,12 @@ func TestMailLoginReputationReportingAndDigest(t *testing.T) {
 	now := time.Now()
 	f := alert.Finding{Check: "ip_reputation", Severity: alert.Critical, SourceIP: "203.0.113.7", MailLoginFailure: true, Timestamp: now}
 	if _, _, err := c.OnFinding(f); err != nil {
+		t.Fatal(err)
+	}
+	if cap.len() != 0 {
+		t.Fatalf("incident block calls = %d after the reputation match alone, want 0", cap.len())
+	}
+	if _, _, err := c.OnFinding(alert.Finding{Check: "mail_bruteforce", Severity: alert.Critical, SourceIP: "203.0.113.7", Timestamp: now}); err != nil {
 		t.Fatal(err)
 	}
 	if cap.len() != 1 {

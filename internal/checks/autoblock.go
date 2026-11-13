@@ -340,6 +340,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 		p.IP = ip
+		// A newly trusted proxy is no longer a retry candidate, even when
+		// the budget or engine would defer its block before the final guard.
+		if IsTrustedProxy(ip, cfg) {
+			work.completePending(p)
+			continue
+		}
 		// Retry only evidence still eligible under the current policy. Older
 		// queues lack check identity; a free-text reason cannot establish it.
 		if !BlockableFinding(cfg, alert.Finding{Check: p.Check, Severity: p.Severity, Cause: p.Cause}) {
@@ -441,8 +447,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 
-		// Never block infra IPs
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
+		// Never block infra IPs or a trusted proxy, which carries every
+		// visitor behind it.
+		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" || IsTrustedProxy(ip, cfg) {
 			continue
 		}
 

@@ -332,7 +332,7 @@ func TestCentralUnobservedRootIsRefusedOnce(t *testing.T) {
 	a := withRecordingAdmission(t)
 	d := New(cfg, nil, nil, "")
 	store := centralStoreWith(t, []reporting.ScoredEntry{{IP: "198.51.100.21", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Unix(1_700_000_000, 0).UTC()}})
-	f := alert.Finding{Check: "ip_reputation", Severity: alert.Critical, SourceIP: "198.51.100.21"}
+	f := alert.Finding{Check: "ftp_bruteforce", Severity: alert.Critical, SourceIP: "198.51.100.21"}
 	planned, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, func(string) bool { return false }, f)
 	if !ok {
 		t.Fatal("legacy central policy did not select its block")
@@ -345,7 +345,7 @@ func TestCentralUnobservedRootIsRefusedOnce(t *testing.T) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	want := derivedRefusal{admission.KindBlockIP, "ip_reputation", admission.EntryCentral, admission.ReasonAttribution}
+	want := derivedRefusal{admission.KindBlockIP, "ftp_bruteforce", admission.EntryCentral, admission.ReasonAttribution}
 	if len(a.refusals) != 1 || a.refusals[0] != want {
 		t.Fatalf("refusals=%+v, want %+v", a.refusals, want)
 	}

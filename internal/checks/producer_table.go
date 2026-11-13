@@ -141,17 +141,21 @@ var derivedEntries = []admission.ProducerSpec{
 
 // DerivedEntries returns the derived entries' producer specs. A challenge
 // timeout answers the checks routed to the challenge; central intel and
-// incidents answer any check whose address a producer publishes.
+// incidents answer the published checks that observe a local attack.
 func DerivedEntries() []admission.ProducerSpec {
 	var published, challenged []string
+	seen := map[string]bool{}
 	for _, p := range producerTable {
 		for _, check := range p.Spec.Checks {
-			if slices.Contains(published, check) {
+			if seen[check] {
 				continue
 			}
-			published = append(published, check)
+			seen[check] = true
 			if ResponsePolicyFor(check).ChallengeFirst {
 				challenged = append(challenged, check)
+			}
+			if _, pol, ok := AdmissionPolicy(check); ok && pol.Family.LocalAttack() {
+				published = append(published, check)
 			}
 		}
 	}

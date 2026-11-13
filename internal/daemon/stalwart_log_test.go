@@ -43,7 +43,9 @@ func TestUseStalwartReader(t *testing.T) {
 
 func TestDispatchLogLineStampsProducer(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
-	line := maillog.Line{Source: "file", Message: "x", Position: maillog.Position{Stream: "file:1:2", Cursor: "10"}}
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	line := maillog.Line{Source: "file", Message: "x", Position: maillog.Position{Stream: "file:1:2", Cursor: "10", ObservedAt: at}}
+	want := alert.Observation{Producer: string(checks.ProducerStalwartLog), Stream: "file:1:2", Cursor: "10", ObservedAt: at}
 	handler := func(string, alert.Observation, *config.Config) []alert.Finding {
 		return []alert.Finding{{Check: "smtp_bruteforce", SourceIP: "203.0.113.5"}}
 	}
@@ -52,8 +54,8 @@ func TestDispatchLogLineStampsProducer(t *testing.T) {
 	}
 	select {
 	case f := <-d.alertCh:
-		if f.Observation.Producer != string(checks.ProducerStalwartLog) || f.Observation.Stream != "file:1:2" {
-			t.Fatalf("observation = %+v", f.Observation)
+		if f.Observation != want {
+			t.Fatalf("observation = %+v, want %+v", f.Observation, want)
 		}
 	default:
 		t.Fatal("finding not enqueued")

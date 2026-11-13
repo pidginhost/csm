@@ -97,6 +97,11 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs || !CheckResponseEnabled(cfg, check) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrAutoBlockDisabled
 	}
+	// A trusted proxy carries every visitor behind it: refuse it as the
+	// engine refuses infra, before admission is asked.
+	if IsTrustedProxy(req.IP, cfg) {
+		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, fmt.Errorf("%w: %s is a trusted proxy", firewall.ErrIPProtected, req.IP)
+	}
 	respondDerived(req)
 	blocker := getIPBlocker()
 	if blocker == nil {

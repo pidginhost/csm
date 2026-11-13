@@ -231,13 +231,14 @@ func AdmissionPolicy(check string) (string, admission.Policy, bool) {
 }
 
 // AddressEvidence reports whether the structured address of a finding from
-// check at sev is attacker evidence: the registry gives the check an evidence
-// family and the finding meets its severity floor. Automatic responses that
-// act on a finding's address outside scan admission ask this first, so a
-// destination, a customer login or an advisory is never blocked for it.
+// check at sev is local attack evidence: the registry gives the check a local
+// attack family and the finding meets its severity floor. Central intel and
+// incidents ask this before acting on a finding's address, so a destination,
+// a customer login, an advisory or an outside reputation match is never
+// blocked for it.
 func AddressEvidence(check string, sev alert.Severity) bool {
 	_, pol, ok := AdmissionPolicy(check)
-	if !ok || pol.Family == admission.FamilyNone || pol.Family.Destination() {
+	if !ok || !pol.Family.LocalAttack() {
 		return false
 	}
 	return admissionSeverity(sev) >= pol.MinSeverity

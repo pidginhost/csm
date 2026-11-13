@@ -40,9 +40,9 @@ func TestCompareMatchesSprayBlocksThroughTheirEntries(t *testing.T) {
 	// A scan-pass finding that drove a spray block has no observation yet:
 	// its attribution refusal through incident_spray is designed.
 	scanned := "fid-" + strings.Repeat("5", 32)
-	findings[scanned] = "ip_reputation"
+	findings[scanned] = "webmail_bruteforce"
 	attributed := legacyBlock(scanned, 40*time.Minute, "credential_spray")
-	unobserved := summary(time.Hour, "ip_reputation", "refused", "attribution", 1)
+	unobserved := summary(time.Hour, "webmail_bruteforce", "refused", "attribution", 1)
 	unobserved.Entry = "incident_spray"
 	report, err = compareReport(findings, []anonAction{attributed, unobserved, last})
 	if err != nil {
@@ -50,6 +50,20 @@ func TestCompareMatchesSprayBlocksThroughTheirEntries(t *testing.T) {
 	}
 	if !strings.Contains(report, "explained by a designed refusal: 1 (attribution 1)") || !strings.Contains(report, "unexplained: 0: pass") {
 		t.Fatalf("a spray block of a scan-pass finding was not explained:\n%s", report)
+	}
+	// Incidents never act on a reputation match alone, so a spray block
+	// that one drove is a mismatch, not a designed refusal.
+	reputed := "fid-" + strings.Repeat("6", 32)
+	findings[reputed] = "ip_reputation"
+	reputedBlock := legacyBlock(reputed, 40*time.Minute, "credential_spray")
+	reputedRefusal := summary(time.Hour, "ip_reputation", "refused", "attribution", 1)
+	reputedRefusal.Entry = "incident_spray"
+	report, err = compareReport(findings, []anonAction{reputedBlock, reputedRefusal, last})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(report, "unexplained: 1: FAIL") {
+		t.Fatalf("a reputation-driven spray block was explained:\n%s", report)
 	}
 	scanEntry := coalescedSpray
 	scanEntry.Entry = "scan"
