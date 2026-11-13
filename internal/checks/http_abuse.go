@@ -164,6 +164,9 @@ type domlogStats struct {
 	// supplied for any counted record: such a count is not the HTTP peer's
 	// and reads as a trusted chain.
 	forwarded map[string]map[string]bool
+	// direct marks, by the same key, the addresses a record named as its
+	// own connecting peer.
+	direct map[string]map[string]bool
 
 	// callers collects requests for flagged files; nil when none is flagged.
 	callers *webshellCallers
@@ -220,6 +223,13 @@ func uaObservationKey(kind uaKind) string { return "ua:" + itoa(int(kind)) }
 // or not it can be the finding's observation.
 func (s *domlogStats) markForwarded(key, ip string, direct bool) {
 	if direct {
+		if s.direct == nil {
+			s.direct = make(map[string]map[string]bool)
+		}
+		if s.direct[key] == nil {
+			s.direct[key] = make(map[string]bool)
+		}
+		s.direct[key][ip] = true
 		return
 	}
 	if s.forwarded == nil {
@@ -255,10 +265,11 @@ func (s *domlogStats) observe(key, ip string, r scanRecord, direct bool) {
 func (s *domlogStats) stamp(f *alert.Finding, key string) {
 	r := s.newest[key][f.SourceIP]
 	r.stamp(f, ProducerDomlogScan)
-	// A forwarded client keeps its kind without a record: the challenge
-	// route reads it.
+	// A forwarded client keeps its kind without a record. It is a proxied
+	// client only when no counted record came from the address itself.
 	if s.forwarded[key][f.SourceIP] {
 		f.Attribution = admission.AttributionTrustedHTTPChain
+		f.ProxiedClient = !s.direct[key][f.SourceIP]
 	}
 }
 

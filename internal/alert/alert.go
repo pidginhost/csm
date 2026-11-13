@@ -192,6 +192,11 @@ type Finding struct {
 	// that read the address sets it; a response path never does. Unknown
 	// never authorizes an admission response.
 	Attribution admission.Attribution `json:"-"`
+	// ProxiedClient marks an address only a trusted proxy's forwarded header
+	// named: no record counted for it came from the address itself, so a
+	// firewall block cannot reach it. A count that mixes direct records is
+	// not one.
+	ProxiedClient bool `json:"-"`
 	// Observation is where the finding was read; zero when the producer has
 	// no position for it. Internal-only like Claims.
 	Observation Observation `json:"-"`

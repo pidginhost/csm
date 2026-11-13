@@ -2,6 +2,8 @@ package checks
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,17 +27,43 @@ func TestChallengeRouteNeverEscalatesAChainClient(t *testing.T) {
 	cfg.Challenge.Enabled = true
 
 	actions := ChallengeRouteIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.48", Message: "WordPress brute force from 203.0.113.48", Attribution: admission.AttributionTrustedHTTPChain},
+		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.48", Message: "WordPress brute force from 203.0.113.48", Attribution: admission.AttributionTrustedHTTPChain, ProxiedClient: true},
 		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.49", Message: "WordPress brute force from 203.0.113.49", Attribution: admission.AttributionHTTPPeer},
+		// One forwarded request beside direct ones reads as a chain for
+		// admission, but the address also connects here itself.
+		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.50", Message: "WordPress brute force from 203.0.113.50", Attribution: admission.AttributionTrustedHTTPChain},
 	})
-	if len(actions) != 2 || !mock.ips["203.0.113.48"] || !mock.ips["203.0.113.49"] {
-		t.Fatalf("routed %v with %d actions, want both addresses", mock.ips, len(actions))
+	if len(actions) != 3 || !mock.ips["203.0.113.48"] || !mock.ips["203.0.113.49"] || !mock.ips["203.0.113.50"] {
+		t.Fatalf("routed %v with %d actions, want all three addresses", mock.ips, len(actions))
 	}
 	if !mock.nonEscalating["203.0.113.48"] {
 		t.Error("a chain client's challenge timeout must not escalate to a block")
 	}
 	if mock.nonEscalating["203.0.113.49"] {
 		t.Error("a direct peer's challenge timeout must still escalate")
+	}
+	if mock.nonEscalating["203.0.113.50"] {
+		t.Error("a forwarded request beside direct ones must not spare the address its escalation")
+	}
+}
+
+// Only a count every record of which a trusted proxy forwarded names a
+// proxied client; one direct record makes the address a packet source.
+func TestDomlogMixedCountIsNoProxiedClient(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"192.0.2.10"}
+	var forwarded []string
+	for i := 0; i < 20; i++ {
+		forwarded = append(forwarded, fmt.Sprintf(`192.0.2.10 - - [09/Nov/2026:12:01:%02d +0000] "POST /wp-login.php HTTP/1.1" 200 100 "-" "Mozilla/5.0" "203.0.113.62"`, i))
+	}
+	_, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, forwarded)
+	if f := oneScanFinding(t, findings, "wp_login_bruteforce"); f.Attribution != admission.AttributionTrustedHTTPChain || !f.ProxiedClient {
+		t.Fatalf("forwarded count read as %s, proxied %v; want a proxied chain client", f.Attribution, f.ProxiedClient)
+	}
+	mixed := slices.Concat(forwarded[:19], []string{domlogTestLine("203.0.113.62", 30, "POST", "/wp-login.php", 200, "Mozilla/5.0")})
+	_, findings = scanDomlogFile(t, cfg, nopBotClassifier{}, mixed)
+	if f := oneScanFinding(t, findings, "wp_login_bruteforce"); f.Attribution != admission.AttributionTrustedHTTPChain || f.ProxiedClient {
+		t.Fatalf("mixed count read as %s, proxied %v; want a chain that is no proxied client", f.Attribution, f.ProxiedClient)
 	}
 }
 
@@ -46,8 +74,8 @@ func TestDomlogForwardedFindingNamesItsChainWithoutARecord(t *testing.T) {
 	s.markForwarded("wp_login_bruteforce", "203.0.113.48", false)
 	f := alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.48"}
 	s.stamp(&f, "wp_login_bruteforce")
-	if f.Attribution != admission.AttributionTrustedHTTPChain {
-		t.Fatalf("attribution = %v, want trusted_http_chain", f.Attribution)
+	if f.Attribution != admission.AttributionTrustedHTTPChain || !f.ProxiedClient {
+		t.Fatalf("attribution = %v, proxied %v; want a proxied trusted_http_chain client", f.Attribution, f.ProxiedClient)
 	}
 	if f.Observation != (alert.Observation{}) {
 		t.Fatalf("observation = %+v, want none without a record", f.Observation)

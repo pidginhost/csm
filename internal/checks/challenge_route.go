@@ -220,10 +220,10 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		// A trusted proxy's client sends no packets here and the challenge
-		// map matches the connecting address, so its challenge can only
-		// time out: that timeout is no reason to block it.
-		nonEscalating := f.Check == "http_claimed_bot_unverified" || f.Attribution == admission.AttributionTrustedHTTPChain
+		// A client only a trusted proxy forwarded sends no packets here and
+		// the challenge map matches the connecting address, so its challenge
+		// can only time out: that timeout is no reason to block it.
+		nonEscalating := f.Check == "http_claimed_bot_unverified" || f.ProxiedClient
 		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root, nonEscalating)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
