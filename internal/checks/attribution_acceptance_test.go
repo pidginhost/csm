@@ -27,24 +27,46 @@ func TestAttributionAcceptanceRow(t *testing.T) {
 		}
 		return lines
 	}
+	scanWP := func(t *testing.T, cfg *config.Config, lines []string, ip string, kind admission.Attribution) alert.Finding {
+		t.Helper()
+		path, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
+		f := oneScanFinding(t, findings, "wp_login_bruteforce")
+		if f.SourceIP != ip || f.Attribution != kind {
+			t.Fatalf("finding names %s as %s, want %s as %s", f.SourceIP, f.Attribution, ip, kind)
+		}
+		// Refusal can precede cursor validation, so it cannot prove the
+		// scanner attached the record that actually counted.
+		wantScanObservation(t, f, ProducerDomlogScan, lineRef(t, path, lines, len(lines)-1), domlogTestTime(19))
+		for _, other := range findings {
+			if other.SourceIP != "" && other.SourceIP != ip {
+				t.Fatalf("%s names unexpected address %s", other.Check, other.SourceIP)
+			}
+		}
+		return f
+	}
+	wantTarget := func(t *testing.T, f alert.Finding, ip string, producer admission.ProducerID) {
+		t.Helper()
+		e, target, err := mintScanFinding(t, f)
+		if err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+		if addr, ok := target.Addr(); !ok || addr.String() != ip || e.Target() != target {
+			t.Fatalf("mint input target %v, evidence target %v; want %s", target, e.Target(), ip)
+		}
+		if e.Producer() != producer || e.Observation().Stream != f.Observation.Stream || e.Observation().Cursor != f.Observation.Cursor || !e.ObservedAt().Equal(f.Observation.ObservedAt) {
+			t.Fatalf("minted evidence %+v lost the scanner's observation %+v", e, f.Observation)
+		}
+	}
 	proxied := &config.Config{}
 	proxied.WebServer.TrustedProxies = []string{"192.0.2.10", "192.0.2.11"}
 
 	t.Run("untrusted_xff", func(t *testing.T) {
-		_, findings := scanDomlogFile(t, &config.Config{}, nopBotClassifier{}, wpLines("203.0.113.70", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", victim))
-		f := oneScanFinding(t, findings, "wp_login_bruteforce")
-		if f.SourceIP != "203.0.113.70" {
-			t.Fatalf("finding names %s, want the untrusted peer", f.SourceIP)
-		}
-		wantPeerMints(t, f)
+		f := scanWP(t, proxied, wpLines("203.0.113.70", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", victim), "203.0.113.70", admission.AttributionHTTPPeer)
+		wantTarget(t, f, "203.0.113.70", ProducerDomlogScan)
 	})
 
 	t.Run("trusted_multi_hop_chain", func(t *testing.T) {
-		_, findings := scanDomlogFile(t, proxied, nopBotClassifier{}, wpLines("192.0.2.10", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", victim+", 203.0.113.71, 192.0.2.11"))
-		f := oneScanFinding(t, findings, "wp_login_bruteforce")
-		if f.SourceIP != "203.0.113.71" {
-			t.Fatalf("finding names %s, want the first untrusted hop from the right", f.SourceIP)
-		}
+		f := scanWP(t, proxied, wpLines("192.0.2.10", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", victim+", 203.0.113.71, 192.0.2.11"), "203.0.113.71", admission.AttributionTrustedHTTPChain)
 		wantChainRefused(t, f)
 		mock := &mockIPList{ips: make(map[string]bool)}
 		old := challengeIPList
@@ -53,7 +75,7 @@ func TestAttributionAcceptanceRow(t *testing.T) {
 		routed := *proxied
 		routed.Challenge.Enabled = true
 		ChallengeRouteIPs(&routed, []alert.Finding{f})
-		if !mock.ips[f.SourceIP] || !mock.nonEscalating[f.SourceIP] {
+		if len(mock.ips) != 1 || len(mock.nonEscalating) != 1 || !mock.ips["203.0.113.71"] || !mock.nonEscalating["203.0.113.71"] {
 			t.Fatalf("challenge list %v, non-escalating %v: a proxied client's timeout must never block it", mock.ips, mock.nonEscalating)
 		}
 	})
@@ -63,11 +85,7 @@ func TestAttributionAcceptanceRow(t *testing.T) {
 	nobody := func(t *testing.T, forwarded string) {
 		lines := wpLines("192.0.2.10", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", forwarded)
 		lines = append(lines, wpLines("192.0.2.10", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", "203.0.113.75")...)
-		_, findings := scanDomlogFile(t, proxied, nopBotClassifier{}, lines)
-		f := oneScanFinding(t, findings, "wp_login_bruteforce")
-		if f.SourceIP != "203.0.113.75" {
-			t.Fatalf("finding names %s, want only the valid chain's client", f.SourceIP)
-		}
+		f := scanWP(t, proxied, lines, "203.0.113.75", admission.AttributionTrustedHTTPChain)
 		wantChainRefused(t, f)
 	}
 	t.Run("malformed_chain", func(t *testing.T) { nobody(t, "203.0.113.72, not-an-address") })
@@ -75,35 +93,19 @@ func TestAttributionAcceptanceRow(t *testing.T) {
 
 	t.Run("rewritten_remote_address", func(t *testing.T) {
 		withHTTPRewrite(t, activeRewrite)
-		_, findings := scanDomlogFile(t, &config.Config{}, nopBotClassifier{}, wpLines("203.0.113.74", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", ""))
-		f := oneScanFinding(t, findings, "wp_login_bruteforce")
+		f := scanWP(t, &config.Config{}, wpLines("203.0.113.74", "POST /wp-login.php HTTP/1.1", "Mozilla/5.0", ""), "203.0.113.74", admission.AttributionHTTPPeer)
 		if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != admission.CauseRewrittenLog {
 			t.Fatalf("mint: %v, want the rewritten_log cause", err)
 		}
 	})
 
 	t.Run("injected_victim_in_text", func(t *testing.T) {
-		_, findings := scanDomlogFile(t, &config.Config{}, nopBotClassifier{}, wpLines("203.0.113.73", "POST /wp-login.php?redirect_to=http://"+victim+"/ HTTP/1.1", "Mozilla/5.0 (from "+victim+")", ""))
-		for _, f := range findings {
-			if f.SourceIP == victim {
-				t.Fatalf("%s names the address in the request text", f.Check)
-			}
-		}
-		f := oneScanFinding(t, findings, "wp_login_bruteforce")
-		_, target, err := mintScanFinding(t, f)
-		if addr, _ := target.Addr(); err != nil || addr.String() != "203.0.113.73" {
-			t.Fatalf("mint target %v, %v; want the peer", addr, err)
-		}
+		f := scanWP(t, &config.Config{}, wpLines("203.0.113.73", "POST /wp-login.php?redirect_to=http://"+victim+"/ HTTP/1.1", "Mozilla/5.0 (from "+victim+")", ""), "203.0.113.73", admission.AttributionHTTPPeer)
+		wantTarget(t, f, "203.0.113.73", ProducerDomlogScan)
 	})
 
 	t.Run("outbound_destination", func(t *testing.T) {
-		data := procTCPHeader + tcpLine("0", hexAddr(192, 0, 2, 100, 54321), hexAddr(203, 0, 113, 9, 443), "01")
-		withMockOS(t, &mockOS{readFile: func(path string) ([]byte, error) {
-			if path == "/proc/sys/kernel/random/boot_id" {
-				return []byte("4b5f6e0c-1d2e-4f3a-9b8c-7d6e5f4a3b2c\n"), nil
-			}
-			return []byte(data), nil
-		}})
+		outboundOS(t, tcpLine("0", hexAddr(192, 0, 2, 100, 54321), hexAddr(203, 0, 113, 9, 443), "01"), testBootID)
 		var c2 []alert.Finding
 		for _, f := range CheckOutboundConnections(context.Background(), &config.Config{C2Blocklist: []string{"203.0.113.9"}, BackdoorPorts: []int{}}, nil) {
 			if f.Check == "c2_connection" {
@@ -113,10 +115,10 @@ func TestAttributionAcceptanceRow(t *testing.T) {
 		if len(c2) != 1 || c2[0].Attribution != admission.AttributionSocketDestination {
 			t.Fatalf("c2 findings %+v, want one socket destination", c2)
 		}
-		_, in, err := AdmissionEvidence(c2[0])
-		if addr, _ := in.Target.Addr(); err != nil || addr.String() != "203.0.113.9" {
-			t.Fatalf("AdmissionEvidence target %v, %v; want the destination", addr, err)
+		if c2[0].Observation.Stream != alert.SocketStream(testBootID) || c2[0].Observation.Cursor != "12345" {
+			t.Fatalf("socket observation %+v, want the scanned boot and inode", c2[0].Observation)
 		}
+		wantTarget(t, c2[0], "203.0.113.9", ProducerConnectionScan)
 		// Central intel and incidents never take a destination as an attacker.
 		if AddressEvidence("c2_connection", alert.Critical) {
 			t.Fatal("a destination is address evidence")
