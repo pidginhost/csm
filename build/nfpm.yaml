@@ -66,6 +66,8 @@ contents:
     dst: /opt/csm/ui/static/css/
   - src: ui/static/css/fonts/*
     dst: /opt/csm/ui/static/css/fonts/
+  - src: ui/static/img/*
+    dst: /opt/csm/ui/static/img/
 
   - src: configs/*
     dst: /opt/csm/configs/
