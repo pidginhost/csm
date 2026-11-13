@@ -60,6 +60,18 @@ func TestInAllowRendersIPv4Sources(t *testing.T) {
 	}
 }
 
+// Mapped IPv4 sources retain their IPv4 scope and work with IPv6 disabled.
+func TestInAllowRendersMappedIPv4Sources(t *testing.T) {
+	got := inAllowRuleExprs(inAllow(3306, "::ffff:203.0.113.10", "::ffff:192.0.2.11/120"), false)
+	want := [][]expr.Any{
+		wantInAllowRule(2, 12, 4, "203.0.113.10/32", 3306),
+		wantInAllowRule(2, 12, 4, "192.0.2.0/24", 3306),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("rules = %v, want guarded IPv4 host and subnet matches", got)
+	}
+}
+
 func TestInAllowRendersIPv6Sources(t *testing.T) {
 	got := inAllowRuleExprs(inAllow(3306, "2001:db8::11", "2001:db8:1::/64"), true)
 	want := [][]expr.Any{

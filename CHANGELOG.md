@@ -30,6 +30,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Firewall lockout warnings now account for the address families and restricted ports covered by source-specific TCP exceptions.
 - On newer kernels CSM no longer reports its firewall rules as modified, or its port locks as missing, when nothing changed.
 - After a burst of renames, realtime protection rechecks only watched locations, so unrelated system directories no longer slow the recheck of sites.
 - On nginx servers CSM now refreshes its challenge snippet after an upgrade instead of leaving it stale with a configtest warning.

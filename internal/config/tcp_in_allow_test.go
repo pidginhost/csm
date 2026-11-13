@@ -106,8 +106,8 @@ func TestInAllowScopedPortIsNotALockout(t *testing.T) {
 	}{
 		{"no entry", nil, true},
 		{"usable source", []firewall.InAllowRule{
-			{Port: 22, Sources: []string{"db1.example.com", "203.0.113.10"}},
-			{Port: 9443, Sources: []string{"198.51.100.0/28"}},
+			{Port: 22, Sources: []string{"db1.example.com", "203.0.113.10", "2001:db8::11"}},
+			{Port: 9443, Sources: []string{"198.51.100.0/28", "2001:db8::11"}},
 		}, false},
 		{"no usable source", []firewall.InAllowRule{
 			{Port: 22, Sources: []string{"db1.example.com", "0.0.0.0/0"}},
@@ -137,6 +137,87 @@ func TestInAllowScopedPortIsNotALockout(t *testing.T) {
 				if got[key] != tc.warn {
 					t.Errorf("%s lockout warning = %t, want %t", key, got[key], tc.warn)
 				}
+			}
+		})
+	}
+}
+
+// A source in another family cannot reach the listener. In particular, an
+// IPv6 entry ignored by the engine must not hide an IPv4 lockout.
+func TestInAllowLockoutRequiresMatchingFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		sources           []string
+		ipv6              bool
+		inherit           bool
+		warnTCP, warnTCP6 bool
+	}{
+		{"IPv6 disabled", []string{"2001:db8::11"}, false, false, true, false},
+		{"IPv6 source only", []string{"2001:db8::11"}, true, false, true, false},
+		{"IPv4 source only", []string{"192.0.2.11"}, true, false, false, true},
+		{"mapped IPv4 source", []string{"::ffff:192.0.2.11/120"}, true, false, false, true},
+		{"both families", []string{"192.0.2.11", "2001:db8::11"}, true, false, false, false},
+		{"inherited IPv6 with IPv4 source", []string{"192.0.2.11"}, true, true, true, false},
+		{"inherited IPv6 with IPv6 source", []string{"2001:db8::11"}, true, true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useSSHDConfig(t, "Port 22\n")
+			cfg := lockoutTestConfig(&firewall.FirewallConfig{
+				Enabled: true, IPv6: tc.ipv6, TCPIn: []int{80}, TCP6In: []int{80},
+				TCPInAllow: []firewall.InAllowRule{
+					{Port: 22, Sources: tc.sources}, {Port: 9443, Sources: tc.sources},
+				},
+			})
+			if tc.inherit {
+				cfg.Firewall.TCP6In = nil
+			}
+			for _, check := range []struct {
+				service string
+				results []ValidationResult
+			}{{"web UI", firewallLockoutResults(cfg)}, {"sshd", probeSSHLockout(cfg)}} {
+				for field, want := range map[string]bool{"firewall.tcp_in": tc.warnTCP, "firewall.tcp6_in": tc.warnTCP6} {
+					_, got := findResult(check.results, "warn", field)
+					if got != want {
+						t.Errorf("%s %s warning = %t, want %t: %v", check.service, field, got, want, check.results)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A scoped accept precedes restricted_tcp, so its covered port is reachable
+// without infra_ips. An exception for one port must not hide another's warning.
+func TestInAllowRestrictedPortReachability(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sources   []string
+		otherPort bool
+		ipv6      bool
+		wantWarn  bool
+	}{
+		{"reachable", []string{"192.0.2.11", "2001:db8::11"}, false, false, false},
+		{"reachable dual stack", []string{"192.0.2.11", "2001:db8::11"}, false, true, false},
+		{"missing IPv6 source", []string{"192.0.2.11"}, false, true, true},
+		{"wrong family", []string{"2001:db8::11"}, false, false, true},
+		{"another restricted port", []string{"192.0.2.11", "2001:db8::11"}, true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := lockoutTestConfig(&firewall.FirewallConfig{
+				Enabled: true, IPv6: tc.ipv6, TCPIn: []int{9443}, RestrictedTCP: []int{9443},
+				TCPInAllow: []firewall.InAllowRule{{Port: 9443, Sources: tc.sources}},
+			})
+			cfg.InfraIPs = nil
+			if tc.otherPort {
+				cfg.Firewall.TCPIn = append(cfg.Firewall.TCPIn, 2087)
+				cfg.Firewall.RestrictedTCP = append(cfg.Firewall.RestrictedTCP, 2087)
+			}
+			result, got := findResult(firewallLockoutResults(cfg), "warn", "firewall.restricted_tcp")
+			if got != tc.wantWarn {
+				t.Fatalf("restricted warning = %t, want %t: %v", got, tc.wantWarn, result)
+			}
+			if tc.otherPort && strings.Contains(result.Message, "web UI") {
+				t.Errorf("reachable web UI blamed for another restricted port: %s", result.Message)
 			}
 		})
 	}
