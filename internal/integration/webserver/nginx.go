@@ -3,20 +3,24 @@ package webserver
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"time"
+
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // nginxHandler manages the nginx integration. The snippet lands in
 // /etc/nginx/conf.d/ where stock nginx auto-includes everything via
-// the default http{} include glob. Validation uses `nginx -t`; reload
-// uses `systemctl reload nginx` so existing connections drain
-// gracefully.
+// the default http{} include glob. Validation uses `nginx -t`, run
+// outside the service sandbox; reload uses `systemctl reload nginx` so
+// existing connections drain gracefully.
 type nginxHandler struct {
 	cmdRunner cmdRunner
+	lookPath  systemdrun.LookPathFunc
 }
 
 func newNginxHandler(r cmdRunner) *nginxHandler {
-	return &nginxHandler{cmdRunner: r}
+	return &nginxHandler{cmdRunner: r, lookPath: exec.LookPath}
 }
 
 func (h *nginxHandler) Kind() string        { return "nginx" }
@@ -42,10 +46,15 @@ should respect the challenge:
 Then run: nginx -t && systemctl reload nginx`
 }
 
+const nginxConfigtestTimeout = 15 * time.Second
+
 func (h *nginxHandler) Validate() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), nginxConfigtestTimeout)
 	defer cancel()
-	out, err := h.cmdRunner.Run(ctx, "nginx", "-t")
+	// nginx -t opens its log files for writing, which the
+	// daemon's read-only service sandbox refuses.
+	out, err := systemdrun.Run(ctx, h.lookPath, h.cmdRunner.Run,
+		systemdrun.Options{Pipe: true, RuntimeMax: nginxConfigtestTimeout}, "nginx", "-t")
 	if err != nil {
 		return fmt.Errorf("nginx configtest failed: %v\n%s", err, out)
 	}
