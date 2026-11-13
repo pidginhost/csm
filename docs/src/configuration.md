@@ -1444,13 +1444,11 @@ Use it for a database, replication or monitoring port that a few known hosts nee
 
 `port` is a single TCP port. `sources` is required and takes IPv4 and IPv6 addresses or CIDRs; a bare address means that one host, the same as `/32` or `/128`. A port out of range, an empty list, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors; open a port to everyone in `tcp_in` instead. IPv6 sources need `firewall.ipv6: true`; with it off, IPv6 is not filtered at all and validation warns.
 
-Lockout warnings count a source exception only for its IP family. An IPv6 source cannot suppress an IPv4 warning, and IPv4 sources do not open IPv6 access even when `tcp6_in` inherits `tcp_in`. A usable source exception also keeps a restricted port reachable without `infra_ips`.
+The Web UI and sshd lockout warnings treat a port with at least one usable source here as deliberate and stay quiet for it, in both IP families. An entry whose sources render no rule, such as IPv6 sources while `firewall.ipv6` is off, does not count. A usable source also keeps a port in `restricted_tcp` reachable without `infra_ips`.
 
 The accepts come right after `infra_ips` and before the blocked address, blocked subnet and country rules, and before the rate limits. A listed source therefore keeps reaching its port while it is blocked, and only that port: every other port still follows the blocklists. `csm firewall deny` on a listed source does not close the port for it. Remove the source from the entry and run `csm firewall restart` instead.
 
-Entries from `conf.d` fragments are added to the ones in `csm.yaml`. A change takes effect on `csm firewall restart`. `csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback, and the Web UI firewall page shows entries from the live daemon config with its port exceptions. After a firewall restart or rollback, that page can differ from the applied policy; use the CLI to inspect the engine configuration. Hosts that support the key report the `firewall.tcp_in_allow.v1` capability.
-
-The Web UI port exception count includes each configured source and port pair alongside manually added exceptions, matching its allowed list.
+Entries from `conf.d` fragments are added to the ones in `csm.yaml`. A change takes effect on `csm firewall restart`. `csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback, and the Web UI firewall page shows and counts the entries with its port exceptions. That page reads the config the daemon loaded, so after a firewall restart or rollback it can differ from the applied policy until the daemon reloads; the CLI shows what is applied. Hosts that support the key report the `firewall.tcp_in_allow.v1` capability.
 
 For a single address on one host without a config change, `csm firewall allow-port` still works. That allow is a soft one: it sits after the blocklists, so an operator block overrides it.
 

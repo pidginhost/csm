@@ -142,9 +142,10 @@ func TestInAllowScopedPortIsNotALockout(t *testing.T) {
 	}
 }
 
-// A source in another family cannot reach the listener. In particular, an
-// IPv6 entry ignored by the engine must not hide an IPv4 lockout.
-func TestInAllowLockoutRequiresMatchingFamily(t *testing.T) {
+// A source the engine ignores opens nothing: an IPv6 entry while
+// firewall.ipv6 is off must not hide the IPv4 lockout. Any source that
+// renders a rule, in either family, marks the port as deliberate.
+func TestInAllowLockoutNeedsARenderedSource(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
 		sources           []string
@@ -152,13 +153,13 @@ func TestInAllowLockoutRequiresMatchingFamily(t *testing.T) {
 		inherit           bool
 		warnTCP, warnTCP6 bool
 	}{
-		{"IPv6 disabled", []string{"2001:db8::11"}, false, false, true, false},
-		{"IPv6 source only", []string{"2001:db8::11"}, true, false, true, false},
-		{"IPv4 source only", []string{"192.0.2.11"}, true, false, false, true},
-		{"mapped IPv4 source", []string{"::ffff:192.0.2.11/120"}, true, false, false, true},
+		{"IPv6 source ignored while IPv6 is off", []string{"2001:db8::11"}, false, false, true, false},
+		{"IPv6 source only", []string{"2001:db8::11"}, true, false, false, false},
+		{"IPv4 source only", []string{"192.0.2.11"}, true, false, false, false},
+		{"mapped IPv4 source", []string{"::ffff:192.0.2.11/120"}, true, false, false, false},
 		{"both families", []string{"192.0.2.11", "2001:db8::11"}, true, false, false, false},
-		{"inherited IPv6 with IPv4 source", []string{"192.0.2.11"}, true, true, true, false},
-		{"inherited IPv6 with IPv6 source", []string{"2001:db8::11"}, true, true, true, false},
+		{"inherited IPv6 with IPv4 source", []string{"192.0.2.11"}, true, true, false, false},
+		{"inherited IPv6 with IPv6 source", []string{"2001:db8::11"}, true, true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			useSSHDConfig(t, "Port 22\n")
@@ -198,8 +199,8 @@ func TestInAllowRestrictedPortReachability(t *testing.T) {
 	}{
 		{"reachable", []string{"192.0.2.11", "2001:db8::11"}, false, false, false},
 		{"reachable dual stack", []string{"192.0.2.11", "2001:db8::11"}, false, true, false},
-		{"missing IPv6 source", []string{"192.0.2.11"}, false, true, true},
-		{"wrong family", []string{"2001:db8::11"}, false, false, true},
+		{"IPv4 source on dual stack", []string{"192.0.2.11"}, false, true, false},
+		{"IPv6 source ignored while IPv6 is off", []string{"2001:db8::11"}, false, false, true},
 		{"another restricted port", []string{"192.0.2.11", "2001:db8::11"}, true, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -220,5 +221,30 @@ func TestInAllowRestrictedPortReachability(t *testing.T) {
 				t.Errorf("reachable web UI blamed for another restricted port: %s", result.Message)
 			}
 		})
+	}
+}
+
+// The common shape: SSH and the Web UI scoped to an IPv4 office range on a
+// dual-stack firewall, where sshd listens on IPv6 as well. Nothing here is a
+// lockout: the operator named who reaches the ports. A warning would tell
+// them to add the port to tcp_in, which undoes the scoping.
+func TestInAllowIPv4SourceOnDualStackIsNotALockout(t *testing.T) {
+	useSSHDConfig(t, "Port 22\n")
+	for _, inherit := range []bool{true, false} {
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled: true, IPv6: true, TCPIn: []int{80, 443}, TCP6In: []int{80},
+			TCPInAllow: []firewall.InAllowRule{
+				{Port: 22, Sources: []string{"198.51.100.0/28"}},
+				{Port: 9443, Sources: []string{"198.51.100.0/28"}},
+			},
+		})
+		if inherit {
+			cfg.Firewall.TCP6In = nil
+		}
+		for _, r := range append(firewallLockoutResults(cfg), probeSSHLockout(cfg)...) {
+			if r.Level == "warn" && (r.Field == "firewall.tcp_in" || r.Field == "firewall.tcp6_in") {
+				t.Errorf("tcp6_in inherited=%t: unexpected lockout warning: %s", inherit, r.Message)
+			}
+		}
 	}
 }

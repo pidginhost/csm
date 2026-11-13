@@ -236,6 +236,31 @@ type InAllowRule struct {
 	Sources []string `yaml:"sources"`
 }
 
+// Networks returns the sources the engine renders an accept for: none when
+// the port is out of range, and otherwise every parseable source that is not
+// world-wide, IPv6 ones only while dual-stack filtering is on. Validation
+// reports what this leaves out; callers must not widen it.
+func (r InAllowRule) Networks(ipv6Enabled bool) []*net.IPNet {
+	if r.Port < 1 || r.Port > 65535 {
+		return nil
+	}
+	var out []*net.IPNet
+	for _, source := range r.Sources {
+		network, err := ParseOutAllowDst(source)
+		if err != nil {
+			continue
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			continue
+		}
+		if network.IP.To4() == nil && !ipv6Enabled {
+			continue
+		}
+		out = append(out, network)
+	}
+	return out
+}
+
 // allowedProtocol is an IP protocol protocol_allow can name, with the
 // link-local multicast groups it advertises to.
 type allowedProtocol struct {

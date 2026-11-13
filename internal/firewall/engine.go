@@ -2356,30 +2356,15 @@ func protocolAllowRuleExprs(rules []ProtocolAllowRule, ipv6Enabled bool) (input,
 }
 
 // inAllowRuleExprs renders firewall.tcp_in_allow: per source, an input accept
-// on that source and the entry's destination port. A port out of range, an
-// unparseable or world-wide source, and an IPv6 source while dual-stack
-// filtering is off render nothing: validation reports the first three, the
-// family bypass already passes IPv6, and a rule wider than the operator
-// asked for must never be the fallback.
+// on that source and the entry's destination port. InAllowRule.Networks
+// decides which sources render; a rule wider than the operator asked for
+// must never be the fallback.
 func inAllowRuleExprs(rules []InAllowRule, ipv6Enabled bool) [][]expr.Any {
 	var out [][]expr.Any
 	for _, r := range rules {
-		if r.Port < 1 || r.Port > 65535 {
-			continue
-		}
-		for _, source := range r.Sources {
-			network, err := ParseOutAllowDst(source)
-			if err != nil {
-				continue
-			}
-			if ones, _ := network.Mask.Size(); ones == 0 {
-				continue
-			}
+		for _, network := range r.Networks(ipv6Enabled) {
 			exprs, addr, offset, length := ipv4NFProtoGuard(), network.IP.To4(), uint32(12), uint32(4)
 			if addr == nil {
-				if !ipv6Enabled {
-					continue
-				}
 				exprs, addr, offset, length = ipv6NFProtoGuard(), network.IP.To16(), 8, 16
 			}
 			exprs = append(exprs,

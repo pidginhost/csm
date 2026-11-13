@@ -452,13 +452,15 @@ checks, and the Web UI returns each warning once:
 
 - The enabled Web UI port is missing from `tcp_in`, or from an explicit
   `tcp6_in` override when IPv6 filtering is enabled. An empty `tcp6_in`
-  inherits `tcp_in`. A port opened to usable sources in `tcp_in_allow`
-  suppresses the warning only for their IP family.
+  inherits `tcp_in`. A port opened to at least one usable source in
+  `tcp_in_allow` does not warn.
 - A `restricted_tcp` entry also appears in an effective public TCP allow list,
   but no `infra_ips` are configured. The restricted list only filters public
-  accepts; it does not open ports itself. A usable `tcp_in_allow` exception
-  still provides access for its source family. The warning remains for any
-  affected port and family without such an exception.
+  accepts; it does not open ports itself. Matching ports are therefore
+  reachable only through the port-agnostic infrastructure-IP accept rule, and
+  with no infrastructure addresses they are reachable from nowhere. A port
+  with a usable `tcp_in_allow` source stays reachable from that source and
+  is left out of the warning.
 
 These stay warnings and never block a save or a start: fronting the Web UI with
 a reverse proxy or reaching it over a VPN are legitimate reasons to leave the
@@ -474,7 +476,8 @@ firewall save rather than on every load:
   counts, including ones in `Include`d drop-ins under `/etc/ssh/sshd_config.d/`,
   and a port named in `restricted_tcp` with `infra_ips` set is treated as a
   deliberate infra-only listener. A port opened to listed sources in
-  `tcp_in_allow` is treated as deliberate for the source's IP family.
+  `tcp_in_allow` is treated as deliberate too, unless none of its sources
+  renders a rule.
   `AddressFamily` and `ListenAddress` limit the check to the IP families sshd
   exposes, and loopback-only listeners do not count because the inbound
   firewall always accepts loopback traffic.
