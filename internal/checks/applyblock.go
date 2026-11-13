@@ -97,6 +97,11 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs || !CheckResponseEnabled(cfg, check) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrAutoBlockDisabled
 	}
+	// A trusted proxy carries every visitor behind it: refuse it as the
+	// engine refuses infra, before admission is asked.
+	if IsTrustedProxy(req.IP, cfg) {
+		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, fmt.Errorf("%w: %s is a trusted proxy", firewall.ErrIPProtected, req.IP)
+	}
 	respondDerived(req)
 	blocker := getIPBlocker()
 	if blocker == nil {
@@ -157,11 +162,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	var outcome firewall.BlockOutcome
 	var err error
 	durableOutcome := false
-	if IsTrustedProxy(req.IP, cfg) {
-		// A trusted proxy carries every visitor behind it: refuse it as the
-		// engine refuses infra, queued blocks included.
-		outcome, err = firewall.BlockOutcomeNoop, fmt.Errorf("%w: %s is a trusted proxy", firewall.ErrIPProtected, req.IP)
-	} else if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
+	if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
 		durableOutcome = true
 		var admission *firewall.ScanAdmission
 		if req.Source == BlockSourceScan && !req.LoginSpray {

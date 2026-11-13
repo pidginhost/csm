@@ -244,6 +244,17 @@ func TestAutomaticResponsesNeverTargetATrustedProxy(t *testing.T) {
 		}
 	})
 
+	t.Run("derived block asks admission nothing", func(t *testing.T) {
+		cfg := pendingTestConfig(t)
+		cfg.WebServer.TrustedProxies = trusted
+		a := withAdmission(t)
+		applyBlockTestSetup(t, &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive})
+		_, err := ApplyBlock(cfg, ApplyBlockRequest{IP: proxy, TTL: time.Hour, Source: BlockSourceIncident, Entry: admission.EntryIncident, Check: "wp_login_bruteforce"})
+		if !errors.Is(err, firewall.ErrIPProtected) || len(a.responses()) != 0 {
+			t.Fatalf("ApplyBlock(trusted proxy) error = %v, admission responses = %+v; want ErrIPProtected and none", err, a.responses())
+		}
+	})
+
 	t.Run("derived block", func(t *testing.T) {
 		cfg := pendingTestConfig(t)
 		cfg.WebServer.TrustedProxies = trusted
