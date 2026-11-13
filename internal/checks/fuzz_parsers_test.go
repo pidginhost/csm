@@ -1742,7 +1742,7 @@ func FuzzC2SocketDestination(f *testing.F) {
 func FuzzRequestedFile(f *testing.F) {
 	const docroot = "/home/alice/public_html"
 	flagged := map[string]bool{docroot + "/x/shell.php": true, docroot + "/a/b/index.php": false}
-	for _, seed := range []string{"/x/shell.php", "/x/shell.php/anything?cmd=id", "/x/%73hell.php", "/a/b/", "/x/./y/../shell.php", "/x/shell.php%00.jpg", "/x/%zz", "http://example.com/x/shell.php", "/../../etc/passwd", ""} {
+	for _, seed := range []string{"/x/shell.php", "/x/shell.php/anything?cmd=id", "/x/%73hell.php", "/x%2Fshell.php", "/a/b/", "/x/./y/../shell.php", "/x/shell.php%00.jpg", "/x/%zz", "http://example.com/x/shell.php", "/../../etc/passwd", ""} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, uri string) {

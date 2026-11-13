@@ -57,7 +57,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `webmail_logins` | Roundcube/Horde access anomalies |
 | `api_auth_failures` | API authentication failure patterns |
 
-Webshell caller attribution uses dated requests from the last 24 hours and preserves the full request target before resolving dot segments and PHP path info. Above-root traversal is rejected. Requests containing encoded slashes in their URL path are omitted because [Apache's encoded-slash policy](https://httpd.apache.org/docs/2.4/mod/core.html#allowencodedslashes) can reject, preserve, or decode them. URL rewrites and custom directory indexes are not inferred. When a client accesses the same file through several domains, its account finding does not name a single domain. These exclusions affect caller attribution only; file scanning is unchanged.
+Webshell caller attribution uses dated requests from the last 24 hours and preserves the full request target before resolving dot segments and PHP path info. Above-root traversal is rejected. An encoded slash in the URL path is decoded like any other escape, because a web server that accepts it runs the file the decoded path names. URL rewrites and custom directory indexes are not inferred. When a client accesses the same file through several domains, its account finding does not name a single domain. These exclusions affect caller attribution only; file scanning is unchanged.
 
 ## Email
 
