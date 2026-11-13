@@ -87,12 +87,14 @@
                                         <span class="nav-link-title">Cleanup History</span>
                                     </a>
                                 </li>
+                                {{if feature "mail"}}
                                 <li class="nav-item" data-csm-route="email">
                                     <a class="nav-link" href="/email">
                                         <span class="nav-link-icon"><i class="ti ti-mail"></i></span>
                                         <span class="nav-link-title">Email Security</span>
                                     </a>
                                 </li>
+                                {{end}}
                                 <li class="nav-item" data-csm-route="modsec">
                                     <a class="nav-link" href="/modsec">
                                         <span class="nav-link-icon"><i class="ti ti-shield-check"></i></span>

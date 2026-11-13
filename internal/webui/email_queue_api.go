@@ -23,7 +23,7 @@ const (
 // selectQueueAdmin picks the per-message queue executor. Only cPanel/exim is
 // wired; other platforms answer the queue routes as unavailable.
 func selectQueueAdmin() intel.QueueAdmin {
-	if platform.Detect().IsCPanel() {
+	if cpanelMailBackend(platform.Detect()) {
 		return intel.NewEximQueueAdmin(platform.EximSpoolRoot, eximLookPath, eximRun)
 	}
 	return nil

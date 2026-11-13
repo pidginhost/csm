@@ -52,7 +52,7 @@
             </a>
         </div>
         <div class="col-6 col-lg" id="kpi-malware">
-            <a href="?tab=held" class="card card-link stat-card" title="Malware: open the Held mail tab">
+            {{if feature "mailHeld"}}<a href="?tab=held" class="card card-link stat-card" title="Malware: open the Held mail tab">{{else}}<a href="?tab=rejects" class="card card-link stat-card" title="Malware: open the Rejects tab">{{end}}
                 <div class="card-body">
                     <div class="subheader">Malware</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
@@ -78,6 +78,7 @@
                 </div>
             </a>
         </div>
+        {{if feature "mailQueue"}}
         <div class="col-6 col-lg" id="kpi-queue">
             <a href="?tab=queue" class="card card-link stat-card" title="Mail queue: open the Queue tab">
                 <div class="card-body">
@@ -87,6 +88,7 @@
                 </div>
             </a>
         </div>
+        {{end}}
     </div>
 
     <!-- Job tabs, on the first screen under the cards. A tab loads what it
@@ -98,21 +100,27 @@
                 <i class="ti ti-layout-dashboard"></i>&nbsp;Overview
             </button>
         </li>
+        {{if feature "mailQueue"}}
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-queue" data-bs-toggle="tab" data-bs-target="#email-pane-queue" type="button" role="tab" aria-controls="email-pane-queue" aria-selected="false">
                 <i class="ti ti-mailbox"></i>&nbsp;Queue<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
+        {{end}}
+        {{if feature "mailHeld"}}
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-held" data-bs-toggle="tab" data-bs-target="#email-pane-held" type="button" role="tab" aria-controls="email-pane-held" aria-selected="false">
                 <i class="ti ti-lock"></i>&nbsp;Held mail<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
+        {{end}}
+        {{if feature "mailSuspensions"}}
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-suspended" data-bs-toggle="tab" data-bs-target="#email-pane-suspended" type="button" role="tab" aria-controls="email-pane-suspended" aria-selected="false">
                 <i class="ti ti-user-off"></i>&nbsp;Suspended<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
+        {{end}}
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-rejects" data-bs-toggle="tab" data-bs-target="#email-pane-rejects" type="button" role="tab" aria-controls="email-pane-rejects" aria-selected="false">
                 <i class="ti ti-mail-off"></i>&nbsp;Rejects<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
@@ -123,16 +131,20 @@
                 <i class="ti ti-send"></i>&nbsp;Sending accounts<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
+        {{if feature "mailForwarders"}}
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-forwarders" data-bs-toggle="tab" data-bs-target="#email-pane-forwarders" type="button" role="tab" aria-controls="email-pane-forwarders" aria-selected="false">
                 <i class="ti ti-mail-forward"></i>&nbsp;Forwarders<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
+        {{end}}
+        {{if feature "mailDeferrals"}}
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-delays" data-bs-toggle="tab" data-bs-target="#email-pane-delays" type="button" role="tab" aria-controls="email-pane-delays" aria-selected="false">
                 <i class="ti ti-clock-pause"></i>&nbsp;Provider delays<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
             </button>
         </li>
+        {{end}}
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="email-tab-findings" data-bs-toggle="tab" data-bs-target="#email-pane-findings" type="button" role="tab" aria-controls="email-pane-findings" aria-selected="false">
                 <i class="ti ti-list"></i>&nbsp;Findings<span class="badge bg-secondary-lt ms-1" data-tab-count aria-hidden="true" hidden></span> <span class="visually-hidden" data-tab-count-text></span>
@@ -201,21 +213,25 @@
                                 <span class="text-muted">Antispam</span>
                                 <span class="ms-auto text-end" data-prot-value>--</span>
                             </div>
+                            {{if feature "emailAV"}}
                             <div class="d-flex align-items-center gap-2 mb-2" id="prot-av">
                                 <span class="status-dot"></span>
                                 <span class="text-muted">Antivirus</span>
                                 <span class="ms-auto text-end" data-prot-value>--</span>
                             </div>
+                            {{end}}
                             <div class="d-flex align-items-center gap-2 mb-2" id="prot-smtp">
                                 <span class="status-dot"></span>
                                 <span class="text-muted">Outbound SMTP</span>
                                 <span class="ms-auto text-end" data-prot-value>--</span>
                             </div>
+                            {{if feature "emailAV"}}
                             <div class="d-flex align-items-center gap-2" id="prot-watcher">
                                 <span class="status-dot"></span>
                                 <span class="text-muted">Watcher mode</span>
                                 <span class="ms-auto text-end" data-prot-value>--</span>
                             </div>
+                            {{end}}
                         </div>
                     </div>
                 </div>
@@ -224,6 +240,7 @@
 
         <!-- Queue: what is stuck and why, oldest first, with the actions on
              each message; then the composition and stuck recipients -->
+        {{if feature "mailQueue"}}
         <div class="tab-pane fade" id="email-pane-queue" role="tabpanel" aria-labelledby="email-tab-queue" tabindex="0">
             <div class="card">
                 <div class="card-body border-bottom">
@@ -286,9 +303,11 @@
                 </div>
             </div>
         </div>
+        {{end}}
 
         <!-- Held mail: malware the email AV quarantined and forward copies
              the forward guard held, newest first, in the page range -->
+        {{if feature "mailHeld"}}
         <div class="tab-pane fade" id="email-pane-held" role="tabpanel" aria-labelledby="email-tab-held" tabindex="0">
             <div class="card">
                 <div class="card-body border-bottom">
@@ -331,8 +350,10 @@
                 </div>
             </div>
         </div>
+        {{end}}
 
         <!-- Suspended: mailboxes and accounts CSM suspended, with Release -->
+        {{if feature "mailSuspensions"}}
         <div class="tab-pane fade" id="email-pane-suspended" role="tabpanel" aria-labelledby="email-tab-suspended" tabindex="0">
             <div class="card">
                 <div class="card-body border-bottom">
@@ -357,6 +378,7 @@
                 </div>
             </div>
         </div>
+        {{end}}
 
         <!-- Rejects: recent rejects in the range -->
         <div class="tab-pane fade" id="email-pane-rejects" role="tabpanel" aria-labelledby="email-tab-rejects" tabindex="0">
@@ -429,6 +451,7 @@
 
         <!-- Forwarders: every mail forwarder on the host, the ones to
              outside addresses first; each destination can be deleted -->
+        {{if feature "mailForwarders"}}
         <div class="tab-pane fade" id="email-pane-forwarders" role="tabpanel" aria-labelledby="email-tab-forwarders" tabindex="0">
             <div class="card">
                 <div class="csm-toolbar">
@@ -460,10 +483,12 @@
                 </div>
             </div>
         </div>
+        {{end}}
 
         <!-- Provider delays: which providers defer this server's mail and why,
              then this server's sending IPs, from the newest exim_mainlog
              lines -->
+        {{if feature "mailDeferrals"}}
         <div class="tab-pane fade" id="email-pane-delays" role="tabpanel" aria-labelledby="email-tab-delays" tabindex="0">
             <div class="card mb-3">
                 <div class="card-body border-bottom">
@@ -508,6 +533,7 @@
                 </div>
             </div>
         </div>
+        {{end}}
 
         <!-- Findings: scoped by the header range -->
         <div class="tab-pane fade" id="email-pane-findings" role="tabpanel" aria-labelledby="email-tab-findings" tabindex="0">

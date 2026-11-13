@@ -20,6 +20,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - The Web UI now shows a CSM icon in browser tabs and bookmarks.
 
+### Changed
+
+- On servers without cPanel, the Web UI hides cPanel-only Email Security tabs, cPHulk actions and settings, and shows Email Security only when a mail server runs.
+
 ### Fixed
 
 - On newer kernels CSM no longer reports its firewall rules as modified, or its port locks as missing, when nothing changed.

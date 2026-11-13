@@ -179,6 +179,9 @@ type Server struct {
 	accountRoots func() []string
 	scanAccounts func(*config.Config) ([]string, error)
 
+	// featureState caches the platform features the UI renders.
+	featureState
+
 	provider health.Provider // set by Daemon when it starts the WebUI
 
 	mu         sync.RWMutex
@@ -874,7 +877,9 @@ func (s *Server) SetScanJobs(c ScanJobController) {
 func (s *Server) csmConfig() map[string]interface{} {
 	cfg := s.liveCfg()
 	return map[string]interface{}{
-		"version":      s.version,
+		"version": s.version,
+		// What this host supports; pages hide the rest.
+		"features":     s.features(),
 		"emailAV":      cfg.EmailAV.Enabled,
 		"firewall":     cfg.Firewall != nil && cfg.Firewall.Enabled,
 		"autoResponse": cfg.AutoResponse.Enabled,
@@ -1037,6 +1042,7 @@ func (s *Server) templateFuncs() template.FuncMap {
 		"isoTime":         isoTime,
 		"asset":           s.assetURL,
 		"csrfToken":       func() string { return "" }, // per request, see renderTemplate
+		"feature":         s.feature,
 		"csmConfig":       func() template.JS { return jsonForScript(s.csmConfig()) },
 		"json":            jsonForScript,
 		"multiply":        func(a, b int) int { return a * b },

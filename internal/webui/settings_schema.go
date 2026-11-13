@@ -42,6 +42,10 @@ type SettingsField struct {
 	// ports / Rate limits / Logging). Empty string means the field
 	// renders ungrouped under the section's flat grid.
 	FieldGroup string `json:"field_group,omitempty"`
+	// Feature names the platform feature (see uiFeatures) this field needs.
+	// A host without it does not show the field and cannot set it; the
+	// value in csm.yaml is left alone. Empty means every host.
+	Feature string `json:"-"`
 	// FileOnly fields are shown but can only be changed in csm.yaml. They
 	// name a command, executable, path, socket or environment variable the
 	// root daemon acts on, so a browser session must not be able to set them.
@@ -62,14 +66,17 @@ type SettingsField struct {
 // "bell" for "ti ti-bell"); Group is the nav category the section lives
 // in ("Alerting", "Detection", "Integrations", "Ops").
 type SettingsSection struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	YAMLPath  string          `json:"yaml_path"`
-	Restart   bool            `json:"restart_hint"`
-	ReloadTag string          `json:"reload_tag,omitempty"`
-	Icon      string          `json:"icon,omitempty"`
-	Group     string          `json:"group,omitempty"`
-	Fields    []SettingsField `json:"fields"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	YAMLPath  string `json:"yaml_path"`
+	Restart   bool   `json:"restart_hint"`
+	ReloadTag string `json:"reload_tag,omitempty"`
+	Icon      string `json:"icon,omitempty"`
+	Group     string `json:"group,omitempty"`
+	// Feature hides the whole section on hosts without it; see
+	// SettingsField.Feature.
+	Feature string          `json:"-"`
+	Fields  []SettingsField `json:"fields"`
 }
 
 // Section groups for the sidebar. Order here defines order in the UI.
@@ -245,10 +252,10 @@ var settingsSections = []SettingsSection{
 		Fields: []SettingsField{
 			{YAMLPath: "upcp_window_start", Type: "string", Label: "UPCP window start (HH:MM)"},
 			{YAMLPath: "upcp_window_end", Type: "string", Label: "UPCP window end (HH:MM)"},
-			{YAMLPath: "known_api_tokens", Type: "[]string", Label: "Known API tokens (hashed)"},
+			{YAMLPath: "known_api_tokens", Type: "[]string", Label: "Known API tokens (hashed)", Feature: "cpanel"},
 			{YAMLPath: "ignore_paths", Type: "[]string", Label: "Ignore paths"},
-			{YAMLPath: "suppress_webmail_alerts", Type: "bool", Label: "Suppress webmail login alerts"},
-			{YAMLPath: "suppress_cpanel_login_alerts", Type: "bool", Label: "Suppress cPanel login alerts"},
+			{YAMLPath: "suppress_webmail_alerts", Type: "bool", Label: "Suppress webmail login alerts", Feature: "cpanel"},
+			{YAMLPath: "suppress_cpanel_login_alerts", Type: "bool", Label: "Suppress cPanel login alerts", Feature: "cpanel"},
 			{YAMLPath: "trusted_countries", Type: "[]string", Label: "Trusted countries (ISO 3166-1 alpha-2)"},
 		},
 	},
@@ -268,7 +275,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "max_blocks_per_hour", Type: "int", Label: "Max IP blocks per hour", Min: int64p(0), Help: fmt.Sprintf("Hourly budget for scan-driven IP blocks; challenge, central and incident blocks are not limited. 0 uses the defaults: %d for scan-driven blocks and %d for the admission ledger, which caps any value at %d.", config.DefaultMaxBlocksPerHour, config.DefaultAdmissionCeiling, admission.MaxCeiling)},
 			{YAMLPath: "enforce_permissions", Type: "bool", Label: "Auto-chmod 644 world/group-writable PHP"},
 			{YAMLPath: "fix_wp_cron", Type: "bool", Label: "Auto-disable WP-Cron + install system cron", Help: "On perf_wp_cron findings, edit wp-config.php and add a per-user cron. Tune interval/php under Performance."},
-			{YAMLPath: "block_cpanel_logins", Type: "bool", Label: "Block on cPanel/webmail login alerts"},
+			{YAMLPath: "block_cpanel_logins", Type: "bool", Label: "Block on cPanel/webmail login alerts", Feature: "cpanel"},
 			{YAMLPath: "http_scanner_action", Type: "enum", Label: "URL scanner response", Options: []string{"challenge", "block"}, Help: "Response to http_scanner_profile findings. challenge routes the IP to the PoW challenge when the challenge subsystem is enabled, falling back to a block when it is not; block always hard-blocks."},
 			{YAMLPath: "netblock", Type: "bool", Label: "Auto-block /24 on threshold"},
 			{YAMLPath: "netblock_threshold", Type: "int", Label: "Netblock threshold", Min: int64p(config.MinBlockEscalationCount), Help: "Blocked addresses in one IPv4 /24 or IPv6 /64 before the subnet itself is blocked. Default 3."},
@@ -401,6 +408,7 @@ var settingsSections = []SettingsSection{
 		ID:       "email_av",
 		Title:    "Email AV",
 		YAMLPath: "email_av",
+		Feature:  "emailAV",
 		Icon:     "virus",
 		Group:    SectionGroupDetection,
 		Restart:  true,

@@ -11,7 +11,7 @@ import (
 // cPanel/exim is wired; other platforms get the empty reporter until their
 // adapters land (Phase 3).
 func selectDeferralReporter() intel.Reporter {
-	if platform.Detect().IsCPanel() {
+	if cpanelMailBackend(platform.Detect()) {
 		return intel.NewEximSource()
 	}
 	return intel.EmptyReporter{}

@@ -65,9 +65,11 @@ function emailPage(opts = {}) {
             static now() { return Date.parse(opts.now); }
         };
     }
-    const page = loadPage(templateBody('email'), SHARED, {
+    // opts.features is the host's platform features; a cPanel host by default.
+    const page = loadPage(templateBody('email', opts.features), SHARED, {
         url: opts.url || 'https://csm.example.test/email',
         storage: opts.storage || {},
+        config: opts.features ? { features: opts.features } : undefined,
         globals
     });
     page.window.bootstrap.Tab = tabPlugin(page.window);
@@ -4355,4 +4357,48 @@ test('releasing an account hold warns that the held mail is delivered', async ()
     assert.equal(asked[0].message, 'Release the outgoing mail hold on cPanel account shopowner? Mail held in the queue is delivered at once, so delete any spam on the Queue tab first.');
     assert.equal(asked[0].opts.danger, true, 'releasing held mail is not marked dangerous');
     assert.equal(page.requests.filter(r => r.method !== 'GET').length, 0, 'a cancelled confirm still released');
+});
+
+// ---------- Hosts without cPanel ----------
+
+// A Postfix or Stalwart server: mail is there, the cPanel/Exim backends are not.
+const MAIL_ONLY = { mail: true };
+const CPANEL_ONLY_APIS = ['/email/queue', '/email/held', '/email/quarantine', '/email/suspensions',
+    '/email/forwarders', '/email/deferrals', '/email/av/status'];
+
+test('without cPanel the page shows only the tabs any mail server has', async () => {
+    const page = emailPage({ features: MAIL_ONLY });
+    await settle();
+    for (const name of ['overview', 'rejects', 'sending', 'findings']) {
+        assert.ok(page.document.getElementById('email-tab-' + name), name + ' tab');
+    }
+    for (const name of ['queue', 'held', 'suspended', 'forwarders', 'delays']) {
+        assert.equal(page.document.getElementById('email-tab-' + name), null, name + ' tab');
+        assert.equal(page.document.getElementById('email-pane-' + name), null, name + ' pane');
+    }
+    assert.equal(page.document.getElementById('kpi-queue'), null);
+    assert.equal(page.document.getElementById('prot-av'), null);
+});
+
+test('without cPanel the header says nothing about a queue it cannot show', async () => {
+    const page = emailPage({ features: MAIL_ONLY });
+    page.respond('/api/v1/email/overview', 200, overview({ scanned: 10, clean: 10 }, {
+        queue: { size: 0, unavailable: true, warn: 100, crit: 500 }
+    }));
+    await settle();
+    const subtitle = page.document.getElementById('email-subtitle').textContent;
+    assert.match(subtitle, /Mail flowing/);
+    assert.doesNotMatch(subtitle, /Queue/);
+});
+
+test('without cPanel no cPanel-only API is called, on load, refresh or a hidden-tab link', async () => {
+    for (const url of ['https://csm.example.test/email', 'https://csm.example.test/email?tab=queue', 'https://csm.example.test/email?tab=held']) {
+        const page = emailPage({ features: MAIL_ONLY, url });
+        await settle();
+        page.document.getElementById('email-refresh').click();
+        await settle();
+        const called = page.requests.map(r => r.url).filter(u => CPANEL_ONLY_APIS.some(a => u.includes(a)));
+        assert.deepEqual(called, [], url);
+        assert.equal(page.document.getElementById('email-tab-overview').getAttribute('aria-selected'), 'true', url);
+    }
 });

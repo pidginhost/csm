@@ -114,7 +114,7 @@ func (s *Server) apiSettingsSections(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]interface{}{
 		"groups":   SectionGroupOrder,
-		"sections": AllSettingsSections(),
+		"sections": s.settingsSections(),
 	})
 }
 
@@ -142,7 +142,7 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	section, ok := LookupSettingsSection(sectionID)
+	section, ok := s.lookupSettingsSection(sectionID)
 	if !ok {
 		writeJSONError(w, "unknown section", http.StatusNotFound)
 		return
@@ -172,6 +172,15 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSONError(w, "extract: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// A field this host hides is left out of the values too.
+	if full, ok := LookupSettingsSection(sectionID); ok {
+		for _, f := range full.Fields {
+			if lookupSchemaField(section, f.YAMLPath) == nil {
+				delete(values, f.YAMLPath)
+			}
+		}
 	}
 
 	var pendingFields []string
@@ -277,7 +286,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "section required", http.StatusBadRequest)
 		return
 	}
-	section, ok := LookupSettingsSection(sectionID)
+	section, ok := s.lookupSettingsSection(sectionID)
 	if !ok {
 		writeJSONError(w, "unknown section", http.StatusNotFound)
 		return
