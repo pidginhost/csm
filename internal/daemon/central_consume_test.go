@@ -382,6 +382,79 @@ func TestPlanCentralActionRequiresAddressEvidence(t *testing.T) {
 	}
 }
 
+// A trusted proxy carries every visitor behind it. A finding that names it,
+// as a cPanel login scan does behind a proxy, never leads central intel to
+// challenge or block it; another listed address still is.
+func TestPlanCentralActionSkipsATrustedProxy(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
+	previous := config.Active()
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(previous) })
+	d := New(cfg, nil, nil, "")
+	seen := time.Unix(1_700_000_000, 0).UTC()
+	store := centralStoreWith(t, []reporting.ScoredEntry{
+		{IP: "198.51.100.20", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: seen},
+		{IP: "203.0.113.20", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: seen},
+	})
+	notProtected := func(string) bool { return false }
+	for _, action := range []reporting.Action{reporting.ActionChallenge, reporting.ActionBlockIfLocalCorroborated} {
+		for ip, want := range map[string]bool{"198.51.100.20": false, "::ffff:198.51.100.20": false, "203.0.113.20": true} {
+			f := alert.Finding{Check: "webmail_bruteforce", Severity: alert.Critical, SourceIP: ip}
+			if _, ok := d.planCentralAction(store, action, 80, notProtected, f); ok != want {
+				t.Errorf("%s for %s: planned %v, want %v", action, ip, ok, want)
+			}
+		}
+	}
+}
+
+// A reload can trust a proxy after central intel queues its challenge.
+// Execution must recheck the active list while an unrelated queued client
+// still reaches the real challenge list.
+func TestPerformCentralActionRechecksTrustedProxy(t *testing.T) {
+	for _, alias := range []string{"web_server", "challenge"} {
+		for _, ip := range []string{"198.51.100.20", "::ffff:198.51.100.20"} {
+			t.Run(alias+"/"+ip, func(t *testing.T) {
+				cfg := &config.Config{}
+				previous := config.Active()
+				config.SetActive(cfg)
+				t.Cleanup(func() { config.SetActive(previous) })
+				d := New(cfg, nil, nil, "")
+				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+				seen := time.Unix(1_700_000_000, 0).UTC()
+				store := centralStoreWith(t, []reporting.ScoredEntry{
+					{IP: "198.51.100.20", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: seen},
+					{IP: "203.0.113.20", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: seen},
+				})
+				var queued []centralQueuedAction
+				for _, target := range []string{ip, "203.0.113.20"} {
+					f := alert.Finding{Check: "webmail_bruteforce", Severity: alert.Critical, SourceIP: target}
+					a, ok := d.planCentralAction(store, reporting.ActionChallenge, 80, func(string) bool { return false }, f)
+					if !ok || a.decision != reporting.DecisionChallenge || a.ip != target {
+						t.Fatalf("before reload: planned %+v, %v; want a challenge of %s", a, ok, target)
+					}
+					queued = append(queued, a)
+				}
+				reloaded := *cfg
+				if alias == "web_server" {
+					reloaded.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
+				} else {
+					reloaded.Challenge.TrustedProxies = []string{"198.51.100.0/24"}
+				}
+				config.SetActive(&reloaded)
+				for _, a := range queued {
+					if err := d.performCentralAction(a); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if d.ipList.Contains(ip) || !d.ipList.Contains("203.0.113.20") {
+					t.Fatal("queued challenge targeted a newly trusted proxy or lost the unrelated client")
+				}
+			})
+		}
+	}
+}
+
 func TestLogCentralBlockFailureSuppressesProtectedIPError(t *testing.T) {
 	prevWriter := log.Writer()
 	prevFlags := log.Flags()

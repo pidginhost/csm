@@ -441,8 +441,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 
-		// Never block infra IPs
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
+		// Never block infra IPs or a trusted proxy, which carries every
+		// visitor behind it.
+		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" || IsTrustedProxy(ip, cfg) {
 			continue
 		}
 

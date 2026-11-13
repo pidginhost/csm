@@ -157,7 +157,11 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	var outcome firewall.BlockOutcome
 	var err error
 	durableOutcome := false
-	if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
+	if IsTrustedProxy(req.IP, cfg) {
+		// A trusted proxy carries every visitor behind it: refuse it as the
+		// engine refuses infra, queued blocks included.
+		outcome, err = firewall.BlockOutcomeNoop, fmt.Errorf("%w: %s is a trusted proxy", firewall.ErrIPProtected, req.IP)
+	} else if durable, ok := blocker.(durableActionBlocker); ok && durable.DurableActionsEnabled() {
 		durableOutcome = true
 		var admission *firewall.ScanAdmission
 		if req.Source == BlockSourceScan && !req.LoginSpray {

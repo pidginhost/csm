@@ -208,7 +208,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		if isInfraIP(ip, infra) || ip == "127.0.0.1" || (protector != nil && protector.BlockProtected(ip)) {
+		if isInfraIP(ip, infra) || ip == "127.0.0.1" || (protector != nil && protector.BlockProtected(ip)) || IsTrustedProxy(ip, cfg) {
 			continue
 		}
 
@@ -220,7 +220,11 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root)
+		// A trusted proxy's client sends no packets here and the challenge
+		// map matches the connecting address, so its challenge can only
+		// time out: that timeout is no reason to block it.
+		nonEscalating := f.Check == "http_claimed_bot_unverified" || f.Attribution == admission.AttributionTrustedHTTPChain
+		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root, nonEscalating)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -240,8 +244,8 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	return actions
 }
 
-func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence) {
-	if check == "http_claimed_bot_unverified" {
+func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence, nonEscalating bool) {
+	if nonEscalating {
 		challengeIPList.AddNonEscalating(ip, reason, duration)
 		return
 	}

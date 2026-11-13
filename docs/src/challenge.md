@@ -70,7 +70,10 @@ entry only expires. The pending claimed-bot path
 escalation because the reverse-DNS verifier decides the next action. A confirmed
 spoof is hard-blocked by the later `http_ua_spoof` finding after it reaches the
 UA threshold, while a real crawler is removed from the challenge list once
-verification succeeds.
+verification succeeds. A client named only by a trusted proxy's
+X-Forwarded-For header is the other exception: its requests reach this host
+from the proxy, so neither the challenge page nor a firewall block reaches
+it, and its entry expires without escalation.
 
 A timeout block of an address that recently logged in as a customer sends
 the [known-customer block alert](auto-response.md#known-customer-block-alert)

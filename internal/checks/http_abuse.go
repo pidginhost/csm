@@ -254,10 +254,12 @@ func (s *domlogStats) observe(key, ip string, r scanRecord, direct bool) {
 // as a trusted chain otherwise.
 func (s *domlogStats) stamp(f *alert.Finding, key string) {
 	r := s.newest[key][f.SourceIP]
-	if s.forwarded[key][f.SourceIP] {
-		r.kind = admission.AttributionTrustedHTTPChain
-	}
 	r.stamp(f, ProducerDomlogScan)
+	// A forwarded client keeps its kind without a record: the challenge
+	// route reads it.
+	if s.forwarded[key][f.SourceIP] {
+		f.Attribution = admission.AttributionTrustedHTTPChain
+	}
 }
 
 // trustedFor returns cfg's trusted proxies, parsed on the first record.

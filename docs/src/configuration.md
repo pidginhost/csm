@@ -333,6 +333,7 @@ web_server:
   # IPs or CIDRs trusted by periodic access-log scans and the challenge server
   # to append or replace X-Forwarded-For with their observed peer. Other
   # HTTP readers protect these addresses without reading that header.
+  # Automatic responses never challenge or block a listed address.
   # challenge.trusted_proxies entries count too. Addresses of this host
   # are never trusted. CSM skips an empty or unreadable entry and never
   # trusts one covering every address; csm validate warns about both,
