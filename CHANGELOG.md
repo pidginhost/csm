@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Fixed
+
+- On newer kernels CSM no longer reports its firewall rules as modified, or its port locks as missing, when nothing changed.
+
 ## [4.12.0] - 2026-11-13
 
 ### Highlights

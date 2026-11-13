@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -176,6 +177,7 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 }
 
 func nftRulesetStructureHash(out []byte) string {
+	out = []byte(firewall.StableRuleset(string(out)))
 	var stableLines []byte
 	inElements := false
 	elementBraceDepth := 0

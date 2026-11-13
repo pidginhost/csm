@@ -5,6 +5,7 @@ package firewall
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -241,5 +242,33 @@ func TestLockedLocalPortsRejectsUnprovenLiveRules(t *testing.T) {
 	readErr = nil
 	if got := e.LockedLocalPorts(); len(got) != 0 {
 		t.Fatal("missing installation baseline reported protected")
+	}
+}
+
+// Newer kernels make nft print a live element count beside a set's size.
+// It moves with traffic and must not read as a changed ruleset.
+func TestLockedLocalPortsIgnoresSetElementCounts(t *testing.T) {
+	withLockUsers(t, map[string]string{"web": "33"})
+	conn, _ := nftConnCapturingRules(t)
+	size, count := 65535, 28
+	e := &Engine{conn: conn, cfg: &FirewallConfig{LocalPortLocks: []string{"8080:web"}}, statePath: t.TempDir(),
+		listTables: func() ([]*nftables.Table, error) { return nil, nil },
+		readRuleset: func() (string, error) {
+			return fmt.Sprintf("table inet csm {\n\tset meter_syn {\n\t\tsize %d\t# count %d\n\t}\n}\n", size, count), nil
+		},
+	}
+	if err := e.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	count = 34
+	if got := e.LockedLocalPorts(); !reflect.DeepEqual(got, []int{8080}) {
+		t.Fatalf("a moving element count hid the lock: %v", got)
+	}
+	if current, applied, err := e.RulesetSnapshot(); err != nil || current != applied {
+		t.Fatalf("a moving element count reads as drift: %q vs %q (%v)", current, applied, err)
+	}
+	size = 100
+	if got := e.LockedLocalPorts(); len(got) != 0 {
+		t.Fatal("a changed set size still reported the lock")
 	}
 }

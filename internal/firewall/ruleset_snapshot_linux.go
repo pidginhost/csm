@@ -21,7 +21,8 @@ func (e *Engine) RulesetSnapshot() (current, applied string, err error) {
 
 func (e *Engine) readRulesetLocked() (string, error) {
 	if e.readRuleset != nil {
-		return e.readRuleset()
+		out, err := e.readRuleset()
+		return StableRuleset(out), err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -31,5 +32,5 @@ func (e *Engine) readRulesetLocked() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(out), nil
+	return StableRuleset(string(out)), nil
 }
