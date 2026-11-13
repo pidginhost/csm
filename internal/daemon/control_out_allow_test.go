@@ -44,3 +44,25 @@ func TestFmtProtocolAllowRendersProtocolAndPeers(t *testing.T) {
 		t.Errorf("got %v, want no lines", got)
 	}
 }
+
+func TestFmtInAllowRendersPortAndSources(t *testing.T) {
+	got := fmtInAllow([]firewall.InAllowRule{
+		{Port: 3306, Sources: []string{"203.0.113.10", "198.51.100.0/28"}},
+		{Port: 5432, Sources: []string{"2001:db8::11"}},
+	})
+	want := []string{
+		"tcp 3306 from 203.0.113.10, 198.51.100.0/28",
+		"tcp 5432 from 2001:db8::11",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines %v, want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if got := fmtInAllow(nil); len(got) != 0 {
+		t.Errorf("got %v, want no lines", got)
+	}
+}

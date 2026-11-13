@@ -152,6 +152,19 @@ func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
 			portAllowed[len(portAllowed)-1].Source = firewall.InferProvenance("allow_port", entry.Reason)
 		}
 	}
+	// Ports opened from config are exceptions too; state holds only the
+	// ones added with `csm firewall allow-port`.
+	for _, rule := range config.EffectiveFirewallConfig(s.liveCfg()).TCPInAllow {
+		for _, source := range rule.Sources {
+			portAllowed = append(portAllowed, firewallPortAllowView{
+				IP:     source,
+				Port:   rule.Port,
+				Proto:  "tcp",
+				Reason: "Declared in firewall.tcp_in_allow",
+				Source: firewall.SourceConfig,
+			})
+		}
+	}
 	sort.Slice(portAllowed, func(i, j int) bool {
 		if portAllowed[i].IP != portAllowed[j].IP {
 			return portAllowed[i].IP < portAllowed[j].IP

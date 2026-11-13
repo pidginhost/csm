@@ -422,6 +422,12 @@ range (built-in or `reputation.verified_bots`). Precedence:
 
 - **`infra_ips`** - hard protect. Never blocked by anything, auto or
   manual; subnet blocks containing one are refused.
+- **`tcp_in_allow` sources** - firm, one port. The accept for a listed
+  source on its declared port sits right after `infra_ips`, ahead of the
+  blocked address, blocked subnet and country rules. A block of that source,
+  automatic or manual, takes effect on every other port and never on the
+  declared one. To cut a source off, remove it from the entry. See
+  [firewall.tcp_in_allow](configuration.md#firewalltcp_in_allow).
 - **`allowed_ips`, port-specific allows, and verified-bot ranges** - soft
   allow. The auto-block path skips them, but an explicit operator deny
   (`csm firewall deny`, Web UI manual block) still applies, because operator
@@ -446,7 +452,8 @@ checks, and the Web UI returns each warning once:
 
 - The enabled Web UI port is missing from `tcp_in`, or from an explicit
   `tcp6_in` override when IPv6 filtering is enabled. An empty `tcp6_in`
-  inherits `tcp_in`.
+  inherits `tcp_in`. A port opened to listed sources in `tcp_in_allow` does
+  not warn.
 - A `restricted_tcp` entry also appears in an effective public TCP allow list,
   but no `infra_ips` are configured. The restricted list only filters public
   accepts; it does not open ports itself. Matching ports are therefore
@@ -466,7 +473,8 @@ firewall save rather than on every load:
   host that never moved it loses SSH on the first apply. Every `Port` directive
   counts, including ones in `Include`d drop-ins under `/etc/ssh/sshd_config.d/`,
   and a port named in `restricted_tcp` with `infra_ips` set is treated as a
-  deliberate infra-only listener. `AddressFamily` and `ListenAddress` limit
+  deliberate infra-only listener. A port opened to listed sources in
+  `tcp_in_allow` is treated as deliberate too. `AddressFamily` and `ListenAddress` limit
   the check to the IP families sshd exposes, and loopback-only listeners do
   not count because the inbound firewall always accepts loopback traffic.
   Hosts with no sshd config get no warning.

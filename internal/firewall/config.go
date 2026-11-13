@@ -47,6 +47,11 @@ type FirewallConfig struct {
 	// peers only. tcp/udp/icmp have their own keys and are not accepted here.
 	ProtocolAllow []ProtocolAllowRule `yaml:"protocol_allow"`
 
+	// TCPInAllow opens one TCP port to listed sources only. The accepts
+	// precede the blocklists, so a listed source keeps reaching that port
+	// when it is blocked, and stays blockable on every other port.
+	TCPInAllow []InAllowRule `yaml:"tcp_in_allow"`
+
 	// Passive FTP range
 	PassiveFTPStart int `yaml:"passive_ftp_start"`
 	PassiveFTPEnd   int `yaml:"passive_ftp_end"`
@@ -222,6 +227,13 @@ type OutAllowRule struct {
 type ProtocolAllowRule struct {
 	Protocol string   `yaml:"protocol"`
 	Peers    []string `yaml:"peers"`
+}
+
+// InAllowRule accepts inbound TCP on one port from its sources.
+// Each source is an IP or CIDR, parsed as a tcp_out_allow destination.
+type InAllowRule struct {
+	Port    int      `yaml:"port"`
+	Sources []string `yaml:"sources"`
 }
 
 // allowedProtocol is an IP protocol protocol_allow can name, with the

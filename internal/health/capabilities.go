@@ -70,6 +70,7 @@ func Capabilities() []string {
 			"firewall.dos_exempt.v1",        // ranges exempt from connection-rate and flood metering
 			"firewall.protocol_allow.v1",    // peer-scoped portless protocols such as VRRP
 			"firewall.drop_ipv4_options.v1", // drops inbound IPv4 TCP that carries IP options
+			"firewall.tcp_in_allow.v1",      // one TCP port opened to listed sources, ahead of the blocklists
 		)
 	}
 	if maillog.JournalSupported() {

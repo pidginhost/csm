@@ -66,6 +66,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 		PassiveFTPEnd:   fwCfg.PassiveFTPEnd,
 		TCPOutAllow:     fmtOutAllow(fwCfg.TCPOutAllow),
 		ProtocolAllow:   fmtProtocolAllow(fwCfg.ProtocolAllow),
+		TCPInAllow:      fmtInAllow(fwCfg.TCPInAllow),
 		InfraIPCount:    len(fwCfg.InfraIPs),
 		BlockedCount:    len(state.Blocked),
 		BlockedNetCount: len(state.BlockedNet),
@@ -142,7 +143,25 @@ func (c *ControlListener) handleFirewallPorts(_ json.RawMessage) (any, error) {
 		}
 	}
 
+	if allows := fmtInAllow(fwCfg.TCPInAllow); len(allows) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "TCP Inbound (source-scoped, ahead of blocks):")
+		for _, line := range allows {
+			lines = append(lines, "  "+line)
+		}
+	}
+
 	return control.FirewallListResult{Lines: lines}, nil
+}
+
+// fmtInAllow renders tcp_in_allow one entry per line: the port, then the
+// sources that reach it.
+func fmtInAllow(rules []firewall.InAllowRule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, fmt.Sprintf("tcp %d from %s", r.Port, strings.Join(r.Sources, ", ")))
+	}
+	return out
 }
 
 // fmtProtocolAllow renders protocol_allow one entry per line: the protocol,

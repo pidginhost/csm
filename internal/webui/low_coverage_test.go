@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1078,6 +1079,43 @@ func TestAPIFirewallAllowedWithStateData(t *testing.T) {
 	}
 	if len(resp.PortAllowed) != 1 {
 		t.Errorf("port_allowed count = %d, want 1", len(resp.PortAllowed))
+	}
+}
+
+// A port opened from config must show beside the ones opened with
+// `csm firewall allow-port`, or the page understates what is reachable.
+func TestAPIFirewallAllowedListsConfiguredPortSources(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	s.cfg.Firewall.TCPInAllow = []firewall.InAllowRule{{Port: 3306, Sources: []string{"203.0.113.10", "198.51.100.0/28"}}}
+	stateDir := filepath.Join(s.cfg.StatePath, "firewall")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(firewall.FirewallState{
+		PortAllowed: []firewall.PortAllowEntry{{IP: "203.0.113.4", Port: 8080, Proto: "tcp", Reason: "Port allow via CLI"}},
+	})
+	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.apiFirewallAllowed(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		PortAllowed []firewallPortAllowView `json:"port_allowed"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	want := []firewallPortAllowView{
+		{IP: "198.51.100.0/28", Port: 3306, Proto: "tcp", Reason: "Declared in firewall.tcp_in_allow", Source: "config"},
+		{IP: "203.0.113.10", Port: 3306, Proto: "tcp", Reason: "Declared in firewall.tcp_in_allow", Source: "config"},
+		{IP: "203.0.113.4", Port: 8080, Proto: "tcp", Reason: "Port allow via CLI", Source: "cli"},
+	}
+	if !reflect.DeepEqual(resp.PortAllowed, want) {
+		t.Errorf("port_allowed = %+v, want %+v", resp.PortAllowed, want)
 	}
 }
 

@@ -1232,6 +1232,13 @@ func (e *Engine) createInputChain() error {
 		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainIn, Exprs: exprs})
 	}
 
+	// Source-scoped port allows share that position: a listed source keeps
+	// reaching its port when a blocklist or the country block covers it, and
+	// reaches nothing else through this rule.
+	for _, exprs := range inAllowRuleExprs(e.cfg.TCPInAllow, e.cfg.IPv6) {
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainIn, Exprs: exprs})
+	}
+
 	// Rule 4: Cloudflare IP whitelist - accept on TCP 80/443 only.
 	// CF IPs can still be blocked on other ports (unlike infra).
 	e.addCFWhitelistRule(e.setCFWhitelist, false)
@@ -2346,6 +2353,48 @@ func protocolAllowRuleExprs(rules []ProtocolAllowRule, ipv6Enabled bool) (input,
 		}
 	}
 	return input, append(output, groups...)
+}
+
+// inAllowRuleExprs renders firewall.tcp_in_allow: per source, an input accept
+// on that source and the entry's destination port. A port out of range, an
+// unparseable or world-wide source, and an IPv6 source while dual-stack
+// filtering is off render nothing: validation reports the first three, the
+// family bypass already passes IPv6, and a rule wider than the operator
+// asked for must never be the fallback.
+func inAllowRuleExprs(rules []InAllowRule, ipv6Enabled bool) [][]expr.Any {
+	var out [][]expr.Any
+	for _, r := range rules {
+		if r.Port < 1 || r.Port > 65535 {
+			continue
+		}
+		for _, source := range r.Sources {
+			network, err := ParseOutAllowDst(source)
+			if err != nil {
+				continue
+			}
+			if ones, _ := network.Mask.Size(); ones == 0 {
+				continue
+			}
+			exprs, addr, offset, length := ipv4NFProtoGuard(), network.IP.To4(), uint32(12), uint32(4)
+			if addr == nil {
+				if !ipv6Enabled {
+					continue
+				}
+				exprs, addr, offset, length = ipv6NFProtoGuard(), network.IP.To16(), 8, 16
+			}
+			exprs = append(exprs,
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+			)
+			exprs = append(exprs, networkMatchExprs(addr, network.Mask, offset, length)...)
+			out = append(out, append(exprs,
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(r.Port))},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			))
+		}
+	}
+	return out
 }
 
 // validOutAllowRange mirrors the config validator so a rule that slipped past
