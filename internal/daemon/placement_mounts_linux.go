@@ -163,6 +163,17 @@ func pathWithin(path, dir string) bool {
 	return dir == "/" || path == dir || strings.HasPrefix(path, dir+"/")
 }
 
+// placementWithinRoots reports whether an entry placed at path can put a
+// file under a watch root: it is inside one, or is a directory holding one.
+func placementWithinRoots(roots []watchRootMark, path string, isDir bool) bool {
+	for _, r := range roots {
+		if pathWithin(path, r.path) || isDir && pathWithin(r.path, path) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolvePlacementPath joins leaf-first names under the whole-superblock
 // mount of dev. Bind mounts of a subdirectory (a CageFS cage) share dev but
 // show only part of the tree, so they cannot place a superblock-rooted path.

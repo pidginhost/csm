@@ -37,7 +37,9 @@ type placementBPF struct {
 	// mounts is read once at startup. A mount moved later only costs
 	// verification failures, never analysis of a different file.
 	mounts []mountEntry
-	count  atomic.Uint64
+	// roots are the watch roots spelled as the joined paths spell them.
+	roots []watchRootMark
+	count atomic.Uint64
 	// unresolved counts events dropped because their path was truncated or
 	// had no whole-filesystem mount to join under; placementFromRaw also
 	// raises a finding for them.
@@ -65,7 +67,7 @@ func startPlacementBPF(_ context.Context, fm *FileMonitor) (*placementBPF, error
 	if err = bpfprog.LoadPlacementObjects(objs, nil); err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
 	}
-	p := &placementBPF{objs: objs, fm: fm, handle: fm.handlePlacement, mounts: mounts, unresolved: queuehealth.New(0, time.Minute)}
+	p := &placementBPF{objs: objs, fm: fm, handle: fm.handlePlacement, mounts: mounts, roots: roots, unresolved: queuehealth.New(0, time.Minute)}
 	if err = p.attach(); err != nil {
 		p.closeKernel()
 		return nil, err
@@ -162,8 +164,13 @@ func (p *placementBPF) resolve(raw PlacementRawEvent) []placementEvent {
 
 // recoverDropped runs on the reader goroutine for an event the full output
 // queue refused. Resolving a path is a join, cheap enough to do there.
+// Recovery costs a directory rescan or a tree walk per event and its queues
+// are bounded, so it is spent only on the watched trees: the kernel filter
+// is per device and also reports renames far from them.
 func (p *placementBPF) recoverDropped(raw PlacementRawEvent) {
 	for _, ev := range p.resolve(raw) {
-		p.fm.recoverDroppedPlacement(ev)
+		if placementWithinRoots(p.roots, ev.Path, ev.IsDir) {
+			p.fm.recoverDroppedPlacement(ev)
+		}
 	}
 }
