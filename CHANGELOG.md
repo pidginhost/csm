@@ -17,6 +17,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Requests and probes for flagged webshells through encoded slashes now count as callers, even when the server returns not found.
 - A client seen only through a trusted proxy's forwarded address is no longer firewall-blocked when its challenge times out.
 - Automatic responses no longer challenge or block an address listed in web_server.trusted_proxies, such as a proxy in front of cPanel logins.
+- Central intelligence and incident responses no longer act on an outside reputation match alone; a local attack from the same address is now required.
 
 ### Fixed
 
