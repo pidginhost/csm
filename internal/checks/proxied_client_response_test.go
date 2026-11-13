@@ -106,6 +106,40 @@ func TestChallengeRouteNeverEscalatesAChainClient(t *testing.T) {
 	}
 }
 
+func TestChallengeRouteDirectPeerUsesResolvedAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name, ip, source, message string
+	}{
+		{"mapped IPv4", "203.0.113.51", "::ffff:203.0.113.51", ""},
+		{"IPv4 port", "203.0.113.51", "203.0.113.51:443", ""},
+		{"expanded IPv6", "2001:db8::abcd", "2001:0DB8:0:0:0:0:0:ABCD", ""},
+		{"IPv6 port", "2001:db8::abcd", "[2001:db8::abcd]:443", ""},
+		{"message address", "203.0.113.51", "", "User enumeration from 203.0.113.51"},
+	} {
+		for _, directFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/directFirst=%v", tc.name, directFirst), func(t *testing.T) {
+				mock := &mockIPList{ips: make(map[string]bool)}
+				old := challengeIPList
+				SetChallengeIPList(mock)
+				t.Cleanup(func() { SetChallengeIPList(old) })
+				cfg := &config.Config{}
+				cfg.Challenge.Enabled = true
+				findings := []alert.Finding{
+					{Check: "wp_login_bruteforce", SourceIP: tc.ip, ProxiedClient: true},
+					{Check: "wp_user_enumeration", SourceIP: tc.source, Message: tc.message},
+				}
+				if directFirst {
+					slices.Reverse(findings)
+				}
+				actions := ChallengeRouteIPs(cfg, findings)
+				if len(actions) != 1 || len(mock.ips) != 1 || !mock.ips[tc.ip] || mock.nonEscalating[tc.ip] {
+					t.Fatalf("actions=%d, listed=%v, non-escalating=%v; want one escalating challenge for %s", len(actions), mock.ips, mock.nonEscalating, tc.ip)
+				}
+			})
+		}
+	}
+}
+
 // A direct request for any other key in the same scan makes the address a
 // packet source, so a forwarded count for it is no proxied client.
 func TestDomlogDirectRequestOnAnyKeyIsNoProxiedClient(t *testing.T) {

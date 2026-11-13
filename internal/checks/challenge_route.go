@@ -178,8 +178,10 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	// whichever of its findings is listed first.
 	escalates := make(map[string]bool)
 	for _, f := range findings {
-		if f.SourceIP != "" && !f.ProxiedClient && isChallengeableCheck(f.Check) && f.Check != "http_claimed_bot_unverified" {
-			escalates[f.SourceIP] = true
+		if !f.ProxiedClient && isChallengeableCheck(f.Check) && f.Check != "http_claimed_bot_unverified" {
+			if ip := extractIPFromFinding(f); ip != "" {
+				escalates[ip] = true
+			}
 		}
 	}
 
