@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,57 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 )
+
+// Trust changes retire queued blocks even when no block can be attempted.
+func TestAutoBlockRetiresTrustedProxyRetriesBeforeDeferral(t *testing.T) {
+	const proxy, other = "198.51.100.7", "203.0.113.60"
+	for _, mode := range []string{"rate limited", "engine unavailable", "redispatched"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := autoBlockQueueFixture(t, func() error {
+				t.Error("deferred block reached firewall")
+				return nil
+			})
+			cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
+			now := time.Now()
+			setAutoBlockNow(t, now)
+			state := &blockState{HourKey: now.Format("2006-01-02T15")}
+			var findings []alert.Finding
+			for _, ip := range []string{proxy, "::ffff:" + proxy, other} {
+				f := retryFinding(ip)
+				state.Pending = append(state.Pending, pendingIP{
+					IP: ip, Check: f.Check, Severity: f.Severity, Reason: f.Message,
+					FindingID: alert.FindingID(f), QueuedAt: now,
+				})
+				f.AutoIPResponseEvaluated = true
+				findings = append(findings, f)
+			}
+			switch mode {
+			case "rate limited":
+				cfg.AutoResponse.MaxBlocksPerHour = 1
+				state.BlocksThisHour = 1
+				findings = nil
+			case "engine unavailable":
+				SetIPBlocker(nil)
+				findings = nil
+			}
+			if err := writeBlockState(cfg.StatePath, state); err != nil {
+				t.Fatal(err)
+			}
+			stderr := captureStderr(t, func() { AutoBlockIPs(cfg, findings) })
+			pending := loadBlockState(cfg.StatePath).Pending
+			if len(pending) != 1 || pending[0].IP != other || !pending[0].QueuedAt.Equal(now) {
+				t.Fatalf("pending = %+v, want only the unrelated retry with its original age", pending)
+			}
+			if strings.Contains(stderr, proxy) {
+				t.Fatalf("protected retry logged as a failure: %s", stderr)
+			}
+			queued, candidates := retryQueueRows(t, now)
+			if queued.Depth != 1 || queued.DroppedTotal != 0 || candidates.Depth != 0 || candidates.DroppedTotal != 0 {
+				t.Fatalf("protected retries counted as lost: pending=%+v candidates=%+v", queued, candidates)
+			}
+		})
+	}
+}
 
 // A client named only through a trusted proxy's forwarded header sends no
 // packets to this host, and the challenge map matches the connecting
