@@ -52,26 +52,30 @@ func TestCpanelScanKeepsEscapedFieldRecords(t *testing.T) {
 }
 
 // A quoted field is scanned once: an escape never makes the parser search the
-// rest of the field again. Eight times the escapes must cost about eight
-// times as much, not sixty-four. The ratio holds under the race detector and
-// coverage, which slow both runs alike.
+// rest of the field again. One long field must cost about as much as the same
+// bytes in short fields; a rescanned suffix costs many times more. Both runs
+// last about as long, so a busy runner slows them alike.
 func TestPatternQuotedFieldEscapesAreLinear(t *testing.T) {
-	cost := func(escapes int) time.Duration {
+	// Rescanning must dominate even the per-escape atomic coverage overhead.
+	const short, pieces = 2500, 256
+	cost := func(escapes, fields int) time.Duration {
 		field := `"` + strings.Repeat(`\\`, escapes) + `" tail`
 		best := time.Duration(1<<63 - 1)
 		for range 5 {
 			start := time.Now()
-			raw, rest, ok := patternQuotedField(field)
-			elapsed := time.Since(start)
-			if !ok || len(raw) != 2*escapes || rest != " tail" {
-				t.Fatalf("field of %d escapes parsed as %d bytes, rest %q, ok %v", escapes, len(raw), rest, ok)
+			for range fields {
+				raw, rest, ok := patternQuotedField(field)
+				if !ok || len(raw) != 2*escapes || rest != " tail" {
+					t.Fatalf("field of %d escapes parsed as %d bytes, rest %q, ok %v", escapes, len(raw), rest, ok)
+				}
 			}
-			best = min(best, elapsed)
+			best = min(best, time.Since(start))
 		}
 		return best
 	}
-	small, large := cost(20000), cost(160000)
-	if large > 32*small+time.Millisecond {
-		t.Fatalf("8x the escapes cost %v against %v: the scan is not linear", large, small)
+	split, whole := cost(short, pieces), cost(short*pieces, 1)
+	if whole > 8*split+time.Millisecond {
+		t.Fatalf("one field of %d escapes cost %v against %v for the same bytes in %d fields: the scan is not linear",
+			short*pieces, whole, split, pieces)
 	}
 }
