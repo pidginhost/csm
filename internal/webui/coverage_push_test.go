@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
@@ -349,7 +350,8 @@ func TestHandleDashboardRecentCapped(t *testing.T) {
 		t.Errorf("status = %d", w.Code)
 	}
 	want := "10|" + now.Format(time.RFC3339) + "|" + now.Add(-9*time.Minute).Format(time.RFC3339)
-	if got := w.Body.String(); got != want {
+	// The template escapes the plus sign of a zone east of UTC.
+	if got := html.UnescapeString(w.Body.String()); got != want {
 		t.Errorf("dashboard = %q, want %q", got, want)
 	}
 }

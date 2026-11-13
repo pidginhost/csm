@@ -3,6 +3,7 @@ package webui
 import (
 	"bytes"
 	"encoding/json"
+	"html"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
@@ -329,7 +330,8 @@ func TestHandleDashboardShowsLastCritical(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if got, want := w.Body.String(), now.Format(time.RFC3339); got != want {
+	// The template escapes the plus sign of a zone east of UTC.
+	if got, want := html.UnescapeString(w.Body.String()), now.Format(time.RFC3339); got != want {
 		t.Errorf("last critical = %q, want %q", got, want)
 	}
 }

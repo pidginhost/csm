@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,7 +32,11 @@ func TestScanZipListerUsesProcessSpecificSlice(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CSM_TEST_UNIT_ARGS", args)
-	lister, err := scanZipLister("/bin/true")
+	binary, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lister, err := scanZipLister(binary)
 	if err != nil {
 		t.Fatal(err)
 	}
