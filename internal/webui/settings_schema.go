@@ -254,7 +254,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "upcp_window_end", Type: "string", Label: "UPCP window end (HH:MM)"},
 			{YAMLPath: "known_api_tokens", Type: "[]string", Label: "Known API tokens (hashed)", Feature: "cpanel"},
 			{YAMLPath: "ignore_paths", Type: "[]string", Label: "Ignore paths"},
-			{YAMLPath: "suppress_webmail_alerts", Type: "bool", Label: "Suppress webmail login alerts"},
+			{YAMLPath: "suppress_webmail_alerts", Type: "bool", Label: "Suppress webmail login alerts", Feature: "cpanel"},
 			{YAMLPath: "suppress_cpanel_login_alerts", Type: "bool", Label: "Suppress cPanel login alerts", Feature: "cpanel"},
 			{YAMLPath: "trusted_countries", Type: "[]string", Label: "Trusted countries (ISO 3166-1 alpha-2)"},
 		},

@@ -876,13 +876,10 @@ func (s *Server) SetScanJobs(c ScanJobController) {
 // render it through jsonForScript.
 func (s *Server) csmConfig() map[string]interface{} {
 	cfg := s.liveCfg()
-	snap := s.platformSnapshot()
 	return map[string]interface{}{
 		"version": s.version,
 		// What this host supports; pages hide the rest.
-		"features":     snap.features,
-		"panel":        string(snap.panel),
-		"mta":          string(snap.mta),
+		"features":     s.features(),
 		"emailAV":      cfg.EmailAV.Enabled,
 		"firewall":     cfg.Firewall != nil && cfg.Firewall.Enabled,
 		"autoResponse": cfg.AutoResponse.Enabled,

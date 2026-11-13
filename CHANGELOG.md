@@ -22,7 +22,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
-- The Web UI now shows only what the server supports. Without cPanel, the cPanel-only Email Security tabs, cPHulk actions and cPanel settings are hidden, and Email Security appears whenever Exim, Postfix or Stalwart is detected.
+- On servers without cPanel, the Web UI hides cPanel-only Email Security tabs, cPHulk actions and settings, and shows Email Security only when a mail server runs.
 
 ### Fixed
 

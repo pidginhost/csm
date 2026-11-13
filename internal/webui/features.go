@@ -38,8 +38,6 @@ func uiFeatures(info platform.Info, mta platform.MTAKind) map[string]bool {
 // featureSnapshot is one platform detection and the features derived from it.
 type featureSnapshot struct {
 	at       time.Time
-	panel    platform.Panel
-	mta      platform.MTAKind
 	features map[string]bool
 }
 
@@ -82,7 +80,7 @@ func (s *Server) platformSnapshot() featureSnapshot {
 	} else {
 		info, mta = hostPlatform()
 	}
-	snap := featureSnapshot{at: now, panel: info.Panel, mta: mta, features: uiFeatures(info, mta)}
+	snap := featureSnapshot{at: now, features: uiFeatures(info, mta)}
 	s.featureMu.Lock()
 	s.featureCache = snap
 	s.featureRefreshing = false

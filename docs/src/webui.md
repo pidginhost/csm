@@ -130,8 +130,8 @@ Exim, Postfix or Stalwart is detected; a mail server started after CSM shows
 up within five minutes. Its Queue, Held mail, Suspended, Forwarders and
 Provider delays tabs, the antivirus lines of the Protection card, cPHulk
 actions on the Firewall page, the dashboard's Email AV chip, and the Email AV,
-cPanel login and known API token settings need cPanel and are not shown elsewhere. Hidden
-settings keep the values they have in `csm.yaml`.
+cPanel and webmail login, and known API token settings need cPanel and are not
+shown elsewhere. Hidden settings keep the values they have in `csm.yaml`.
 
 On Email Security, failed refreshes mark protection status as unavailable
 and hide stale chart data. An older response cannot overwrite newer health

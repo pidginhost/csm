@@ -132,9 +132,6 @@ func TestCSMConfigCarriesFeatures(t *testing.T) {
 	if !feats["mail"] || feats["cpanel"] {
 		t.Errorf("features = %v, want mail on and cpanel off", feats)
 	}
-	if cfg["panel"] != "plesk" || cfg["mta"] != "postfix" {
-		t.Errorf("panel=%v mta=%v, want plesk and postfix", cfg["panel"], cfg["mta"])
-	}
 }
 
 func TestCoreExposesFeatureHelper(t *testing.T) {

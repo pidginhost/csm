@@ -12,7 +12,7 @@ import (
 )
 
 var cpanelOnlySettingsFields = map[string][]string{
-	"suppressions":  {"known_api_tokens", "suppress_cpanel_login_alerts"},
+	"suppressions":  {"known_api_tokens", "suppress_webmail_alerts", "suppress_cpanel_login_alerts"},
 	"auto_response": {"block_cpanel_logins"},
 }
 
@@ -68,7 +68,7 @@ func TestFilterSettingsSectionDropsGatedSection(t *testing.T) {
 const featureSettingsYAML = `hostname: t.example.com
 suppressions:
   suppress_cpanel_login_alerts: true
-  suppress_webmail_alerts: false
+  suppress_webmail_alerts: true
 auto_response:
   enabled: true
   block_ips: false
@@ -124,14 +124,14 @@ func TestSettingsSaveKeepsHiddenCpanelValues(t *testing.T) {
 	if w := postSettingsChange(t, s, "auto_response", `{"block_ips":true}`); w.Code != http.StatusOK {
 		t.Fatalf("save auto_response = %d: %s", w.Code, w.Body.String())
 	}
-	if w := postSettingsChange(t, s, "suppressions", `{"suppress_webmail_alerts":true}`); w.Code != http.StatusOK {
+	if w := postSettingsChange(t, s, "suppressions", `{"upcp_window_start":"03:00"}`); w.Code != http.StatusOK {
 		t.Fatalf("save suppressions = %d: %s", w.Code, w.Body.String())
 	}
 	disk, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"block_cpanel_logins: true", "suppress_cpanel_login_alerts: true", "block_ips: true", "suppress_webmail_alerts: true"} {
+	for _, want := range []string{"block_cpanel_logins: true", "suppress_cpanel_login_alerts: true", "suppress_webmail_alerts: true", "block_ips: true", "03:00"} {
 		if !strings.Contains(string(disk), want) {
 			t.Errorf("config lost or missed %q:\n%s", want, disk)
 		}
