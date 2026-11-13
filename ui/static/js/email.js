@@ -1169,6 +1169,7 @@
     // ---------- AV status (Protection card) ----------
 
     function loadAVStatus() {
+        if (!CSM.feature('emailAV')) return;
         var seq = ++_avSeq;
         CSM.get('/api/v1/email/av/status', { silent: true })
             .then(function(data) {
@@ -1687,6 +1688,7 @@
     // loadHeldMail reads both stores. countOnly updates the tab count and
     // leaves the list of a hidden tab as drawn; it reads again on opening.
     function loadHeldMail(countOnly) {
+        if (!CSM.feature('mailHeld')) return;
         loadHeldSource('malware', countOnly);
         loadHeldSource('forward', countOnly);
     }
@@ -2101,6 +2103,7 @@
     var _suspendedBusy = Object.create(null);
 
     function loadSuspended() {
+        if (!CSM.feature('mailSuspensions')) return;
         var seq = ++_suspendedSeq;
         CSM.get('/api/v1/email/suspensions', { silent: true })
             .then(function(data) {
@@ -2209,6 +2212,7 @@
     }
 
     function loadForwarders() {
+        if (!CSM.feature('mailForwarders')) return;
         if (forwardersLoaded) return;
         forwardersLoaded = true;
         var seq = ++_forwardersSeq;
@@ -2399,6 +2403,7 @@
     };
 
     function loadQueue() {
+        if (!CSM.feature('mailQueue')) return;
         var seq = ++_queueSeq;
         var params = 'page=' + _queuePage + '&limit=' + QUEUE_PAGE_SIZE +
             '&filter=' + encodeURIComponent(queueFilterEl ? queueFilterEl.value : 'all') +
@@ -3060,6 +3065,7 @@
     // and leaves the tables of a hidden tab as drawn; they read again on
     // opening.
     function loadDeliverability(countOnly) {
+        if (!CSM.feature('mailDeferrals')) return;
         var seq = ++_delaysSeq;
         CSM.get('/api/v1/email/deferrals', { silent: true })
             .then(function(data) {
@@ -3282,6 +3288,7 @@
     // ---------- Queue composition (Queue tab) ----------
 
     function loadQueueComposition() {
+        if (!CSM.feature('mailQueue')) return;
         if (queueCompositionLoaded) return;
         queueCompositionLoaded = true;
         var seq = ++_queueCompositionSeq;
