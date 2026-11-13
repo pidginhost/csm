@@ -56,7 +56,8 @@ func TestCpanelScanKeepsEscapedFieldRecords(t *testing.T) {
 // bytes in short fields; a rescanned suffix costs many times more. Both runs
 // last about as long, so a busy runner slows them alike.
 func TestPatternQuotedFieldEscapesAreLinear(t *testing.T) {
-	const short, pieces = 2500, 64
+	// Rescanning must dominate even the per-escape atomic coverage overhead.
+	const short, pieces = 2500, 256
 	cost := func(escapes, fields int) time.Duration {
 		field := `"` + strings.Repeat(`\\`, escapes) + `" tail`
 		best := time.Duration(1<<63 - 1)
