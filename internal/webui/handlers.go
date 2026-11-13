@@ -175,6 +175,12 @@ func (s *Server) handleFirewall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEmail(w http.ResponseWriter, r *http.Request) {
+	// No mail server here: the sidebar has no Email entry, so an old
+	// bookmark lands on the dashboard.
+	if !s.feature("mail") {
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		return
+	}
 	s.renderTemplate(w, r, "email.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
