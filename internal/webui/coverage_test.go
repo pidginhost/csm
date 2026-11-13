@@ -15,7 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
-	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/session"
 	"github.com/pidginhost/csm/internal/state"
 	sessionstore "github.com/pidginhost/csm/internal/store"
@@ -502,11 +501,6 @@ func newTestServer(t *testing.T, token string) *Server {
 	s, err := New(cfg, store)
 	if err != nil {
 		t.Fatal(err)
-	}
-	// The panel follows platform overrides; the mail server is fixed so no
-	// test depends on what the build host runs. See setTestPlatform.
-	s.detectPlatform = func() (platform.Info, platform.MTAKind) {
-		return platform.Detect(), platform.MTAPostfix
 	}
 
 	db, err := sessionstore.Open(t.TempDir())

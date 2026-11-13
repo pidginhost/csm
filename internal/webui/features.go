@@ -43,6 +43,12 @@ type featureSnapshot struct {
 	features map[string]bool
 }
 
+// hostPlatform detects this host's panel and mail server. The package tests
+// replace it so no test depends on what the build host runs.
+var hostPlatform = func() (platform.Info, platform.MTAKind) {
+	return platform.Detect(), platform.DetectMTA()
+}
+
 type featureState struct {
 	// detectPlatform and featureNow are nil outside tests.
 	detectPlatform func() (platform.Info, platform.MTAKind)
@@ -66,7 +72,7 @@ func (s *Server) platformSnapshot() featureSnapshot {
 	if s.detectPlatform != nil {
 		info, mta = s.detectPlatform()
 	} else {
-		info, mta = platform.Detect(), platform.DetectMTA()
+		info, mta = hostPlatform()
 	}
 	s.featureCache = featureSnapshot{at: now, panel: info.Panel, mta: mta, features: uiFeatures(info, mta)}
 	return s.featureCache
@@ -79,3 +85,44 @@ func (s *Server) features() map[string]bool { return s.platformSnapshot().featur
 // feature reports whether the named feature is available on this host.
 // Unknown names are off.
 func (s *Server) feature(name string) bool { return s.features()[name] }
+
+// filterSettingsSection returns sec as a host with the given features sees
+// it: ok is false when the section itself needs a missing feature, and
+// fields that need one are left out. The schema is not modified.
+func filterSettingsSection(sec SettingsSection, features map[string]bool) (SettingsSection, bool) {
+	if sec.Feature != "" && !features[sec.Feature] {
+		return SettingsSection{}, false
+	}
+	fields := make([]SettingsField, 0, len(sec.Fields))
+	for _, f := range sec.Fields {
+		if f.Feature == "" || features[f.Feature] {
+			fields = append(fields, f)
+		}
+	}
+	sec.Fields = fields
+	return sec, true
+}
+
+// settingsSections lists the settings sections this host shows.
+func (s *Server) settingsSections() []SettingsSection {
+	features := s.features()
+	all := AllSettingsSections()
+	out := make([]SettingsSection, 0, len(all))
+	for _, sec := range all {
+		if f, ok := filterSettingsSection(sec, features); ok {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// lookupSettingsSection returns a section as this host shows it. Reads and
+// saves both go through it, so a hidden field is neither returned nor
+// accepted, and its value on disk stays as it is.
+func (s *Server) lookupSettingsSection(id string) (SettingsSection, bool) {
+	sec, ok := LookupSettingsSection(id)
+	if !ok {
+		return SettingsSection{}, false
+	}
+	return filterSettingsSection(sec, s.features())
+}

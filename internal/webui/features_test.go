@@ -12,6 +12,15 @@ import (
 
 var allUIFeatures = []string{"cpanel", "mail", "mailQueue", "mailHeld", "mailForwarders", "mailDeferrals", "mailSuspensions", "emailAV", "cphulk"}
 
+// Servers in this package's tests see a cPanel host unless a test calls
+// setTestPlatform: every page, tab and setting is present, and no test asks
+// the build host which mail server it runs.
+func init() {
+	hostPlatform = func() (platform.Info, platform.MTAKind) {
+		return platform.Info{Panel: platform.PanelCPanel}, platform.MTAExim
+	}
+}
+
 // setTestPlatform makes s see the given panel and mail server.
 func setTestPlatform(s *Server, panel platform.Panel, mta platform.MTAKind) {
 	s.detectPlatform = func() (platform.Info, platform.MTAKind) {
@@ -102,6 +111,9 @@ func TestServerFeaturesFollowPlatformOverride(t *testing.T) {
 			t.Fatal("platform override rejected before Detect")
 		}
 		s := newTestServer(t, "tok")
+		s.detectPlatform = func() (platform.Info, platform.MTAKind) {
+			return platform.Detect(), platform.MTAUnknown
+		}
 		if got := s.feature("cphulk"); got != c.want {
 			t.Errorf("panel %q: cphulk = %v, want %v", c.panel, got, c.want)
 		}
