@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -632,17 +631,6 @@ func makeAccountBackdoorCheck(account string) CheckFunc {
 		}
 		return findings
 	}
-}
-
-// LookupUID returns the UID for a system account name, or -1 if not found.
-func LookupUID(account string) int {
-	u, err := user.Lookup(account)
-	if err != nil {
-		return -1
-	}
-	uid := 0
-	fmt.Sscanf(u.Uid, "%d", &uid)
-	return uid
 }
 
 // AccountHomePatterns returns the glob for every account home ("<root>/*") on

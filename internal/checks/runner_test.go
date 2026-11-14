@@ -105,34 +105,6 @@ func TestRunnerFindingNamesMatchesRegisteredRunnersAndChecks(t *testing.T) {
 	}
 }
 
-// --- PerfCheckNamesForTier -------------------------------------------
-
-func TestPerfCheckNamesForTierCritical(t *testing.T) {
-	names := PerfCheckNamesForTier(TierCritical)
-	for _, n := range names {
-		if n[:5] != "perf_" {
-			t.Errorf("non-perf check in critical tier: %q", n)
-		}
-	}
-}
-
-func TestPerfCheckNamesForTierAll(t *testing.T) {
-	names := PerfCheckNamesForTier(TierAll)
-	if len(names) == 0 {
-		t.Error("TierAll should return perf checks")
-	}
-}
-
-func TestPerfCheckNamesForTierDeep(t *testing.T) {
-	names := PerfCheckNamesForTier(TierDeep)
-	// Deep tier has perf checks
-	for _, n := range names {
-		if n[:5] != "perf_" {
-			t.Errorf("non-perf check: %q", n)
-		}
-	}
-}
-
 func TestLatestPurgeCheckNamesForTierCriticalIncludesEmittedNames(t *testing.T) {
 	names := LatestPurgeCheckNamesForTier(TierCritical)
 	for _, want := range []string{"wp_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse"} {

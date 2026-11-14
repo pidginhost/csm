@@ -303,11 +303,3 @@ func TestMakeAccountBackdoorCheckIgnoresUnknownNames(t *testing.T) {
 		t.Errorf("non-backdoor name should not emit, got %+v", got)
 	}
 }
-
-// --- LookupUID ---------------------------------------------------------
-
-func TestLookupUIDMissingUserReturnsMinusOne(t *testing.T) {
-	if got := LookupUID("definitely-not-a-real-user-9999"); got != -1 {
-		t.Errorf("expected -1 for missing user, got %d", got)
-	}
-}
