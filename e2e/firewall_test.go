@@ -130,11 +130,11 @@ func TestNFTablesEngineRestart(t *testing.T) {
 		t.Fatalf("Apply: %v", err)
 	}
 	const ip = "192.0.2.50"
-	if err := engine1.BlockIPForce(ip, "restart-test", 0); err != nil {
+	if err = engine1.BlockIPForce(ip, "restart-test", 0); err != nil {
 		t.Fatalf("BlockIPForce: %v", err)
 	}
-	if blocked, err := engine1.IsBlockedLive(ip); err != nil || !blocked {
-		t.Fatalf("live block before restart = %v, %v; want true, nil", blocked, err)
+	if blocked, liveErr := engine1.IsBlockedLive(ip); liveErr != nil || !blocked {
+		t.Fatalf("live block before restart = %v, %v; want true, nil", blocked, liveErr)
 	}
 
 	// A new daemon rebuilds the ruleset from persisted state on startup.
@@ -142,22 +142,22 @@ func TestNFTablesEngineRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine after restart: %v", err)
 	}
-	if err := engine2.Apply(); err != nil {
+	if err = engine2.Apply(); err != nil {
 		t.Fatalf("Apply after restart: %v", err)
 	}
 	if !engine2.IsBlocked(ip) {
 		t.Fatal("persisted block missing after restart")
 	}
-	if blocked, err := engine2.IsBlockedLive(ip); err != nil || !blocked {
-		t.Fatalf("live block after restart = %v, %v; want true, nil", blocked, err)
+	if blocked, liveErr := engine2.IsBlockedLive(ip); liveErr != nil || !blocked {
+		t.Fatalf("live block after restart = %v, %v; want true, nil", blocked, liveErr)
 	}
-	if err := engine2.UnblockIP(ip); err != nil {
+	if err = engine2.UnblockIP(ip); err != nil {
 		t.Fatalf("UnblockIP after restart: %v", err)
 	}
 	if engine2.IsBlocked(ip) {
 		t.Fatal("persisted block survived unblock after restart")
 	}
-	if blocked, err := engine2.IsBlockedLive(ip); err != nil || blocked {
-		t.Fatalf("live block after unblock = %v, %v; want false, nil", blocked, err)
+	if blocked, liveErr := engine2.IsBlockedLive(ip); liveErr != nil || blocked {
+		t.Fatalf("live block after unblock = %v, %v; want false, nil", blocked, liveErr)
 	}
 }
