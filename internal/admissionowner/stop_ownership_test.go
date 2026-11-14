@@ -10,6 +10,8 @@ import (
 
 // A block left to legacy during Stop must not also survive in admission's
 // queue. Work accepted before Stop still belongs to admission after restart.
+// The blocks are answered through their roots' own entry: a restart ends
+// incident blocks an earlier process queued.
 func TestOwnerStopLeavesNoLegacyOwnedArrivals(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -27,7 +29,7 @@ func TestOwnerStopLeavesNoLegacyOwnedArrivals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !checks.AnswerRoot(admission.KindBlockIP, targetOf(first), first, admission.EntryIncident) {
+	if !checks.AnswerRoot(admission.KindBlockIP, targetOf(first), first, 0) {
 		t.Fatal("running owner did not take the first block")
 	}
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -42,7 +44,7 @@ func TestOwnerStopLeavesNoLegacyOwnedArrivals(t *testing.T) {
 	<-entered
 	go func() { o.Stop(); close(stopDone) }()
 	<-o.summaryCtx.Done()
-	if checks.AnswerRoot(admission.KindBlockIP, targetOf(late), late, admission.EntryIncident) {
+	if checks.AnswerRoot(admission.KindBlockIP, targetOf(late), late, 0) {
 		t.Error("stopping owner took a new block from legacy")
 	}
 	if got := o.ingress.Len(); got != 1 {

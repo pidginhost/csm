@@ -235,6 +235,21 @@ func (o *Owner) refuseDisabled() error {
 	return nil
 }
 
+// endEarlierIncidents ends, as disabled, the incident and spray blocks an
+// earlier process queued. The correlator reads its selectors when the
+// process starts, so that work may no longer be selected; the incident's
+// next block still applies. Only an owner that executes blocks ends it.
+func (o *Owner) endEarlierIncidents() error {
+	if liveExecution && o.executable() && o.policyErr == nil {
+		if err := o.ledger.RefuseDisabled(func(c admission.Candidate, _ func() []admission.Evidence) bool {
+			return c.Entry != admission.EntryIncident && c.Entry != admission.EntryIncidentSpray
+		}); err != nil {
+			return fmt.Errorf("ending incident blocks queued before start: %w", err)
+		}
+	}
+	return nil
+}
+
 // heldCause is why automatic execution is held, or nil.
 func (o *Owner) heldCause() error {
 	if o.policyErr != nil {
