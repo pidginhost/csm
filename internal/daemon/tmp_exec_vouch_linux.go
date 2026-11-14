@@ -22,7 +22,7 @@ func tmpExecEvidence(event fileEvent, uid uint32) ancestryEvidence {
 	}
 	if event.tmpCaptured {
 		var st unix.Stat_t
-		if event.tmpStat == nil || unix.Fstat(event.fd, &st) != nil || !sameTmpSnapshot(*event.tmpStat, st) {
+		if event.tmpStat == nil || unix.Fstat(event.fd, &st) != nil || !sameTmpFile(*event.tmpStat, st) {
 			return ancestryEvidence{}
 		}
 	}
@@ -62,11 +62,13 @@ const (
 	tmpOccupantScanGap = 5 * time.Second
 )
 
-// sameTmpSnapshot binds captured ancestry to the unchanged file. Ctime also
-// catches an ownership change away from root and back while the event waited.
-func sameTmpSnapshot(a, b unix.Stat_t) bool {
-	return a.Dev == b.Dev && a.Ino == b.Ino && a.Uid == b.Uid && a.Gid == b.Gid &&
-		a.Mode == b.Mode && a.Size == b.Size && a.Ctim == b.Ctim && a.Mtim == b.Mtim
+// sameTmpFile reports whether two stats name the same file under the same
+// owner. Size, mode and times are left out on purpose: a build goes on
+// writing, re-moding and hard-linking a file after the close that raised the
+// event, and each of those moves its ctime. Only root can change the owner of a
+// root-owned file, so an owner changed away and back is not what this guards.
+func sameTmpFile(a, b unix.Stat_t) bool {
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.Uid == b.Uid && a.Gid == b.Gid
 }
 
 // tmpVouches pins each vouched inode until expiry or eviction, so removing a
@@ -136,7 +138,7 @@ func tmpVouchDirectory(event fileEvent) *os.File {
 		if i == len(parts)-1 {
 			var original unix.Stat_t
 			if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o022 != 0 ||
-				unix.Fstat(event.fd, &original) != nil || !sameTmpSnapshot(st, original) {
+				unix.Fstat(event.fd, &original) != nil || !sameTmpFile(st, original) {
 				return nil
 			}
 			result := workFD

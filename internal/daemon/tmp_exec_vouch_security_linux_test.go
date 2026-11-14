@@ -94,27 +94,79 @@ func TestTmpVouchRejectsUnsafePlacement(t *testing.T) {
 	}
 }
 
+// A file that was not root-owned when its write was seen is never walked, even
+// if root owns it by the time it is analyzed.
 func TestTmpVouchAdmissionOwnerChanges(t *testing.T) {
-	for _, initialRoot := range []bool{false, true} {
-		t.Run(map[bool]string{false: "becomes root", true: "changes back to root"}[initialRoot], func(t *testing.T) {
-			stubTmpExecWriters(t)
-			path := filepath.Join(tmpWorkDirForTest(t), "tool")
-			makeTmpExec(t, path)
-			if !initialRoot {
-				chownForTest(t, path)
+	stubTmpExecWriters(t)
+	path := filepath.Join(tmpWorkDirForTest(t), "tool")
+	makeTmpExec(t, path)
+	chownForTest(t, path)
+	event := fileEvent{path: path, fd: openRawFd(t, path), pid: tmpProvenPID}
+	captureTmpExecAncestry(&event)
+	if err := os.Chown(path, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(event)
+	got := drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("changed ownership: %+v, want Critical", got)
+	}
+}
+
+// A build keeps working on a file after the close that raised the event: the
+// copy that fills a file created empty, the linker's chmod, a hard link that
+// replaces a duplicate. The proof read at admission still belongs to that file,
+// and a file still being written can still vouch for its work directory.
+func TestTmpExecProofSurvivesBuildRewrites(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		rewrite func(t *testing.T, path string)
+	}{
+		{"content appended", func(t *testing.T, path string) {
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
 			}
+			if _, err := f.WriteString("echo more\n"); err != nil {
+				t.Fatal(err)
+			}
+			_ = f.Close()
+		}},
+		{"mode changed", func(t *testing.T, path string) { chmodForTest(t, path, 0o700) }},
+		{"hard link added", func(t *testing.T, path string) {
+			if err := os.Link(path, path+".link"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stubTmpExecWriters(t)
+			work := tmpWorkDirForTest(t)
+			path := filepath.Join(work, "tool")
+			makeTmpExec(t, path)
 			event := fileEvent{path: path, fd: openRawFd(t, path), pid: tmpProvenPID}
 			captureTmpExecAncestry(&event)
-			chownForTest(t, path)
-			if err := os.Chown(path, 0, 0); err != nil {
-				t.Fatal(err)
+			tt.rewrite(t, path)
+			tmpExecAncestry = func(int32) ancestryEvidence {
+				t.Error("walked the writer again after admission")
+				return ancestryEvidence{vanished: true}
 			}
 			ch := make(chan alert.Finding, 8)
 			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			t.Cleanup(fm.tmpVouches.close)
 			fm.analyzeFile(event)
-			got := drainFindings(ch)
-			if len(got) != 1 || got[0].Severity != alert.Critical {
-				t.Fatalf("changed ownership: %+v, want Critical", got)
+			if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+				t.Fatalf("proven writer of a file the build rewrote: %+v, want one Warning", got)
+			}
+			gone := ancestryEvidence{vanished: true}
+			sibling := filepath.Join(work, "sibling")
+			makeTmpExec(t, sibling)
+			endAlertCooldown(fm)
+			fm.analyzeFile(fileEvent{path: sibling, fd: openRawFd(t, sibling), pid: tmpGonePID, tmpAncestry: &gone})
+			if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+				t.Fatalf("exited writer beside it: %+v, want the grouped Warning", got)
 			}
 		})
 	}
