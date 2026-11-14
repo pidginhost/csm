@@ -80,8 +80,10 @@ func (db *DB) uncountMailLocked(rec *IPRecord) {
 	}
 	db.mailOnlyCount--
 	if rec.Mail.AuthAttacks > 0 {
-		i, _ := slices.BinarySearchFunc(db.mailAuthTimes, rec.Mail.LastAuthAttack, time.Time.Compare)
-		db.mailAuthTimes = slices.Delete(db.mailAuthTimes, i, i+1)
+		// On a miss the index is left as it is until the next recount.
+		if i, found := slices.BinarySearchFunc(db.mailAuthTimes, rec.Mail.LastAuthAttack, time.Time.Compare); found {
+			db.mailAuthTimes = slices.Delete(db.mailAuthTimes, i, i+1)
+		}
 	}
 }
 

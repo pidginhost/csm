@@ -257,3 +257,43 @@ func TestProtectedAuthDoesNotForcePassPerVerdict(t *testing.T) {
 		t.Fatalf("%d evicted, %d records, want 0 and 189", db.mailEvicted, len(db.records))
 	}
 }
+
+// A panic here would leave the database locked: these paths unlock without defer.
+func TestLoginIndexMissKeepsLockAndCount(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(*DB, string)
+	}{
+		{"finding", func(db *DB, ip string) {
+			db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: ip, Timestamp: mailNow, Message: "x"})
+		}},
+		{"block", (*DB).MarkBlocked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const missed, indexed = "192.0.2.1", "192.0.2.2"
+			stored := make(map[string]*IPRecord)
+			for _, ip := range []string{missed, indexed} {
+				rec := storedSpam(ip, 1, 0, mailNow)
+				rec.Mail.AuthAttacks, rec.Mail.LastAuthAttack = 1, mailNow.Add(-time.Hour)
+				stored[ip] = rec
+			}
+			db := NewForTest(stored)
+			// Later than every indexed time, so the search ends past the index.
+			db.records[missed].Mail.LastAuthAttack = mailNow
+
+			tc.act(db, missed)
+
+			if !db.mu.TryLock() {
+				t.Fatal("database still locked")
+			}
+			defer db.mu.Unlock()
+			if rec := db.records[missed]; rec.EventCount == 0 && !rec.AutoBlocked {
+				t.Fatalf("record unchanged: %+v", rec)
+			}
+			// Past the login window the other record is the one mail-only record.
+			if truth := mailOnlyAt(db, mailNow.Add(mailAuthWindow+time.Hour)); truth != 1 || db.mailOnlyCount < truth {
+				t.Fatalf("count %d with %d mail-only records, want at least 1 of 1", db.mailOnlyCount, truth)
+			}
+		})
+	}
+}
