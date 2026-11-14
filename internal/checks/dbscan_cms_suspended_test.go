@@ -23,22 +23,59 @@ func TestCMSInstallLoopCapsInstallsForEveryAdapter(t *testing.T) {
 			continue // own discovery loops
 		}
 		t.Run(a.name, func(t *testing.T) {
-			withCMSConfigOS(t, &twoOwnerCMSOS{files: a.files})
+			base := &twoOwnerCMSOS{files: a.files}
+			withCMSConfigOS(t, &mockOS{
+				glob: func(pattern string) ([]string, error) {
+					var paths []string
+					for path := range a.files {
+						matched, err := filepath.Match(pattern, path)
+						if err != nil {
+							return nil, err
+						}
+						if matched {
+							paths = append(paths, path)
+						}
+					}
+					return paths, nil
+				},
+				readFile: base.ReadFile,
+				stat: func(path string) (os.FileInfo, error) {
+					info, err := base.Stat(path)
+					if err != nil {
+						return nil, err
+					}
+					return &fakeFileInfoMtime{name: path, size: info.Size()}, nil
+				},
+				lstat: base.Lstat,
+			})
 			withMockCmd(t, &mockCmd{runWithEnv: func(_ string, args []string, _ ...string) ([]byte, error) {
 				return maliciousRowsFor(a.name, strings.Join(args, " "), 0), nil
 			}})
-			ctx, coverage := withIncompleteCheckCollector(context.Background())
-			cfg := &config.Config{}
-			cfg.Thresholds.AccountScanMaxFiles = 1
-			owners := map[string]bool{}
-			for _, f := range a.run(ctx, cfg, nil) {
-				owners[f.TenantID] = true
-			}
-			// The fixture's glob also offers nested configs that are not
-			// installs, so the one capped slot can go to a path with no findings.
-			if len(owners) > 1 || !coverage.contains("db_content_"+a.name) {
-				t.Fatalf("capped scan reached owners %v with incomplete=%t, want at most one install and a coverage gap",
-					owners, coverage.contains("db_content_"+a.name))
+			for _, limit := range []int{1, 2} {
+				ctx, coverage := withIncompleteCheckCollector(context.Background())
+				cfg := &config.Config{}
+				cfg.Thresholds.AccountScanMaxFiles = limit
+				byOwner := map[string]map[string]int{}
+				for _, f := range a.run(ctx, cfg, nil) {
+					if byOwner[f.TenantID] == nil {
+						byOwner[f.TenantID] = map[string]int{}
+					}
+					byOwner[f.TenantID][f.Check]++
+				}
+				want := map[string]int{}
+				for _, check := range a.want {
+					want[check] = 1
+				}
+				if a.name == "opencart" {
+					want["opencart_content_injection"] = 2
+				}
+				if len(byOwner) != limit || !maps.Equal(byOwner["alice"], want) ||
+					(limit == 2 && !maps.Equal(byOwner["bob"], want)) {
+					t.Errorf("limit %d: findings by owner = %v, want %d installs with %v", limit, byOwner, limit, want)
+				}
+				if got := coverage.contains("db_content_" + a.name); got != (limit == 1) {
+					t.Errorf("limit %d: incomplete = %t, want %t", limit, got, limit == 1)
+				}
 			}
 		})
 	}

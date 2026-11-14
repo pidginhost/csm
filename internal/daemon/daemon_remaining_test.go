@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -81,17 +85,26 @@ func TestDoGeoIPUpdate_EmptyCredentials(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// doSignatureUpdate — exercises with invalid URL (fails gracefully)
+// doSignatureUpdate handles a failed download without reloading rules.
 // ---------------------------------------------------------------------------
 
-func TestDoSignatureUpdate_InvalidURL(t *testing.T) {
+func TestDoSignatureUpdate_DownloadFailure(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = t.TempDir()
-	cfg.Signatures.UpdateURL = "http://localhost:1/nonexistent"
+	cfg.Signatures.UpdateURL = "https://updates.example.com/rules.yaml"
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Signatures.SigningKey = hex.EncodeToString(publicKey)
 	d := New(cfg, nil, nil, "")
+	requests := failUpdateRequests(t, http.MethodGet)
 	// The download fails: no rule file lands and no reload follows, so the
 	// daemon raises nothing.
 	d.doSignatureUpdate()
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("download attempts = %d, want 1", got)
+	}
 	if entries, err := os.ReadDir(cfg.Signatures.RulesDir); err != nil || len(entries) != 0 {
 		t.Fatalf("rules dir after a failed update = %v, %v; want empty", entries, err)
 	}

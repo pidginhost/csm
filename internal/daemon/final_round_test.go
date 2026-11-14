@@ -1,39 +1,73 @@
 package daemon
 
 import (
+	"crypto/rand"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/store"
 )
 
 // ---------------------------------------------------------------------------
 // doGeoIPUpdate — exercises the credentials-present path.
-// With nonsensical URL/credentials geoip.Update returns an "error" status
-// per edition. The function handles that branch without publishing.
+// A failed download must leave the loaded database in place.
 // ---------------------------------------------------------------------------
 
-func TestDoGeoIPUpdate_WithCredentialsInvalidPath(t *testing.T) {
+func TestDoGeoIPUpdate_DownloadFailure(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.GeoIP.AccountID = "test-account"
-	cfg.GeoIP.LicenseKey = "test-key"
+	cfg.GeoIP.LicenseKey = rand.Text()
 	cfg.GeoIP.Editions = []string{"GeoLite2-City"}
 	d := New(cfg, nil, nil, "")
 	prev := getGeoIPDB()
-	// These credentials are refused, or the network is absent: either way
-	// the edition fails, no database lands and the loaded one stays.
+	loaded := &geoip.DB{}
+	setGeoIPDB(loaded)
+	t.Cleanup(func() { setGeoIPDB(prev) })
+	requests := failUpdateRequests(t, http.MethodHead)
 	d.doGeoIPUpdate()
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("download attempts = %d, want 1", got)
+	}
 	if matches, _ := filepath.Glob(filepath.Join(cfg.StatePath, "geoip", "*.mmdb")); len(matches) != 0 {
 		t.Fatalf("failed update left databases on disk: %v", matches)
 	}
-	if getGeoIPDB() != prev {
+	if getGeoIPDB() != loaded {
 		t.Fatal("failed update replaced the GeoIP database")
 	}
+}
+
+type updateFailureTransport struct {
+	t        *testing.T
+	method   string
+	requests atomic.Int32
+}
+
+func (tr *updateFailureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	tr.requests.Add(1)
+	if req.Method != tr.method {
+		tr.t.Errorf("update request method = %s, want %s", req.Method, tr.method)
+	}
+	return nil, errors.New("download unavailable")
+}
+
+// Both updaters use the default transport. Intercept it so the tests cannot
+// contact a public feed or depend on a service listening on the test host.
+func failUpdateRequests(t *testing.T, method string) *atomic.Int32 {
+	t.Helper()
+	tr := &updateFailureTransport{t: t, method: method}
+	previous := http.DefaultTransport
+	http.DefaultTransport = tr
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	return &tr.requests
 }
 
 // ---------------------------------------------------------------------------
