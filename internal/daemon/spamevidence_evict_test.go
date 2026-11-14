@@ -122,6 +122,37 @@ func TestMailEvictionWarningAccumulatesSuppressedDrops(t *testing.T) {
 	}
 }
 
+// A flood that stops leaves drops no later verdict reports: the periodic
+// check hands them to the same warning.
+func TestPendingEvictionRaisesWarning(t *testing.T) {
+	d := newTestDaemon(t)
+	adb := useTestAttackDB(t)
+	adb.SetMailBudget(10)
+	at := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	later := at.Add(24 * time.Hour)
+	for n := 1; n <= 11; n++ {
+		d.recordMailVerdict(adb, fmt.Sprintf("2001:db8:7:%x::1", n), true, at)
+	}
+	checkEvictionWarning(t, evictionWarning(t, d), "2001:db8:7::/48", at)
+	d.warnSpamEvidenceEvicted(adb.PendingEviction(later), later)
+	if got := drainAlerts(d.alertCh); len(got) != 0 {
+		t.Fatalf("warning with nothing pending: %+v", got)
+	}
+
+	for n := 12; n <= 13; n++ {
+		d.recordMailVerdict(adb, fmt.Sprintf("2001:db8:7:%x::1", n), true, at.Add(time.Hour))
+	}
+	if got := drainAlerts(d.alertCh); len(got) != 0 {
+		t.Fatalf("warning before a day elapsed: %+v", got)
+	}
+	d.warnSpamEvidenceEvicted(adb.PendingEviction(later), later)
+	checkEvictionWarning(t, evictionWarning(t, d), "2001:db8:7::/48", later)
+	d.warnSpamEvidenceEvicted(adb.PendingEviction(later), later)
+	if got := drainAlerts(d.alertCh); len(got) != 0 {
+		t.Fatalf("pending drops warned twice: %+v", got)
+	}
+}
+
 func TestMailEvictionWarningLogsWhenQueueFull(t *testing.T) {
 	d := newTestDaemon(t)
 	d.alertCh = make(chan alert.Finding, 1)

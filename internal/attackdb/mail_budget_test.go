@@ -468,6 +468,94 @@ func TestEvictionReportOncePerDay(t *testing.T) {
 	}
 }
 
+// Budget 10, as above. A flood that stops must not leave its last drops
+// unreported.
+func TestPendingEvictionReportedAfterADay(t *testing.T) {
+	db := NewForTest(nil)
+	db.SetMailBudget(10)
+	if ev := db.PendingEviction(mailNow); ev != nil {
+		t.Fatalf("report before any drop: %+v", ev)
+	}
+	for n := range 10 {
+		db.RecordMailVerdict(thinIP(n), true, mailNow)
+	}
+	if ev := db.RecordMailVerdict(thinIP(10), true, mailNow); ev == nil || ev.Dropped != 2 {
+		t.Fatalf("first pass reported %+v, want 2 dropped", ev)
+	}
+	if ev := db.PendingEviction(mailNow.Add(day)); ev != nil {
+		t.Fatalf("report with nothing pending: %+v", ev)
+	}
+
+	// Two more passes inside the day. The last one has network figures of its
+	// own: two records in one /48.
+	for n, ip := range []string{thinIP(11), thinIP(12), "2001:db8:7:1::1", "2001:db8:7:2::1"} {
+		if ev := db.RecordMailVerdict(ip, true, mailNow.Add(time.Duration(n+1)*time.Minute)); ev != nil {
+			t.Fatalf("verdict %d inside the day reported %+v", n, ev)
+		}
+	}
+	if got := db.computeStats().MailEvicted; got != 6 {
+		t.Fatalf("MailEvicted = %d, want 6 after three passes", got)
+	}
+	for _, age := range []time.Duration{time.Hour, day - time.Nanosecond} {
+		if ev := db.PendingEviction(mailNow.Add(age)); ev != nil {
+			t.Fatalf("pending report %v after the last one: %+v", age, ev)
+		}
+	}
+
+	ev := db.PendingEviction(mailNow.Add(day))
+	if want := (Eviction{Dropped: 4, Network: "2001:db8:7::/48", NetworkRecords: 2}); ev == nil || *ev != want {
+		t.Fatalf("pending report a day after the last one = %+v, want %+v", ev, want)
+	}
+	for _, age := range []time.Duration{day, 3 * day} {
+		if ev := db.PendingEviction(mailNow.Add(age)); ev != nil {
+			t.Fatalf("drops reported twice, %v after the first report: %+v", age, ev)
+		}
+	}
+	if got := db.computeStats().MailEvicted; got != 6 {
+		t.Errorf("MailEvicted = %d, want 6: a report drops nothing", got)
+	}
+}
+
+// Both kinds of report share one clock, or the same day would get two.
+func TestPendingEvictionRestartsReportWindow(t *testing.T) {
+	db := NewForTest(nil)
+	db.SetMailBudget(10)
+	next := 0
+	// Every second new record is over the budget and starts a pass.
+	pass := func(at time.Time) *Eviction {
+		t.Helper()
+		for range 2 {
+			next++
+			if ev := db.RecordMailVerdict(thinIP(next), true, at); ev != nil {
+				return ev
+			}
+		}
+		return nil
+	}
+	for range 9 {
+		next++
+		db.RecordMailVerdict(thinIP(next), true, mailNow)
+	}
+	if ev := pass(mailNow); ev == nil || ev.Dropped != 2 {
+		t.Fatalf("first pass reported %+v, want 2 dropped", ev)
+	}
+	if ev := pass(mailNow.Add(time.Hour)); ev != nil {
+		t.Fatalf("pass inside the day reported %+v", ev)
+	}
+	reported := mailNow.Add(day + 6*time.Hour)
+	if ev := db.PendingEviction(reported); ev == nil || ev.Dropped != 2 {
+		t.Fatalf("pending report = %+v, want 2 dropped", ev)
+	}
+
+	// More than a day after the first report, less than a day after the second.
+	if ev := pass(reported.Add(day - time.Nanosecond)); ev != nil {
+		t.Fatalf("pass inside a day of the pending report reported %+v", ev)
+	}
+	if ev := pass(reported.Add(day)); ev == nil || ev.Dropped != 4 {
+		t.Fatalf("pass a day after the pending report reported %+v, want 4 dropped", ev)
+	}
+}
+
 func TestEvictedRecordsAreDeletedFromStore(t *testing.T) {
 	for _, backend := range []string{"json", "bbolt"} {
 		t.Run(backend, func(t *testing.T) {

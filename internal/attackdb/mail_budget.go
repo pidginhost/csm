@@ -17,7 +17,7 @@ const mailReportEvery = 24 * time.Hour
 // Eviction reports spam-evidence records dropped to keep the budget.
 type Eviction struct {
 	Dropped        int    // records dropped since the last report
-	Network        string // covering network with the most such records when the pass began
+	Network        string // covering network with the most such records when the last pass began
 	NetworkRecords int    // how many it held
 }
 
@@ -114,8 +114,8 @@ func mailLevel(m *MailEvidence) float64 {
 // records fill less than nine tenths of the budget; above that, one pass
 // trims the weakest of them once.
 //
-// It returns a report at most once in mailReportEvery. The caller holds
-// db.mu.
+// It returns a report at most once in mailReportEvery; PendingEviction
+// hands out what a pass could not report. The caller holds db.mu.
 func (db *DB) evictMailLocked(at time.Time) *Eviction {
 	defer db.recountMailOnlyLocked()
 	type candidate struct {
@@ -164,23 +164,38 @@ func (db *DB) evictMailLocked(at time.Time) *Eviction {
 	}
 	db.mailEvicted += dropped
 	db.mailEvictPending += dropped
-	if !db.mailEvictReport.IsZero() && at.Sub(db.mailEvictReport) < mailReportEvery {
-		return nil
-	}
-	// Prefix text is needed only for a report. Append into stack buffers to
+	// Every pass keeps its figures: a later report may be the one to carry
+	// them. Ties go to the smaller prefix text, compared in stack buffers to
 	// keep a wide sender spread from allocating one string per network.
-	var report Eviction
 	var best, scratch [64]byte
 	bestLen := 0
+	db.mailEvictCrowd = 0
 	for network, n := range crowds {
 		text := network.AppendTo(scratch[:0])
-		if n > report.NetworkRecords || n == report.NetworkRecords && bytes.Compare(text, best[:bestLen]) < 0 {
+		if n > db.mailEvictCrowd || n == db.mailEvictCrowd && bytes.Compare(text, best[:bestLen]) < 0 {
 			bestLen = copy(best[:], text)
-			report.NetworkRecords = n
+			db.mailEvictNetwork, db.mailEvictCrowd = network, n
 		}
 	}
-	report.Network = string(best[:bestLen])
-	report.Dropped = db.mailEvictPending
+	return db.pendingEvictionLocked(at)
+}
+
+// PendingEviction reports the drops no verdict has reported yet, once
+// mailReportEvery has passed since the last report. Without it a flood that
+// stops would leave its last drops unreported.
+func (db *DB) PendingEviction(now time.Time) *Eviction {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.pendingEvictionLocked(now)
+}
+
+// pendingEvictionLocked issues every report, so drops are reported once and
+// all reports share one clock. The caller holds db.mu.
+func (db *DB) pendingEvictionLocked(at time.Time) *Eviction {
+	if db.mailEvictPending == 0 || !db.mailEvictReport.IsZero() && at.Sub(db.mailEvictReport) < mailReportEvery {
+		return nil
+	}
+	report := &Eviction{Dropped: db.mailEvictPending, Network: db.mailEvictNetwork.String(), NetworkRecords: db.mailEvictCrowd}
 	db.mailEvictPending, db.mailEvictReport = 0, at
-	return &report
+	return report
 }

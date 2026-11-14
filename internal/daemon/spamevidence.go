@@ -57,7 +57,12 @@ func (d *Daemon) recordSpamEvidence(s antispam.Scan, at time.Time, cfg *config.C
 // database drop spam evidence. The database hands each report out once, so
 // every verdict is recorded through here.
 func (d *Daemon) recordMailVerdict(adb *attackdb.DB, ip string, spam bool, at time.Time) {
-	ev := adb.RecordMailVerdict(ip, spam, at)
+	d.warnSpamEvidenceEvicted(adb.RecordMailVerdict(ip, spam, at), at)
+}
+
+// warnSpamEvidenceEvicted raises the warning for one report of the attack
+// database; nil is no report.
+func (d *Daemon) warnSpamEvidenceEvicted(ev *attackdb.Eviction, at time.Time) {
 	if ev == nil {
 		return
 	}

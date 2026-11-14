@@ -444,8 +444,10 @@ once per day of recorded verdict time while drops continue. It also
 queues the warning for alerts; a full queue can refuse it. The warning
 gives the number of records dropped, names the most crowded network and
 says how many records that network held. The count in a later warning
-includes everything dropped since the previous one. If drops stop before
-another warning is due, no final warning is sent. The [API threat
+includes everything dropped since the previous one. Drops made after a
+warning are reported by the next warning. It comes with a later drop or
+with a deep scan, once a day has passed since the previous warning. A
+restart forgets drops not yet reported. The [API threat
 statistics](api.md) include the total dropped since the daemon started.
 
 Look at the named network and its count. The count is how many records

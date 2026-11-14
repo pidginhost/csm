@@ -2131,6 +2131,9 @@ func (d *Daemon) deepScanner() {
 			// Prune expired attack DB records (90-day retention)
 			if adb := attackdb.Global(); adb != nil {
 				adb.PruneExpired()
+				// A flood that stopped left drops no later verdict will report.
+				now := time.Now()
+				d.warnSpamEvidenceEvicted(adb.PendingEviction(now), now)
 				fmt.Fprintf(os.Stderr, "[%s] Attack DB after daily prune (%s)\n", ts(), adb.FormatTopLine())
 			}
 

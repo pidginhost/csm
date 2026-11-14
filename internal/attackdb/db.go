@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"net/netip"
 	"os"
 	"sort"
 	"strings"
@@ -206,8 +207,10 @@ type DB struct {
 	mailAuthTimes    []time.Time
 	mailOnlyCount    int
 	mailEvicted      int
-	mailEvictPending int       // evicted since the last report
-	mailEvictReport  time.Time // when an eviction was last reported
+	mailEvictPending int          // evicted since the last report
+	mailEvictReport  time.Time    // when an eviction was last reported
+	mailEvictNetwork netip.Prefix // most crowded covering network when the last evicting pass began
+	mailEvictCrowd   int          // mail-only records it held
 }
 
 // markDirtyLocked records that ip's record changed and must be persisted on the
