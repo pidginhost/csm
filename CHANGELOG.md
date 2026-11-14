@@ -11,7 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Crafted mail addresses and greetings no longer mislabel Postfix rejects or hide authenticated sends in Email Security.
 - Command-and-control connection alerts now name the local socket, user and process, and automatic response forecasts include connections this server opens.
 - Central intelligence, incident blocking and subnet or permanent block escalation no longer treat a listed command-and-control server as an attacker; only the C2 check blocks it, when auto_response.block_ips is on.
 - Automatic response forecasts now also refuse web findings when an Apache log file is named through a variable CSM cannot resolve.
@@ -32,7 +31,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Postfix rejects now retain quoted sender and recipient addresses and recognize client blocklist refusals.
 - On newer kernels CSM no longer reports its firewall rules as modified, or its port locks as missing, when nothing changed.
 - After a burst of renames, realtime protection rechecks only watched locations, so unrelated system directories no longer slow the recheck of sites.
 - On nginx servers CSM now refreshes its challenge snippet after an upgrade instead of leaving it stale with a configtest warning.

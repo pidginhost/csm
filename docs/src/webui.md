@@ -136,10 +136,9 @@ shown elsewhere. Hidden settings keep the values they have in `csm.yaml`.
 Rejects and Sending accounts read the Exim main log, or the Postfix mail log
 on a host without Exim. On Postfix a send is mail accepted from a client that
 logged in, counted under that login; mail relayed for a trusted host without
-a login is not counted. Postfix reject classes describe the server's reason,
-including client blocklist refusals. Ambiguous replies appear as Other. Quoted envelope
-addresses are preserved; ambiguous envelope fields are left empty. These
-statistics do not drive blocking. Both tabs stay empty on a Stalwart host.
+a login is not counted. A Postfix reject whose reason cannot be told apart
+from text the client sent is listed under Other. Both tabs stay empty on a
+Stalwart host.
 
 On Email Security, failed refreshes mark protection status as unavailable
 and hide stale chart data. An older response cannot overwrite newer health

@@ -28,7 +28,10 @@ func ParsePostfixReject(line string, loc *time.Location, fallback time.Time) (Re
 		if !ok || !isQueueID(id) {
 			return Reject{}, false
 		}
-		r.MsgID, rest = id, after
+		// Before a queue file exists Postfix logs NOQUEUE in its place.
+		if rest = after; id != "NOQUEUE" {
+			r.MsgID = id
+		}
 	}
 	command, rest, ok := strings.Cut(rest, " from ")
 	if !ok || strings.Trim(command, "ABCDEFGHIJKLMNOPQRSTUVWXYZ-") != "" || command == "" {

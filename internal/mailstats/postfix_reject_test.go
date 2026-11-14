@@ -198,3 +198,13 @@ func TestPostfixRejectBeforeMailIgnoresHELO(t *testing.T) {
 		}
 	}
 }
+
+// A milter can refuse before Postfix opens a queue file. NOQUEUE is then a
+// placeholder, not a message to join a scan or a quarantine to.
+func TestPostfixMilterRejectBeforeQueueHasNoMessageID(t *testing.T) {
+	line := pfSMTPD + "NOQUEUE: milter-reject: RCPT from unknown[192.0.2.10]: 5.7.1 Spam message rejected" + pfTail
+	r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+	if !ok || r.Class != ClassSpam || r.MsgID != "" {
+		t.Fatalf("got %+v, parsed %v; want a spam reject with no message id", r, ok)
+	}
+}
