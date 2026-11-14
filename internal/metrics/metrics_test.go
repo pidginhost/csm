@@ -131,6 +131,55 @@ func TestCounterVecArityMismatchPanics(t *testing.T) {
 	cv.With("only-one")
 }
 
+// Every vector kind rejects a With call whose value count differs from its
+// label keys, and a constructor given no label keys.
+func TestVecsPanicOnLabelMismatch(t *testing.T) {
+	for name, fn := range map[string]func(){
+		"gauge arity":       func() { NewGaugeVec("x", "", []string{"a", "b"}).With("only-one") },
+		"histogram arity":   func() { NewHistogramVec("x", "", []string{"a", "b"}, []float64{1}).With("only-one") },
+		"counter no keys":   func() { NewCounterVec("x", "", nil) },
+		"gauge no keys":     func() { NewGaugeVec("x", "", nil) },
+		"histogram no keys": func() { NewHistogramVec("x", "", nil, []float64{1}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected a panic")
+				}
+			}()
+			fn()
+		})
+	}
+}
+
+// Children are scraped in label order, whatever order they were created in.
+func TestVecsScrapeChildrenInLabelOrder(t *testing.T) {
+	r := NewRegistry()
+	cv := NewCounterVec("c_total", "", []string{"k"})
+	gv := NewGaugeVec("g", "", []string{"k"})
+	hv := NewHistogramVec("h", "", []string{"k"}, []float64{1})
+	for _, v := range []string{"b", "a"} {
+		cv.With(v).Inc()
+		gv.With(v).Set(1)
+		hv.With(v).Observe(0.5)
+	}
+	r.MustRegister("c_total", cv)
+	r.MustRegister("g", gv)
+	r.MustRegister("h", hv)
+
+	var buf bytes.Buffer
+	if err := r.WriteOpenMetrics(&buf); err != nil {
+		t.Fatalf("WriteOpenMetrics: %v", err)
+	}
+	out := buf.String()
+	for _, sample := range []string{`c_total{k="`, `g{k="`, `h_count{k="`} {
+		a, b := strings.Index(out, sample+`a"`), strings.Index(out, sample+`b"`)
+		if a < 0 || b < 0 || a > b {
+			t.Errorf("%s: a at %d, b at %d, want both present with a first:\n%s", sample, a, b, out)
+		}
+	}
+}
+
 func TestHistogramVecScrapeShape(t *testing.T) {
 	hv := NewHistogramVec("dur", "", []string{"check", "tier"}, []float64{0.1, 1, 10})
 	hv.With("scan_ssh", "critical").Observe(0.05)
