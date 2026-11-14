@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/spamscore"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -632,16 +633,30 @@ func (db *DB) ForgetIP(ip net.IP) []*IPRecord {
 	return removed
 }
 
-// PruneExpired removes records older than 90 days.
+// mailMassFloor is the decayed mass below which mail evidence counts as gone.
+const mailMassFloor = 0.01
+
+// PruneExpired removes records older than 90 days, and records kept only for
+// spam evidence once that evidence has decayed away.
 func (db *DB) PruneExpired() {
 	db.pruneExpired()
 }
 
 func (db *DB) pruneExpired() {
-	cutoff := time.Now().Add(-90 * 24 * time.Hour)
+	db.pruneExpiredAt(time.Now())
+}
+
+func (db *DB) pruneExpiredAt(now time.Time) {
+	cutoff := now.Add(-90 * 24 * time.Hour)
 	db.mu.Lock()
 	for ip, rec := range db.records {
-		if rec.LastSeen.Before(cutoff) {
+		expired := rec.LastSeen.Before(cutoff)
+		if !expired && mailOnly(rec, now) {
+			f := spamscore.Recency(now.Sub(rec.Mail.MassAt))
+			// Ham holds the record too: it keeps later spam from listing the sender.
+			expired = rec.Mail.SpamMass*f < mailMassFloor && rec.Mail.HamMass*f < mailMassFloor
+		}
+		if expired {
 			delete(db.records, ip)
 			db.markDeletedLocked(ip)
 		}

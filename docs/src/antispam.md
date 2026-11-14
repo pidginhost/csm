@@ -378,6 +378,14 @@ spam verdicts and no ham reach 50, which lists the sender as `CSM_IP_SPAM`.
 Spam evidence never blocks an address, never changes its threat score and is
 never reported to AbuseIPDB.
 
+CSM forgets a record that holds only spam evidence once its spam and ham
+verdicts have both lost nearly all their weight: about 47 days after a single
+spam message, later for a sender with more verdicts. Ham on the record keeps
+it, so the next spam from a mostly clean sender does not list it. A record
+that also has attack findings, a block or a mail login attack in the last 30
+days is kept, and every record leaves 90 days after its last activity. CSM
+checks daily and at start.
+
 An IPv6 sender is recorded and listed per /64 network, for example
 `2001:db8:1:2::/64`, so a sender that rotates addresses builds one score.
 IPv4 senders, including IPv4-mapped IPv6 addresses, stay per address.

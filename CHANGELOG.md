@@ -34,6 +34,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - On servers without cPanel, the Web UI hides cPanel-only Email Security tabs, cPHulk actions and settings, and shows Email Security only when a mail server runs.
 - Spam evidence about IPv6 senders is now recorded and listed per /64 network, so a sender rotating addresses builds one score. Evidence recorded per IPv6 address before the upgrade stays until it expires.
+- CSM now forgets an address known only for spam once its evidence has faded, about six weeks after a single message, instead of keeping it 90 days.
 
 ### Fixed
 
