@@ -3,6 +3,8 @@ package daemon
 import (
 	"fmt"
 	"net/netip"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,9 +55,14 @@ func TestSpamEvidenceEvictionRaisesWarning(t *testing.T) {
 	d.recordSpamEvidence(scanOf(spamLine(sender(11))), at, cfg)
 	checkEvictionWarning(t, evictionWarning(t, d), "2001:db8:5::/48", at)
 
-	d.recordSpamEvidence(scanOf(spamLine(sender(12))), at, cfg)
+	for n := 12; n <= 13; n++ {
+		d.recordSpamEvidence(scanOf(spamLine(sender(n))), at, cfg)
+	}
+	if got := len(adb.AllRecords()); got != 9 {
+		t.Fatalf("records = %d, want 9 after two eviction passes", got)
+	}
 	if got := drainAlerts(d.alertCh); len(got) != 0 {
-		t.Fatalf("findings after the twelfth sender: %+v", got)
+		t.Fatalf("findings after the second eviction pass: %+v", got)
 	}
 }
 
@@ -76,8 +83,68 @@ func TestStalwartVerdictEvictionRaisesWarning(t *testing.T) {
 	d.recordStalwartVerdict(sender(11), true, at, cfg)
 	checkEvictionWarning(t, evictionWarning(t, d), "2001:db8:6::/48", at)
 
-	d.recordStalwartVerdict(sender(12), true, at, cfg)
+	for n := 12; n <= 13; n++ {
+		d.recordStalwartVerdict(sender(n), true, at, cfg)
+	}
+	if got := len(adb.AllRecords()); got != 9 {
+		t.Fatalf("records = %d, want 9 after two eviction passes", got)
+	}
 	if got := drainAlerts(d.alertCh); len(got) != 0 {
-		t.Fatalf("findings after the twelfth sender: %+v", got)
+		t.Fatalf("findings after the second eviction pass: %+v", got)
+	}
+}
+
+func TestMailEvictionWarningAccumulatesSuppressedDrops(t *testing.T) {
+	d := newTestDaemon(t)
+	adb := useTestAttackDB(t)
+	adb.SetMailBudget(10)
+	at := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	for n := 1; n <= 11; n++ {
+		d.recordMailVerdict(adb, fmt.Sprintf("2001:db8:7:%x::1", n), true, at)
+	}
+	checkEvictionWarning(t, evictionWarning(t, d), "2001:db8:7::/48", at)
+	for n := 12; n <= 13; n++ {
+		d.recordMailVerdict(adb, fmt.Sprintf("2001:db8:7:%x::1", n), true, at.Add(23*time.Hour))
+	}
+	if got := drainAlerts(d.alertCh); len(got) != 0 {
+		t.Fatalf("warning before a day elapsed: %+v", got)
+	}
+	for n := 14; n <= 15; n++ {
+		d.recordMailVerdict(adb, fmt.Sprintf("2001:db8:7:%x::1", n), true, at.Add(24*time.Hour))
+	}
+	f := evictionWarning(t, d)
+	want := "Spam evidence budget reached: dropped 4 records, weakest evidence first; the most crowded network, 2001:db8:7::/48, held 11"
+	if f.Message != want || !f.Timestamp.Equal(at.Add(24*time.Hour)) {
+		t.Fatalf("next warning = %q at %v, want %q after one day", f.Message, f.Timestamp, want)
+	}
+	if got := len(adb.AllRecords()); got != 9 {
+		t.Fatalf("records = %d, want 9 after three eviction passes", got)
+	}
+}
+
+func TestMailEvictionWarningLogsWhenQueueFull(t *testing.T) {
+	d := newTestDaemon(t)
+	d.alertCh = make(chan alert.Finding, 1)
+	d.alertCh <- alert.Finding{Check: "test_alert"}
+	adb := useTestAttackDB(t)
+	adb.SetMailBudget(10)
+	at := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	logged := captureAppliedBlockStderr(t, func() {
+		for n := 1; n <= 11; n++ {
+			d.recordMailVerdict(adb, fmt.Sprintf("2001:db8:5:%x::1", n), true, at)
+		}
+	})
+	want := "spam_evidence_evicted: Spam evidence budget reached: dropped 2 records, weakest evidence first; the most crowded network, 2001:db8:5::/48, held 11\n"
+	if !strings.HasSuffix(logged, want) || strings.Count(logged, "\n") != 1 {
+		t.Fatalf("stderr = %q, want one eviction warning ending in %q", logged, want)
+	}
+	if got := atomic.LoadInt64(&d.droppedAlerts); got != 1 {
+		t.Fatalf("dropped alerts = %d, want 1", got)
+	}
+	if got := drainAlerts(d.alertCh); len(got) != 1 || got[0].Check != "test_alert" {
+		t.Fatalf("queue = %+v, want the original finding only", got)
+	}
+	if got := len(adb.AllRecords()); got != 9 {
+		t.Fatalf("records = %d, want 9 despite the full queue", got)
 	}
 }

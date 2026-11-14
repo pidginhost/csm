@@ -411,48 +411,51 @@ verdicts.
 
 ### Spam evidence budget
 
-CSM keeps a limited number of records that hold only spam evidence: the
-budget. A record that also has attack findings, a block or a mail login
-attack in the last 30 days does not count toward the budget and is never
-dropped for it.
+The spam evidence budget is currently disabled. When enabled, it limits
+the number of records that hold only spam evidence. A record that also
+has attack findings, a block or a mail login attack in the last 30 days
+does not count toward the budget and is never dropped for it.
 
-When a new sender takes the count past the budget, CSM drops records until
-nine tenths of the budget remain. Each record has a level: the weight its
-verdicts still have, rounded up to whole messages, and at least 2 once it
-has two or more verdicts. Records of the lowest level go first. Inside a
-level, records in the network that holds the most spam-only records go
-first, counted per IPv6 /48 and per IPv4 /16, then the record with the least
-weight.
+When a verdict is recorded and the count is over the budget, CSM drops
+records until nine tenths of the budget remain, rounded down. Each record
+has a level: the weight its verdicts still have, rounded up to whole
+messages, and at least 2 once it has two or more verdicts. Records of the
+lowest level go first. Inside a level, records in the network that holds
+the most spam-only records go first, counted per IPv6 /48 and per IPv4
+/16 at the start of the pass. When those counts tie, the record with the
+least weight goes first.
 
-A flood of single messages from one network, one /48 or /16, loses its own
-records first once that network holds more spam-only records than any other.
-A flood spread over many networks competes with the other records of the
-same level: the most faded go first, whoever sent them. A flood of single
-messages cannot remove a sender with two or more verdicts, a listed sender
-or a sender's ham history while records with two or more verdicts fill less
-than nine tenths of the budget; above that, one pass trims the weakest of
-them once. To displace evidence of a level, a sender must deliver as many
-messages as that level from each of its own addresses or /64 networks, which
-is evidence about itself. Senders that share a crowded /16 or /48 with a
-flood can lose records of the same level with it.
+A flood of single messages from one network, one /48 or /16, loses its
+own records first once that network holds more spam-only records than any
+other. A flood spread over many networks competes with the other records
+of the same level: the most crowded networks go first, then the records
+with the least remaining weight when network counts tie, whoever sent
+them. A flood of single messages cannot remove a sender with two or more
+verdicts, a listed sender or a sender's ham history while records with
+two or more verdicts fill less than nine tenths of the budget; above
+that, one pass trims the weakest of them once. Higher levels are reached
+only after every lower-level record has been dropped; they can still be
+dropped when they alone exceed the trim target. Senders that share a
+crowded /16 or /48 with a flood can lose records of the same level with
+it.
 
-CSM raises a `spam_evidence_evicted` warning at the first drop, then at most
-once a day while drops continue, and writes it to the daemon log as well.
-The warning gives the number of records dropped, names the most crowded
-network and says how many records that network held. The count in a later
-warning includes everything dropped since the previous one. A flood that
-ends within a day is reported by its first warning only; the total since the
-daemon started is `mail_evicted` in `/api/v1/threat/stats`.
+CSM writes a warning to the daemon log at the first drop, then at most
+once per day of recorded verdict time while drops continue. It also
+queues the warning for alerts; a full queue can refuse it. The warning
+gives the number of records dropped, names the most crowded network and
+says how many records that network held. The count in a later warning
+includes everything dropped since the previous one. If drops stop before
+another warning is due, no final warning is sent. The [API threat
+statistics](api.md) include the total dropped since the daemon started.
 
 Look at the named network and its count. The count is how many records
-holding only spam evidence the network had when the drop began, not how many
-of the dropped records were its own. A large count points at that network as
-the likely source; if it is hostile, block it in the
-[firewall](firewall.md). A small count means the senders are spread over
-many networks and no single one stands out. Records with attack findings, a
-block or a mail login attack in the last 30 days are never dropped. Records
-with two or more verdicts are dropped only once such records fill nine
-tenths of the budget.
+holding only spam evidence the network had when the drop began, not how
+many of the dropped records were its own. The count alone does not show
+whether the network sent the flood. Inspect its senders; if the network
+is hostile, block it in the [firewall](firewall.md). Records with attack
+findings, a block or a mail login attack in the last 30 days are never
+dropped by this budget. Records with two or more verdicts are dropped
+only once such records fill nine tenths of the budget.
 
 ### Scores
 
