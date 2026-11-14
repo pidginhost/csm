@@ -36,6 +36,9 @@ type setupFakeAPI struct {
 	writeErr  error
 	reloadErr error
 	writes    []string
+	probe     stalwartapi.SpamProbeResult
+	probeErr  error
+	probes    []stalwartapi.SpamProbe
 }
 
 func (f *setupFakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, error) {
@@ -71,6 +74,10 @@ func (f *setupFakeAPI) SpamSettings(context.Context) (stalwartapi.SpamSettings, 
 }
 func (f *setupFakeAPI) SpamFilterStageOff(context.Context) (bool, error) {
 	return f.stageOff, errors.Join(f.readErr, f.stageErr)
+}
+func (f *setupFakeAPI) ClassifySpam(_ context.Context, p stalwartapi.SpamProbe) (stalwartapi.SpamProbeResult, error) {
+	f.probes = append(f.probes, p)
+	return f.probe, f.probeErr
 }
 func (f *setupFakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	f.writes = append(f.writes, "reload")
