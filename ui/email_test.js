@@ -4427,7 +4427,9 @@ test('a Stalwart host shows what its filter did with the mail', async () => {
     assert.match(kpi(page, 'kpi-spam').sub, /2 discarded/);
     const subtitle = page.document.getElementById('email-subtitle').textContent;
     assert.match(subtitle, /41 filed to Junk and 3 rejected in the last 24 hours/);
-    assert.doesNotMatch(page.document.getElementById('email-kpis').textContent + subtitle, /scanned|clean|Antispam is off/i);
+    const chartLabel = page.document.getElementById('email-decisions-chart').getAttribute('aria-label');
+    assert.match(chartLabel, /delivered, filed to Junk, rejected, discarded/);
+    assert.doesNotMatch(page.document.getElementById('email-kpis').textContent + subtitle + chartLabel, /scanned|clean|Antispam is off/i);
     // CSM's antispam mode says nothing about Stalwart's filter: no badge, not even an empty dot.
     assert.equal(page.document.querySelector('#kpi-spam [data-kpi-badge]'), null, 'a mode badge on a Stalwart host');
 });
@@ -4474,6 +4476,12 @@ test('verdicts lost under a flood are named', async () => {
     page.respond('/api/v1/email/overview', 200, stalwartOverview({ delivered: 30, unmatched: 7 }));
     await settle();
     assert.match(kpi(page, 'kpi-scanned').sub, /7 not matched/);
+
+    // Mail whose verdict was lost still arrived.
+    const lost = emailPage({ features: STALWART });
+    lost.respond('/api/v1/email/overview', 200, stalwartOverview({ unmatched: 7 }));
+    await settle();
+    assert.doesNotMatch(lost.document.getElementById('email-subtitle').textContent, /No inbound mail/);
 });
 
 test('a Stalwart host charts delivered, Junk, rejected and discarded', async () => {

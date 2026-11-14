@@ -357,7 +357,7 @@
         var t = ov.totals || {};
         var words = rangeWords(range);
         if (stalwart) {
-            if (!t.delivered && !t.junk && !t.filter_rejected && !t.discarded) parts.push('No inbound mail ' + words + '.');
+            if (!t.delivered && !t.junk && !t.filter_rejected && !t.discarded && !t.unmatched) parts.push('No inbound mail ' + words + '.');
             else parts.push('Mail flowing. ' + num(t.junk) + ' filed to Junk and ' + (ov.filter_rejects_seen ? num(t.filter_rejected) : 'none logged') + ' rejected ' + words + '.');
         } else if (!t.scanned) {
             parts.push('No mail scanned ' + words + '.');

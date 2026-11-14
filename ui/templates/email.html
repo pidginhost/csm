@@ -164,7 +164,7 @@
                         </div>
                         <div class="card-body d-flex flex-column">
                             <div class="csm-chart-md flex-grow-1">
-                                <canvas id="email-decisions-chart" role="img" aria-label="Chart of mail decisions over the selected range: clean, tagged, spam rejected, malware and other rejects"></canvas>
+                                <canvas id="email-decisions-chart" role="img" aria-label="Chart of mail decisions over the selected range: {{if feature "stalwartFilter"}}delivered, filed to Junk, rejected, discarded, malware and other rejects{{else}}clean, tagged, spam rejected, malware and other rejects{{end}}"></canvas>
                             </div>
                             <div class="text-muted small mt-2" id="email-chart-note"></div>
                         </div>
