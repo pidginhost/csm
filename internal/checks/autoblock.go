@@ -454,9 +454,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		// Admission is asked for the block the policy selects; the tracker,
-		// the kernel and the hourly budget below are the legacy path's.
-		if !challengeSelected(cfg, f) {
-			respond(admission.KindBlockIP, f, ip, 0)
+		// the kernel and the hourly budget below are the legacy path's, and
+		// a block admission takes leaves them alone. Mail spray keeps its
+		// legacy block, whose lifetime and budget admission does not model,
+		// so an executing admission is not handed it.
+		if !challengeSelected(cfg, f) && (f.BlockTTL == 0 || !admissionExecutesBlocks()) {
+			if _, taken := respond(admission.KindBlockIP, f, ip, 0); taken {
+				continue
+			}
 		}
 
 		// Don't re-block already blocked IPs.

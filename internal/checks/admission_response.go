@@ -86,6 +86,13 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 	return e, taken(executes, kind, nil, a.Respond(kind, target, e, via))
 }
 
+// admissionExecutesBlocks reports whether the wired admission applies the
+// block picks it takes.
+func admissionExecutesBlocks() bool {
+	a := getResponseAdmission()
+	return a != nil && a.ExecutesBlocks()
+}
+
 // taken reports whether legacy must leave a response of kind to admission:
 // admission applies block picks and accepted this one, or refused it as a
 // client behind a trusted proxy or a CDN edge, which no block contains.
