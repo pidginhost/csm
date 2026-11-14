@@ -153,8 +153,9 @@ status or the selected outbound abuse range.
 Headline counts refresh every 30 seconds. Queue messages and composition,
 held mail, rejects, sending accounts, provider delays and Findings refresh
 every minute while their tab is open. Hidden tabs do not poll their lists;
-the Held mail, Sending accounts and Provider delays counts and the rspamd
-state in the header refresh every minute on any tab.
+the Held mail, Sending accounts and Provider delays counts refresh every
+minute on any tab. On hosts without Stalwart's filter, the rspamd state in
+the header also refreshes every minute on any tab.
 Unchanged results keep their rows; changed results retain paging, sorting,
 selection, open details and focus for items still present. Pending message,
 bulk and firewall actions stay disabled across refreshes. Queue actions wait

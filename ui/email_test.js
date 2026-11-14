@@ -4570,6 +4570,25 @@ test('a Stalwart host leaves out the rspamd card and the Antispam line', async (
     await settle();
     assert.match(doc.getElementById('prot-smtp').textContent, /Protection status unavailable/);
 
+    // Polling and returning to Overview must also work without rspamd.
+    for (const name of ['rejects', 'sending', 'findings', 'overview']) {
+        page.window.bootstrap.Tab.getOrCreateInstance(doc.getElementById('email-tab-' + name)).show();
+        intervals.forEach(i => i.fn());
+        await settle();
+        assert.equal(new URL(page.window.location.href).searchParams.get('tab'), name === 'overview' ? null : name);
+    }
+    while (page.pending('/api/v1/email/overview').length) {
+        page.respond('/api/v1/email/overview', 200,
+            stalwartOverview({ delivered: 15, junk: 4 }, { mode: 'off', smtp_restricted: false }));
+    }
+    await settle();
+    assert.equal(kpi(page, 'kpi-scanned').value, '15');
+    assert.equal(kpi(page, 'kpi-tagged').value, '4');
+    assert.equal(doc.querySelector('#prot-smtp [data-prot-value]').textContent, 'open');
+    assert.equal(doc.querySelector('#prot-smtp .csm-load-error'), null);
+    assert.equal(doc.querySelector('#email-kpis .csm-load-error'), null);
+    assert.equal(page.requests.filter(r => r.url.includes('/api/v1/email/rspamd')).length, 0, 'asked for rspamd after switching tabs');
+
     // The chart takes the row the rspamd card no longer shares.
     const column = d => d.getElementById('email-decisions-chart').closest('.row > div');
     assert.ok(column(doc).classList.contains('col-12'));
