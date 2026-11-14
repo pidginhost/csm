@@ -267,11 +267,13 @@ type FirewallAckResult struct {
 // apart and which decides whether the alert will stop.
 // If legacy spellings created multiple records for the same address, Events
 // is their total event count and Score is the highest removed record's score.
+// Network is the /64 whose spam evidence went with an IPv6 address.
 type ThreatForgetResult struct {
 	IP      string `json:"ip"`
 	Found   bool   `json:"found"`
 	Score   int    `json:"score"`
 	Events  int    `json:"events"`
+	Network string `json:"network,omitempty"`
 	Message string `json:"message"`
 }
 

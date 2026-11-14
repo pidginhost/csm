@@ -225,6 +225,33 @@ func TestHandleThreatForgetUnknownIPReportsNothingCleared(t *testing.T) {
 	}
 }
 
+// Forgetting an IPv6 address also removes the spam evidence of its /64. A
+// reply that only says "score 0, 0 attack events" hides what was removed.
+func TestHandleThreatForgetNamesRemovedNetwork(t *testing.T) {
+	for _, tc := range []struct{ sender, forget, network, message string }{
+		{"2001:db8:1:2::5", "2001:db8:1:2::9", "2001:db8:1:2::/64",
+			"Cleared local threat record for 2001:db8:1:2::9 (was score 0/100, 0 attack events) and the spam evidence of 2001:db8:1:2::/64; block, allow and whitelist entries are unchanged"},
+		{"198.51.100.23", "198.51.100.23", "",
+			"Cleared local threat record for 198.51.100.23 (was score 0/100, 0 attack events); block, allow and whitelist entries are unchanged"},
+	} {
+		t.Run(tc.forget, func(t *testing.T) {
+			db := useTestAttackDB(t)
+			db.RecordMailVerdict(tc.sender, true, time.Now())
+			raw, err := newListenerForTest(t).handleThreatForget([]byte(`{"ip":"` + tc.forget + `"}`))
+			if err != nil {
+				t.Fatalf("handleThreatForget: %v", err)
+			}
+			res := raw.(control.ThreatForgetResult)
+			if !res.Found || res.Network != tc.network || res.Message != tc.message {
+				t.Fatalf("reply = %+v, want network %q and message %q", res, tc.network, tc.message)
+			}
+			if got := len(db.AllRecords()); got != 0 {
+				t.Fatalf("%d records left after forget", got)
+			}
+		})
+	}
+}
+
 // The address is the whole request. A malformed one must fail loudly rather
 // than silently clear nothing, which would read as success.
 func TestHandleThreatForgetRejectsInvalidIP(t *testing.T) {

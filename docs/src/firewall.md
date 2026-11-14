@@ -141,9 +141,11 @@ address, including equivalent IPv6 spellings; CIDRs and extra arguments are
 rejected. There is no dry-run option.
 
 The command clears equivalent stored spellings together and reports their
-highest score and total event count. Blocks, allow lists, whitelists and raw
-event history remain intact. New findings immediately
-start a fresh scoring record, even if they arrive while the command runs.
+highest score and total event count. Forgetting an IPv6 address also forgets
+the spam evidence of its /64 network, and the reply names that network.
+Blocks, allow lists, whitelists and raw event history remain intact. New
+findings immediately start a fresh scoring record, even if they arrive while
+the command runs.
 This does not suppress findings about the host's own address.
 
 Persistence is attempted immediately but remains best effort: a success reply

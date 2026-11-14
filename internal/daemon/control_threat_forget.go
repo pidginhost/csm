@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/control"
@@ -43,6 +44,10 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 		res.Found = true
 		res.Score = max(res.Score, attackdb.ComputeScore(rec))
 		res.Events += rec.EventCount
+		// Only a network record is stored under a CIDR.
+		if strings.Contains(rec.IP, "/") {
+			res.Network = rec.IP
+		}
 	}
 
 	if !res.Found {
@@ -56,8 +61,10 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 	// legitimately have created a fresh record by then.
 	_ = adb.Flush()
 
-	res.Message = fmt.Sprintf(
-		"Cleared local threat record for %s (was score %d/100, %d attack events); block, allow and whitelist entries are unchanged",
-		args.IP, res.Score, res.Events)
+	res.Message = fmt.Sprintf("Cleared local threat record for %s (was score %d/100, %d attack events)", args.IP, res.Score, res.Events)
+	if res.Network != "" {
+		res.Message += " and the spam evidence of " + res.Network
+	}
+	res.Message += "; block, allow and whitelist entries are unchanged"
 	return res, nil
 }
