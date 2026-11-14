@@ -267,8 +267,9 @@ func TestAdmissionLedgerDisabledHandsEachCandidateItsRoots(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if len(seen) == 0 {
-			t.Fatal("the refusal pass consulted no candidate")
+		wantSeen := map[admission.CandidateID]int{firstID: 1, secondID: 1}
+		if !reflect.DeepEqual(seen, wantSeen) {
+			t.Fatalf("policy calls = %v, want %v", seen, wantSeen)
 		}
 	}
 	before, notices := f.db.WriteTxID(), f.notices()
@@ -299,11 +300,16 @@ func TestAdmissionLedgerDisabledUnreadableRootIsNotARefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []admission.Evidence
+	calls := 0
 	if err := f.l.RefuseDisabled(func(_ admission.Candidate, roots func() []admission.Evidence) bool {
+		calls++
 		got = roots()
 		return true
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("policy calls = %d, want 1", calls)
 	}
 	if got != nil {
 		t.Fatalf("damaged roots handed as %v, want nil", got)
