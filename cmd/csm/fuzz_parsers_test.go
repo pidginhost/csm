@@ -45,3 +45,23 @@ func FuzzStalwartSocketAddress(f *testing.F) {
 		}
 	})
 }
+
+func FuzzStalwartDiagnosticText(f *testing.F) {
+	for _, seed := range []string{"DNSWL_BLOCKED", "\x1b[2J\r\n\x00\u202e", strings.Repeat("x", 8192), "\xff", ""} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, text string) {
+		got := stalwartDiagnosticText(text, 96)
+		if len(got) > 96 {
+			t.Fatalf("output has %d bytes", len(got))
+		}
+		for _, r := range got {
+			if r < 32 || r > 126 {
+				t.Fatal("unsafe terminal output")
+			}
+		}
+		if len(text) > 96 && !strings.HasSuffix(got, "...") {
+			t.Fatal("truncation has no omission marker")
+		}
+	})
+}

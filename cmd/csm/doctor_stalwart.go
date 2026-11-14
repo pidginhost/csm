@@ -145,9 +145,9 @@ func stalwartFailedLoginCheck(path string) DoctorCheck {
 // so then it says nothing.
 func stalwartClassifierCheck(path string) (DoctorCheck, bool) {
 	var last *stalwartlog.Event
-	err := scanLogEvents(path, []string{"spam.model-not-ready", "spam.train-started"}, func(ev stalwartlog.Event) bool {
+	err := scanLogEvents(path, []string{"spam.model-not-ready", "spam.train-started"}, func(ev stalwartlog.Event, complete bool) bool {
 		last = nil
-		if ev.Name == "spam.model-not-ready" {
+		if complete && ev.Name == "spam.model-not-ready" {
 			last = &ev
 		}
 		return true
@@ -171,21 +171,30 @@ func stalwartClassifierCheck(path string) (DoctorCheck, bool) {
 }
 
 func logHasEvent(path, name string) (found bool, err error) {
-	err = scanLogEvents(path, []string{name}, func(stalwartlog.Event) bool {
-		found = true
-		return false
+	err = scanLogEvents(path, []string{name}, func(_ stalwartlog.Event, complete bool) bool {
+		found = complete
+		return !found
 	})
 	return found, err
 }
 
-// scanLogEvents calls fn, in file order, for each event in path named in
-// names, until fn returns false.
-func scanLogEvents(path string, names []string, fn func(stalwartlog.Event) bool) error {
+// scanLogEvents calls fn in file order until it returns false. A recognized
+// header with a malformed body is passed with complete=false: classifier
+// status must still supersede an older record, but login checks ignore it.
+func scanLogEvents(path string, names []string, fn func(ev stalwartlog.Event, complete bool) bool) error {
 	f, err := os.Open(path) // #nosec G304 -- operator-configured Stalwart log path
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
+	type eventMarker struct {
+		name string
+		text []byte
+	}
+	markers := make([]eventMarker, len(names))
+	for i, name := range names {
+		markers[i] = eventMarker{name: name, text: []byte("(" + name + ")")}
+	}
 	r := bufio.NewReaderSize(f, 64*1024)
 	discard := false
 	for {
@@ -202,11 +211,30 @@ func scanLogEvents(path string, names []string, fn func(stalwartlog.Event) bool)
 			discard = prefix
 			continue
 		}
-		if !slices.ContainsFunc(names, func(name string) bool { return bytes.Contains(line, []byte("("+name+")")) }) {
-			continue
-		}
-		if ev, ok := stalwartlog.Parse(string(line)); ok && slices.Contains(names, ev.Name) && !fn(ev) {
-			return nil
+		for _, marker := range markers {
+			start := bytes.Index(line, marker.text)
+			if start < 0 {
+				continue
+			}
+			end := start + len(marker.text)
+			if end < len(line) && line[end] != ' ' {
+				continue
+			}
+			ev, complete := stalwartlog.Parse(string(line))
+			if !complete {
+				var ok bool
+				ev, ok = stalwartlog.Parse(string(line[:end]))
+				if !ok {
+					continue
+				}
+			}
+			if ev.Name != marker.name {
+				continue
+			}
+			if !fn(ev, complete) {
+				return nil
+			}
+			break
 		}
 	}
 }
@@ -282,7 +310,7 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 	// A filter that is off, or in an unknown state, may make no lookups.
 	for _, st := range plan.Steps {
 		if st.Name == "spam filter" && st.State != stalwartsetup.Warn {
-			checks = append(checks, stalwartBlocklistCheck(ctx, api))
+			checks = append(checks, stalwartBlocklistCheck(ctx, api, user, password))
 		}
 	}
 	return checks
@@ -292,15 +320,21 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 // neither delivers nor learns from. Through a resolver the blocklists refuse,
 // such as a public one, the matched rules include ones named *_BLOCKED. The
 // verdict and score are ignored: the test sender fails SPF and DMARC.
-func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI) DoctorCheck {
+func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI, user, password string) DoctorCheck {
 	res, err := api.ClassifySpam(ctx, stalwartapi.BlocklistProbe)
 	if err != nil {
-		return DoctorCheck{Name: "stalwart blocklists", Status: "warn", Message: "Could not test Stalwart's DNS blocklists: " + err.Error()}
+		return DoctorCheck{Name: "stalwart blocklists", Status: "warn", Message: "Could not test Stalwart's DNS blocklists: " + stalwartDiagnosticText(stalwartapi.Redact(err.Error(), user, password), 512)}
 	}
 	var blocked []string
 	for _, tag := range res.Tags {
 		if strings.Contains(tag, "_BLOCKED") {
-			blocked = append(blocked, tag)
+			// Bound terminal output, not detection: every tag before the
+			// first blocked one is still examined.
+			if len(blocked) == 8 {
+				blocked = append(blocked, "...")
+				break
+			}
+			blocked = append(blocked, stalwartDiagnosticText(stalwartapi.Redact(tag, user, password), 96))
 		}
 	}
 	if len(blocked) == 0 {
@@ -309,6 +343,24 @@ func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI) DoctorCh
 	return DoctorCheck{Name: "stalwart blocklists", Status: "warn",
 		Message: "Stalwart's DNS blocklists refuse this server's resolver (" + strings.Join(blocked, ", ") + "), so they add nothing to spam scores",
 		Fix:     "point Stalwart at a local recursive resolver, then restart Stalwart"}
+}
+
+// stalwartDiagnosticText escapes terminal controls and bounds server text.
+// Redaction must happen first, before escaping or truncation changes secrets.
+func stalwartDiagnosticText(text string, maxBytes int) string {
+	truncated := len(text) > maxBytes
+	if truncated {
+		text = text[:maxBytes]
+	}
+	quoted := strconv.QuoteToASCII(text)
+	text = quoted[1 : len(quoted)-1]
+	if len(text) > maxBytes {
+		truncated = true
+	}
+	if truncated {
+		text = text[:min(len(text), maxBytes-3)] + "..."
+	}
+	return text
 }
 
 func stalwartStepChecks(plan stalwartsetup.Plan) []DoctorCheck {
