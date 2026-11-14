@@ -36,10 +36,11 @@ type stalwartState struct {
 	sessions *stalwartSessions
 	hourly   stalwartHealth
 	excused  excusedBans
+	verdicts *stalwartVerdicts
 }
 
 func newStalwartState(ports stalwartlog.Ports, start time.Time) *stalwartState {
-	s := &stalwartState{ports: ports, webmail: newStalwartWebmailTracker(), sessions: newStalwartSessions()}
+	s := &stalwartState{ports: ports, webmail: newStalwartWebmailTracker(), sessions: newStalwartSessions(), verdicts: newStalwartVerdicts()}
 	s.stats.lastLine.Store(start.Unix())
 	return s
 }
@@ -69,10 +70,14 @@ func (d *Daemon) startStalwartLogReader(cfg *config.Config) {
 		defer d.wg.Done()
 		ticker := time.NewTicker(stalwartHealthTick)
 		defer ticker.Stop()
+		verdictTicker := time.NewTicker(stalwartVerdictTick)
+		defer verdictTicker.Stop()
 		for {
 			select {
 			case <-d.stopCh:
 				return
+			case now := <-verdictTicker.C:
+				d.sweepStalwartVerdicts(now, d.currentCfg())
 			case now := <-ticker.C:
 				// A missing log already reports itself as unavailable.
 				active := d.WatcherStatuses()[stalwartLogWatcher] && stalwartServiceActive()
@@ -125,6 +130,7 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 		return nil
 	}
 	s.stats.parsed.Add(1)
+	d.sweepStalwartVerdicts(time.Now(), cfg)
 	switch ev.Name {
 	case "auth.failed", "auth.success":
 		session, ok := ev.Session()
@@ -149,6 +155,18 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 			return nil
 		}
 		return d.stalwartBan(ev, session, cfg)
+	case "queue.message-queued":
+		if session, ok := ev.Session(); ok {
+			d.stalwartQueued(ev, session)
+		}
+	case "message-ingest.ham", "message-ingest.spam":
+		if id := ev.Fields["queueId"]; id != "" {
+			s.verdicts.ingested(id, ev.Name == "message-ingest.spam")
+		}
+	case "spam.classify":
+		if session, ok := ev.Session(); ok {
+			d.stalwartClassify(ev, session, cfg)
+		}
 	}
 	return nil
 }

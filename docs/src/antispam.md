@@ -966,6 +966,50 @@ the Junk folders of domain mailboxes start new baselines.
 To roll back, set `enabled: false`. CSM removes its rspamd files, puts back
 the files it replaced and reloads rspamd.
 
+## Stalwart hosts
+
+On a host whose mail server is Stalwart, CSM does not install or manage
+rspamd and puts nothing in the mail path. Stalwart's own spam filter and
+its own scores decide what happens to each message. `csm stalwart setup`
+makes Stalwart log the mail its filter rejects or discards and reports
+whether the filter is on and at which scores it acts; `csm doctor` checks
+the same and whether the filter's DNS blocklists answer. Neither switches
+the filter or changes its scores. See
+[Preparing Stalwart](detection-realtime.md#preparing-stalwart).
+
+### Filter verdicts
+
+CSM reads Stalwart's log and counts one verdict per message on the Email
+page: delivered, Junk, rejected or discarded. A message to several
+recipients that went to Junk for any of them counts as Junk. Delivered and
+Junk messages are counted two minutes after CSM reads them, so the page lags
+by that much. A message with no local delivery by then, because it was
+relayed, deferred or failed, is not counted. Mail from logged-in senders,
+local mail between mailboxes included, is not counted, and neither is mail
+Stalwart logs without a client address. When more messages wait than CSM
+can hold, as under a flood, the extra ones count as "not matched".
+
+Delivered counts every delivered message, also while the filter is off. It
+also counts mail a mailbox's own Sieve rule filed into a folder, Junk
+included, because Stalwart logs such mail as not spam. Rejected and
+discarded show a dash until Stalwart has logged one.
+
+### Spam evidence on Stalwart
+
+Each counted message, except one not matched, also records a verdict about
+the sending address, as on cPanel (see [Spam evidence](#spam-evidence)):
+Junk, rejected and discarded count as spam, delivered as ham. Junk is spam at Stalwart's Junk
+score, not at a CSM score. The same addresses are skipped: whitelisted,
+`infra_ips`, private and the server's own. Spam evidence never blocks an
+address, never changes its threat score and is never reported. It does
+not need `email_protection.antispam`.
+
+### Not done on Stalwart
+
+CSM does not change Stalwart's scores or rules, set up its DNS blocklists or
+check outgoing mail. Stalwart does not yet read CSM's own address list; that
+is planned.
+
 ## rspamd admin interface
 
 rspamd's controller answers admin and statistics requests. By default it
