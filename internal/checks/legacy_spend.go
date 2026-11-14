@@ -41,10 +41,9 @@ func LegacyBlockSpend(statePath string, now time.Time) (admission.LegacySpend, e
 }
 
 // LegacyHandover reads legacy blocking's state for the admission owner's
-// live start: the hourly count as LegacyBlockSpend reads it,
-// and how many pending entries legacy blocking would still retry. A stale
-// entry, which its drain drops unblocked, is not counted. The whole file
-// must validate, as for LegacyBlockSpend.
+// live start: the hourly count as LegacyBlockSpend reads it. Pending entries
+// stay legacy's to retry, since a finding admission takes never enters the
+// queue. The whole file must validate, as for LegacyBlockSpend.
 func LegacyHandover(statePath string, now time.Time) (admission.LegacyHandover, error) {
 	state, path, err := readLegacyBlockState(statePath, now.Location())
 	if err != nil {
@@ -54,13 +53,7 @@ func LegacyHandover(statePath string, now time.Time) (admission.LegacyHandover, 
 	if err != nil {
 		return admission.LegacyHandover{}, err
 	}
-	h := admission.LegacyHandover{Spend: spend}
-	for _, p := range state.Pending {
-		if p.QueuedAt.IsZero() || now.Sub(p.QueuedAt) <= maxPendingAge {
-			h.Pending++
-		}
-	}
-	return h, nil
+	return admission.LegacyHandover{Spend: spend}, nil
 }
 
 // readLegacyBlockState reads and validates the whole legacy state file; no

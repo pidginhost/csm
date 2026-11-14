@@ -75,13 +75,6 @@ func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 		if err = carryLegacySpend(tx, h.Spend); err != nil {
 			return err
 		}
-		// Without an observation an entry is unassessed: it is counted as
-		// a refused finding without evidence is, and raises no notice.
-		for range h.Pending {
-			if err = q.count(admission.EventRefused, admission.ReasonAttribution, admission.Tier{}); err != nil {
-				return err
-			}
-		}
 		data, err := admission.LiveStart{At: now}.MarshalBinary()
 		if err != nil {
 			return err
