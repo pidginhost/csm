@@ -19,6 +19,8 @@ import (
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
+func noRoots() []admission.Evidence { return nil }
+
 func publishTestConfig(t *testing.T, body string) *config.Config {
 	t.Helper()
 	cfg, err := config.LoadBytes([]byte(body))
@@ -120,14 +122,14 @@ func TestExecutionPolicyAllowsWhatTheConfigAllows(t *testing.T) {
 	}
 	publishTestConfig(t, "auto_response:\n  enabled: true\n  block_ips: true\n")
 	on := d.executionPolicy()
-	if on.Allows == nil || !on.Allows(block("ftp_bruteforce")) || on.Allows(block("cpanel_multi_ip_login")) {
+	if on.Allows == nil || !on.Allows(block("ftp_bruteforce"), noRoots) || on.Allows(block("cpanel_multi_ip_login"), noRoots) {
 		t.Fatal("the policy does not follow the block switches")
 	}
 	publishTestConfig(t, "auto_response:\n  enabled: false\n  block_ips: true\n")
-	if off := d.executionPolicy(); off.Allows(block("ftp_bruteforce")) {
+	if off := d.executionPolicy(); off.Allows(block("ftp_bruteforce"), noRoots) {
 		t.Fatal("a policy with blocking off allows a block")
 	}
-	if on.Allows(block("ftp_bruteforce")) {
+	if on.Allows(block("ftp_bruteforce"), noRoots) {
 		t.Fatal("an earlier policy allows a block the live config forbids")
 	}
 }
@@ -146,7 +148,7 @@ func TestExecutionPolicyFollowsSettingsOutsideItsEpoch(t *testing.T) {
 	publishTestConfig(t, on)
 	p := d.executionPolicy()
 	for _, entry := range []admission.Entry{admission.EntryChallengeTimeout, admission.EntryIncident} {
-		if !p.Allows(admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}, Entry: entry, Check: "wp_login_bruteforce"}) {
+		if !p.Allows(admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}, Entry: entry, Check: "wp_login_bruteforce"}, noRoots) {
 			t.Fatalf("policy refuses %v while it is on", entry)
 		}
 	}
@@ -155,7 +157,7 @@ func TestExecutionPolicyFollowsSettingsOutsideItsEpoch(t *testing.T) {
 		t.Fatalf("the save moved the epoch from %d to %d", p.Epoch, epoch)
 	}
 	for _, entry := range []admission.Entry{admission.EntryChallengeTimeout, admission.EntryIncident} {
-		if p.Allows(admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}, Entry: entry, Check: "wp_login_bruteforce"}) {
+		if p.Allows(admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}, Entry: entry, Check: "wp_login_bruteforce"}, noRoots) {
 			t.Fatalf("installed policy still allows %v after it was turned off", entry)
 		}
 	}
@@ -200,6 +202,32 @@ func TestDaemonReportsARefusedExecutionPolicy(t *testing.T) {
 	}
 	if held := d.AdmissionStatus().Owner.ExecutionHeld; !strings.Contains(held, "mode: observe") {
 		t.Fatalf("execution held = %q", held)
+	}
+}
+
+// A queued block of an address the saved config now names as a trusted
+// proxy is refused at the next turn, without a new epoch.
+func TestExecutionPolicyRefusesQueuedBlocksOfANewTrustedProxy(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	d := &Daemon{}
+	base := "auto_response:\n  enabled: true\n  block_ips: true\n"
+	publishTestConfig(t, base)
+	p := d.executionPolicy()
+	target, err := admission.CanonicalAddress("192.0.2.44", admission.Caps{IPv6: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP, Target: target}, Entry: admission.EntryScan, Check: "ftp_bruteforce"}
+	if !p.Allows(c, noRoots) {
+		t.Fatal("policy refuses an ordinary queued block")
+	}
+	publishTestConfig(t, base+"web_server:\n  trusted_proxies: [\"192.0.2.44\"]\n")
+	if _, epoch := config.ActiveEpoch(); epoch != p.Epoch {
+		t.Fatalf("the save moved the epoch from %d to %d", p.Epoch, epoch)
+	}
+	if p.Allows(c, noRoots) {
+		t.Fatal("installed policy allows a queued block of a trusted proxy")
 	}
 }
 
@@ -269,18 +297,18 @@ func TestExecutionPolicyFollowsCentralSprayAndDetectorModes(t *testing.T) {
 			}
 			publish(true)
 			p := d.executionPolicy()
-			if !p.Allows(tc.c) {
+			if !p.Allows(tc.c, noRoots) {
 				t.Fatal("policy refuses the response while it is on")
 			}
 			publish(false)
 			if _, epoch := config.ActiveEpoch(); epoch != p.Epoch {
 				t.Fatalf("the save moved the epoch from %d to %d", p.Epoch, epoch)
 			}
-			if p.Allows(tc.c) {
+			if p.Allows(tc.c, noRoots) {
 				t.Fatal("installed policy still allows the response after it was turned off")
 			}
 			publish(true)
-			if !p.Allows(tc.c) {
+			if !p.Allows(tc.c, noRoots) {
 				t.Fatal("installed policy refuses the response after it was turned back on")
 			}
 		})

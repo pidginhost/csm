@@ -122,7 +122,7 @@ func TestOwnerBatchGateRefusesDisabledBeforeDeferring(t *testing.T) {
 	mono.advance(900 * time.Millisecond)
 	f.host.advance(900 * time.Millisecond)
 	next := validPolicy(2)
-	next.Allows = func(admission.Candidate) bool { return false }
+	next.Allows = func(admission.Candidate, func() []admission.Evidence) bool { return false }
 	reader.publish(next)
 	if err := o.do(func() error {
 		o.hold(firewall.ErrBlockBatchState, false)
@@ -160,7 +160,7 @@ func TestOwnerBatchGateKeepsDisabledMaintenanceSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := validPolicy(2)
-	next.Allows = func(admission.Candidate) bool { return false }
+	next.Allows = func(admission.Candidate, func() []admission.Evidence) bool { return false }
 	reader.publish(next)
 	if err := o.do(func() error {
 		o.hold(firewall.ErrBlockBatchState, false)

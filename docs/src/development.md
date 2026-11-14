@@ -1304,7 +1304,11 @@ valid policy, a pick it no longer allows ends refused as `disabled` before
 any panel ask, engine check, forecast, preview or reservation, live or dry
 run. The test reads the configuration live at each turn, not the epoch's:
 challenge, incident, central and per-check settings can change without a
-new epoch, and a saved change applies from the next turn.
+new epoch, and a saved change applies from the next turn. A queued block of
+an address the live configuration now names as a trusted proxy, or of a
+known CDN or website-firewall edge that one of its roots may have seen
+relaying, also ends as `disabled`: the mint would refuse it now. Roots are
+read only for an edge address.
 
 Disabled responses end together before capacity selection, including
 challenge previews. Spent ceiling or history budgets, retry backoff and

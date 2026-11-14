@@ -26,7 +26,7 @@ func TestOwnerDisabledWorkPrecedesBoundaryRevalidation(t *testing.T) {
 				next := validPolicy(2)
 				next.DryRun = dry
 				next.CeilingLimit--
-				next.Allows = func(admission.Candidate) bool { return false }
+				next.Allows = func(admission.Candidate, func() []admission.Evidence) bool { return false }
 				if boundary == "restart" {
 					next.Epoch = 1
 					o, _, _ = policyOwner(t, f, blocks, next)

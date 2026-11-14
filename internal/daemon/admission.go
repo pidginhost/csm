@@ -123,9 +123,11 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 		},
 		// Switches outside auto_response change without a new epoch, so
 		// queued work is tested against the config live at each turn.
-		Allows: func(c admission.Candidate) bool {
+		// A queued block of an address that became a trusted proxy or a
+		// known edge ends too, as the mint would refuse it now.
+		Allows: func(c admission.Candidate, roots func() []admission.Evidence) bool {
 			live := config.Active()
-			return checks.AutomaticResponseAllowed(live, c.Key.Kind, c.Entry, c.Check)
+			return checks.AutomaticResponseAllowed(live, c.Key.Kind, c.Entry, c.Check) && !checks.BlocksAProxy(live, c, roots)
 		},
 	}
 }

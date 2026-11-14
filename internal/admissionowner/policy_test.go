@@ -23,7 +23,7 @@ func noVerdict(context.Context, string, string) (verdict.Response, error) {
 	return verdict.Response{}, errNoCallback
 }
 
-func allowAll(admission.Candidate) bool { return true }
+func allowAll(admission.Candidate, func() []admission.Evidence) bool { return true }
 
 // validPolicy is a live policy with the callback off that allows every
 // response.

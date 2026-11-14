@@ -93,7 +93,7 @@ func TestOwnerLaterRefusalDuringComparisonWrite(t *testing.T) {
 	<-started
 	ended := make(chan error, 1)
 	go func() {
-		ended <- o.ledger.RefuseDisabled(func(admission.Candidate) bool { return false })
+		ended <- o.ledger.RefuseDisabled(func(admission.Candidate, func() []admission.Evidence) bool { return false })
 	}()
 	if err := <-ended; err != nil {
 		t.Fatal(err)
