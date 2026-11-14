@@ -409,6 +409,41 @@ excluded addresses. The "Spam evidence only" filter lists
 senders by spam score. The IP lookup shows mail login attacks and spam
 verdicts.
 
+### Spam evidence budget
+
+CSM keeps a limited number of records that hold only spam evidence: the
+budget. A record that also has attack findings, a block or a mail login
+attack in the last 30 days does not count toward the budget and is never
+dropped for it.
+
+When a new sender takes the count past the budget, CSM drops records until
+nine tenths of the budget remain. Each record has a level: the weight its
+verdicts still have, rounded up to whole messages, and at least 2 once it
+has two or more verdicts. Records of the lowest level go first. Inside a
+level, records in the network that holds the most such records go first,
+counted per IPv6 /48 and per IPv4 /16, then the record with the least
+weight.
+
+A flood of single messages from new addresses loses its own records first.
+It cannot remove a sender with two or more verdicts, a listed sender or a
+sender's ham history while such stronger records fill less than nine tenths
+of the budget; above that, one pass trims the weakest of them once. To
+displace evidence of a given level, a sender must deliver more messages than
+that from each of its own addresses or /64 networks, which is evidence about
+itself. Senders that share a crowded /16 or /48 with a flood can lose
+records of the same level with it.
+
+CSM raises a `spam_evidence_evicted` warning at the first drop, then at most
+once a day while drops continue. The warning gives the number of records
+dropped and names the network that held the most records. The count in a
+later warning includes everything dropped since the previous one. A flood
+that ends within a day is reported by its first warning only; the total
+since the daemon started is `mail_evicted` in `/api/v1/threat/stats`.
+
+Look at the named network. If it is hostile, block it in the
+[firewall](firewall.md); otherwise leave it. Listed senders and records with
+findings are kept either way.
+
 ### Scores
 
 No feed symbol weighs more than 5, and the symbols of one feed add up to at
@@ -1026,6 +1061,7 @@ senders are recorded and listed per /64 network, and clearing or
 whitelisting an address inside forgets the network's evidence. Spam
 evidence never blocks an address, never changes its threat score and is
 never reported. It does not need `email_protection.antispam`.
+The [spam evidence budget](#spam-evidence-budget) applies here too.
 
 ### Not done on Stalwart
 
@@ -1492,6 +1528,7 @@ that failed in its last pass, until a later pass reads it.
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 | `antispam_learning` | Warning | One finding per learning readiness or removal problem. Core filtering is unaffected. See [Learning findings](#learning-findings). |
+| `spam_evidence_evicted` | Warning | The spam evidence budget was reached and CSM dropped the weakest records. The message names the network that held the most. See [Spam evidence budget](#spam-evidence-budget). |
 
 While rspamd is down or scans fail on a cPanel host, mail is delivered
 without spam filtering. Exim adds no rejection for a scanner failure, and

@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"fmt"
 	"net/netip"
 	"slices"
+	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
@@ -45,7 +48,28 @@ func (d *Daemon) recordSpamEvidence(s antispam.Scan, at time.Time, cfg *config.C
 	never := func(a netip.Addr) bool { return d.spamSenderExcluded(a, cfg) }
 	ip, v := spamEvidence(s, cfg.EmailProtection.Antispam, never, weight)
 	if v != ipmap.NoVerdict {
-		adb.RecordMailVerdict(ip, v == ipmap.SpamVerdict, at)
+		d.recordMailVerdict(adb, ip, v == ipmap.SpamVerdict, at)
+	}
+}
+
+// recordMailVerdict stores one verdict and warns when it made the attack
+// database drop spam evidence. The database hands each report out once, so
+// every verdict is recorded through here.
+func (d *Daemon) recordMailVerdict(adb *attackdb.DB, ip string, spam bool, at time.Time) {
+	ev := adb.RecordMailVerdict(ip, spam, at)
+	if ev == nil {
+		return
+	}
+	finding := alert.Finding{
+		Severity: alert.Warning,
+		Check:    "spam_evidence_evicted",
+		Message: fmt.Sprintf("Spam evidence budget reached: dropped %d records of single or faded evidence; %s held %d",
+			ev.Dropped, ev.Network, ev.NetworkRecords),
+		Details:   "Listed senders and records with attack findings are kept. The network named held the most spam-evidence records and is the likely source.",
+		Timestamp: at,
+	}
+	if !alert.TryEnqueue(d.alertCh, finding) {
+		atomic.AddInt64(&d.droppedAlerts, 1)
 	}
 }
 

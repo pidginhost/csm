@@ -937,6 +937,7 @@ Attribution gaps:
 | `smtp_bruteforce` | ignored | attacker-side |  |
 | `smtp_probe_abuse` | ignored | attacker-side |  |
 | `smtp_subnet_spray` | ignored | attacker-side |  |
+| `spam_evidence_evicted` | ignored | self-health |  |
 | `ssh_keys` | ignored | host-scope |  |
 | `ssh_login_unknown_ip` | ignored | informational |  |
 | `sshd_config_change` | ignored | host-scope |  |

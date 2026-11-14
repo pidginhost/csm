@@ -78,6 +78,7 @@ var emailChecks = []emailCheck{
 	{"stalwart_log_degraded", ""},
 	{"mail_spam_source", ""},
 	{"shared_senders_stale", ""},
+	{"spam_evidence_evicted", ""},
 	{"antispam_apply_failed", ""},
 	{"antispam_controller_open", ""},
 	{"antispam_file_replaced", ""},

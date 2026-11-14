@@ -1446,8 +1446,10 @@ POST /api/v1/threat/bulk-action        Bulk block (24h or permanent) / whitelist
 ```
 
 `/api/v1/threat/stats` includes `mail_only_ips`, the attack database records
-that hold only spam evidence, and `mail_only_new_24h`, those first seen in the
-last 24 hours.
+that hold only spam evidence, `mail_only_new_24h`, those first seen in the
+last 24 hours, and `mail_evicted`, those dropped to keep the
+[spam evidence budget](antispam.md#spam-evidence-budget) since the daemon
+started.
 
 In `/api/v1/threat/top-attackers`, `ip` is an IPv6 /64 in CIDR form, such as
 `2001:db8:1:2::/64`, for a record that holds the spam evidence of a network.
