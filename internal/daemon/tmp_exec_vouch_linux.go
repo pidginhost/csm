@@ -57,6 +57,9 @@ const (
 	// tmpVouchCap bounds the table. Concurrent maintenance uses a handful of
 	// work directories.
 	tmpVouchCap = 32
+	// tmpOccupantScanGap spaces out process-table scans for one work
+	// directory in which no running maintenance process was found.
+	tmpOccupantScanGap = 5 * time.Second
 )
 
 // sameTmpSnapshot binds captured ancestry to the unchanged file. Ctime also
@@ -72,6 +75,10 @@ func sameTmpSnapshot(a, b unix.Stat_t) bool {
 type tmpVouches struct {
 	mu      sync.Mutex
 	entries []tmpVouch
+	// scanMu admits one occupant scan at a time; scanned holds, per work
+	// directory, when the next scan may run after one that found nothing.
+	scanMu  sync.Mutex
+	scanned map[string]time.Time
 }
 
 type tmpVouch struct {
@@ -86,6 +93,11 @@ type tmpVouch struct {
 // or mounts below the temporary root. The final file must be the event's open
 // file, not a replacement at its old name. O_PATH never opens a FIFO or device
 // for IO. Mount IDs from fdinfo also work on the supported older kernels.
+//
+// Mount IDs are compared only along this walk. The event descriptor belongs to
+// the writer's mount, and a daemon that systemd gave its own mount namespace
+// never shares a mount ID with the processes it watches; the descriptor is
+// bound to the walked file by device and inode instead.
 func tmpVouchDirectory(event fileEvent) *os.File {
 	work := tmpWorkDir(event.path)
 	if !strings.HasSuffix(work, "/") || filepath.Clean(event.path) != event.path {
@@ -123,7 +135,7 @@ func tmpVouchDirectory(event fileEvent) *os.File {
 		}
 		if i == len(parts)-1 {
 			var original unix.Stat_t
-			if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o022 != 0 || tmpMountID(event.fd) != tempMount ||
+			if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o022 != 0 ||
 				unix.Fstat(event.fd, &original) != nil || !sameTmpSnapshot(st, original) {
 				return nil
 			}
@@ -191,6 +203,11 @@ func (v *tmpVouches) grant(event fileEvent, reason string, now time.Time) {
 	if at.IsZero() {
 		at = now
 	}
+	v.grantAt(event, reason, at, now)
+}
+
+// grantAt records proof read at the given time for the event's work directory.
+func (v *tmpVouches) grantAt(event fileEvent, reason string, at, now time.Time) {
 	if !now.Before(at.Add(tmpVouchTTL)) {
 		return
 	}
@@ -254,4 +271,100 @@ func (v *tmpVouches) close() {
 		_ = e.dir.Close()
 	}
 	v.entries = nil
+}
+
+// occupied looks for a running maintenance process working inside the event's
+// work directory and vouches for the directory when it finds one. A build
+// driver such as make stays in its work directory while the short-lived tools
+// it starts write the files, so no writer there may ever be proven.
+func (v *tmpVouches) occupied(event fileEvent, now time.Time) (string, bool) {
+	dir := tmpVouchDirectory(event)
+	if dir == nil {
+		return "", false
+	}
+	defer func() { _ = dir.Close() }()
+	var st unix.Stat_t
+	if unix.Fstat(int(dir.Fd()), &st) != nil {
+		return "", false
+	}
+	work := tmpWorkDir(event.path)
+	// Workers that queue behind a scan find the vouch it left.
+	v.scanMu.Lock()
+	defer v.scanMu.Unlock()
+	if reason, ok := v.covers(event, now); ok {
+		return reason, true
+	}
+	v.mu.Lock()
+	wait := now.Before(v.scanned[work])
+	v.mu.Unlock()
+	if wait {
+		return "", false
+	}
+	reason, ok := provenOccupant(uint64(st.Dev), st.Ino, now)
+	v.mu.Lock()
+	if len(v.scanned) >= tmpVouchCap {
+		clear(v.scanned)
+	}
+	if v.scanned == nil {
+		v.scanned = make(map[string]time.Time)
+	}
+	if ok {
+		delete(v.scanned, work)
+	} else {
+		v.scanned[work] = now.Add(tmpOccupantScanGap)
+	}
+	v.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	v.grantAt(event, reason, now, now)
+	return reason, true
+}
+
+// provenOccupant reports the reason a running root process with proven
+// maintenance ancestry gives, when its working directory is inside the work
+// directory with this device and inode. The directory is matched by identity,
+// so a second mount of the same temporary filesystem does not hide it.
+func provenOccupant(dev, ino uint64, now time.Time) (string, bool) {
+	entries, err := os.ReadDir(procRootDir)
+	if err != nil {
+		return "", false
+	}
+	for _, entry := range entries {
+		pid, err := strconv.ParseInt(entry.Name(), 10, 32)
+		if err != nil || pid <= 1 {
+			continue
+		}
+		cwd, err := os.Readlink(filepath.Join(procRootDir, entry.Name(), "cwd"))
+		if err != nil || !underTempRoot(cwd+"/") {
+			continue
+		}
+		var st unix.Stat_t
+		work := strings.TrimSuffix(tmpWorkDir(cwd+"/"), "/")
+		if unix.Lstat(work, &st) != nil || uint64(st.Dev) != dev || st.Ino != ino {
+			continue
+		}
+		if !procIsRoot(int32(pid)) {
+			continue
+		}
+		if ok, reason := tmpExecDemote(0, tmpExecAncestry(int32(pid)), now); ok {
+			return reason, true
+		}
+	}
+	return "", false
+}
+
+// procIsRoot reports whether pid runs as root by real and effective user.
+func procIsRoot(pid int32) bool {
+	// #nosec G304 -- procfs pseudo-file under a fixed root; pid is a numeric procfs entry.
+	status, err := os.ReadFile(filepath.Join(procRootDir, strconv.Itoa(int(pid)), "status"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(status), "\n") {
+		if strings.HasPrefix(line, "Uid:") {
+			return statusUIDIsRoot(line)
+		}
+	}
+	return false
 }

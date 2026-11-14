@@ -2081,9 +2081,14 @@ func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
 			case tmpStat.Uid == 0 && ev.vanished:
 				// The writer exited before its ancestry could be read. It
 				// is judged by a writer already proven in the same
-				// root-private work directory; a writer that is still
+				// root-private work directory, or by a maintenance
+				// process working inside it; a writer that is still
 				// running and proved nothing never is.
-				if vouched, covered := fm.tmpVouches.covers(event, now); covered {
+				vouched, covered := fm.tmpVouches.covers(event, now)
+				if !covered {
+					vouched, covered = fm.tmpVouches.occupied(event, now)
+				}
+				if covered {
 					ok, reason = true, vouched+" in this work directory, writer exited"
 				} else {
 					finding.Details += " [writer exited before its ancestry was read]"

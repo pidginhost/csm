@@ -3,11 +3,14 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
@@ -41,8 +44,16 @@ type ancestryEvidence struct {
 	initramfsBuilder bool
 	// vanished reports that the walk stopped at a process that had already
 	// exited, with no non-root or unknown credentials encountered first.
-	// Read errors alone do not establish exit.
+	// Read errors alone do not establish exit: see procGone.
 	vanished bool
+}
+
+// procGone reports whether a procfs read failed because the process no longer
+// exists. Opening a file of a process that has been reaped fails with ENOENT;
+// a process that exits between the open and the read fails the read with
+// ESRCH. Any other error says nothing about the process.
+func procGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
 }
 
 func (e ancestryEvidence) none() bool {
@@ -61,7 +72,7 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
 		commRaw, err := os.ReadFile(dir + "/comm")
 		if err != nil {
-			ev.vanished = os.IsNotExist(err) && rootChain
+			ev.vanished = procGone(err) && rootChain
 			return ev
 		}
 		comm := strings.TrimSpace(string(commRaw))
@@ -77,7 +88,7 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
 		status, err := os.ReadFile(dir + "/status")
 		if err != nil {
-			ev.vanished = os.IsNotExist(err) && rootChain
+			ev.vanished = procGone(err) && rootChain
 			return ev
 		}
 		ppid := int32(-1)
@@ -103,6 +114,13 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		rootChain = rootChain && root
 		if rootChain && isInitramfsBuilderComm(statusComm) {
 			ev.initramfsBuilder = true
+		}
+		// The kernel prints parent 0 for a task it is releasing while the
+		// status is read. Only init and the kernel thread parent, PIDs 1
+		// and 2, really have no parent.
+		if ppid == 0 && pid > 2 {
+			ev.vanished = rootChain
+			return ev
 		}
 		pid = ppid
 	}

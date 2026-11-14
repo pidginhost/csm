@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,7 +18,7 @@ import (
 )
 
 func TestTmpVouchRejectsUnsafePlacement(t *testing.T) {
-	for _, attack := range []string{"writable child", "foreign child", "symlink child", "writable file", "replaced file", "bind alias", "symlink work", "bind work", "event mount alias"} {
+	for _, attack := range []string{"writable child", "foreign child", "symlink child", "writable file", "replaced file", "bind alias", "symlink work", "bind work"} {
 		t.Run(attack, func(t *testing.T) {
 			stubTmpExecWriters(t)
 			work := tmpWorkDirForTest(t)
@@ -74,18 +76,6 @@ func TestTmpVouchRejectsUnsafePlacement(t *testing.T) {
 			}
 			makeTmpExec(t, path)
 			fd := openRawFd(t, path)
-			if attack == "event mount alias" {
-				alias := tmpWorkDirForTest(t)
-				if err := unix.Mount(work, alias, "", unix.MS_BIND, ""); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := unix.Unmount(alias, 0); err != nil {
-						t.Error(err)
-					}
-				})
-				fd = openRawFd(t, filepath.Join(alias, "child", "tool"))
-			}
 			if attack == "writable file" {
 				chmodForTest(t, path, 0o777)
 			}
@@ -301,5 +291,183 @@ func TestTmpExecCaptureDoesNotWalkSpecialFiles(t *testing.T) {
 		if event.tmpAncestry != nil {
 			t.Fatal("captured ancestry for a non-regular file")
 		}
+	}
+}
+
+// The event descriptor belongs to the writer's mount. A daemon that systemd
+// gave its own mount namespace never shares a mount with the processes it
+// watches, so a descriptor opened through another mount of the same directory
+// is still the file the path names, and the vouch covers it.
+func TestTmpVouchCoversDescriptorFromAnotherMount(t *testing.T) {
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	t.Cleanup(fm.tmpVouches.close)
+	writeTmpExecAs(t, fm, filepath.Join(work, "proof"), tmpProvenPID)
+	if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("proof: %+v", got)
+	}
+	alias := tmpWorkDirForTest(t)
+	if err := unix.Mount(work, alias, "", unix.MS_BIND, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Unmount(alias, 0); err != nil {
+			t.Error(err)
+		}
+	})
+	path := filepath.Join(work, "tool")
+	makeTmpExec(t, path)
+	endAlertCooldown(fm)
+	fm.analyzeFile(fileEvent{path: path, fd: openRawFd(t, filepath.Join(alias, "tool")), pid: tmpGonePID})
+	got := drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Warning || got[0].FilePath != path {
+		t.Fatalf("descriptor from another mount: %+v, want the grouped Warning", got)
+	}
+}
+
+// occupantProc adds a process to a synthetic procfs: its working directory and
+// the user it runs as.
+func occupantProc(t *testing.T, root string, pid int32, cwd, uidLine string) {
+	t.Helper()
+	dir := filepath.Join(root, strconv.Itoa(int(pid)))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status"), []byte("Name:\tmake\nPPid:\t1\n"+uidLine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cwd != "" {
+		if err := os.Symlink(cwd, filepath.Join(dir, "cwd")); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+const rootUIDLine = "Uid:\t0\t0\t0\t0\n"
+
+// A build driver stays in its work directory while the short-lived tools it
+// starts write the files, so no writer there is ever proven. The directory is
+// then vouched for by the driver itself: a running root process with proven
+// ancestry working inside it.
+func TestTmpExecutableVanishedWriterProvenByOccupant(t *testing.T) {
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	module := filepath.Join(work, "module", "blib")
+	if err := os.MkdirAll(module, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proc := t.TempDir()
+	overrideProcRoot(t, proc)
+	occupantProc(t, proc, tmpProvenPID, filepath.Dir(module), rootUIDLine)
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	t.Cleanup(fm.tmpVouches.close)
+
+	first := filepath.Join(module, "first.so")
+	writeTmpExecAs(t, fm, first, tmpGonePID)
+	got := drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Warning || got[0].FilePath != first {
+		t.Fatalf("exited writer beside a proven occupant: %+v, want one Warning", got)
+	}
+	for _, want := range []string{"initramfs build ancestry", "writer exited", "work directory"} {
+		if !strings.Contains(got[0].Details, want) {
+			t.Fatalf("Details = %q, want %q", got[0].Details, want)
+		}
+	}
+
+	// The driver has finished; its proof still stands for the directory.
+	if err := os.RemoveAll(filepath.Join(proc, strconv.Itoa(int(tmpProvenPID)))); err != nil {
+		t.Fatal(err)
+	}
+	endAlertCooldown(fm)
+	writeTmpExecAs(t, fm, filepath.Join(module, "second.so"), tmpGonePID)
+	if got = drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("exited writer after the occupant left: %+v, want the grouped Warning", got)
+	}
+
+	planted := filepath.Join(module, "planted")
+	writeTmpExecAs(t, fm, planted, tmpLivePID)
+	if got = drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Critical || got[0].FilePath != planted {
+		t.Fatalf("running writer that proves nothing: %+v, want its own Critical", got)
+	}
+}
+
+// Only a root process with proven ancestry, working inside this very work
+// directory, vouches for it.
+func TestTmpExecutableOccupantMustBeProvenRootInside(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		pid     int32
+		uidLine string
+		cwd     func(t *testing.T, work string) string
+		prepare func(t *testing.T, work string)
+	}{
+		{name: "occupant proves nothing", pid: tmpLivePID, uidLine: rootUIDLine},
+		{name: "occupant is not root", pid: tmpProvenPID, uidLine: "Uid:\t1000\t1000\t1000\t1000\n"},
+		{name: "occupant only has root as effective user", pid: tmpProvenPID, uidLine: "Uid:\t1000\t0\t0\t0\n"},
+		{name: "occupant has no readable credentials", pid: tmpProvenPID},
+		{name: "occupant works in another directory", pid: tmpProvenPID, uidLine: rootUIDLine,
+			cwd: func(t *testing.T, _ string) string { return tmpWorkDirForTest(t) }},
+		{name: "occupant works in the temporary root", pid: tmpProvenPID, uidLine: rootUIDLine,
+			cwd: func(*testing.T, string) string { return "/tmp" }},
+		{name: "occupant has no working directory", pid: tmpProvenPID, uidLine: rootUIDLine,
+			cwd: func(*testing.T, string) string { return "" }},
+		{name: "work directory is writable by others", pid: tmpProvenPID, uidLine: rootUIDLine,
+			prepare: func(t *testing.T, work string) { chmodForTest(t, work, 0o777) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stubTmpExecWriters(t)
+			work := tmpWorkDirForTest(t)
+			if tt.prepare != nil {
+				tt.prepare(t, work)
+			}
+			cwd := work
+			if tt.cwd != nil {
+				cwd = tt.cwd(t, work)
+			}
+			proc := t.TempDir()
+			overrideProcRoot(t, proc)
+			occupantProc(t, proc, tt.pid, cwd, tt.uidLine)
+			ch := make(chan alert.Finding, 8)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			t.Cleanup(fm.tmpVouches.close)
+			path := filepath.Join(work, "tool")
+			writeTmpExecAs(t, fm, path, tmpGonePID)
+			got := drainFindings(ch)
+			if len(got) != 1 || got[0].Severity != alert.Critical || got[0].FilePath != path {
+				t.Fatalf("findings = %+v, want one Critical", got)
+			}
+		})
+	}
+}
+
+// A work directory nobody proven works in is not rescanned for every file of
+// a burst.
+func TestTmpOccupantScansAreSpaced(t *testing.T) {
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	path := filepath.Join(work, "tool")
+	makeTmpExec(t, path)
+	event := fileEvent{path: path, fd: openRawFd(t, path), pid: tmpGonePID}
+	proc := t.TempDir()
+	overrideProcRoot(t, proc)
+	var v tmpVouches
+	t.Cleanup(v.close)
+	now := time.Unix(1_700_000_000, 0)
+
+	if _, ok := v.occupied(event, now); ok {
+		t.Fatal("an empty process table vouched for the directory")
+	}
+	occupantProc(t, proc, tmpProvenPID, work, rootUIDLine)
+	if _, ok := v.occupied(event, now.Add(tmpOccupantScanGap-time.Second)); ok {
+		t.Fatal("rescanned before the gap had passed")
+	}
+	if reason, ok := v.occupied(event, now.Add(tmpOccupantScanGap)); !ok || reason != "initramfs build ancestry" {
+		t.Fatalf("occupied = (%q, %v) after the gap, want the occupant's proof", reason, ok)
+	}
+	if _, ok := v.covers(event, now.Add(tmpOccupantScanGap+tmpVouchTTL-time.Second)); !ok {
+		t.Fatal("the occupant's proof did not vouch for the directory")
 	}
 }

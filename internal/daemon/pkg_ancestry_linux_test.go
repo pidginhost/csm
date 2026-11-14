@@ -3,10 +3,13 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -583,6 +586,12 @@ func TestProcAncestryReportsVanishedProcess(t *testing.T) {
 			procs: map[int32]proc{300: {"dnf", 200}},
 			want:  ancestryEvidence{packageManager: true, vanished: true},
 		},
+		{
+			// What the kernel prints for a task it is releasing mid-read.
+			name:  "status of a task being released",
+			procs: map[int32]proc{300: {"cp", 0}},
+			want:  ancestryEvidence{vanished: true},
+		},
 		{name: "live chain that proves nothing", procs: map[int32]proc{300: {"cp", 200}, 200: {"bash", 1}}},
 		{
 			name:  "unreadable parent link is not an exit",
@@ -627,5 +636,38 @@ func TestProcAncestryDepthCapIsNotVanished(t *testing.T) {
 	overrideProcRoot(t, fakeProc(t, procs))
 	if got := procAncestryEvidence(100, nil); got.vanished {
 		t.Fatalf("depth-capped walk = %+v, want no vanished mark", got)
+	}
+}
+
+// A process that exits between the open and the read of a procfs file fails
+// the read with ESRCH. That is an exit, like a missing directory; an error
+// that says nothing about the process is not.
+func TestProcGone(t *testing.T) {
+	for _, tt := range []struct {
+		err  error
+		want bool
+	}{
+		{&fs.PathError{Op: "open", Path: "/proc/1/comm", Err: syscall.ENOENT}, true},
+		{&fs.PathError{Op: "read", Path: "/proc/1/status", Err: syscall.ESRCH}, true},
+		{&fs.PathError{Op: "read", Path: "/proc/1/status", Err: syscall.EACCES}, false},
+		{&fs.PathError{Op: "read", Path: "/proc/1/comm", Err: syscall.EISDIR}, false},
+		{errors.New("unexpected"), false},
+	} {
+		if got := procGone(tt.err); got != tt.want {
+			t.Errorf("procGone(%v) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
+// The kernel thread parent has no parent and is not an exited process.
+func TestProcAncestryKernelThreadParentIsNotVanished(t *testing.T) {
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{2: {"kthreadd", 0}})
+	writeProcStatus(t, root, 2, 0, "Uid:\t0\t0\t0\t0\n")
+	overrideProcRoot(t, root)
+	if got := procAncestryEvidence(2, nil); got.vanished {
+		t.Fatalf("kernel thread parent = %+v, want no vanished mark", got)
 	}
 }
