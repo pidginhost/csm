@@ -322,16 +322,20 @@ func (v *tmpVouches) occupied(event fileEvent, now time.Time) (string, bool) {
 		return reason, true
 	}
 	v.mu.Lock()
-	wait := now.Before(v.scanned[work])
+	for path, until := range v.scanned {
+		if !now.Before(until) {
+			delete(v.scanned, path)
+		}
+	}
+	// Never evict an active cooldown: a burst across more directories than
+	// the table holds would otherwise turn every write into a process scan.
+	wait := now.Before(v.scanned[work]) || len(v.scanned) >= tmpVouchCap
 	v.mu.Unlock()
 	if wait {
 		return "", false
 	}
 	reason, ok := provenOccupant(uint64(st.Dev), st.Ino, now)
 	v.mu.Lock()
-	if len(v.scanned) >= tmpVouchCap {
-		clear(v.scanned)
-	}
 	if v.scanned == nil {
 		v.scanned = make(map[string]time.Time)
 	}
@@ -362,7 +366,8 @@ func provenOccupant(dev, ino uint64, now time.Time) (string, bool) {
 		if err != nil || pid <= 1 {
 			continue
 		}
-		cwd, err := os.Readlink(filepath.Join(procRootDir, entry.Name(), "cwd"))
+		cwdPath := filepath.Join(procRootDir, entry.Name(), "cwd")
+		cwd, err := os.Readlink(cwdPath)
 		if err != nil || !underTempRoot(cwd+"/") {
 			continue
 		}
@@ -371,7 +376,7 @@ func provenOccupant(dev, ino uint64, now time.Time) (string, bool) {
 		if unix.Lstat(work, &st) != nil || uint64(st.Dev) != dev || st.Ino != ino {
 			continue
 		}
-		if !procIsRoot(int32(pid)) {
+		if !tmpOccupantInside(cwdPath, dev, ino) || !procIsRoot(int32(pid)) {
 			continue
 		}
 		if ok, reason := tmpExecDemote(0, tmpExecAncestry(int32(pid)), now); ok {
@@ -379,6 +384,40 @@ func provenOccupant(dev, ino uint64, now time.Time) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// tmpOccupantInside follows the kernel's cwd reference, not just its printed
+// name. Every directory back to the event's work directory must be controlled
+// by root. A writable child cannot lend its occupant's proof to safe siblings.
+func tmpOccupantInside(cwdPath string, dev, ino uint64) bool {
+	fd, err := unix.Open(cwdPath, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = unix.Close(fd) }()
+	mount := tmpMountID(fd)
+	if mount == "" {
+		return false
+	}
+	for {
+		var st unix.Stat_t
+		if unix.Fstat(fd, &st) != nil || st.Uid != 0 || st.Mode&0o022 != 0 {
+			return false
+		}
+		if uint64(st.Dev) == dev && st.Ino == ino {
+			return true
+		}
+		parent, err := unix.Openat(fd, "..", unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return false
+		}
+		_ = unix.Close(fd)
+		fd = parent
+		var up unix.Stat_t
+		if tmpMountID(fd) != mount || unix.Fstat(fd, &up) != nil || (st.Dev == up.Dev && st.Ino == up.Ino) {
+			return false
+		}
+	}
 }
 
 // procIsRoot reports whether pid runs as root by real and effective user.

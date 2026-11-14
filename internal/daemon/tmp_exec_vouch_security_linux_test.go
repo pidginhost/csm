@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -466,6 +467,35 @@ func TestTmpExecutableOccupantMustBeProvenRootInside(t *testing.T) {
 			cwd: func(*testing.T, string) string { return "/tmp" }},
 		{name: "occupant has no working directory", pid: tmpProvenPID, uidLine: rootUIDLine,
 			cwd: func(*testing.T, string) string { return "" }},
+		{name: "occupant works in a writable child", pid: tmpProvenPID, uidLine: rootUIDLine,
+			cwd: func(t *testing.T, work string) string {
+				child := filepath.Join(work, "shared")
+				if err := os.Mkdir(child, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				chmodForTest(t, child, 0o777)
+				return child
+			}},
+		{name: "occupant works below a foreign child", pid: tmpProvenPID, uidLine: rootUIDLine,
+			cwd: func(t *testing.T, work string) string {
+				child := filepath.Join(work, "foreign")
+				cwd := filepath.Join(child, "private")
+				if err := os.MkdirAll(cwd, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				chownForTest(t, child)
+				return cwd
+			}},
+		{name: "cwd link points outside through a symlink", pid: tmpProvenPID, uidLine: rootUIDLine,
+			cwd: func(t *testing.T, work string) string {
+				alias := filepath.Join(work, "alias")
+				if err := os.Symlink(tmpWorkDirForTest(t), alias); err != nil {
+					t.Fatal(err)
+				}
+				return alias
+			}},
+		{name: "cwd link names a missing child", pid: tmpProvenPID, uidLine: rootUIDLine,
+			cwd: func(_ *testing.T, work string) string { return filepath.Join(work, "missing") }},
 		{name: "work directory is writable by others", pid: tmpProvenPID, uidLine: rootUIDLine,
 			prepare: func(t *testing.T, work string) { chmodForTest(t, work, 0o777) }},
 	} {
@@ -521,6 +551,120 @@ func TestTmpOccupantScansAreSpaced(t *testing.T) {
 	}
 	if _, ok := v.covers(event, now.Add(tmpOccupantScanGap+tmpVouchTTL-time.Second)); !ok {
 		t.Fatal("the occupant's proof did not vouch for the directory")
+	}
+}
+
+// Overflow must neither forget active cooldowns nor let an untracked directory
+// scan on every write. Expired entries must free capacity again.
+func TestTmpOccupantScanOverflowKeepsCooldowns(t *testing.T) {
+	stubTmpExecWriters(t)
+	proc := t.TempDir()
+	overrideProcRoot(t, proc)
+	var v tmpVouches
+	t.Cleanup(v.close)
+	now := time.Unix(1_700_000_000, 0)
+	var events []fileEvent
+	for range tmpVouchCap + 1 {
+		path := filepath.Join(tmpWorkDirForTest(t), "tool")
+		makeTmpExec(t, path)
+		event := fileEvent{path: path, fd: openRawFd(t, path), pid: tmpGonePID}
+		events = append(events, event)
+		if _, ok := v.occupied(event, now); ok {
+			t.Fatal("empty process table provided proof")
+		}
+	}
+	for i, event := range events {
+		occupantProc(t, proc, tmpProvenPID+int32(i), filepath.Dir(event.path), rootUIDLine)
+	}
+	walks := 0
+	tmpExecAncestry = func(int32) ancestryEvidence {
+		walks++
+		return ancestryEvidence{initramfsBuilder: true}
+	}
+	for _, event := range events {
+		if _, ok := v.occupied(event, now.Add(time.Second)); ok {
+			t.Error("overflow permitted a scan before cooldown expired")
+		}
+	}
+	if walks != 0 {
+		t.Errorf("overflow performed %d ancestry walks, want zero", walks)
+	}
+	if len(v.scanned) != tmpVouchCap {
+		t.Errorf("cooldowns = %d, want %d", len(v.scanned), tmpVouchCap)
+	}
+	if _, ok := v.occupied(events[len(events)-1], now.Add(tmpOccupantScanGap)); !ok {
+		t.Fatal("expired cooldowns did not release scan capacity")
+	}
+}
+
+// Occupant descriptors may use another mount of the same work directory, but
+// a mount inside it must not import an unrelated process's proof.
+func TestTmpOccupantMountPlacement(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		t.Run(strconv.FormatBool(nested), func(t *testing.T) {
+			stubTmpExecWriters(t)
+			work := tmpWorkDirForTest(t)
+			source, target := work, tmpWorkDirForTest(t)
+			if nested {
+				source, target = target, filepath.Join(work, "mounted")
+				if err := os.Mkdir(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := unix.Mount(source, target, "", unix.MS_BIND, ""); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := unix.Unmount(target, 0); err != nil {
+					t.Error(err)
+				}
+			})
+			proc := t.TempDir()
+			overrideProcRoot(t, proc)
+			occupantProc(t, proc, tmpProvenPID, target, rootUIDLine)
+			ch := make(chan alert.Finding, 8)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			t.Cleanup(fm.tmpVouches.close)
+			writeTmpExecAs(t, fm, filepath.Join(work, "tool"), tmpGonePID)
+			want := alert.Warning
+			if nested {
+				want = alert.Critical
+			}
+			if got := drainFindings(ch); len(got) != 1 || got[0].Severity != want {
+				t.Fatalf("findings = %+v, want one %v", got, want)
+			}
+		})
+	}
+}
+
+func TestTmpOccupantConcurrentMissScansOnce(t *testing.T) {
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	path := filepath.Join(work, "tool")
+	makeTmpExec(t, path)
+	event := fileEvent{path: path, fd: openRawFd(t, path), pid: tmpGonePID}
+	proc := t.TempDir()
+	overrideProcRoot(t, proc)
+	occupantProc(t, proc, tmpLivePID, work, rootUIDLine)
+	var walks atomic.Int32
+	tmpExecAncestry = func(int32) ancestryEvidence {
+		walks.Add(1)
+		return ancestryEvidence{}
+	}
+	var v tmpVouches
+	t.Cleanup(v.close)
+	now := time.Now()
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			if _, ok := v.occupied(event, now); ok {
+				t.Error("unproven occupant supplied proof")
+			}
+		})
+	}
+	wg.Wait()
+	if got := walks.Load(); got != 1 {
+		t.Fatalf("concurrent burst scanned %d times, want one", got)
 	}
 }
 
