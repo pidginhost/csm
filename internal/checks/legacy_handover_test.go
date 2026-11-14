@@ -8,11 +8,10 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 )
 
-// Design C7: the live start reads the legacy hour as LegacyBlockSpend does
-// and counts the pending entries legacy blocking would still retry. A stale
-// entry, which its drain drops unblocked, is not counted; an entry from
-// before queue times were kept is.
-func TestLegacyHandoverCountsRetriablePending(t *testing.T) {
+// The live start reads the legacy hour as LegacyBlockSpend does. Pending
+// entries stay legacy's to retry: a finding admission takes never enters
+// the queue, so the handover carries none of them.
+func TestLegacyHandoverCarriesOnlyTheHour(t *testing.T) {
 	now := time.Date(2026, 10, 4, 14, 20, 0, 0, time.UTC)
 	stamp := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339Nano) }
 	body := fmt.Sprintf(`{"ips":[],"pending":[`+
@@ -30,8 +29,8 @@ func TestLegacyHandoverCountsRetriablePending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Pending != 3 || h.Spend != spend || spend.Units != 12 {
-		t.Fatalf("handover = %+v, want 3 pending and %+v", h, spend)
+	if h != (admission.LegacyHandover{Spend: spend}) || spend.Units != 12 {
+		t.Fatalf("handover = %+v, want only the hour %+v", h, spend)
 	}
 }
 

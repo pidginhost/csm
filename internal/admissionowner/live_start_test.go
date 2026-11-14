@@ -56,12 +56,11 @@ func previewed(t *testing.T, f *ownerFixture, p *admission.Producer, blocks *fak
 	withLiveExecution(t, true)
 }
 
-// Design C7: the first owner that executes carries legacy blocking's state
-// over before it serves anything live. The legacy hour counts the greater
-// of its count and the preview's charge in it, the pending entry legacy
-// would still retry is refused for attribution and the stale one is not,
-// and an address a preview answered is blocked on its next observation.
-// A restart starts nothing again.
+// The first owner that executes carries legacy blocking's state over before
+// it serves anything live. The legacy hour counts the greater of its count
+// and the preview's charge in it, pending entries stay legacy's to retry
+// and count nothing, and an address a preview answered is blocked on its
+// next observation. A restart starts nothing again.
 func TestOwnerStartsLiveWhenItFirstExecutes(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -77,8 +76,8 @@ func TestOwnerStartsLiveWhenItFirstExecutes(t *testing.T) {
 	if got := ceiling(t, o).General.Used; got != 9 {
 		t.Fatalf("general use = %d, want the legacy hour's 9", got)
 	}
-	if got := refusedForAttribution(t, o); got != 1 {
-		t.Fatalf("pending refusals = %d, want 1", got)
+	if got := refusedForAttribution(t, o); got != 0 {
+		t.Fatalf("pending refusals = %d, want 0", got)
 	}
 	f.host.advance(time.Second)
 	again := observe(t, o, p, f, "192.0.2.10", "offset=2")
@@ -96,7 +95,7 @@ func TestOwnerStartsLiveWhenItFirstExecutes(t *testing.T) {
 	})
 	o, _, _ = policyOwner(t, f, blocks, validPolicy(1))
 	turn(t, o)
-	if calls != 0 || ceiling(t, o).General.Used != used || refusedForAttribution(t, o) != 1 {
+	if calls != 0 || ceiling(t, o).General.Used != used || refusedForAttribution(t, o) != 0 {
 		t.Fatalf("a restart started again: %d calls, use %d", calls, ceiling(t, o).General.Used)
 	}
 }

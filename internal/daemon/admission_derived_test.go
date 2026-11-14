@@ -33,6 +33,8 @@ type recordingAdmission struct {
 	mu        sync.Mutex
 	responses []derivedResponse
 	refusals  []derivedRefusal
+	// executes is what ExecutesBlocks reports.
+	executes bool
 }
 
 type derivedRefusal struct {
@@ -47,6 +49,12 @@ func (a *recordingAdmission) Mint(f alert.Finding) (admission.Evidence, error) {
 		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonAttribution, Detail: "finding has no observation"}
 	}
 	return mintRoot(a.t, f)
+}
+
+func (a *recordingAdmission) ExecutesBlocks() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.executes
 }
 
 func (a *recordingAdmission) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry, err error) {

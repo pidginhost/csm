@@ -33,6 +33,16 @@ type fakeAdmission struct {
 	pending *respondCall
 	// mint, when set, returns the evidence Mint hands back.
 	mint func(f alert.Finding) admission.Evidence
+	// executes, mintErr and respondErr set what ExecutesBlocks, Mint and
+	// Respond report.
+	executes            bool
+	mintErr, respondErr error
+}
+
+func (a *fakeAdmission) ExecutesBlocks() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.executes
 }
 
 func (a *fakeAdmission) Mint(f alert.Finding) (admission.Evidence, error) {
@@ -40,6 +50,9 @@ func (a *fakeAdmission) Mint(f alert.Finding) (admission.Evidence, error) {
 	defer a.mu.Unlock()
 	if a.refuse {
 		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonInvalid, Detail: "refused"}
+	}
+	if a.mintErr != nil {
+		return admission.Evidence{}, a.mintErr
 	}
 	a.pending = &respondCall{check: f.Check, cursor: f.Observation.Cursor, rooted: true}
 	if a.mint != nil {
@@ -69,7 +82,7 @@ func (a *fakeAdmission) Respond(kind admission.Kind, target string, e admission.
 	}
 	c.kind, c.target, c.via = kind, target, via
 	a.calls = append(a.calls, c)
-	return nil
+	return a.respondErr
 }
 
 // realRoot mints f's evidence as the owner would, with the production

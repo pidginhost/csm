@@ -66,8 +66,7 @@ func TestAdmissionLedgerFailedLiveStartChangesNothing(t *testing.T) {
 	f.begin()
 	f.observedArrival("192.0.2.10", "offset=1")
 	h := admission.LegacyHandover{
-		Spend:   admission.LegacySpend{Units: 9, At: f.wall.Add(30 * time.Minute)},
-		Pending: 2,
+		Spend: admission.LegacySpend{Units: 9, At: f.wall.Add(30 * time.Minute)},
 	}
 	before := f.snapshot()
 	f.failNext("live start")
@@ -204,23 +203,22 @@ func TestAdmissionLedgerLiveStartWithoutTheLegacyCountKeepsNoCredit(t *testing.T
 	}
 }
 
-// Legacy pending entries carry no observation, so admission counts each
-// as refused for attribution, unassessed, as it counts a finding refused
-// without evidence; none raises a notice.
-func TestAdmissionLedgerLiveStartRefusesLegacyPending(t *testing.T) {
+// Legacy pending entries stay legacy's to retry, so a live start counts
+// none of them and raises no notice.
+func TestAdmissionLedgerLiveStartLeavesLegacyPendingAlone(t *testing.T) {
 	f := newLedgerFixture(t)
 	notices := f.notices()
-	if err := f.l.StartLive(admission.LegacyHandover{Pending: 3}); err != nil {
+	if err := f.l.StartLive(admission.LegacyHandover{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.countOf(admission.EventRefused, admission.ReasonAttribution, admission.Tier{}); got != 3 {
-		t.Errorf("refusals = %d, want 3", got)
+	if got := f.countOf(admission.EventRefused, admission.ReasonAttribution, admission.Tier{}); got != 0 {
+		t.Errorf("refusals = %d, want 0", got)
 	}
 	if got := f.notices(); !reflect.DeepEqual(got, notices) {
-		t.Errorf("pending refusals raised notices: %+v", got)
+		t.Errorf("live start raised notices: %+v", got)
 	}
 	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
-		t.Fatalf("reopening after refused pending entries: %v", err)
+		t.Fatalf("reopening after the live start: %v", err)
 	}
 }
 

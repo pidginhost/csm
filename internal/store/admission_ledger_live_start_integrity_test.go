@@ -30,7 +30,7 @@ func TestAdmissionLedgerLiveStartMissingMarkerRefuses(t *testing.T) {
 	if _, err = OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
 		t.Errorf("opened a live schema without its marker: %v", err)
 	}
-	if err = stale.StartLive(admission.LegacyHandover{Pending: 2}); !isCorrupt(err) {
+	if err = stale.StartLive(admission.LegacyHandover{}); !isCorrupt(err) {
 		t.Errorf("stale handle restarted a damaged live schema: %v", err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {

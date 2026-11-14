@@ -1252,9 +1252,9 @@ the clock first, and the reading runs the live start. It charges the legacy
 hour as the greater of its count and the charges the ledger already retains
 in that hour, since previews and legacy blocking count the same responses;
 earlier preview charges stay as handover charges with their lane, cost and
-release times, so a later forecast cannot refund them. It counts each
-pending entry legacy blocking would still retry as refused for attribution,
-since none carries an observation. It ends the episode answers of earlier
+release times, so a later forecast cannot refund them. Pending legacy
+entries stay legacy's to retry and count nothing: a finding admission takes
+never enters that queue. It ends the episode answers of earlier
 observe previews, so the next observation of a previewed address queues a
 new generation, or a new episode when no other candidate kept the old one;
 challenge previews and verified blocks keep their answers. It clears the
@@ -1890,7 +1890,15 @@ unrelated pending work and fresh observations still run. Admission uses the
 canonical address selected by the legacy extractor, including its message
 fallback, without changing the finding or its audit identity. Distinct
 observations still submit even when their address is already challenged.
-Admission outcomes do not change, delay or skip any existing responder decision.
+While admission executes blocks, a block it accepts, or refuses because the
+client is behind a trusted proxy or is a CDN edge, skips the legacy block:
+no engine call, tracker row, queued retry or hourly charge. Every other
+mint or synchronous ingress refusal keeps the legacy block, and mail spray
+blocks stay legacy. Acceptance is not application: a later hold, dry-run
+change or queue displacement never returns that request to legacy. A derived
+block admission takes ends before the engine as an expected refusal: timeout
+escalation and central intel log nothing, and the incident correlator counts
+it as requested. Previews and challenges never change a responder decision.
 
 Subnet funnels submit every selected response before the existing responder evaluates its available execution budget. Constituent evidence follows the selected mail response; paths without eligible observations retain their designed refusal rather than minting a replacement root.
 
@@ -1902,7 +1910,7 @@ Incident event preparation retains the attesting finding's check and severity, i
 
 Hourly summaries count committed arrivals, memory-coalesced reports, mint refusals, displaced submissions and both observed and terminally refused picks. The displacement callback runs under the ingress mutex on the submitting goroutine and uses the funnel's clock; drain callbacks use the owner's fresh clock. Summary time never regresses: event hours are clamped to the latest admission-clock or funnel hour after a backward wall step, including clock readings from an incomplete startup. Immutable write acknowledgments cannot consume newer rows. Summaries continue during ledger or clock outages, and shutdown flushes completed decisions even when a final drain fails. Failed writes retain a bounded chronological set of completed hours, so missing recordings remain explicit lower bounds.
 
-Ingress placement on an ended or in-flight candidate is a counted invalid refusal. An episode that cannot be encoded is ledger damage. Shutdown closes ingress before final drains and stops incident background response loops before stopping the owner.
+Ingress placement on an ended or in-flight candidate is a counted invalid refusal. An episode that cannot be encoded is ledger damage. Shutdown closes ingress before returning new blocks to legacy, even while an owner turn is still running. Previously accepted work is drained for restart; new legacy-owned blocks cannot enter that queue. Incident background response loops stop before the owner.
 
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.
 

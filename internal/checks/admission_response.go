@@ -14,8 +14,8 @@ import (
 
 // ResponseAdmission is the admission owner as the response funnels see it.
 // Every automatic response the legacy funnels select is also handed to it,
-// where it is previewed, or forecast in dry run, but never executed; the
-// legacy path keeps every enforcement decision and never waits for
+// where it is previewed, forecast in dry run, or, for a block admission
+// applies, executed instead of the legacy block. The funnels never wait for
 // admission.
 type ResponseAdmission interface {
 	// Mint mints the evidence f's own observation supports, aimed at the
@@ -29,6 +29,9 @@ type ResponseAdmission interface {
 	// derived entry via when it is set. Admission refuses a target that is
 	// not e's address and does not contain it.
 	Respond(kind admission.Kind, target string, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error
+	// ExecutesBlocks reports whether admission applies the block picks it
+	// takes, so legacy must leave them alone.
+	ExecutesBlocks() bool
 }
 
 type responseAdmissionSlot struct{ a ResponseAdmission }
@@ -66,21 +69,41 @@ func timeHandoff(start time.Time) {
 
 // respond asks admission for a response of kind to the address or prefix
 // f names, through via when it is set, and returns the minted evidence for
-// a derived response to answer later. Its outcome never changes the
-// legacy response.
-func respond(kind admission.Kind, f alert.Finding, target string, via admission.Entry) admission.Evidence {
+// a derived response to answer later, and whether legacy must leave the
+// block to admission.
+func respond(kind admission.Kind, f alert.Finding, target string, via admission.Entry) (admission.Evidence, bool) {
 	a := getResponseAdmission()
 	if a == nil {
-		return admission.Evidence{}
+		return admission.Evidence{}, false
 	}
 	defer timeHandoff(time.Now())
+	executes := a.ExecutesBlocks()
+	// Spray lifetime and budget stay with legacy. Use the handoff's owner
+	// and execution snapshot so a concurrent publication cannot take it.
+	if kind == admission.KindBlockIP && f.BlockTTL > 0 && executes {
+		return admission.Evidence{}, false
+	}
 	e, err := a.Mint(f)
 	if err != nil {
 		a.Refuse(kind, f, via, err)
-		return admission.Evidence{}
+		return admission.Evidence{}, taken(executes, kind, err, nil)
 	}
-	_ = a.Respond(kind, target, e, via)
-	return e
+	return e, taken(executes, kind, nil, a.Respond(kind, target, e, via))
+}
+
+// taken reports whether legacy must leave a response of kind to admission:
+// admission applies block picks and accepted this one, or refused it as a
+// client behind a trusted proxy or a CDN edge, which no block contains.
+// Any other refusal leaves the legacy block in place.
+func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
+	if !executes || kind != admission.KindBlockIP {
+		return false
+	}
+	if mintErr != nil {
+		c := admission.CauseOf(mintErr)
+		return c == admission.CauseUnreachable || c == admission.CauseProxyPeer
+	}
+	return respondErr == nil
 }
 
 // respondSpray asks admission to block a spray's prefix through the mail
@@ -108,15 +131,15 @@ func respondSpray(f alert.Finding, cidr string) {
 }
 
 // respondDerived hands admission the block a derived path applies, with the
-// root it carries, through its entry. A permanent block is never asked for
-// implicitly: it is handed over without a root, as a path that
-// kept none is, and admission refuses it.
-func respondDerived(req ApplyBlockRequest) {
+// root it carries, through its entry, and reports whether legacy must leave
+// it to admission. A permanent block is never asked for implicitly: it is
+// handed over without a root, as a path that kept none is, and admission
+// refuses it.
+func respondDerived(req ApplyBlockRequest) bool {
 	if req.TTL == 0 {
-		AnswerRoot(admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
-		return
+		return AnswerRoot(admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
 	}
-	AnswerPreparedRoot(admission.KindBlockIP, req.IP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)
+	return AnswerPreparedRoot(admission.KindBlockIP, req.IP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)
 }
 
 // AdmissionRoot keeps a root for a derived path whose retained finding
@@ -137,25 +160,33 @@ func PrepareAdmissionRoot(f alert.Finding) (admission.Evidence, error) {
 }
 
 // AnswerPreparedRoot counts a failed mint once, without replacing its
-// provenance refusal with a second rootless-response refusal.
-func AnswerPreparedRoot(kind admission.Kind, target string, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) {
+// provenance refusal with a second rootless-response refusal. It reports
+// whether legacy must leave the response to admission.
+func AnswerPreparedRoot(kind admission.Kind, target string, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) bool {
 	if err != nil {
-		if a := getResponseAdmission(); a != nil {
-			defer timeHandoff(time.Now())
-			a.Refuse(kind, f, via, err)
+		a := getResponseAdmission()
+		if a == nil {
+			return false
 		}
-		return
+		defer timeHandoff(time.Now())
+		executes := a.ExecutesBlocks()
+		a.Refuse(kind, f, via, err)
+		return taken(executes, kind, err, nil)
 	}
-	AnswerRoot(kind, target, root, via, ttl)
+	return AnswerRoot(kind, target, root, via, ttl)
 }
 
 // AnswerRoot hands admission a response of kind to target a derived path
-// decided, with the root it kept, through its entry.
-func AnswerRoot(kind admission.Kind, target string, root admission.Evidence, via admission.Entry, ttl ...time.Duration) {
-	if a := getResponseAdmission(); a != nil {
-		defer timeHandoff(time.Now())
-		_ = a.Respond(kind, target, root, via, ttl...)
+// decided, with the root it kept, through its entry, and reports whether
+// legacy must leave it to admission.
+func AnswerRoot(kind admission.Kind, target string, root admission.Evidence, via admission.Entry, ttl ...time.Duration) bool {
+	a := getResponseAdmission()
+	if a == nil {
+		return false
 	}
+	defer timeHandoff(time.Now())
+	executes := a.ExecutesBlocks()
+	return taken(executes, kind, nil, a.Respond(kind, target, root, via, ttl...))
 }
 
 // respondNetblock hands admission a netblock escalation. It rests on past

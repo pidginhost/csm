@@ -137,7 +137,8 @@ type Options struct {
 	// Blocks returns the firewall engine that runs block_ip picks, or nil
 	// while none runs. Without a provider every pick is a preview. With
 	// one, the policy and liveExecution guard decide whether block picks
-	// forecast, preview or execute.
+	// forecast, preview or execute. The provider must be safe to call
+	// concurrently and return promptly: response funnels also read it.
 	Blocks func() BlockEngine
 	// Policy reads the published execution policy. An owner with
 	// Blocks binds to it at every turn and reload, and does not start
@@ -160,18 +161,20 @@ type request struct {
 // It serves its queue as observe previews unless an engine runs its block
 // picks (Options.Blocks).
 type Owner struct {
-	opts      Options
-	stopping  atomic.Bool
-	reg       *admission.Registry
-	producers map[admission.ProducerID]*admission.Producer
-	ingress   *admission.Ingress
-	requests  chan request
-	quit      chan bool
-	done      chan struct{}
-	stopOnce  sync.Once
-	current   atomic.Pointer[health.AdmissionStatus]
-	audit     *queuehealth.Sampled
-	notices   *sender
+	opts     Options
+	stopping atomic.Bool
+	// executesBlocks publishes mayExecute() for the response funnels.
+	executesBlocks atomic.Bool
+	reg            *admission.Registry
+	producers      map[admission.ProducerID]*admission.Producer
+	ingress        *admission.Ingress
+	requests       chan request
+	quit           chan bool
+	done           chan struct{}
+	stopOnce       sync.Once
+	current        atomic.Pointer[health.AdmissionStatus]
+	audit          *queuehealth.Sampled
+	notices        *sender
 	// verdictQueue samples the verdict jobs of an executing owner.
 	verdictQueue *queuehealth.Sampled
 	compare      comparison
@@ -550,10 +553,10 @@ var startLiveLedger = (*store.AdmissionLedger).StartLive
 // startLive runs the live start once per ledger, as soon as the
 // installed policy executes. Every drain and turn reads the clock through
 // tick first, so nothing is placed or served under that policy before it:
-// legacy blocking's hour and pending queue are carried over, and earlier
-// previews stop answering episodes and sending notices. A legacy state it
-// cannot read is not an empty one: the ledger keeps no saved credit, and
-// status names the error.
+// legacy blocking's hour is carried over, its pending queue stays legacy's,
+// and earlier previews stop answering episodes and sending notices. A
+// legacy state it cannot read is not an empty one: the ledger keeps no saved
+// credit, and status names the error.
 func (o *Owner) startLive() error {
 	if !o.executing() || o.ledger.LiveStarted() {
 		return nil
@@ -722,6 +725,11 @@ func (o *Owner) Stop() { o.halt(true) }
 // set; without it the ledger is left as a crash leaves it.
 func (o *Owner) halt(clean bool) {
 	o.stopOnce.Do(func() {
+		// Close acceptance before returning new blocks to legacy, even
+		// while an owner turn is still running. Later snapshots stay closed.
+		if o.ingress != nil {
+			o.ingress.Close()
+		}
 		o.stopping.Store(true)
 		o.summaryCancel()
 		o.quit <- clean
@@ -746,9 +754,6 @@ func (o *Owner) shutdown() {
 	if !o.started {
 		return
 	}
-	// No snapshot published during the stop reopens admission, so the
-	// drains below end even if a producer was not stopped first.
-	o.ingress.Close()
 	// An outcome still unwritten stays running for the next start to
 	// settle; the held arrivals are drained regardless.
 	if err := o.finishPending(); err != nil {
@@ -1254,6 +1259,15 @@ func (o *Owner) Mint(f alert.Finding) (admission.Evidence, error) {
 	// Claims resolve against the inventory the ingress judges scopes by.
 	in.Inventory = o.ingress.Inventory()
 	return p.Mint(in)
+}
+
+// ExecutesBlocks reports whether legacy must leave new block picks to this
+// owner: a valid live policy is installed and an engine is present. It is
+// false once shutdown begins. It says nothing about one request: a request
+// accepted earlier stays the owner's through later holds or displacement.
+func (o *Owner) ExecutesBlocks() bool {
+	// A turn already in flight can publish its policy after Stop begins.
+	return !o.stopping.Load() && o.executesBlocks.Load() && o.opts.Blocks() != nil
 }
 
 // Refuse counts a response of kind through via that could not be answered

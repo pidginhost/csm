@@ -41,7 +41,7 @@ func TestAdmissionOptionsReadTheLegacyHandover(t *testing.T) {
 	}
 	opts := (&Daemon{cfg: &config.Config{StatePath: dir}}).admissionOptions(nil)
 	h, err := opts.LegacyHandover(opts.StatePath, now)
-	if err != nil || h.Pending != 1 || h.Spend.Units != 2 {
+	if err != nil || h.Spend.Units != 2 {
 		t.Fatalf("handover = %+v, %v", h, err)
 	}
 }

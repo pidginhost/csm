@@ -3,12 +3,10 @@ package admission
 import "time"
 
 // LegacyHandover is what legacy blocking's state holds when the owner first
-// executes: the current hour's count, and how many pending entries legacy
-// would still retry. A pending entry names no observation, so admission
-// cannot answer it (design C7).
+// executes: the current hour's count. Pending entries stay legacy's to
+// retry: a finding admission takes never enters that queue.
 type LegacyHandover struct {
-	Spend   LegacySpend
-	Pending int
+	Spend LegacySpend
 }
 
 const liveStartVersion = 1
