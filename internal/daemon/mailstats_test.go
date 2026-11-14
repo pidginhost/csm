@@ -347,3 +347,73 @@ func TestEximArrivalCountsSubmitterAccount(t *testing.T) {
 		t.Fatalf("senders = %+v, want %+v", got, want)
 	}
 }
+
+const (
+	mailStatsPostfixReject = "Oct 20 12:10:00 mx postfix/smtpd[1234]: NOQUEUE: reject: RCPT from unknown[192.0.2.10]: 550 5.1.1 <nobody@example.com>: Recipient address rejected: User unknown in virtual mailbox table; from=<a@example.net> to=<nobody@example.com> proto=ESMTP helo=<mail.example.net>"
+	mailStatsPostfixSpam   = "Oct 20 12:10:01 mx postfix/cleanup[55]: 4F1A2B3C4D: milter-reject: END-OF-MESSAGE from mail.example.net[192.0.2.11]: 5.7.1 Spam message rejected; from=<a@example.net> to=<u@example.com> proto=ESMTP helo=<mail.example.net>"
+	mailStatsPostfixSend   = "Oct 20 12:10:02 mx postfix/submission/smtpd[9]: 4F1A2B3C4E: client=client.example.net[192.0.2.5], sasl_method=PLAIN, sasl_username="
+	mailStatsPostfixNoAuth = "Oct 20 12:10:03 mx postfix/smtpd[1234]: 4F1A2B3C4F: client=mx.example.net[192.0.2.6]"
+)
+
+func TestMailStatsCountsPostfixRejects(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	for _, line := range []string{mailStatsPostfixReject, mailStatsPostfixSpam} {
+		d.recordMailStatsMail(line, now)
+	}
+	got := d.mailStats.Rejects(now.Add(-time.Hour), now, nil, 10)
+	if len(got) != 2 || got[0].Class != mailstats.ClassSpam || got[1].Class != mailstats.ClassUnknownRecipient {
+		t.Fatalf("rejects = %+v, want the spam reject then the unknown recipient", got)
+	}
+	if got[1].IP != "192.0.2.10" || got[1].Recipient != "nobody@example.com" {
+		t.Errorf("reject = %+v", got[1])
+	}
+	tot := d.mailStats.Overview(now.Add(-time.Hour), now).Totals
+	if tot.Rejects[mailstats.ClassUnknownRecipient] != 1 || tot.Rejects[mailstats.ClassSpam] != 1 {
+		t.Errorf("totals = %+v", tot.Rejects)
+	}
+}
+
+// A send is an authenticated submission, counted under the login whatever
+// case the client typed it in.
+func TestMailStatsCountsPostfixSends(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	for _, login := range []string{"User@Example.com", "user@example.com", "b@example.com"} {
+		d.recordMailStatsMail(mailStatsPostfixSend+login, now)
+	}
+	rep := d.mailStats.TopSenders(now.Add(-time.Hour), now, 10)
+	want := []mailstats.AccountSends{{Account: "user@example.com", Messages: 2}, {Account: "b@example.com", Messages: 1}}
+	if rep.Total != 3 || rep.Unresolved != 0 || !reflect.DeepEqual(rep.Accounts, want) {
+		t.Fatalf("senders = %+v, want %+v", rep, want)
+	}
+}
+
+// Mail accepted without a login is inbound or relayed for a trusted host:
+// the line names no sender to count.
+func TestMailStatsPostfixSendNeedsLogin(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	d.recordMailStatsMail(mailStatsPostfixNoAuth, now)
+	d.recordMailStatsMail(mailStatsPostfixSend, now)
+	if rep := d.mailStats.TopSenders(now.Add(-time.Hour), now, 10); rep.Total != 0 {
+		t.Fatalf("senders = %+v, want none", rep)
+	}
+}
+
+// Where the Exim main log is watched it is the source: a Postfix line in
+// the mail log must not count the same mail again.
+func TestMailStatsPostfixSkippedWhenEximWatched(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	d.smtpAuthFromExim = true
+	for _, line := range []string{mailStatsPostfixReject, mailStatsPostfixSpam, mailStatsPostfixSend + "user@example.com"} {
+		d.recordMailStatsMail(line, now)
+	}
+	if got := d.mailStats.Rejects(now.Add(-time.Hour), now, nil, 10); len(got) != 0 {
+		t.Errorf("rejects = %+v, want none", got)
+	}
+	if rep := d.mailStats.TopSenders(now.Add(-time.Hour), now, 10); rep.Total != 0 {
+		t.Errorf("senders = %+v, want none", rep)
+	}
+}

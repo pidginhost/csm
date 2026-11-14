@@ -45,16 +45,38 @@ func (d *Daemon) recordMailStatsExim(line string, at time.Time) {
 }
 
 // recordMailStatsMail counts the password attempts of a failed Dovecot
-// login, whatever the client address. A zero at means the source gave no
-// observation time.
+// login, whatever the client address, and on a Postfix host the rejects and
+// sends of the mail log. A zero at means the source gave no observation
+// time.
 func (d *Daemon) recordMailStatsMail(line string, at time.Time) {
-	if !strings.Contains(line, "(auth failed") || !isMailAuthLine(line) || dovecotLoginSucceeded(line) {
-		return
-	}
 	if at.IsZero() {
 		at = d.mailStatsNow()
 	}
+	// Where the Exim main log is watched it already counts this mail.
+	if !d.smtpAuthFromExim && strings.Contains(line, "postfix") {
+		d.recordMailStatsPostfix(line, at)
+	}
+	if !strings.Contains(line, "(auth failed") || !isMailAuthLine(line) || dovecotLoginSucceeded(line) {
+		return
+	}
 	d.mailStats.RecordLoginFailure(mailstats.LineTime(line, time.Local, at), true, dovecotFailedAttempts(line))
+}
+
+// recordMailStatsPostfix counts a Postfix reject, or a send: the line smtpd
+// logs when it accepts mail from a client that logged in. The login is the
+// sender; mail accepted without one is inbound or relayed for a trusted
+// host, and the line cannot tell which.
+func (d *Daemon) recordMailStatsPostfix(line string, at time.Time) {
+	if strings.Contains(line, "reject: ") {
+		if r, ok := mailstats.ParsePostfixReject(line, time.Local, at); ok {
+			d.mailStats.RecordReject(r)
+		}
+		return
+	}
+	_, msg := postfixSMTPDMessage(line)
+	if _, login := postfixSASLSuccess(msg); login != "" {
+		d.mailStats.RecordSend(mailstats.LineTime(line, time.Local, at), strings.ToLower(login))
+	}
 }
 
 // restoreMailStats merges the stored counts into the counter before the log
