@@ -28,10 +28,17 @@ const setupTestPassword = "s3cret-test"
 // listener on 8080.
 type setupFakeAPI struct {
 	http      stalwartapi.HTTPSettings
+	spam      stalwartapi.SpamSettings
+	stageOff  bool
+	spamErr   error
+	stageErr  error
 	readErr   error
 	writeErr  error
 	reloadErr error
 	writes    []string
+	probe     stalwartapi.SpamProbeResult
+	probeErr  error
+	probes    []stalwartapi.SpamProbe
 }
 
 func (f *setupFakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, error) {
@@ -62,6 +69,16 @@ func (f *setupFakeAPI) Listeners(context.Context) ([]stalwartapi.Listener, error
 	}, f.readErr
 }
 func (f *setupFakeAPI) ProxyTrustedNetworks(context.Context) ([]string, error) { return nil, f.readErr }
+func (f *setupFakeAPI) SpamSettings(context.Context) (stalwartapi.SpamSettings, error) {
+	return f.spam, errors.Join(f.readErr, f.spamErr)
+}
+func (f *setupFakeAPI) SpamFilterStageOff(context.Context) (bool, error) {
+	return f.stageOff, errors.Join(f.readErr, f.stageErr)
+}
+func (f *setupFakeAPI) ClassifySpam(_ context.Context, p stalwartapi.SpamProbe) (stalwartapi.SpamProbeResult, error) {
+	f.probes = append(f.probes, p)
+	return f.probe, f.probeErr
+}
 func (f *setupFakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	f.writes = append(f.writes, "reload")
 	return []string{"store: reloaded with a note"}, f.reloadErr
@@ -88,7 +105,7 @@ func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
 func newSetupHarness(t *testing.T) *setupHarness {
 	t.Helper()
 	h := &setupHarness{
-		api: &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}},
+		api: &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, spam: stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5}},
 		env: map[string]string{"STALWART_USER": "admin", "STALWART_PASSWORD": setupTestPassword},
 	}
 	cfg := &config.Config{}
@@ -194,13 +211,27 @@ func TestStalwartSetupDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestStalwartSetupPrintsSpamSteps(t *testing.T) {
+	h := newSetupHarness(t)
+	code, out := h.run("--dry-run")
+	if code != 0 || !strings.Contains(out, "spam verdict logging: change: ") || !strings.Contains(out, "spam filter: done: ") {
+		t.Fatalf("code %d, out %q; want 0 with both spam steps", code, out)
+	}
+
+	h = newSetupHarness(t)
+	h.api.spam.Enabled = false
+	if code, out := h.run("--dry-run"); code != 0 || !strings.Contains(out, "spam filter: warn: ") {
+		t.Fatalf("filter off: code %d, out %q; want 0 with the spam filter warned", code, out)
+	}
+}
+
 func TestStalwartSetupAppliesAndReloadsOnce(t *testing.T) {
 	h := newSetupHarness(t)
 	code, out := h.run("--url", "http://127.0.0.1:18080")
 	if code != 0 {
 		t.Fatalf("code = %d, out %q", code, out)
 	}
-	if want := []string{"tracing", "http", "bans", "reload"}; !reflect.DeepEqual(h.api.writes, want) {
+	if want := []string{"tracing", "http", "bans", "tracing", "reload"}; !reflect.DeepEqual(h.api.writes, want) {
 		t.Fatalf("writes = %q, want %q", h.api.writes, want)
 	}
 	if h.gotURL != "http://127.0.0.1:18080" {
@@ -462,5 +493,50 @@ func TestWaitStalwartPeerUsesAcceptedOwner(t *testing.T) {
 				t.Fatalf("accepted=%v: %v", err == nil, err)
 			}
 		})
+	}
+}
+
+func TestStalwartSetupSpamReadFailures(t *testing.T) {
+	for _, method := range []string{"settings", "stage"} {
+		for _, dryRun := range []bool{true, false} {
+			for _, unauthorized := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/dry=%t/unauthorized=%t", method, dryRun, unauthorized), func(t *testing.T) {
+					h := newSetupHarness(t)
+					err := errors.New("API error " + setupTestPassword)
+					if unauthorized {
+						err = fmt.Errorf("%s: %w", setupTestPassword, stalwartapi.ErrUnauthorized)
+					}
+					if method == "settings" {
+						h.api.spamErr = err
+					} else {
+						h.api.stageErr = err
+					}
+					var args []string
+					if dryRun {
+						args = []string{"--dry-run"}
+					}
+					code, out := h.run(args...)
+					if strings.Contains(out, setupTestPassword) {
+						t.Fatal("setup exposed the password")
+					}
+					if unauthorized {
+						if code != 2 || !strings.Contains(out, "refused the admin login") || len(h.api.writes) != 0 {
+							t.Fatalf("unauthorized: code %d, writes %q, out %q", code, h.api.writes, out)
+						}
+						return
+					}
+					if code != 0 || !strings.Contains(out, "spam filter: warn: Cannot read") {
+						t.Fatalf("code %d, out %q; want success with a spam status warning", code, out)
+					}
+					var want []string
+					if !dryRun {
+						want = []string{"tracing", "http", "bans", "tracing", "reload"}
+					}
+					if !reflect.DeepEqual(h.api.writes, want) {
+						t.Fatalf("writes = %q, want %q", h.api.writes, want)
+					}
+				})
+			}
+		}
 	}
 }

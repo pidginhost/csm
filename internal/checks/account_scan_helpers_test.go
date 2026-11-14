@@ -53,19 +53,3 @@ func TestResolveWebRootsNoMatch(t *testing.T) {
 		t.Errorf("no match should return empty, got %v", roots)
 	}
 }
-
-// --- LookupUID --------------------------------------------------------
-
-func TestLookupUIDCurrentUser(t *testing.T) {
-	// Current user should have a valid UID
-	uid := LookupUID(os.Getenv("USER"))
-	if uid < 0 {
-		t.Skipf("current user lookup failed (USER=%q)", os.Getenv("USER"))
-	}
-}
-
-func TestLookupUIDNonexistent(t *testing.T) {
-	if uid := LookupUID("nonexistent_user_zzz"); uid != -1 {
-		t.Errorf("nonexistent user should return -1, got %d", uid)
-	}
-}

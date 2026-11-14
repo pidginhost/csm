@@ -291,7 +291,7 @@ func (q *Quarantine) reinjectClaimed(path string) error {
 // where it is now and where it was held. The rename is atomic, so one
 // caller wins and the others find the copy not held.
 func (q *Quarantine) claim(id string) (claimed, held string, err error) {
-	_, held = q.locate(id)
+	held = q.pathOf(id)
 	if held == "" {
 		return "", "", errNotHeld(id)
 	}
@@ -463,14 +463,9 @@ func (q *Quarantine) CountsByForwarder() (map[string]int, error) {
 
 // pathOf returns the on-disk path of a held message id, or "" if absent.
 func (q *Quarantine) pathOf(id string) string {
-	_, path := q.locate(id)
-	return path
-}
-
-func (q *Quarantine) locate(id string) (dir, path string) {
 	id = filepath.Base(id) // defend against traversal in a caller-supplied id
 	if id == "" || id == "." || id == ".." || id == string(filepath.Separator) {
-		return "", ""
+		return ""
 	}
 	for _, d := range []string{"new", "cur"} {
 		p := filepath.Join(q.sub(d), id)
@@ -479,10 +474,10 @@ func (q *Quarantine) locate(id string) (dir, path string) {
 			continue
 		}
 		if info.Mode().IsRegular() {
-			return d, p
+			return p
 		}
 	}
-	return "", ""
+	return ""
 }
 
 func readMessageFile(path string) ([]byte, os.FileInfo, error) {

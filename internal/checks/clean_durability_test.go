@@ -58,7 +58,7 @@ func TestCleanBackupFailurePreservesOriginal(t *testing.T) {
 				result := CleanHtaccessFile(path)
 				success, resultErr = result.Success, result.Error
 			case "legacy-htaccess":
-				result := fixHtaccess(path, "injected directive")
+				result := fixHtaccess(path)
 				success, resultErr = result.Success, result.Error
 			case "crontab":
 				result := fixSuspiciousCrontab(path)

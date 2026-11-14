@@ -670,7 +670,7 @@ func TestFixPermissions_NonexistentUnderHome(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFixHtaccess_NonHtaccessBasename(t *testing.T) {
-	r := fixHtaccess("/home/alice/public_html/index.php", "anything")
+	r := fixHtaccess("/home/alice/public_html/index.php")
 	if r.Success {
 		t.Error("non-.htaccess base must be rejected")
 	}

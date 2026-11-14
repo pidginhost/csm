@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -78,6 +79,57 @@ func TestLapsedBlockCoalescesAndDeclinedCallbackKeepsRung(t *testing.T) {
 			inc, _ = c.Get("inc_ladder")
 			if len(calls) != 2 || calls[1] != 7*24*time.Hour || inc.AutoBlock.Count != 2 {
 				t.Fatalf("retry skipped rung or duplicated block: calls=%v state=%+v", calls, inc.AutoBlock)
+			}
+		})
+	}
+}
+
+// A re-block says which block it is, so an operator reading the firewall
+// reason or the incident timeline can see the ladder.
+func TestReblockReasonNamesTheAttempt(t *testing.T) {
+	for _, spray := range []bool{false, true} {
+		t.Run(map[bool]string{false: "generic", true: "spray"}[spray], func(t *testing.T) {
+			var reason string
+			c, f := blockLifecycleCorrelator(t, spray, func(_, r string, _ time.Duration, _ string, _ PreparedRoot) bool {
+				reason = r
+				return true
+			})
+			_, _, _ = c.OnFinding(f)
+			if !strings.HasSuffix(reason, "; block 2 after the previous one lapsed") {
+				t.Fatalf("reason = %q, want it to name the second block", reason)
+			}
+		})
+	}
+}
+
+// A block request whose incident changed between being prepared under the
+// lock and being run must not reach the firewall.
+func TestPreparedBlockIsDroppedWhenItsIncidentChangedFirst(t *testing.T) {
+	for _, spray := range []bool{false, true} {
+		t.Run(map[bool]string{false: "generic", true: "spray"}[spray], func(t *testing.T) {
+			called := false
+			c, _ := blockLifecycleCorrelator(t, spray, func(string, string, time.Duration, string, PreparedRoot) bool {
+				called = true
+				return true
+			})
+			c.mu.Lock()
+			inc := c.incidents["inc_ladder"]
+			var request func()
+			if spray {
+				request = c.triggerSprayBlockLocked(inc, "192.0.2.10", 3, c.now(), "test")
+			} else {
+				request = c.triggerIncidentBlockLocked(inc, "192.0.2.10", c.now(), "test")
+			}
+			if request == nil {
+				c.mu.Unlock()
+				t.Fatal("no block request was prepared")
+			}
+			// An operator block settles the ladder before the request runs.
+			inc.AutoBlock = AutoBlockState{Count: 2, LastAt: c.now()}
+			c.mu.Unlock()
+			request()
+			if called {
+				t.Fatal("a block request ran against an incident that had changed")
 			}
 		})
 	}

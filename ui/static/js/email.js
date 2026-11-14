@@ -269,20 +269,38 @@
         return { smtp: (rejects.malware || 0) - (temporary.malware || 0), quarantined: t.quarantined || 0 };
     }
 
+    // renderFilterKPIs fills the first three cards on a Stalwart host from
+    // what its own filter did; it has no scan count and no CSM mode.
+    function renderFilterKPIs(ov) {
+        var t = ov.totals || {};
+        var deliveredSub = 'not filed to Junk by the filter';
+        if (t.unmatched > 0) deliveredSub += ', ' + num(t.unmatched) + ' not matched';
+        setKPI('kpi-scanned', t.delivered || 0, deliveredSub);
+        // A reject is logged only once its log level is raised, so a zero
+        // before the first one would claim nothing was rejected.
+        if (ov.filter_rejects_seen) setKPI('kpi-spam', t.filter_rejected || 0, num(t.discarded) + ' discarded');
+        else setKPI('kpi-spam', '-', 'none logged yet');
+        setKPI('kpi-tagged', t.junk || 0, 'delivered to the Junk folder');
+    }
+
     function renderKPIs(ov) {
         var t = ov.totals || {};
-        var scanned = t.scanned || 0;
-        var scannedSub = scanned > 0 ? Math.floor((t.clean || 0) / scanned * 100) + '% clean' : 'nothing scanned';
-        if (t.scan_errors > 0) scannedSub += ', ' + num(t.scan_errors) + ' scan errors';
-        setKPI('kpi-scanned', scanned, scannedSub);
+        if (CSM.feature('stalwartFilter')) {
+            renderFilterKPIs(ov);
+        } else {
+            var scanned = t.scanned || 0;
+            var scannedSub = scanned > 0 ? Math.floor((t.clean || 0) / scanned * 100) + '% clean' : 'nothing scanned';
+            if (t.scan_errors > 0) scannedSub += ', ' + num(t.scan_errors) + ' scan errors';
+            setKPI('kpi-scanned', scanned, scannedSub);
 
-        setKPI('kpi-spam', t.rejected || 0, t.would_reject > 0 ? 'would reject ' + num(t.would_reject) : 'at SMTP time');
-        var badge = document.querySelector('#kpi-spam [data-kpi-badge]');
-        if (badge) {
-            badge.className = modeBadgeClass(ov.mode);
-            badge.textContent = ov.mode || '';
+            setKPI('kpi-spam', t.rejected || 0, t.would_reject > 0 ? 'would reject ' + num(t.would_reject) : 'at SMTP time');
+            var badge = document.querySelector('#kpi-spam [data-kpi-badge]');
+            if (badge) {
+                badge.className = modeBadgeClass(ov.mode);
+                badge.textContent = ov.mode || '';
+            }
+            setKPI('kpi-tagged', t.tagged || 0, t.would_tag > 0 ? 'would tag ' + num(t.would_tag) : 'delivered, marked as spam');
         }
-        setKPI('kpi-tagged', t.tagged || 0, t.would_tag > 0 ? 'would tag ' + num(t.would_tag) : 'delivered, marked as spam');
 
         var malware = malwareStopped(t);
         setKPI('kpi-malware', malware.smtp + malware.quarantined,
@@ -332,11 +350,16 @@
     // stateLine says in one sentence how mail is doing over the range.
     function stateLine(ov, rs, range) {
         var parts = [];
+        // On a Stalwart host its own filter runs whatever CSM's mode says.
+        var stalwart = CSM.feature('stalwartFilter');
         if (rs && rs.status === 'down') parts.push('rspamd is down.');
-        else if (ov.mode === 'off') parts.push('Antispam is off.');
+        else if (ov.mode === 'off' && !stalwart) parts.push('Antispam is off.');
         var t = ov.totals || {};
         var words = rangeWords(range);
-        if (!t.scanned) {
+        if (stalwart) {
+            if (!t.delivered && !t.junk && !t.filter_rejected && !t.discarded && !t.unmatched) parts.push('No inbound mail ' + words + '.');
+            else parts.push('Mail flowing. ' + num(t.junk) + ' filed to Junk and ' + (ov.filter_rejects_seen ? num(t.filter_rejected) : 'none logged') + ' rejected ' + words + '.');
+        } else if (!t.scanned) {
             parts.push('No mail scanned ' + words + '.');
         } else if (ov.mode === 'dry-run') {
             parts.push('Mail flowing. Dry run: ' + num(t.would_reject) + ' would be rejected and ' + num(t.would_tag) + ' tagged ' + words + '.');
@@ -396,7 +419,7 @@
         return periods;
     }
 
-    var SERIES_KEYS = ['clean', 'tagged', 'rejected', 'malware', 'other'];
+    var SERIES_KEYS = ['clean', 'tagged', 'rejected', 'malware', 'other', 'delivered', 'junk', 'filter_rejected', 'discarded'];
 
     // groupSeries sums the 15-minute buckets, sorted by time, into periods.
     function groupSeries(series, periods) {
@@ -444,15 +467,22 @@
         var periods = chartPeriods(range);
         var sums = groupSeries(ov.series, periods);
         _chartGapMinutes = periods.map(function(p) { return gapMinutes(ov.gaps, p); });
+        var spam = CSM.feature('stalwartFilter') ? [
+            { label: 'Delivered', data: sums.delivered, backgroundColor: themeColor('--csm-success', '#2fb344') },
+            { label: 'Filed to Junk', data: sums.junk, backgroundColor: themeColor('--csm-warning', '#f59f00') },
+            { label: 'Rejected', data: sums.filter_rejected, backgroundColor: themeColor('--csm-high', '#f76707') },
+            { label: 'Discarded', data: sums.discarded, backgroundColor: themeColor('--csm-info', '#4299e1') }
+        ] : [
+            { label: 'Clean', data: sums.clean, backgroundColor: themeColor('--csm-success', '#2fb344') },
+            { label: 'Tagged', data: sums.tagged, backgroundColor: themeColor('--csm-warning', '#f59f00') },
+            { label: 'Spam rejected', data: sums.rejected, backgroundColor: themeColor('--csm-high', '#f76707') }
+        ];
         var data = {
             labels: periods.map(function(p) { return p.label; }),
-            datasets: [
-                { label: 'Clean', data: sums.clean, backgroundColor: themeColor('--csm-success', '#2fb344') },
-                { label: 'Tagged', data: sums.tagged, backgroundColor: themeColor('--csm-warning', '#f59f00') },
-                { label: 'Spam rejected', data: sums.rejected, backgroundColor: themeColor('--csm-high', '#f76707') },
+            datasets: spam.concat([
                 { label: 'Malware', data: sums.malware, backgroundColor: themeColor('--csm-critical', '#d63939') },
                 { label: 'Other rejects', data: sums.other, backgroundColor: themeColor('--csm-secondary', '#6c757d') }
-            ]
+            ])
         };
         if (decisionsChart) {
             decisionsChart.data = data;
@@ -512,6 +542,8 @@
     }
 
     function loadRspamd() {
+        // Stalwart filters its own mail; the page shows no rspamd there.
+        if (CSM.feature('stalwartFilter')) return;
         var seq = ++_rspamdSeq;
         CSM.get('/api/v1/email/rspamd')
             .then(function(r) {

@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -64,150 +63,30 @@ func sanitizeJSTaintDisplay(s string, maxBytes int) string {
 // the js_taint_scan_incomplete diagnostic. Non-analyzed statuses are never
 // counted as clean files.
 type jsTaintGapCollector struct {
-	paths          map[string]struct{}
-	pathAliases    map[string]struct{}
-	aliasesByPath  map[string][]string
-	byStatus       map[string]int
-	example        map[string]string
+	gapPathSet
 	recordCoverage func([]string)
-	resolveAliases func(string) ([]string, bool)
-	unknown        int
-	unknownExample string
-	// pathsTruncated records that the exact-path set hit its bound.
-	pathsTruncated bool
 }
 
 func newJSTaintGapCollector() *jsTaintGapCollector {
-	return &jsTaintGapCollector{
-		paths:         map[string]struct{}{},
-		pathAliases:   map[string]struct{}{},
-		aliasesByPath: map[string][]string{},
-		byStatus:      map[string]int{},
-		example:       map[string]string{},
-	}
+	return &jsTaintGapCollector{gapPathSet: newGapPathSet(maxJSTaintGapPaths, jsTaintExampleMaxBytes, lexicalGapAliases)}
 }
 
 func (g *jsTaintGapCollector) record(path, status string) {
-	aliases, retained := g.aliasesByPath[path]
-	if !retained && len(g.paths) >= maxJSTaintGapPaths {
-		// Stop retaining paths, but never stop counting: the count is what
-		// tells an operator how much of the host went unexamined.
-		g.pathsTruncated = true
-	} else if !retained {
-		stable := true
-		if g.resolveAliases != nil {
-			aliases, stable = g.resolveAliases(path)
-		} else {
-			aliases = []string{coverageLexicalPath(path)}
-		}
-		if !stable {
-			g.recordUnknownRange(fmt.Sprintf("%s changed while its path identity was captured", path))
-			g.byStatus[status]++
-			if _, ok := g.example[status]; !ok {
-				g.example[status] = sanitizeJSTaintDisplay(path, jsTaintExampleMaxBytes)
-			}
-			return
-		}
-		g.paths[path] = struct{}{}
-		g.aliasesByPath[path] = aliases
-		for _, alias := range aliases {
-			g.pathAliases[alias] = struct{}{}
-		}
-	}
-	if len(aliases) > 0 && g.recordCoverage != nil {
+	if aliases := g.retain(path, status); len(aliases) > 0 && g.recordCoverage != nil {
 		g.recordCoverage(aliases)
 	}
-	g.byStatus[status]++
-	if _, ok := g.example[status]; !ok {
-		g.example[status] = sanitizeJSTaintDisplay(path, jsTaintExampleMaxBytes)
-	}
-}
-
-func (g *jsTaintGapCollector) recordUnknownRange(detail string) {
-	g.unknown++
-	if g.unknownExample == "" {
-		g.unknownExample = sanitizeJSTaintDisplay(detail, jsTaintExampleMaxBytes)
-	}
-}
-
-func (g *jsTaintGapCollector) pathsIncomplete() bool { return g.pathsTruncated || g.unknown > 0 }
-
-func (g *jsTaintGapCollector) empty() bool { return len(g.byStatus) == 0 && g.unknown == 0 }
-
-func (g *jsTaintGapCollector) hasPath(path string) bool {
-	if _, ok := g.paths[path]; ok {
-		return true
-	}
-	for _, alias := range coveragePathAliases(path) {
-		if _, ok := g.pathAliases[alias]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func (g *jsTaintGapCollector) finding() alert.Finding {
-	total := 0
-	statuses := make([]string, 0, len(g.byStatus))
-	for status, n := range g.byStatus {
-		total += n
-		statuses = append(statuses, status)
-	}
-	sort.Strings(statuses)
-	parts := make([]string, 0, len(statuses)+2)
-	for _, status := range statuses {
-		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, g.byStatus[status], g.example[status]))
-	}
-	if g.unknown > 0 {
-		parts = append(parts, fmt.Sprintf("unreadable-range=%d (example: %s)", g.unknown, g.unknownExample))
-	}
-	if g.pathsTruncated {
-		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxJSTaintGapPaths))
-	}
-	message := fmt.Sprintf("JavaScript taint deep scan could not analyze %d file(s)", total)
-	if total == 0 {
-		message = fmt.Sprintf("JavaScript taint deep scan could not cover %d location(s)", g.unknown)
-	}
-	return alert.Finding{
-		Severity: alert.Warning,
-		Check:    "js_taint_scan_incomplete",
-		Message:  message,
-		Details:  strings.Join(parts, "; "),
-		// One host-wide condition: counts and examples vary per cycle and
-		// must not re-alert while coverage stays degraded.
-		DedupKey: "coverage_gap",
-	}
+	return g.incompleteFinding(alert.Warning, "js_taint_scan_incomplete",
+		"JavaScript taint deep scan could not analyze %d file(s)",
+		"JavaScript taint deep scan could not cover %d location(s)")
 }
 
 // carryForwardJSTaintFindings keeps at most one prior state finding for each
-// path the current full cycle could not analyze. Partial rolling windows can
-// leave more than one historical variant at a path because their owner is not
-// purgeable; the most recently observed variant is the one that represents
-// current state when a later full cycle hits a path-specific gap.
+// path the current full cycle could not analyze.
 func carryForwardJSTaintFindings(prior []alert.Finding, gaps *jsTaintGapCollector) []alert.Finding {
-	byPath := make(map[string]alert.Finding)
-	for _, finding := range prior {
-		if finding.Check != "js_keylogger_dataflow" || !gaps.hasPath(finding.FilePath) {
-			continue
-		}
-		current, exists := byPath[finding.FilePath]
-		if !exists || finding.Timestamp.After(current.Timestamp) ||
-			(finding.Timestamp.Equal(current.Timestamp) && finding.Key() < current.Key()) {
-			byPath[finding.FilePath] = finding
-		}
-	}
-	paths := make([]string, 0, len(byPath))
-	for path := range byPath {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	carried := make([]alert.Finding, 0, len(paths))
-	for _, path := range paths {
-		finding := byPath[path]
-		finding.ScanCarryForward = true
-		carried = append(carried, finding)
-	}
-	return carried
+	return carryForwardLatestPerPath(prior, "js_keylogger_dataflow", &gaps.gapPathSet)
 }
 
 // analyzeJSTaintSnapshot runs the JS consumer on one complete in-memory

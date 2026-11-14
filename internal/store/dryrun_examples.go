@@ -214,7 +214,7 @@ func (db *DB) MaintainDryRunBlocks(step DryRunMaintenance) (DryRunMaintained, er
 	}
 	var res DryRunMaintained
 	var victims [][]byte
-	plan := func(tx *bolt.Tx) error {
+	plan := func(tx *bolt.Tx) error { //nolint:unparam // bolt's View fixes the signature
 		res, victims = DryRunMaintained{Next: step.Cursor}, nil
 		bucket := tx.Bucket([]byte(dryRunBlocksBucket))
 		if bucket == nil {

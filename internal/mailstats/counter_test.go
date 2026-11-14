@@ -285,6 +285,7 @@ func TestCounterConcurrentUse(t *testing.T) {
 				c.RecordReject(Reject{At: now, Class: ClassRateLimited, Temporary: true})
 				c.RecordLoginFailure(now, true, 1)
 				c.RecordQuarantine(now, "")
+				c.RecordFilterVerdict(now, FilterRejected)
 				c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
 				c.Rejects(now.Add(-time.Hour), now.Add(time.Hour), nil, 10)
 			}
@@ -293,7 +294,7 @@ func TestCounterConcurrentUse(t *testing.T) {
 	wg.Wait()
 	tot := c.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals
 	if tot.Rejected != 400 || tot.Rejects[ClassSpam] != 400 || tot.Temporary[ClassRateLimited] != 400 ||
-		tot.LoginsMailbox != 400 || tot.Quarantined != 400 {
+		tot.LoginsMailbox != 400 || tot.Quarantined != 400 || tot.FilterRejected != 400 {
 		t.Fatalf("%+v", tot)
 	}
 }
@@ -689,6 +690,83 @@ func TestRecordSendKeepsNoCallerString(t *testing.T) {
 		}
 		if unsafe.StringData(stored) == unsafe.StringData(account) {
 			t.Fatalf("send %d: stored key shares the caller's buffer", i+1)
+		}
+	}
+}
+
+func TestFilterVerdictTotals(t *testing.T) {
+	now := time.Date(2026, 11, 14, 10, 5, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	for outcome, n := range map[string]int{FilterDelivered: 3, FilterJunk: 2, FilterRejected: 1, FilterDiscarded: 1, FilterUnmatched: 1} {
+		for range n {
+			c.RecordFilterVerdict(now, outcome)
+		}
+	}
+	ov := c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
+	tot := ov.Totals
+	if tot.Delivered != 3 || tot.Junk != 2 || tot.FilterRejected != 1 || tot.Rejected != 0 || tot.Discarded != 1 || tot.Unmatched != 1 ||
+		tot.Scanned != 0 || tot.Clean != 0 || tot.Tagged != 0 || tot.ScanErrors != 0 {
+		t.Fatalf("totals %+v", tot)
+	}
+	want := Point{T: time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC).Unix(), Delivered: 3, Junk: 2, FilterRejected: 1, Discarded: 1}
+	if len(ov.Series) != 1 || ov.Series[0] != want {
+		t.Fatalf("series %+v, want [%+v]", ov.Series, want)
+	}
+}
+
+func TestFilterVerdictsLeaveScanTotalsAlone(t *testing.T) {
+	now := time.Date(2026, 11, 14, 10, 5, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "reject"})
+	c.RecordFilterVerdict(now, FilterDelivered)
+	tot := c.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals
+	if tot.Scanned != 1 || tot.Rejected != 1 || tot.Clean != 0 || tot.Delivered != 1 {
+		t.Fatalf("totals %+v", tot)
+	}
+}
+
+func TestFilterRejectsSeen(t *testing.T) {
+	now := time.Date(2026, 11, 14, 10, 5, 0, 0, time.UTC)
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	c := New(func() time.Time { return now })
+	c.RecordFilterVerdict(now, FilterDelivered)
+	c.RecordFilterVerdict(now, FilterJunk)
+	if c.Overview(from, to).FilterRejectsSeen {
+		t.Fatal("seen with only delivered and junk")
+	}
+
+	discard := from.Add(-3 * 24 * time.Hour)
+	c.RecordFilterVerdict(discard, FilterDiscarded)
+	ov := c.Overview(from, to)
+	if !ov.FilterRejectsSeen {
+		t.Fatal("discard before the range not seen")
+	}
+	if ov.Totals.Discarded != 0 {
+		t.Fatalf("discard outside the range counted: %+v", ov.Totals)
+	}
+
+	now = discard.Add(31 * 24 * time.Hour)
+	c.Prune(now)
+	if c.Overview(now.Add(-time.Hour), now.Add(time.Hour)).FilterRejectsSeen {
+		t.Fatal("seen after the discard was pruned")
+	}
+}
+
+func TestPointOmitsFilterKeysWhenZero(t *testing.T) {
+	now := time.Date(2026, 11, 14, 10, 5, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+	ov := c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
+	if len(ov.Series) != 1 {
+		t.Fatalf("series %+v", ov.Series)
+	}
+	got, err := json.Marshal(ov.Series[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"delivered"`, `"junk"`, `"filter_rejected"`, `"discarded"`} {
+		if strings.Contains(string(got), key) {
+			t.Errorf("point %s has %s", got, key)
 		}
 	}
 }

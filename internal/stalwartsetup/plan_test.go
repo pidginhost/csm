@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,20 +15,26 @@ import (
 )
 
 type fakeAPI struct {
-	levels    []stalwartapi.TracingLevel
-	http      stalwartapi.HTTPSettings
-	bans      stalwartapi.BanPeriods
-	listeners []stalwartapi.Listener
-	proxy     []string
-	readErr   error
-	writeErr  error
-	failOn    string
-	reloadErr error
-	calls     []string
+	levels     []stalwartapi.TracingLevel
+	http       stalwartapi.HTTPSettings
+	bans       stalwartapi.BanPeriods
+	listeners  []stalwartapi.Listener
+	proxy      []string
+	spam       stalwartapi.SpamSettings
+	stageOff   bool
+	readErr    error
+	readErrors map[string]error
+	writeErr   error
+	failOn     string
+	reloadErr  error
+	calls      []string
 }
 
 func (f *fakeAPI) read(name string) error {
 	f.calls = append(f.calls, name)
+	if err := f.readErrors[name]; err != nil {
+		return err
+	}
 	return f.readErr
 }
 
@@ -43,25 +50,49 @@ func (f *fakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, er
 	return f.levels, f.read("TracingLevels")
 }
 func (f *fakeAPI) SetTracingLevel(_ context.Context, id, event, level string) error {
-	return f.write(fmt.Sprintf("SetTracingLevel(%s,%s,%s)", id, event, level))
+	if err := f.write(fmt.Sprintf("SetTracingLevel(%s,%s,%s)", id, event, level)); err != nil {
+		return err
+	}
+	for i := range f.levels {
+		if f.levels[i].ID == id {
+			f.levels[i].Level = level
+			return nil
+		}
+	}
+	f.levels = append(f.levels, stalwartapi.TracingLevel{ID: fmt.Sprint(len(f.levels) + 1), Event: event, Level: level})
+	return nil
 }
 func (f *fakeAPI) HTTPSettings(context.Context) (stalwartapi.HTTPSettings, error) {
 	return f.http, f.read("HTTPSettings")
 }
 func (f *fakeAPI) SetHTTPSettings(_ context.Context, h stalwartapi.HTTPSettings) error {
-	return f.write(fmt.Sprintf("SetHTTPSettings(%s,%d)", h.ClientIPSource, h.ForwardedHops))
+	if err := f.write(fmt.Sprintf("SetHTTPSettings(%s,%d)", h.ClientIPSource, h.ForwardedHops)); err != nil {
+		return err
+	}
+	f.http = h
+	return nil
 }
 func (f *fakeAPI) BanPeriods(context.Context) (stalwartapi.BanPeriods, error) {
 	return f.bans, f.read("BanPeriods")
 }
 func (f *fakeAPI) SetBanPeriods(_ context.Context, d time.Duration) error {
-	return f.write(fmt.Sprintf("SetBanPeriods(%s)", d))
+	if err := f.write(fmt.Sprintf("SetBanPeriods(%s)", d)); err != nil {
+		return err
+	}
+	f.bans = stalwartapi.BanPeriods{Auth: dur(d), Abuse: dur(d), Scan: dur(d)}
+	return nil
 }
 func (f *fakeAPI) Listeners(context.Context) ([]stalwartapi.Listener, error) {
 	return f.listeners, f.read("Listeners")
 }
 func (f *fakeAPI) ProxyTrustedNetworks(context.Context) ([]string, error) {
 	return f.proxy, f.read("ProxyTrustedNetworks")
+}
+func (f *fakeAPI) SpamSettings(context.Context) (stalwartapi.SpamSettings, error) {
+	return f.spam, f.read("SpamSettings")
+}
+func (f *fakeAPI) SpamFilterStageOff(context.Context) (bool, error) {
+	return f.stageOff, f.read("SpamFilterStageOff")
 }
 func (f *fakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	if err := f.write("ReloadSettings"); err != nil {
@@ -90,17 +121,21 @@ func fieldListeners() []stalwartapi.Listener {
 
 func dur(d time.Duration) *time.Duration { return &d }
 
+// stockSpam is a fresh install's spam filter: on, Junk at 5, nothing else.
+var stockSpam = stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5}
+
 func freshAPI() *fakeAPI {
-	return &fakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, listeners: fieldListeners()}
+	return &fakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, listeners: fieldListeners(), spam: stockSpam}
 }
 
 func configuredAPI() *fakeAPI {
 	day := dur(24 * time.Hour)
 	return &fakeAPI{
-		levels:    []stalwartapi.TracingLevel{{ID: "t1", Event: "auth.failed", Level: "info"}},
+		levels:    []stalwartapi.TracingLevel{{ID: "t1", Event: "auth.failed", Level: "info"}, {ID: "t2", Event: "spam.classify", Level: "info"}},
 		http:      stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1},
 		bans:      stalwartapi.BanPeriods{Auth: day, Abuse: day, Scan: day},
 		listeners: fieldListeners(),
+		spam:      stockSpam,
 	}
 }
 
@@ -118,7 +153,7 @@ func inspect(t *testing.T, api *fakeAPI, in Inputs) Plan {
 	for i, s := range p.Steps {
 		names[i] = s.Name
 	}
-	want := []string{"failed-login logging", "webmail client addresses", "ban expiry", "proxy protocol listeners"}
+	want := []string{"failed-login logging", "webmail client addresses", "ban expiry", "proxy protocol listeners", "spam verdict logging", "spam filter"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("steps = %q, want %q", names, want)
 	}
@@ -145,7 +180,7 @@ func applyCalls(t *testing.T, api *fakeAPI, p Plan) []string {
 func TestPlanFreshStalwart(t *testing.T) {
 	api := freshAPI()
 	p := inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Change, Change, Change, Done}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Change, Change, Change, Done, Change, Done}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("states = %v, want %v", got, want)
 	}
 	api.calls = nil
@@ -157,6 +192,7 @@ func TestPlanFreshStalwart(t *testing.T) {
 		"SetTracingLevel(,auth.failed,info)",
 		"SetHTTPSettings(xForwardedFor,1)",
 		"SetBanPeriods(24h0m0s)",
+		"SetTracingLevel(,spam.classify,info)",
 		"ReloadSettings",
 	}
 	if !reflect.DeepEqual(api.calls, want) {
@@ -170,7 +206,7 @@ func TestPlanFreshStalwart(t *testing.T) {
 func TestPlanAlreadyConfiguredAppliesNothing(t *testing.T) {
 	api := configuredAPI()
 	p := inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Done, Done, Done, Done}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps)
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
@@ -227,11 +263,12 @@ func TestPlanFlagsUnsafeForwarded(t *testing.T) {
 
 func TestPlanTracingLevelVisibility(t *testing.T) {
 	api := configuredAPI()
-	api.levels = []stalwartapi.TracingLevel{{ID: "t7", Event: "auth.failed", Level: "warn"}}
+	spamDone := stalwartapi.TracingLevel{ID: "t2", Event: "spam.classify", Level: "info"}
+	api.levels = []stalwartapi.TracingLevel{{ID: "t7", Event: "auth.failed", Level: "warn"}, spamDone}
 	if s := inspect(t, api, fieldInputs()).Steps[0]; s.State != Done {
 		t.Fatalf("warn override = %+v, want Done", s)
 	}
-	api.levels = []stalwartapi.TracingLevel{{ID: "t0", Event: "auth.success", Level: "info"}, {ID: "t7", Event: "auth.failed", Level: "debug"}}
+	api.levels = []stalwartapi.TracingLevel{{ID: "t0", Event: "auth.success", Level: "info"}, {ID: "t7", Event: "auth.failed", Level: "debug"}, spamDone}
 	p := inspect(t, api, fieldInputs())
 	if p.Steps[0].State != Change {
 		t.Fatalf("debug override = %+v, want Change", p.Steps[0])
@@ -399,5 +436,164 @@ func TestPlanReloadFailureIsMarked(t *testing.T) {
 	_, err := p.Apply(context.Background(), api)
 	if !errors.Is(err, ErrNotReloaded) {
 		t.Fatalf("err = %v, want ErrNotReloaded", err)
+	}
+}
+
+func stepNamed(t *testing.T, p Plan, name string) Step {
+	t.Helper()
+	for _, s := range p.Steps {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("no %q step in %+v", name, p.Steps)
+	return Step{}
+}
+
+func TestPlanSpamVerdictLoggingChange(t *testing.T) {
+	api := freshAPI()
+	p := inspect(t, api, fieldInputs())
+	s := stepNamed(t, p, "spam verdict logging")
+	if s.State != Change || !strings.Contains(s.Detail, "rejected and discarded spam is not logged") {
+		t.Fatalf("step = %+v, want Change saying rejected and discarded spam is not logged", s)
+	}
+	calls := applyCalls(t, api, p)
+	if !slices.Contains(calls, "SetTracingLevel(,spam.classify,info)") {
+		t.Fatalf("calls = %q, want the spam.classify level set", calls)
+	}
+	if slices.Index(calls, "ReloadSettings") != len(calls)-1 || slices.Index(calls[:len(calls)-1], "ReloadSettings") >= 0 {
+		t.Fatalf("calls = %q, want exactly one ReloadSettings, after every write", calls)
+	}
+}
+
+func TestPlanSpamVerdictLoggingUpdatesOverride(t *testing.T) {
+	api := configuredAPI()
+	api.levels = []stalwartapi.TracingLevel{{ID: "t1", Event: "auth.failed", Level: "info"}, {ID: "t9", Event: "spam.classify", Level: "debug"}}
+	p := inspect(t, api, fieldInputs())
+	if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SetTracingLevel(t9,spam.classify,info)", "ReloadSettings"}) {
+		t.Fatalf("calls = %q", calls)
+	}
+}
+
+func TestPlanSpamVerdictLoggingDone(t *testing.T) {
+	for _, level := range []string{"info", "warn", "error"} {
+		api := freshAPI()
+		api.levels = []stalwartapi.TracingLevel{{ID: "t9", Event: "spam.classify", Level: level}}
+		p := inspect(t, api, fieldInputs())
+		if s := stepNamed(t, p, "spam verdict logging"); s.State != Done {
+			t.Fatalf("%s: step = %+v, want Done", level, s)
+		}
+		for _, c := range applyCalls(t, api, p) {
+			if strings.Contains(c, "spam.classify") {
+				t.Fatalf("%s: Apply made %q", level, c)
+			}
+		}
+	}
+}
+
+func TestPlanSpamFilterStates(t *testing.T) {
+	s := stepNamed(t, inspect(t, freshAPI(), fieldInputs()), "spam filter")
+	for _, want := range []string{"files spam to Junk at 5", "never rejects", "never discards"} {
+		if s.State != Done || !strings.Contains(s.Detail, want) {
+			t.Fatalf("stock: step = %+v, want Done with %q", s, want)
+		}
+	}
+
+	api := freshAPI()
+	api.spam = stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5, ScoreReject: 12, ScoreDiscard: 20}
+	s = stepNamed(t, inspect(t, api, fieldInputs()), "spam filter")
+	for _, want := range []string{"files spam to Junk at 5,", "rejects at 12", "discards at 20"} {
+		if s.State != Done || !strings.Contains(s.Detail, want) {
+			t.Fatalf("scores: step = %+v, want Done with %q", s, want)
+		}
+	}
+
+	off := "Stalwart's spam filter is off, so inbound mail is not filtered; switch it on in Stalwart's admin interface"
+	api = freshAPI()
+	api.spam.Enabled = false
+	if s := stepNamed(t, inspect(t, api, fieldInputs()), "spam filter"); s.State != Warn || s.Detail != off {
+		t.Fatalf("switched off: step = %+v, want Warn", s)
+	}
+	api = freshAPI()
+	api.stageOff = true
+	if s := stepNamed(t, inspect(t, api, fieldInputs()), "spam filter"); s.State != Warn || s.Detail != off {
+		t.Fatalf("stage off: step = %+v, want Warn", s)
+	}
+}
+
+// Setup reports the spam filter but never changes what happens to a message.
+func TestPlanSpamFilterNeverWrites(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeAPI){
+		"stock":        func(*fakeAPI) {},
+		"switched off": func(f *fakeAPI) { f.spam.Enabled = false },
+		"stage off":    func(f *fakeAPI) { f.stageOff = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := configuredAPI()
+			mutate(api)
+			p := inspect(t, api, fieldInputs())
+			if calls := applyCalls(t, api, p); len(calls) != 0 {
+				t.Fatalf("Apply made calls %q", calls)
+			}
+		})
+	}
+}
+
+func TestPlanSpamReadFailureWarnsAndAllowsSetup(t *testing.T) {
+	for _, method := range []string{"SpamSettings", "SpamFilterStageOff"} {
+		t.Run(method, func(t *testing.T) {
+			api := freshAPI()
+			api.readErrors = map[string]error{method: errors.New("private API error detail")}
+			p := inspect(t, api, fieldInputs())
+			s := stepNamed(t, p, "spam filter")
+			if s.State != Warn || s.Detail != "Cannot read Stalwart's spam filter status; check it in Stalwart's admin interface" || s.apply != nil {
+				t.Fatal("spam read failure must produce a static, read-only warning")
+			}
+			want := []string{
+				"SetTracingLevel(,auth.failed,info)",
+				"SetHTTPSettings(xForwardedFor,1)",
+				"SetBanPeriods(24h0m0s)",
+				"SetTracingLevel(,spam.classify,info)",
+				"ReloadSettings",
+			}
+			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, want) {
+				t.Fatalf("writes = %q, want %q", calls, want)
+			}
+			p = inspect(t, api, fieldInputs())
+			if calls := applyCalls(t, api, p); len(calls) != 0 {
+				t.Fatalf("second setup made calls: %q", calls)
+			}
+		})
+	}
+}
+
+func TestPlanSpamReadUnauthorizedStopsSetup(t *testing.T) {
+	for _, method := range []string{"SpamSettings", "SpamFilterStageOff"} {
+		t.Run(method, func(t *testing.T) {
+			api := freshAPI()
+			api.readErrors = map[string]error{method: fmt.Errorf("login: %w", stalwartapi.ErrUnauthorized)}
+			if method == "SpamFilterStageOff" {
+				api.readErrors["SpamSettings"] = errors.New("unavailable")
+			}
+			p, err := Inspect(context.Background(), api, fieldInputs())
+			if !errors.Is(err, stalwartapi.ErrUnauthorized) || len(p.Steps) != 0 {
+				t.Fatal("unauthorized spam read must return the login error and no plan")
+			}
+		})
+	}
+}
+
+func TestPlanSecondSetupWritesNothing(t *testing.T) {
+	api := freshAPI()
+	p := inspect(t, api, fieldInputs())
+	if calls := applyCalls(t, api, p); len(calls) != 5 {
+		t.Fatalf("first setup calls = %q, want four writes and a reload", calls)
+	}
+	p = inspect(t, api, fieldInputs())
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("second setup states = %v, want %v", got, want)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("second setup made calls: %q", calls)
 	}
 }

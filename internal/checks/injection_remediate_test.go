@@ -52,7 +52,7 @@ func TestFixQuarantineOutsideAllowedRoots(t *testing.T) {
 }
 
 func TestFixHtaccessEmptyPath(t *testing.T) {
-	got := fixHtaccess("", "msg")
+	got := fixHtaccess("")
 	if got.Success || !strings.Contains(got.Error, "could not extract") {
 		t.Errorf("expected error for empty path, got %+v", got)
 	}
@@ -60,14 +60,14 @@ func TestFixHtaccessEmptyPath(t *testing.T) {
 
 func TestFixHtaccessWrongFilename(t *testing.T) {
 	// Caller passed a non-.htaccess path - guard rejects it before any I/O.
-	got := fixHtaccess("/home/alice/public_html/index.php", "msg")
+	got := fixHtaccess("/home/alice/public_html/index.php")
 	if got.Success || !strings.Contains(got.Error, "only applies to .htaccess") {
 		t.Errorf("expected filename-guard error, got %+v", got)
 	}
 }
 
 func TestFixHtaccessOutsideAllowedRoots(t *testing.T) {
-	got := fixHtaccess("/etc/.htaccess", "msg")
+	got := fixHtaccess("/etc/.htaccess")
 	if got.Success || !strings.Contains(got.Error, "outside the allowed") {
 		t.Errorf("expected outside-roots error, got %+v", got)
 	}

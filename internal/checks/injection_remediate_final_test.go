@@ -38,7 +38,7 @@ func TestFixHtaccess_RemovesDangerousDirectiveTmpPath(t *testing.T) {
 	// So here we only assert the rejection branch: a valid .htaccess file
 	// but outside /home must fail with the "outside allowed roots" message
 	// from sanitizeFixPath.
-	res := fixHtaccess(path, "htaccess malicious directive")
+	res := fixHtaccess(path)
 	if res.Success {
 		t.Fatal("fixHtaccess should refuse paths outside /home")
 	}
@@ -53,8 +53,7 @@ func TestFixHtaccess_RemovesDangerousDirectiveTmpPath(t *testing.T) {
 func TestFixHtaccess_NonexistentUnderHome(t *testing.T) {
 	// This path is syntactically valid and under /home, but won't exist
 	// on the test host. sanitizeFixPath passes; Lstat fails.
-	res := fixHtaccess("/home/csm-nonexistent-user/public_html/.htaccess",
-		"evil directive")
+	res := fixHtaccess("/home/csm-nonexistent-user/public_html/.htaccess")
 	if res.Success {
 		t.Fatal("missing file should not succeed")
 	}
@@ -65,7 +64,7 @@ func TestFixHtaccess_NonexistentUnderHome(t *testing.T) {
 
 // TestFixHtaccess_EmptyMessage only covers the empty-path early return.
 func TestFixHtaccess_EmptyPathEarlyReturn(t *testing.T) {
-	res := fixHtaccess("", "any message")
+	res := fixHtaccess("")
 	if res.Success {
 		t.Fatal("empty path should not succeed")
 	}
@@ -76,7 +75,7 @@ func TestFixHtaccess_EmptyPathEarlyReturn(t *testing.T) {
 
 // TestFixHtaccess_BasenameIsNotHtaccess ensures the basename guard fires.
 func TestFixHtaccess_BasenameIsNotHtaccess(t *testing.T) {
-	res := fixHtaccess("/home/csm-user/public_html/config.php", "msg")
+	res := fixHtaccess("/home/csm-user/public_html/config.php")
 	if res.Success {
 		t.Fatal("non-.htaccess basename should be rejected")
 	}

@@ -353,7 +353,7 @@ func TestAccessCleanActionsAndWriteFailures(t *testing.T) {
 				case "htaccess":
 					CleanHtaccessFile(path)
 				default:
-					fixHtaccess(path, "")
+					fixHtaccess(path)
 				}
 				if len(sink.records) != 1 {
 					t.Fatalf("records=%d want 1", len(sink.records))

@@ -134,18 +134,17 @@ func (a *analysis) analyzeBinding(be *js.BindingElement, st *state, clearAbsent 
 
 // bindVar performs a strong update binding a variable to a value, appending the
 // variable name to the laundering chain and preserving aliased allocations.
-func (a *analysis) bindVar(st *state, cv *js.Var, rhs value) value {
+func (a *analysis) bindVar(st *state, cv *js.Var, rhs value) {
 	nt := value{
 		scalar: appendVia(rhs.scalar, string(cv.Name())),
 		allocs: rhs.allocs, allocOnly: rhs.allocOnly, scheme: rhs.scheme,
 	}
 	if !storable(nt) {
 		st.delEnv(cv)
-		return value{}
+		return
 	}
 	st.setEnv(cv, nt)
 	a.fact()
-	return nt
 }
 
 // storable reports whether a value carries information worth keeping in the
@@ -884,7 +883,7 @@ func (a *analysis) collectArrayElements(st *state, src value) value {
 	var out value
 	have := false
 	if len(src.scalar) != 0 {
-		out, have = mergePresentValue(out, have, value{scalar: src.scalar})
+		out, have = mergePresentValue(out, have, value{scalar: src.scalar}), true
 	}
 	for ref := range src.allocs {
 		o := st.heap[ref.id]
@@ -893,14 +892,14 @@ func (a *analysis) collectArrayElements(st *state, src value) value {
 		}
 		for name, fv := range o.fields {
 			if isArrayIndexName(name) {
-				out, have = mergePresentValue(out, have, applyRefDepth(fv, ref))
+				out, have = mergePresentValue(out, have, applyRefDepth(fv, ref)), true
 			}
 		}
 		if o.elemMay {
-			out, have = mergePresentValue(out, have, applyRefDepth(o.elem, ref))
+			out, have = mergePresentValue(out, have, applyRefDepth(o.elem, ref)), true
 		}
 		if o.wildMay {
-			out, have = mergePresentValue(out, have, applyRefDepth(o.wild, ref))
+			out, have = mergePresentValue(out, have, applyRefDepth(o.wild, ref)), true
 		}
 	}
 	if !have {
@@ -941,10 +940,10 @@ func (a *analysis) spreadInto(st *state, dst *object, src value) {
 			}
 		}
 		if so.elemMay {
-			elem, elemMay = mergePresentValue(elem, elemMay, applyRefDepth(so.elem, ref))
+			elem, elemMay = mergePresentValue(elem, elemMay, applyRefDepth(so.elem, ref)), true
 		}
 		if so.wildMay {
-			wild, wildMay = mergePresentValue(wild, wildMay, applyRefDepth(so.wild, ref))
+			wild, wildMay = mergePresentValue(wild, wildMay, applyRefDepth(so.wild, ref)), true
 		}
 		if so.elemMust {
 			elemDefinite++
@@ -961,7 +960,7 @@ func (a *analysis) spreadInto(st *state, dst *object, src value) {
 	}
 	// A scalar spread contributes character properties at numeric keys.
 	if len(src.scalar) != 0 {
-		elem, elemMay = mergePresentValue(elem, elemMay, value{scalar: src.scalar})
+		elem, elemMay = mergePresentValue(elem, elemMay, value{scalar: src.scalar}), true
 	}
 	allSources := src.allocOnly && len(src.allocs) != 0
 	if wildMay {

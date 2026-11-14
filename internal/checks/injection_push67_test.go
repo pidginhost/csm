@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -193,7 +194,19 @@ func TestInlineQuarantineWithRealFile(t *testing.T) {
 	osFS = realOS{}
 	defer func() { osFS = old }()
 
+	qdir := filepath.Join(dir, "quarantine")
+	withAutoRespQuarantineDir(t, qdir)
+
+	// A short file with no rule category fails the confidence gate.
 	f := alert.Finding{Check: "webshell", FilePath: path}
-	_, ok := InlineQuarantine(f, path, []byte("<?php system('id'); ?>"))
-	_ = ok // exercises the quarantine path
+	qPath, ok := InlineQuarantine(f, path, []byte("<?php system('id'); ?>"))
+	if ok || qPath != "" {
+		t.Fatalf("InlineQuarantine = %q, %v; want no quarantine", qPath, ok)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file missing after refused quarantine: %v", err)
+	}
+	if entries, _ := os.ReadDir(qdir); len(entries) != 0 {
+		t.Fatalf("quarantine holds %d entries after a refused move", len(entries))
+	}
 }

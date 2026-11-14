@@ -24,6 +24,18 @@ const (
 	bucketLimit  = int(Retention / (BucketSeconds * time.Second))
 )
 
+// What a mail server's own spam filter did with a message. Unmatched is a
+// verdict no delivery or reject could be paired with.
+const (
+	FilterDelivered = "delivered"
+	FilterJunk      = "junk"
+	FilterRejected  = "reject"
+	FilterDiscarded = "discard"
+	FilterUnmatched = "unmatched"
+
+	filterMode = "stalwart"
+)
+
 // Span is a stretch of time.
 type Span struct {
 	Start time.Time `json:"start"`
@@ -34,44 +46,59 @@ type Span struct {
 // unchanged, so it counts as clean and as would-tag or would-reject, never
 // as tagged or rejected. A scan whose message was then rejected or
 // quarantined as malware counts only as scanned. Rejects counts every
-// reject per class; Temporary is the temporary subset.
+// reject per class; Temporary is the temporary subset. Delivered, Junk,
+// FilterRejected, Discarded and Unmatched are mail filter verdicts, separate
+// from the scan counts, including Rejected.
 type Totals struct {
-	Scanned       int           `json:"scanned"`
-	Clean         int           `json:"clean"`
-	Tagged        int           `json:"tagged"`
-	Rejected      int           `json:"rejected"`
-	WouldTag      int           `json:"would_tag"`
-	WouldReject   int           `json:"would_reject"`
-	Unfiltered    int           `json:"unfiltered"`
-	ScanErrors    int           `json:"scan_errors"`
-	Rejects       map[Class]int `json:"rejects"`
-	Temporary     map[Class]int `json:"temporary"`
-	Quarantined   int           `json:"quarantined"`
-	LoginsSMTP    int           `json:"logins_smtp"`
-	LoginsMailbox int           `json:"logins_mailbox"`
+	Scanned        int           `json:"scanned"`
+	Clean          int           `json:"clean"`
+	Tagged         int           `json:"tagged"`
+	Rejected       int           `json:"rejected"`
+	WouldTag       int           `json:"would_tag"`
+	WouldReject    int           `json:"would_reject"`
+	Unfiltered     int           `json:"unfiltered"`
+	ScanErrors     int           `json:"scan_errors"`
+	Rejects        map[Class]int `json:"rejects"`
+	Temporary      map[Class]int `json:"temporary"`
+	Quarantined    int           `json:"quarantined"`
+	LoginsSMTP     int           `json:"logins_smtp"`
+	LoginsMailbox  int           `json:"logins_mailbox"`
+	Delivered      int           `json:"delivered"`
+	Junk           int           `json:"junk"`
+	FilterRejected int           `json:"filter_rejected"`
+	Discarded      int           `json:"discarded"`
+	Unmatched      int           `json:"unmatched"`
 }
 
 // Point is one bucket of the chart. T is the bucket start in unix seconds.
 // A temporary reject defers the message rather than deciding it, so no
-// series counts one.
+// series counts one. Delivered, Junk, FilterRejected and Discarded are
+// mail filter verdicts, separate from the scan counts.
 type Point struct {
-	T        int64 `json:"t"`
-	Clean    int   `json:"clean"`
-	Tagged   int   `json:"tagged"`
-	Rejected int   `json:"rejected"`
-	Malware  int   `json:"malware"`
-	Other    int   `json:"other"`
+	T              int64 `json:"t"`
+	Clean          int   `json:"clean"`
+	Tagged         int   `json:"tagged"`
+	Rejected       int   `json:"rejected"`
+	Malware        int   `json:"malware"`
+	Other          int   `json:"other"`
+	Delivered      int   `json:"delivered,omitempty"`
+	Junk           int   `json:"junk,omitempty"`
+	FilterRejected int   `json:"filter_rejected,omitempty"`
+	Discarded      int   `json:"discarded,omitempty"`
 }
 
-// Overview is what the counter knows about [From, To).
+// Overview is what the counter knows about [From, To). FilterRejectsSeen
+// is set when any kept bucket, in the range or not, holds a mail filter
+// reject or discard.
 type Overview struct {
-	From             time.Time `json:"from"`
-	To               time.Time `json:"to"`
-	CountingSince    time.Time `json:"counting_since,omitzero"`
-	UncountedMinutes int       `json:"uncounted_minutes"`
-	Gaps             []Span    `json:"gaps"`
-	Totals           Totals    `json:"totals"`
-	Series           []Point   `json:"series"`
+	From              time.Time `json:"from"`
+	To                time.Time `json:"to"`
+	CountingSince     time.Time `json:"counting_since,omitzero"`
+	UncountedMinutes  int       `json:"uncounted_minutes"`
+	Gaps              []Span    `json:"gaps"`
+	Totals            Totals    `json:"totals"`
+	Series            []Point   `json:"series"`
+	FilterRejectsSeen bool      `json:"filter_rejects_seen"`
 }
 
 // SendersReport is the outgoing mail of [from, to) by hosting account.
@@ -91,10 +118,11 @@ type AccountSends struct {
 
 // bucket holds the counts of one BucketSeconds window. Scans is keyed by
 // mode + ":" + outcome, where outcome is the scan decision, "error", or
-// "malware" once a malware reject or quarantine of the message followed.
-// Temporary is the subset of Rejects that were temporary. Sends is keyed by
-// hosting account, "" for a submitter that matched none, and stays nil
-// until the window has a send.
+// "malware" once a malware reject or quarantine of the message followed,
+// or by "stalwart:" + a Filter outcome for a mail filter verdict. Temporary
+// is the subset of Rejects that were temporary. Sends is keyed by hosting
+// account, "" for a submitter that matched none, and stays nil until the
+// window has a send.
 type bucket struct {
 	Scans         map[string]int
 	Rejects       map[Class]int
@@ -204,6 +232,21 @@ func (c *Counter) RecordScan(at time.Time, s antispam.Scan) {
 		key = ref.key
 	}
 	b.Scans[key]++
+}
+
+// RecordFilterVerdict counts one message by what the mail server's spam
+// filter did with it, one of the Filter outcomes. Unknown outcomes are ignored.
+func (c *Counter) RecordFilterVerdict(at time.Time, outcome string) {
+	switch outcome {
+	case FilterDelivered, FilterJunk, FilterRejected, FilterDiscarded, FilterUnmatched:
+	default:
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if b := c.bucketAt(at); b != nil {
+		b.Scans[filterMode+":"+outcome]++
+	}
 }
 
 // RecordReject counts one reject and keeps it in its class ring when it is
@@ -391,7 +434,9 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 	var in []keyed
 	c.mu.Lock()
 	since, gaps := c.since, slices.Clone(c.gaps)
+	seen := false
 	for k, b := range c.buckets {
+		seen = seen || b.Scans[filterMode+":"+FilterRejected] > 0 || b.Scans[filterMode+":"+FilterDiscarded] > 0
 		if start := time.Unix(k, 0); !start.Before(from) && start.Before(to) {
 			cp := *b
 			cp.Scans, cp.Rejects, cp.Temporary = maps.Clone(b.Scans), maps.Clone(b.Rejects), maps.Clone(b.Temporary)
@@ -401,7 +446,7 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 	c.mu.Unlock()
 
 	slices.SortFunc(in, func(x, y keyed) int { return cmp.Compare(x.t, y.t) })
-	ov := Overview{From: from, To: to, CountingSince: since,
+	ov := Overview{From: from, To: to, CountingSince: since, FilterRejectsSeen: seen,
 		Totals: Totals{Rejects: map[Class]int{}, Temporary: map[Class]int{}}, Series: make([]Point, 0, len(in))}
 	ov.Gaps, ov.UncountedMinutes = clipGaps(gaps, from, to)
 	tot := &ov.Totals
@@ -409,6 +454,22 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 		p := Point{T: e.t}
 		for key, n := range e.b.Scans {
 			mode, outcome, _ := strings.Cut(key, ":")
+			if mode == filterMode {
+				// The mail server's own filter decided these; CSM scanned none.
+				switch outcome {
+				case FilterDelivered:
+					p.Delivered += n
+				case FilterJunk:
+					p.Junk += n
+				case FilterRejected:
+					p.FilterRejected += n
+				case FilterDiscarded:
+					p.Discarded += n
+				case FilterUnmatched:
+					tot.Unmatched += n
+				}
+				continue
+			}
 			enforce := mode == "enforce"
 			tot.Scanned += n
 			switch {
@@ -450,6 +511,10 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 		tot.Clean += p.Clean
 		tot.Tagged += p.Tagged
 		tot.Rejected += p.Rejected
+		tot.Delivered += p.Delivered
+		tot.Junk += p.Junk
+		tot.FilterRejected += p.FilterRejected
+		tot.Discarded += p.Discarded
 		tot.Quarantined += e.b.Quarantined
 		tot.LoginsSMTP += e.b.LoginsSMTP
 		tot.LoginsMailbox += e.b.LoginsMailbox

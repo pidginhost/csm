@@ -132,6 +132,20 @@ Provider delays tabs, the antivirus lines of the Protection card, cPHulk
 actions on the Firewall page, the dashboard's Email AV chip, and the Email AV,
 cPanel and webmail login, and known API token settings need cPanel and are not
 shown elsewhere. Hidden settings keep the values they have in `csm.yaml`.
+On a Stalwart host the first three Email Security cards show the mail
+Stalwart's spam filter did not file to Junk, the mail it rejected or
+discarded, and the mail it filed to the Junk folder.
+The state line and mail decisions chart use Stalwart's filter verdicts,
+independently of CSM's antispam mode. The Spam rejected card opens Overview
+and has no mode badge. It shows a dash and "none logged yet" until CSM has a
+retained rejection or discard, including events outside the selected range.
+After that, it shows the range's rejection count and the discarded count
+below it. The Mail delivered card also names unmatched verdicts.
+Missing verdict counts from an older daemon display as zero; they never
+fall back to rspamd counts. Large card counts are shortened, with the full
+count available in the value's tooltip. The rspamd card and the Antispam
+line of the Protection card are not shown, as they describe CSM's own
+antispam.
 
 Rejects and Sending accounts read the Exim main log, or the Postfix mail log
 on a host without Exim. On Postfix a send is mail accepted from a client that
@@ -146,8 +160,9 @@ status or the selected outbound abuse range.
 Headline counts refresh every 30 seconds. Queue messages and composition,
 held mail, rejects, sending accounts, provider delays and Findings refresh
 every minute while their tab is open. Hidden tabs do not poll their lists;
-the Held mail, Sending accounts and Provider delays counts and the rspamd
-state in the header refresh every minute on any tab.
+the Held mail, Sending accounts and Provider delays counts refresh every
+minute on any tab. On hosts without Stalwart's filter, the rspamd state in
+the header also refreshes every minute on any tab.
 Unchanged results keep their rows; changed results retain paging, sorting,
 selection, open details and focus for items still present. Pending message,
 bulk and firewall actions stay disabled across refreshes. Queue actions wait

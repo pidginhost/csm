@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -231,5 +232,230 @@ func TestReloadSettingsSendsAction(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{`a: {"k":1}`, "b: second"}) {
 		t.Fatalf("warnings = %q", got)
+	}
+}
+
+func TestSpamSettings(t *testing.T) {
+	for _, want := range []SpamSettings{
+		{Enabled: true, ScoreSpam: 5},
+		{Enabled: true, ScoreSpam: 5, ScoreReject: 12.5, ScoreDiscard: 18.25},
+		{},
+	} {
+		f := newFake(t)
+		f.reply = func(method string, _ map[string]any) (string, any) {
+			return method, map[string]any{"list": []any{map[string]any{
+				"id": "singleton", "enable": want.Enabled, "scoreSpam": want.ScoreSpam,
+				"scoreReject": want.ScoreReject, "scoreDiscard": want.ScoreDiscard, "greylistFor": nil}}}
+		}
+		got, err := f.client().SpamSettings(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("settings = %+v, want %+v", got, want)
+		}
+		if c := f.last(); c.Method != "x:SpamSettings/get" || asJSON(t, c.Args["ids"]) != `["singleton"]` {
+			t.Fatalf("call = %s %s", c.Method, asJSON(t, c.Args["ids"]))
+		}
+	}
+}
+
+func TestSpamSettingsRejectsIncompleteSettings(t *testing.T) {
+	for _, field := range []string{"enable", "scoreSpam", "scoreReject", "scoreDiscard"} {
+		for _, missing := range []bool{false, true} {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				settings := map[string]any{"id": "singleton", "enable": true, "scoreSpam": 5, "scoreReject": 0, "scoreDiscard": 0}
+				if missing {
+					delete(settings, field)
+				} else {
+					settings[field] = nil
+				}
+				return method, map[string]any{"list": []any{settings}}
+			}
+			if _, err := f.client().SpamSettings(context.Background()); err == nil {
+				t.Errorf("invalid %s accepted (missing=%v)", field, missing)
+			}
+		}
+	}
+}
+
+func TestSpamFilterStageOff(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		filter any
+		want   bool
+	}{
+		{"default", map[string]any{"match": map[string]any{}, "else": "is_empty(authenticated_as)"}, false},
+		{"off", map[string]any{"match": map[string]any{}, "else": "false"}, true},
+		{"off with spaces", map[string]any{"match": map[string]any{}, "else": " false "}, true},
+		{"rules before off", map[string]any{"match": map[string]any{"0": map[string]any{"if": "is_empty(authenticated_as)", "then": "true"}}, "else": "false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				return method, map[string]any{"list": []any{map[string]any{"id": "singleton", "enableSpamFilter": tc.filter}}}
+			}
+			got, err := f.client().SpamFilterStageOff(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("off = %v, want %v", got, tc.want)
+			}
+			if c := f.last(); c.Method != "x:MtaStageData/get" || asJSON(t, c.Args["ids"]) != `["singleton"]` {
+				t.Fatalf("call = %s %s", c.Method, asJSON(t, c.Args["ids"]))
+			}
+		})
+	}
+}
+
+func TestClassifySpam(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"c": map[string]any{
+			"score": 11.2, "result": "ham", "tags": map[string]any{
+				"RDNS_NONE":     map[string]any{"score": 1.0, "disposition": "score"},
+				"DNSWL_BLOCKED": map[string]any{"score": 0.0, "disposition": "score"},
+			}}}}
+	}
+	c := f.client()
+	probe := SpamProbe{
+		Message: "Subject: t\r\n\r\nhi\r\n", RemoteIP: "192.0.2.10", EhloDomain: "mx.example.com",
+		MailFrom: "sender@example.com", RcptTo: "postmaster@example.com",
+	}
+	got, err := c.ClassifySpam(context.Background(), probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := f.last()
+	want := `{"c":{"@type":"ClassifySpam","ehloDomain":"mx.example.com","isTls":false,"mailFrom":"sender@example.com","message":"Subject: t\r\n\r\nhi\r\n","rcptTo":{"postmaster@example.com":true},"remoteIp":"192.0.2.10"}}`
+	if call.Method != "x:Action/set" || asJSON(t, call.Args["create"]) != want {
+		t.Fatalf("call = %s %s", call.Method, asJSON(t, call.Args["create"]))
+	}
+	if !reflect.DeepEqual(got, SpamProbeResult{Score: 11.2, Result: "ham", Tags: []string{"DNSWL_BLOCKED", "RDNS_NONE"}}) {
+		t.Fatalf("result = %+v", got)
+	}
+
+	// A tag's disposition is the rule's own action, not the verdict.
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"c": map[string]any{
+			"score": 3.0, "result": "ham", "tags": map[string]any{
+				"SOME_RULE": map[string]any{"score": 3.0, "disposition": "reject"},
+			}}}}
+	}
+	got, err = c.ClassifySpam(context.Background(), probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != "ham" {
+		t.Fatalf("result = %q, want ham", got.Result)
+	}
+}
+
+func TestClassifySpamNotAcknowledged(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{}}
+	}
+	if _, err := f.client().ClassifySpam(context.Background(), BlocklistProbe); err == nil {
+		t.Fatal("a probe without a created result was accepted")
+	}
+}
+
+func TestSpamFilterStageOffRejectsUnexpectedShape(t *testing.T) {
+	for _, filter := range []string{
+		`null`, `{}`, `{"else":"false"}`, `{"match":null,"else":"false"}`,
+		`{"match":[],"else":"false"}`, `{"match":[{"if":"true","then":"true"}],"else":"false"}`,
+		`{"match":true,"else":"false"}`, `{"match":"false","else":"false"}`,
+		`{"match":{}}`, `{"match":{},"else":null}`, `{"match":{},"else":false}`,
+	} {
+		t.Run(filter, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				return method, map[string]any{"list": []any{map[string]any{"id": "singleton", "enableSpamFilter": json.RawMessage(filter)}}}
+			}
+			off, err := f.client().SpamFilterStageOff(context.Background())
+			if err == nil || off {
+				t.Fatalf("unexpected shape: off = %v, err = %v", off, err)
+			}
+		})
+	}
+}
+
+func TestClassifySpamRejectsIncompleteResult(t *testing.T) {
+	for _, result := range []string{
+		`null`, `{}`, `{"score":0,"tags":{}}`, `{"score":0,"result":"","tags":{}}`,
+		`{"result":"ham","tags":{}}`, `{"score":null,"result":"ham","tags":{}}`,
+		`{"score":0,"result":"ham"}`, `{"score":0,"result":"ham","tags":null}`,
+	} {
+		t.Run(result, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				return method, map[string]any{"created": map[string]any{"c": json.RawMessage(result)}}
+			}
+			if _, err := f.client().ClassifySpam(context.Background(), BlocklistProbe); err == nil {
+				t.Fatal("incomplete classification accepted")
+			}
+		})
+	}
+}
+
+func TestClassifySpamZeroScoreWithoutTags(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"c": map[string]any{
+			"score": 0, "result": "ham", "tags": map[string]any{},
+		}}}
+	}
+	got, err := f.client().ClassifySpam(context.Background(), BlocklistProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, SpamProbeResult{Score: 0, Result: "ham", Tags: []string{}}) {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestSpamCallsRedactServerText(t *testing.T) {
+	for _, operation := range []string{"settings", "stage", "classify", "classify failure", "classify output"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				switch operation {
+				case "classify output":
+					return method, map[string]any{"created": map[string]any{"c": map[string]any{
+						"score": 0, "result": testPassword, "tags": map[string]any{testPassword: map[string]any{}},
+					}}}
+				case "classify failure":
+					return method, map[string]any{"notCreated": map[string]any{"c": map[string]any{"type": "invalidProperties", "description": testPassword}}}
+				default:
+					return "error", map[string]any{"type": "serverFail", "description": testPassword}
+				}
+			}
+			c := f.client()
+			var err error
+			switch operation {
+			case "settings":
+				_, err = c.SpamSettings(context.Background())
+			case "stage":
+				_, err = c.SpamFilterStageOff(context.Background())
+			default:
+				var got SpamProbeResult
+				got, err = c.ClassifySpam(context.Background(), BlocklistProbe)
+				if operation == "classify output" {
+					if err != nil {
+						t.Fatal("classification failed")
+					}
+					if got.Result != "[redacted]" || !reflect.DeepEqual(got.Tags, []string{"[redacted]"}) {
+						t.Fatal("classification output was not redacted")
+					}
+					return
+				}
+			}
+			if err == nil || strings.Contains(err.Error(), testPassword) || !strings.Contains(err.Error(), "[redacted]") {
+				t.Fatal("server error was not returned and redacted")
+			}
+		})
 	}
 }

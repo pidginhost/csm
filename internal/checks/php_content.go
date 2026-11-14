@@ -3425,14 +3425,14 @@ func PHPTerminatesImmediatelyAt(buf []byte) (int, bool) {
 	if !isPHPTerminatorStatement(buf, i, word, false) {
 		return 0, false
 	}
-	return phpTerminatorStatementEnd(buf, i, word), true
+	return phpTerminatorStatementEnd(buf, i), true
 }
 
 // phpTerminatorStatementEnd returns the offset where the file's unreachable
 // bytes begin. Past the validated terminator it also consumes any further
 // terminator statements and the closing tag, because a state file commonly
 // opens `exit('...'); __halt_compiler(); ?>` before its data.
-func phpTerminatorStatementEnd(buf []byte, i int, word string) int {
+func phpTerminatorStatementEnd(buf []byte, i int) int {
 	for {
 		i = skipPHPSpace(buf, i)
 		if i < len(buf) && buf[i] == '(' {

@@ -390,13 +390,11 @@ func enforceAccessLogTrackerCap(candidates []accessLogEvictionCandidate, cap int
 	}
 }
 
-func deleteAccessLogTrackerLocked(key string, tracker *accessLogTracker) bool {
+func deleteAccessLogTrackerLocked(key string, tracker *accessLogTracker) {
 	tracker.evicting = true
 	if accessLogTrackers.CompareAndDelete(key, tracker) {
 		decrementAccessLogTrackerCount()
-		return true
 	}
-	return false
 }
 
 func decrementAccessLogTrackerCount() {

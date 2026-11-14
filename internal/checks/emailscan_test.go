@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/config"
 )
 
 // base64Wrap standard-base64-encodes s and wraps it at 76 columns, mirroring
@@ -90,7 +89,7 @@ func TestScanEximMessage_LoneReplyToMismatch_NotHigh(t *testing.T) {
 	)
 	mockEximSpool(t, msgID, header, "plain benign body text\n")
 
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got != nil {
 		t.Fatalf("lone Reply-To mismatch must not produce a finding, got %+v (sev=%v details=%q)", got, got.Severity, got.Details)
 	}
@@ -106,7 +105,7 @@ func TestScanEximMessage_PHPMailerNotAnIndicator(t *testing.T) {
 	)
 	mockEximSpool(t, msgID, header, "order confirmation body\n")
 
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got != nil {
 		t.Fatalf("PHPMailer X-Mailer must not produce a finding, got sev=%v details=%q", got.Severity, got.Details)
 	}
@@ -121,7 +120,7 @@ func TestScanEximMessage_TwoIndicators_High(t *testing.T) {
 	// Two independent signals and no third: Reply-To mismatch + phishing URL.
 	mockEximSpool(t, msgID, header, "click https://bit.ly/x to continue\n")
 
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got == nil {
 		t.Fatal("two independent indicators must produce a finding")
 	}
@@ -142,7 +141,7 @@ func TestScanEximMessageOversizedHeaderStillChecked(t *testing.T) {
 	}
 	header := eximHeader(msgID, lines...)
 	mockEximSpool(t, msgID, header, "click https://bit.ly/x to continue\n")
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got == nil || got.Severity != alert.High {
 		t.Fatalf("oversized header hid the message from the check: %+v", got)
 	}
@@ -157,7 +156,7 @@ func TestScanEximMessage_ThreeIndicators_Critical(t *testing.T) {
 	// Reply-To mismatch + brand spoof (paypal) + phishing URL = 3 indicators.
 	mockEximSpool(t, msgID, header, "verify at https://bit.ly/x now\n")
 
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got == nil {
 		t.Fatal("three indicators must produce a finding")
 	}
@@ -180,7 +179,7 @@ func TestScanEximMessage_Base64BodyBenign_NoFinding(t *testing.T) {
 		"PGh0bWw+aGVsbG8gd29ybGQsIHlvdXIgb3JkZXIgc2hpcHBlZDwvaHRtbD4=\n"
 	mockEximSpool(t, msgID, header, body)
 
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got != nil {
 		t.Fatalf("base64-encoded benign HTML must not produce a finding, got sev=%v details=%q", got.Severity, got.Details)
 	}
@@ -202,7 +201,7 @@ func TestScanEximMessage_Base64BodyDecodedPhishing_Detected(t *testing.T) {
 	body := msgID + "-D\n" + base64Wrap(decoded) + "\n"
 	mockEximSpool(t, msgID, header, body)
 
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got == nil {
 		t.Fatal("decoded base64 phishing content must produce a finding")
 	}
@@ -237,7 +236,7 @@ func TestScanEximMessage_Base64MultipartLaterHTMLPayloadDetected(t *testing.T) {
 		"--b1--\n"
 	mockEximSpool(t, msgID, header, body)
 
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got == nil {
 		t.Fatal("base64 phishing HTML after a longer benign MIME part must produce a finding")
 	}
@@ -272,7 +271,7 @@ func TestScanEximMessageLongHeaderPaddingKeepsEvidence(t *testing.T) {
 					body += " verify your account and confirm your identity"
 				}
 				mockEximSpool(t, msgID, eximHeader(msgID, lines...), body)
-				got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+				got := scanEximMessage(msgID, "shop@example.com")
 				if got == nil || got.Severity != alert.High {
 					t.Fatalf("padding hid message evidence: %+v", got)
 				}

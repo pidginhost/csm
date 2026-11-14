@@ -330,7 +330,7 @@ func TestFixHtaccessRemovesContinuationRemapPortable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := fixHtaccess(path, "htaccess injection at "+path)
+	res := fixHtaccess(path)
 	if !res.Success {
 		t.Fatalf("expected success, got %+v", res)
 	}
@@ -364,7 +364,7 @@ func TestFixHtaccessPreservesLegitContinuationAndRemovesFullDangerousSpan(t *tes
 		t.Fatal(err)
 	}
 
-	res := fixHtaccess(path, "htaccess injection at "+path)
+	res := fixHtaccess(path)
 	if !res.Success {
 		t.Fatalf("expected success, got %+v", res)
 	}
@@ -403,7 +403,7 @@ func TestFixHtaccessPreservesCRLFLegitContinuationWriteBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := fixHtaccess(path, "htaccess injection at "+path)
+	res := fixHtaccess(path)
 	if !res.Success {
 		t.Fatalf("expected success, got %+v", res)
 	}

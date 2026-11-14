@@ -482,8 +482,17 @@ func TestEximFrozenPersistenceWithoutStoreIsNoop(t *testing.T) {
 
 	d := &Daemon{}
 	d.restoreEximFrozenDedup()
-	eximFrozenShouldAlert(frozenTestLine(frozenTestIDReported, "Frozen (delivery error message)"), time.Now())
+	line := frozenTestLine(frozenTestIDReported, "Frozen (delivery error message)")
+	if !eximFrozenShouldAlert(line, time.Now()) {
+		t.Fatal("first freeze was not reported without a store")
+	}
 	d.persistEximFrozenDedup()
+	d.restoreEximFrozenDedup()
+	// The table lives in memory: the repeat is still suppressed after a
+	// persist and restore that had nowhere to go.
+	if eximFrozenShouldAlert(line, time.Now()) {
+		t.Fatal("repeat freeze was reported again without a store")
+	}
 }
 
 // A crash skips the shutdown save, so the periodic writer is what bounds the

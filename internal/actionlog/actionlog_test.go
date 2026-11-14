@@ -61,8 +61,26 @@ func TestWriteStampsSchemaTimestampAndHostname(t *testing.T) {
 // An action that happened must never be rolled back because nobody installed
 // a sink, so recording with no sink is a no-op rather than a panic.
 func TestWriteWithoutSinkIsSilent(t *testing.T) {
+	c := withSink(t)
 	SetSink(nil, "")
 	Write(Record{Op: "respond.kill_process", Result: Applied})
+
+	c.mu.Lock()
+	dropped := len(c.records)
+	c.mu.Unlock()
+	if dropped != 0 {
+		t.Fatalf("removed sink received %d records, want 0", dropped)
+	}
+
+	// The same sink records again once reinstalled, so the zero above is the
+	// nil sink and not a sink that never records.
+	SetSink(c, "host.example.com")
+	Write(Record{Op: "respond.kill_process", Result: Applied})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.records) != 1 || c.records[0].Op != "respond.kill_process" {
+		t.Fatalf("reinstalled sink records = %+v, want the one kill_process record", c.records)
+	}
 }
 
 func TestFileSinkAppendsOneJSONLinePerRecord(t *testing.T) {

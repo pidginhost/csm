@@ -51,36 +51,14 @@ const (
 // the php_taint_scan_incomplete diagnostic. A non-completed status is never
 // counted as a clean file.
 type phpTaintGapCollector struct {
-	paths          map[string]struct{}
-	pathAliases    map[string]struct{}
-	aliasesByPath  map[string][]string
-	byStatus       map[string]int
-	example        map[string]string
+	gapPathSet
 	recordCoverage func([]string)
-	resolveAliases func(string) ([]string, bool)
 	defeatInputs   [][sha256.Size]byte
 	defeatOverflow hash.Hash
-	// unknown counts walk failures whose affected paths cannot be enumerated
-	// (an unreadable directory, a failed Lstat that may hide one). They are
-	// kept apart from paths because carry-forward needs exact paths, but they
-	// must still reach the operator: without this the loss is recorded only in
-	// a boolean that suppresses the purge, and a host running the PHP consumer
-	// without the YARA one is told nothing at all.
-	unknown        int
-	unknownExample string
-	// pathsTruncated records that the exact-path set hit its bound, so the
-	// carry-forward can no longer be trusted to cover every gapped path.
-	pathsTruncated bool
 }
 
 func newPHPTaintGapCollector() *phpTaintGapCollector {
-	return &phpTaintGapCollector{
-		paths:         map[string]struct{}{},
-		pathAliases:   map[string]struct{}{},
-		aliasesByPath: map[string][]string{},
-		byStatus:      map[string]int{},
-		example:       map[string]string{},
-	}
+	return &phpTaintGapCollector{gapPathSet: newGapPathSet(maxPHPTaintGapPaths, phpTaintExampleMaxBytes, lexicalGapAliases)}
 }
 
 func (g *phpTaintGapCollector) record(path, status string) {
@@ -102,74 +80,9 @@ func (g *phpTaintGapCollector) recordSnapshot(path, status, contentSHA256 string
 			_, _ = g.defeatOverflow.Write(identity[:])
 		}
 	}
-	aliases, retained := g.aliasesByPath[path]
-	if !retained {
-		if len(g.paths) < maxPHPTaintGapPaths {
-			stable := true
-			if g.resolveAliases != nil {
-				aliases, stable = g.resolveAliases(path)
-			} else {
-				aliases = []string{coverageLexicalPath(path)}
-			}
-			if !stable {
-				g.recordUnknownRange(fmt.Sprintf("%s changed while its path identity was captured", path))
-				g.byStatus[status]++
-				if _, ok := g.example[status]; !ok {
-					g.example[status] = sanitizeJSTaintDisplay(path, phpTaintExampleMaxBytes)
-				}
-				return
-			}
-			g.paths[path] = struct{}{}
-			g.aliasesByPath[path] = aliases
-			for _, alias := range aliases {
-				g.pathAliases[alias] = struct{}{}
-			}
-		} else {
-			// Stop retaining paths, but never stop counting: the count is what
-			// tells an operator how much of the host went unexamined.
-			g.pathsTruncated = true
-		}
-	}
-	if len(aliases) > 0 && g.recordCoverage != nil {
+	if aliases := g.retain(path, status); len(aliases) > 0 && g.recordCoverage != nil {
 		g.recordCoverage(aliases)
 	}
-	g.byStatus[status]++
-	if _, ok := g.example[status]; !ok {
-		g.example[status] = sanitizeJSTaintDisplay(path, phpTaintExampleMaxBytes)
-	}
-}
-
-// pathsIncomplete reports that this run could not enumerate every gapped path,
-// either because retention hit its bound or because the walk lost an unknown
-// range. Its carry-forward set is therefore not authoritative and the purge
-// must be suppressed for the whole owner.
-func (g *phpTaintGapCollector) pathsIncomplete() bool {
-	return g.pathsTruncated || g.unknown > 0
-}
-
-// recordUnknownRange notes coverage lost over a range this walk cannot
-// enumerate. It deliberately does not add to paths: claiming specific paths
-// would be false, and the unknown range already forces a partial run, which
-// suppresses the purge for every prior finding.
-func (g *phpTaintGapCollector) recordUnknownRange(detail string) {
-	g.unknown++
-	if g.unknownExample == "" {
-		g.unknownExample = sanitizeJSTaintDisplay(detail, phpTaintExampleMaxBytes)
-	}
-}
-
-func (g *phpTaintGapCollector) empty() bool { return len(g.byStatus) == 0 && g.unknown == 0 }
-
-func (g *phpTaintGapCollector) hasPath(path string) bool {
-	if _, ok := g.paths[path]; ok {
-		return true
-	}
-	for _, alias := range coveragePathAliases(path) {
-		if _, ok := g.pathAliases[alias]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 // isPHPTaintAnalyzerDefeatStatus identifies per-file hard failures.
@@ -212,22 +125,9 @@ func (g *phpTaintGapCollector) finding() alert.Finding {
 }
 
 func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRangeLoss, analyzerDefeat bool) alert.Finding {
-	total := 0
-	statuses := make([]string, 0, len(byStatus))
-	for status, n := range byStatus {
-		total += n
-		statuses = append(statuses, status)
-	}
-	sort.Strings(statuses)
-	parts := make([]string, 0, len(statuses))
-	for _, status := range statuses {
-		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, byStatus[status], g.example[status]))
-	}
-	if includeRangeLoss && g.unknown > 0 {
-		parts = append(parts, fmt.Sprintf("unreadable-range=%d (example: %s)", g.unknown, g.unknownExample))
-	}
-	if includeRangeLoss && g.pathsTruncated {
-		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxPHPTaintGapPaths))
+	total, parts := g.statusParts(byStatus)
+	if includeRangeLoss {
+		parts = append(parts, g.rangeLossParts()...)
 	}
 	message := fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total)
 	// Routine coverage loss is one host condition. Analyzer defeats are
@@ -269,29 +169,7 @@ func (g *phpTaintGapCollector) analyzerDefeatDedupKey() string {
 // path the current full cycle could not analyze, so a file that goes from
 // analyzed to unexaminable does not silently lose its existing finding.
 func carryForwardPHPTaintFindings(prior []alert.Finding, gaps *phpTaintGapCollector) []alert.Finding {
-	byPath := make(map[string]alert.Finding)
-	for _, finding := range prior {
-		if finding.Check != "php_remote_taint" || !gaps.hasPath(finding.FilePath) {
-			continue
-		}
-		current, exists := byPath[finding.FilePath]
-		if !exists || finding.Timestamp.After(current.Timestamp) ||
-			(finding.Timestamp.Equal(current.Timestamp) && finding.Key() < current.Key()) {
-			byPath[finding.FilePath] = finding
-		}
-	}
-	paths := make([]string, 0, len(byPath))
-	for path := range byPath {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	carried := make([]alert.Finding, 0, len(paths))
-	for _, path := range paths {
-		finding := byPath[path]
-		finding.ScanCarryForward = true
-		carried = append(carried, finding)
-	}
-	return carried
+	return carryForwardLatestPerPath(prior, "php_remote_taint", &gaps.gapPathSet)
 }
 
 // analyzePHPTaintSnapshot runs the PHP consumer on one complete in-memory

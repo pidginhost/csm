@@ -10,7 +10,9 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-var allUIFeatures = []string{"cpanel", "mail", "mailQueue", "mailHeld", "mailForwarders", "mailDeferrals", "mailSuspensions", "emailAV", "cphulk"}
+var cpanelUIFeatures = []string{"cpanel", "mail", "mailQueue", "mailHeld", "mailForwarders", "mailDeferrals", "mailSuspensions", "emailAV", "cphulk"}
+
+var allUIFeatures = append(slices.Clone(cpanelUIFeatures), "stalwartFilter")
 
 // Servers in this package's tests see a cPanel host unless a test calls
 // setTestPlatform: every page, tab and setting is present, and no test asks
@@ -39,12 +41,12 @@ func TestUIFeaturesByPlatform(t *testing.T) {
 		mta   platform.MTAKind
 		on    []string
 	}{
-		{"cpanel", platform.PanelCPanel, platform.MTAExim, allUIFeatures},
-		{"cpanel mta undetected", platform.PanelCPanel, platform.MTAUnknown, allUIFeatures},
+		{"cpanel", platform.PanelCPanel, platform.MTAExim, cpanelUIFeatures},
+		{"cpanel mta undetected", platform.PanelCPanel, platform.MTAUnknown, cpanelUIFeatures},
 		{"plesk postfix", platform.PanelPlesk, platform.MTAPostfix, []string{"mail"}},
 		{"directadmin exim", platform.PanelDA, platform.MTAExim, []string{"mail"}},
 		{"bare exim", platform.PanelNone, platform.MTAExim, []string{"mail"}},
-		{"bare stalwart", platform.PanelNone, platform.MTAStalwart, []string{"mail"}},
+		{"bare stalwart", platform.PanelNone, platform.MTAStalwart, []string{"mail", "stalwartFilter"}},
 		{"bare no mta", platform.PanelNone, platform.MTAUnknown, nil},
 	}
 	for _, c := range cases {

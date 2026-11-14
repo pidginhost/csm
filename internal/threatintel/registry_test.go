@@ -106,10 +106,10 @@ func TestAsyncBotVerifier_OperatorExtendsBuiltinSuffixes(t *testing.T) {
 	}
 	a.SetOperatorEntries([]BotEntry{{Name: "googlebot", RDNSSuffixes: []string{"extra.example"}}})
 
-	if ok, err := a.v["googlebot"].verify(context.Background(), net.ParseIP("203.0.113.20"), "googlebot"); err != nil || !ok {
+	if ok, err := a.v["googlebot"].verify(context.Background(), net.ParseIP("203.0.113.20")); err != nil || !ok {
 		t.Fatalf("operator-added googlebot suffix must verify: ok=%v err=%v", ok, err)
 	}
-	if ok, err := a.v["googlebot"].verify(context.Background(), net.ParseIP("66.249.66.99"), "googlebot"); err != nil || !ok {
+	if ok, err := a.v["googlebot"].verify(context.Background(), net.ParseIP("66.249.66.99")); err != nil || !ok {
 		t.Fatalf("built-in googlebot suffix must still verify after extension: ok=%v err=%v", ok, err)
 	}
 }

@@ -27,7 +27,7 @@ invalid-entry
 		_, _ = w.Write([]byte(body))
 	}))
 
-	ips, nets, err := downloadFeed(client, localHTTPTestURL, "test-feed")
+	ips, nets, err := downloadFeed(client, localHTTPTestURL)
 	if err != nil {
 		t.Fatalf("downloadFeed: %v", err)
 	}
@@ -60,14 +60,14 @@ func TestDownloadFeedHTTPError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 
-	_, _, err := downloadFeed(client, localHTTPTestURL, "broken")
+	_, _, err := downloadFeed(client, localHTTPTestURL)
 	if err == nil {
 		t.Error("expected error for HTTP 500")
 	}
 }
 
 func TestDownloadFeedNetworkError(t *testing.T) {
-	_, _, err := downloadFeed(newFailingHTTPClient("forced feed transport failure"), localHTTPTestURL, "dead")
+	_, _, err := downloadFeed(newFailingHTTPClient("forced feed transport failure"), localHTTPTestURL)
 	if err == nil {
 		t.Error("expected network error")
 	}
@@ -76,7 +76,7 @@ func TestDownloadFeedNetworkError(t *testing.T) {
 func TestDownloadFeedEmptyBody(t *testing.T) {
 	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
-	ips, nets, err := downloadFeed(client, localHTTPTestURL, "empty")
+	ips, nets, err := downloadFeed(client, localHTTPTestURL)
 	if err != nil {
 		t.Fatalf("downloadFeed: %v", err)
 	}
@@ -205,8 +205,17 @@ func TestCompactPermanentFileSkipsWhenNotWorth(t *testing.T) {
 }
 
 func TestCompactPermanentFileMissingFile(t *testing.T) {
-	// Should not panic on missing file.
-	compactPermanentFile(filepath.Join(t.TempDir(), "missing.txt"), map[string]bool{"1.2.3.4": true})
+	dir := t.TempDir()
+	compactPermanentFile(filepath.Join(dir, "missing.txt"), map[string]bool{"203.0.113.4": true})
+
+	// Nothing to compact: no blocklist and no temp file appear.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("compacting a missing file created %d entries, want 0", len(entries))
+	}
 }
 
 // --- ThreatDB.Lookup --------------------------------------------------

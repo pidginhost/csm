@@ -567,18 +567,6 @@ func deepChecks() []namedCheck {
 	}
 }
 
-// PerfCheckNamesForTier returns the perf_* check names registered in the given tier.
-// Used by the daemon to perform an atomic purge-and-merge when storing findings.
-func PerfCheckNamesForTier(tier Tier) []string {
-	var names []string
-	for _, nc := range checksForTier(tier) {
-		if strings.HasPrefix(nc.name, "perf_") {
-			names = append(names, nc.name)
-		}
-	}
-	return names
-}
-
 // checkThrottleMin maps a check name to its minimum interval in minutes
 // between executions. The runner reserves this before invoking the check
 // function and stamps the slot only after the whole scan completes, so a
@@ -872,14 +860,8 @@ func RunTierWithContext(ctx context.Context, cfg *config.Config, store *state.St
 	return runParallelWithContext(ctx, cfg, store, checksForTier(tier), string(tier), false)
 }
 
-// RunTierDryRun is the dry-run variant of RunTier: auto-response actions
-// are skipped. Used by `csm check*` socket commands and the legacy CLI.
-func RunTierDryRun(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
-	return RunTierDryRunWithContext(context.Background(), cfg, store, tier)
-}
-
-// RunTierDryRunWithContext is RunTierDryRun with a caller-owned parent
-// context. Control-socket scans use it to collect coverage gaps without
+// RunTierDryRunWithContext is RunTierWithContext with auto-response actions
+// skipped. Control-socket scans use it to collect coverage gaps without
 // enabling auto-response actions.
 func RunTierDryRunWithContext(ctx context.Context, cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
 	return runParallelWithContext(ctx, cfg, store, checksForTier(tier), string(tier), true)

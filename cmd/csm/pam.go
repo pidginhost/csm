@@ -37,7 +37,7 @@ func runPAM() {
 	}
 	switch args[0] {
 	case "status":
-		exitOnError(pamStatus(os.Stdout))
+		pamStatus(os.Stdout)
 	case "install":
 		fs := flag.NewFlagSet("pam install", flag.ExitOnError)
 		dryRun := fs.Bool("dry-run", false, "preview the files that would be edited, do not write")
@@ -144,13 +144,11 @@ func resolvePAMSecurityDir() (string, error) {
 	return "", fmt.Errorf("no PAM security directory found; install libpam first")
 }
 
-// pamStatus prints the current install state. Returns nil on success;
-// surfaces errors so operators can pipe `csm pam status; echo $?` into
-// a healthcheck.
-func pamStatus(w io.Writer) error {
+// pamStatus prints the current install state.
+func pamStatus(w io.Writer) {
 	if runtime.GOOS != "linux" {
 		fmt.Fprintln(w, "csm pam: PAM management only available on Linux hosts")
-		return nil
+		return
 	}
 	dir, err := resolvePAMSecurityDir()
 	if err != nil {
@@ -172,7 +170,6 @@ func pamStatus(w io.Writer) error {
 			fmt.Fprintf(w, "%-32s  failed logins: %s\n", "", pamFailureHookState(path))
 		}
 	}
-	return nil
 }
 
 func pamFileState(path string) string {

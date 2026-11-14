@@ -60,9 +60,8 @@ func NewActiveSet(window time.Duration) *ActiveSet {
 }
 
 // Admit merges one finding, then evicts anything the window or the cap no
-// longer holds. It reports whether any eviction happened, which tells a caller
-// the derived result may have changed even though this finding did not feed it.
-func (s *ActiveSet) Admit(f alert.Finding) (evicted bool) {
+// longer holds.
+func (s *ActiveSet) Admit(f alert.Finding) {
 	if f.Timestamp.After(s.newest) {
 		s.newest = f.Timestamp
 	}
@@ -70,28 +69,25 @@ func (s *ActiveSet) Admit(f alert.Finding) (evicted bool) {
 	// Mirror it, or the replay measures a behaviour production no longer has.
 	f.FirstSeen = earliestObservation(s.byKey[f.Key()], f)
 	s.byKey[f.Key()] = f
-	return s.evict()
+	s.evict()
 }
 
-func (s *ActiveSet) evict() (evicted bool) {
+func (s *ActiveSet) evict() {
 	if s.window > 0 {
 		cutoff := s.newest.Add(-s.window)
 		for key, f := range s.byKey {
 			if !f.Timestamp.IsZero() && f.Timestamp.Before(cutoff) {
 				delete(s.byKey, key)
-				evicted = true
 			}
 		}
 	}
 	if len(s.byKey) <= s.cap {
-		return evicted
+		return
 	}
 	ordered := s.Findings()
 	for _, f := range ordered[s.cap:] {
 		delete(s.byKey, f.Key())
-		evicted = true
 	}
-	return evicted
 }
 
 // earliestObservation mirrors the store's rule: the stored row's first

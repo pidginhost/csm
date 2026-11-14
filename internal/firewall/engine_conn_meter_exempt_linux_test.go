@@ -396,9 +396,7 @@ func TestBlockedDropsPrecedeConnMeters(t *testing.T) {
 	e.meterConnlim = &nftables.Set{Table: e.table, Name: "meter_connlimit", KeyType: nftables.TypeIPAddr, Dynamic: true}
 	e.setDOSExempt = &nftables.Set{Table: e.table, Name: "dos_exempt_nets", KeyType: nftables.TypeIPAddr, Interval: true}
 
-	if err := e.createInputChain(); err != nil {
-		t.Fatalf("createInputChain: %v", err)
-	}
+	e.createInputChain()
 	if err := e.conn.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}

@@ -171,7 +171,7 @@ func TestNotificationQueueNeverUsesClosedDescriptor(t *testing.T) {
 	if _, err := q.read(make([]byte, metadataSize), func([]byte) { t.Error("closed reader delivered a batch") }); !errors.Is(err, unix.EBADF) {
 		t.Fatalf("read after close: %v", err)
 	}
-	if _, err := q.write(make([]byte, responseSize)); !errors.Is(err, unix.EBADF) {
+	if err := q.write(make([]byte, responseSize)); !errors.Is(err, unix.EBADF) {
 		t.Fatalf("write after close: %v", err)
 	}
 	readers.Wait()

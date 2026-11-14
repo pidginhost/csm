@@ -17,16 +17,6 @@ func TestNewEngineReturnsError(t *testing.T) {
 	}
 }
 
-func TestConnectExistingReturnsError(t *testing.T) {
-	e, err := ConnectExisting(nil, "")
-	if !errors.Is(err, ErrUnsupportedPlatform) {
-		t.Errorf("ConnectExisting err = %v, want ErrUnsupportedPlatform", err)
-	}
-	if e != nil {
-		t.Errorf("ConnectExisting engine = %v, want nil", e)
-	}
-}
-
 // Every mutating stub must fail loudly. A nil-success stub lets a caller
 // record a phantom block that never reached any kernel.
 func TestNonLinuxStubMutatorsReturnErrUnsupportedPlatform(t *testing.T) {

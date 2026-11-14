@@ -9,8 +9,95 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
+
+// Every adapter on the shared install loop scans only as many installs as the
+// cap allows and reports the rest as a coverage gap.
+func TestCMSInstallLoopCapsInstallsForEveryAdapter(t *testing.T) {
+	withAccountHomeRoots(t, "/home", "/var/www/vhosts")
+	for _, a := range cmsAdapterCases() {
+		if a.name == "prestashop" || a.name == "magento" {
+			continue // own discovery loops
+		}
+		t.Run(a.name, func(t *testing.T) {
+			base := &twoOwnerCMSOS{files: a.files}
+			withCMSConfigOS(t, &mockOS{
+				glob: func(pattern string) ([]string, error) {
+					var paths []string
+					for path := range a.files {
+						matched, err := filepath.Match(pattern, path)
+						if err != nil {
+							return nil, err
+						}
+						if matched {
+							paths = append(paths, path)
+						}
+					}
+					return paths, nil
+				},
+				readFile: base.ReadFile,
+				stat: func(path string) (os.FileInfo, error) {
+					info, err := base.Stat(path)
+					if err != nil {
+						return nil, err
+					}
+					return &fakeFileInfoMtime{name: path, size: info.Size()}, nil
+				},
+				lstat: base.Lstat,
+			})
+			withMockCmd(t, &mockCmd{runWithEnv: func(_ string, args []string, _ ...string) ([]byte, error) {
+				return maliciousRowsFor(a.name, strings.Join(args, " "), 0), nil
+			}})
+			for _, limit := range []int{1, 2} {
+				ctx, coverage := withIncompleteCheckCollector(context.Background())
+				cfg := &config.Config{}
+				cfg.Thresholds.AccountScanMaxFiles = limit
+				byOwner := map[string]map[string]int{}
+				for _, f := range a.run(ctx, cfg, nil) {
+					if byOwner[f.TenantID] == nil {
+						byOwner[f.TenantID] = map[string]int{}
+					}
+					byOwner[f.TenantID][f.Check]++
+				}
+				want := map[string]int{}
+				for _, check := range a.want {
+					want[check] = 1
+				}
+				if a.name == "opencart" {
+					want["opencart_content_injection"] = 2
+				}
+				if len(byOwner) != limit || !maps.Equal(byOwner["alice"], want) ||
+					(limit == 2 && !maps.Equal(byOwner["bob"], want)) {
+					t.Errorf("limit %d: findings by owner = %v, want %d installs with %v", limit, byOwner, limit, want)
+				}
+				if got := coverage.contains("db_content_" + a.name); got != (limit == 1) {
+					t.Errorf("limit %d: incomplete = %t, want %t", limit, got, limit == 1)
+				}
+			}
+		})
+	}
+}
+
+// A cancelled check stops before the next install instead of scanning the rest.
+func TestScanCMSInstallsStopsWhenTheCheckIsCancelled(t *testing.T) {
+	withAccountHomeRoots(t, "/home", "/var/www/vhosts")
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: cmsAdapterCases()[0].files})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scanned := 0
+	scanCMSInstalls(ctx, &config.Config{}, nil, "db_content_joomla",
+		func(context.Context, string, *state.Store) []alert.Finding {
+			scanned++
+			cancel()
+			return nil
+		}, "*/public_html/configuration.php", "*/*/configuration.php")
+	if scanned != 1 {
+		t.Fatalf("scanned %d installs after cancellation, want 1", scanned)
+	}
+}
 
 // A suspended account's database user is locked: its installs are skipped
 // without leaving the check incomplete, and other accounts are still scanned.

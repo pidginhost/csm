@@ -5,6 +5,8 @@ import (
 	"html/template"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,11 +150,25 @@ func TestCachedCores_ReturnsPositiveValue(t *testing.T) {
 // TestCachedUID_MissingReturnsInput exercises the fallback branch when an
 // unknown UID is passed.
 func TestCachedUID_UnknownReturnsInput(t *testing.T) {
-	got := cachedUID("9999999")
-	if got != "9999999" {
-		// On systems with /etc/passwd we don't expect to map this UID. The
-		// function should just echo the string back.
-		t.Logf("cachedUID(9999999) = %q (acceptable if mapped)", got)
+	// The expected name comes from the host's own passwd file, read here
+	// independently: an unmapped UID echoes back, a mapped one resolves.
+	lookup := func(uid string) string {
+		want := uid
+		data, _ := os.ReadFile("/etc/passwd")
+		for _, line := range strings.Split(string(data), "\n") {
+			if fields := strings.Split(line, ":"); len(fields) >= 3 && fields[2] == uid {
+				want = fields[0]
+			}
+		}
+		return want
+	}
+	for _, uid := range []string{"9999999", "0", "not-a-uid"} {
+		if got, want := cachedUID(uid), lookup(uid); got != want {
+			t.Errorf("cachedUID(%q) = %q, want %q", uid, got, want)
+		}
+	}
+	if got := cachedUID("not-a-uid"); got != "not-a-uid" {
+		t.Errorf("cachedUID(not-a-uid) = %q, want the input back", got)
 	}
 }
 

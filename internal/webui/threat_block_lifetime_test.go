@@ -559,7 +559,7 @@ func TestUnblockUndoDoesNotExtendExpiredBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.runUndoEntry(nil, store.UndoEntry{Inverse: undoInverseFirewallUnblock, Payload: raw})
+	result, err := s.runUndoEntry(store.UndoEntry{Inverse: undoInverseFirewallUnblock, Payload: raw})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -266,7 +266,7 @@ func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targets := strings.Join(entry.Targets, ", ")
-	resp, runErr := s.runUndoEntry(r, entry)
+	resp, runErr := s.runUndoEntry(entry)
 	if runErr != nil {
 		// The entry is consumed and the inverse may have run part way, so the
 		// attempt is recorded even though it failed.
@@ -278,7 +278,7 @@ func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunResponse, error) {
+func (s *Server) runUndoEntry(entry store.UndoEntry) (undoRunResponse, error) {
 	var payload undoPayloadIPs
 	if len(entry.Payload) > 0 {
 		if err := decodeUndoPayload(entry.Payload, &payload); err != nil {

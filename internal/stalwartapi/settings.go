@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -188,4 +189,120 @@ func setKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// SpamSettings are the spam filter switch and its score thresholds. A score
+// of 0 means that action is off.
+type SpamSettings struct {
+	Enabled                              bool
+	ScoreSpam, ScoreReject, ScoreDiscard float64
+}
+
+// SpamSettings reads the spam filter switch and thresholds. Missing or null
+// fields are errors, not disabled settings.
+func (c *Client) SpamSettings(ctx context.Context) (SpamSettings, error) {
+	const method = "x:SpamSettings/get"
+	var raw struct {
+		Enable       *bool    `json:"enable"`
+		ScoreSpam    *float64 `json:"scoreSpam"`
+		ScoreReject  *float64 `json:"scoreReject"`
+		ScoreDiscard *float64 `json:"scoreDiscard"`
+	}
+	if err := c.getSingleton(ctx, method, &raw); err != nil {
+		return SpamSettings{}, err
+	}
+	if raw.Enable == nil || raw.ScoreSpam == nil || raw.ScoreReject == nil || raw.ScoreDiscard == nil {
+		return SpamSettings{}, fmt.Errorf("stalwart %s: unexpected response", method)
+	}
+	return SpamSettings{Enabled: *raw.Enable, ScoreSpam: *raw.ScoreSpam, ScoreReject: *raw.ScoreReject, ScoreDiscard: *raw.ScoreDiscard}, nil
+}
+
+// SpamFilterStageOff reports whether the SMTP data stage never runs the spam
+// filter: no conditional rule and a plain false default. An unexpected settings
+// shape is an error, not evidence that the filter is off.
+func (c *Client) SpamFilterStageOff(ctx context.Context) (bool, error) {
+	const method = "x:MtaStageData/get"
+	var raw struct {
+		Filter struct {
+			Match map[string]json.RawMessage `json:"match"`
+			Else  *string                    `json:"else"`
+		} `json:"enableSpamFilter"`
+	}
+	if err := c.getSingleton(ctx, method, &raw); err != nil {
+		return false, err
+	}
+	if raw.Filter.Match == nil || raw.Filter.Else == nil {
+		return false, fmt.Errorf("stalwart %s: unexpected response", method)
+	}
+	return len(raw.Filter.Match) == 0 && strings.TrimSpace(*raw.Filter.Else) == "false", nil
+}
+
+// SpamProbe is one message for Stalwart to classify without delivering it.
+type SpamProbe struct{ Message, RemoteIP, EhloDomain, MailFrom, RcptTo string }
+
+// SpamProbeResult is Stalwart's verdict on a probe. Tags are the names of
+// the rules that matched, sorted. Server text has the admin password redacted.
+type SpamProbeResult struct {
+	Score  float64
+	Result string
+	Tags   []string
+}
+
+// BlocklistProbe is a harmless message whose tags show whether Stalwart's
+// DNS blocklist lookups are refused by its resolver.
+var BlocklistProbe = SpamProbe{
+	Message: "From: sender@example.com\r\n" +
+		"To: postmaster@example.com\r\n" +
+		"Subject: CSM blocklist check\r\n" +
+		"Date: Sat, 14 Nov 2026 10:00:00 +0000\r\n" +
+		"Message-ID: <csm-blocklist-probe@example.com>\r\n" +
+		"\r\n" +
+		"This message checks the spam filter's blocklist lookups.\r\n",
+	RemoteIP:   "192.0.2.10",
+	EhloDomain: "mx.example.com",
+	MailFrom:   "sender@example.com",
+	RcptTo:     "postmaster@example.com",
+}
+
+// ClassifySpam asks Stalwart to score p with its spam filter. An incomplete
+// classification is an error, not a zero score or an empty set of matched tags.
+func (c *Client) ClassifySpam(ctx context.Context, p SpamProbe) (SpamProbeResult, error) {
+	const method = "x:Action/set"
+	out, err := c.set(ctx, method, map[string]any{
+		"create": map[string]any{"c": map[string]any{
+			"@type":      "ClassifySpam",
+			"message":    p.Message,
+			"remoteIp":   p.RemoteIP,
+			"ehloDomain": p.EhloDomain,
+			"isTls":      false,
+			"mailFrom":   p.MailFrom,
+			"rcptTo":     map[string]bool{p.RcptTo: true},
+		}},
+	})
+	if err != nil {
+		return SpamProbeResult{}, err
+	}
+	var res struct {
+		Created map[string]struct {
+			Score  *float64                   `json:"score"`
+			Result string                     `json:"result"`
+			Tags   map[string]json.RawMessage `json:"tags"`
+		} `json:"created"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return SpamProbeResult{}, fmt.Errorf("stalwart %s: unexpected response", method)
+	}
+	r, ok := res.Created["c"]
+	if !ok {
+		return SpamProbeResult{}, fmt.Errorf("stalwart %s: classification was not acknowledged", method)
+	}
+	if r.Score == nil || r.Result == "" || r.Tags == nil {
+		return SpamProbeResult{}, fmt.Errorf("stalwart %s: unexpected response", method)
+	}
+	tags := make([]string, 0, len(r.Tags))
+	for name := range r.Tags {
+		tags = append(tags, Redact(name, c.user, c.password))
+	}
+	sort.Strings(tags)
+	return SpamProbeResult{Score: *r.Score, Result: Redact(r.Result, c.user, c.password), Tags: tags}, nil
 }

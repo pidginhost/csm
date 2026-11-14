@@ -36,29 +36,6 @@ func (db *DB) SetReputation(ip string, entry ReputationEntry) error {
 	})
 }
 
-// SetReputationBatch stores multiple reputation entries in one write
-// transaction. Every bbolt commit fsyncs, so per-entry SetReputation
-// calls in a loop cost one disk flush each; a cycle's worth of cache
-// updates must land in a single commit.
-func (db *DB) SetReputationBatch(entries map[string]ReputationEntry) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	return db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("reputation"))
-		for ip, entry := range entries {
-			val, err := json.Marshal(entry)
-			if err != nil {
-				return err
-			}
-			if err := b.Put([]byte(ip), val); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 // ApplyReputationChanges stores and deletes reputation entries in one write
 // transaction.
 func (db *DB) ApplyReputationChanges(upserts map[string]ReputationEntry, deletes map[string]bool) error {

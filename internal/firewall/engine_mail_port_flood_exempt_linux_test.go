@@ -90,9 +90,7 @@ func TestMailPortFloodMetersCarryDOSExemptLookup(t *testing.T) {
 	}
 	e.table = conn.AddTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
 
-	if err := e.createInputChain(); err != nil {
-		t.Fatalf("createInputChain: %v", err)
-	}
+	e.createInputChain()
 	if err := e.conn.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
@@ -193,9 +191,7 @@ func TestMailPortFloodMetersNoExemptWhenSetNil(t *testing.T) {
 	}
 	e.table = conn.AddTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
 
-	if err := e.createInputChain(); err != nil {
-		t.Fatalf("createInputChain: %v", err)
-	}
+	e.createInputChain()
 	if err := e.conn.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}

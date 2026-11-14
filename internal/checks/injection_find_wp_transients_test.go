@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/config"
 )
 
 // findWPTransients recursively locates wp-config.php and for each runs
@@ -24,7 +23,7 @@ func TestFindWPTransientsDepthBelowZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	var findings []alert.Finding
-	findWPTransients(tmp, &config.Config{}, 1024, 10240, -1, &findings)
+	findWPTransients(tmp, 1024, 10240, -1, &findings)
 	if len(findings) != 0 {
 		t.Errorf("depth<0 should return early, got %d findings", len(findings))
 	}
@@ -32,7 +31,7 @@ func TestFindWPTransientsDepthBelowZero(t *testing.T) {
 
 func TestFindWPTransientsMissingDir(t *testing.T) {
 	var findings []alert.Finding
-	findWPTransients("/no-such-dir", &config.Config{}, 1024, 10240, 3, &findings)
+	findWPTransients("/no-such-dir", 1024, 10240, 3, &findings)
 	if len(findings) != 0 {
 		t.Errorf("missing dir should yield no findings, got %d", len(findings))
 	}
@@ -51,7 +50,7 @@ func TestFindWPTransientsSkipsSkipListDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	var findings []alert.Finding
-	findWPTransients(tmp, &config.Config{}, 1024, 10240, 3, &findings)
+	findWPTransients(tmp, 1024, 10240, 3, &findings)
 	if len(findings) != 0 {
 		t.Errorf("skipDir subtree should not be recursed, got %d findings", len(findings))
 	}
@@ -73,7 +72,7 @@ func TestFindWPTransientsMissingDBCredentialsSkipped(t *testing.T) {
 		},
 	})
 	var findings []alert.Finding
-	findWPTransients(tmp, &config.Config{}, 1024, 10240, 3, &findings)
+	findWPTransients(tmp, 1024, 10240, 3, &findings)
 	if mockCalls != 0 {
 		t.Errorf("missing creds should short-circuit before mysql, got %d calls", mockCalls)
 	}
@@ -102,7 +101,7 @@ func TestFindWPTransientsUnsafeIdentifierSkipped(t *testing.T) {
 		},
 	})
 	var findings []alert.Finding
-	findWPTransients(tmp, &config.Config{}, 1024, 10240, 3, &findings)
+	findWPTransients(tmp, 1024, 10240, 3, &findings)
 	if calls != 0 {
 		t.Errorf("unsafe identifier should short-circuit before mysql, got %d calls", calls)
 	}
@@ -130,7 +129,7 @@ func TestFindWPTransientsEmitsWarningAndCriticalBySize(t *testing.T) {
 		},
 	})
 	var findings []alert.Finding
-	findWPTransients(tmp, &config.Config{}, 1024, 10240, 3, &findings)
+	findWPTransients(tmp, 1024, 10240, 3, &findings)
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings (warn+crit), got %d: %+v", len(findings), findings)
 	}

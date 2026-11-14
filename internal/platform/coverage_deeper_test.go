@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -172,12 +173,25 @@ func TestInfo_IsRHELFamily_CentOS(t *testing.T) {
 // --- DetectFresh runs all detectors (smoke test) -------------------------
 
 func TestDetectFreshReturnsNonPanic(t *testing.T) {
-	// DetectFresh reads real OS files; on macOS/CI it should return
-	// gracefully with empty fields rather than panic.
-	info := DetectFresh()
-	_ = info.OS
-	_ = info.Panel
-	_ = info.WebServer
+	// DetectFresh reads real OS files, and only those: an operator override
+	// changes what Detect reports, never what a fresh probe finds.
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+	base := DetectFresh()
+
+	other := PanelCPanel
+	if base.Panel == PanelCPanel {
+		other = PanelPlesk
+	}
+	if !SetOverrides(Overrides{Panel: &other}) {
+		t.Fatal("override was not installed")
+	}
+	if got := DetectFreshWithOverrides().Panel; got != other {
+		t.Fatalf("overridden panel = %q, want %q", got, other)
+	}
+	if got := DetectFresh(); !reflect.DeepEqual(got, base) {
+		t.Fatalf("DetectFresh under an override = %+v, want the host's own %+v", got, base)
+	}
 }
 
 // --- SetOverrides after Detect (duplicate call) -------------------------

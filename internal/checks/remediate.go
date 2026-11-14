@@ -172,7 +172,7 @@ func ApplyFix(ctx context.Context, checkType, message, details string, filePath 
 	case "backdoor_binary", "new_executable_in_config":
 		return fixKillAndQuarantine(ctx, path, details)
 	case "htaccess_injection", "htaccess_injection_realtime":
-		return fixHtaccess(path, message)
+		return fixHtaccess(path)
 	case "email_phishing_content":
 		return fixQuarantineSpoolMessage(message)
 	case "suspicious_crontab":
@@ -348,7 +348,7 @@ func fixKillAndQuarantine(ctx context.Context, path, details string) Remediation
 
 // fixHtaccess removes malicious directives from an .htaccess file while
 // preserving comments and known-safe directives (e.g., Wordfence, LiteSpeed).
-func fixHtaccess(path, message string) (result RemediationResult) {
+func fixHtaccess(path string) (result RemediationResult) {
 	audit := newCleanAction(path)
 	defer func() { audit.finish(result.Error) }()
 	if path == "" {

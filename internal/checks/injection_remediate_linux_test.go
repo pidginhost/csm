@@ -259,7 +259,7 @@ func TestFixHtaccessRemovesDangerousLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := fixHtaccess(htaccess, "htaccess injection at "+htaccess)
+	res := fixHtaccess(htaccess)
 	if !res.Success {
 		t.Fatalf("expected success, got %+v", res)
 	}
@@ -305,7 +305,7 @@ func TestFixHtaccessRemovesPHPHandlerRemap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := fixHtaccess(htaccess, "htaccess injection at "+htaccess)
+	res := fixHtaccess(htaccess)
 	if !res.Success {
 		t.Fatalf("expected success, got %+v", res)
 	}
@@ -335,7 +335,7 @@ func TestFixHtaccessNoDangerousDirectivesReportsError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := fixHtaccess(htaccess, "msg")
+	res := fixHtaccess(htaccess)
 	if res.Success || !strings.Contains(res.Error, "no malicious directives") {
 		t.Errorf("expected nothing-to-remove error, got %+v", res)
 	}

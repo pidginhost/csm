@@ -3,6 +3,7 @@ package checks
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -196,13 +197,36 @@ func TestScanProcNetTCPASNLookupConcurrentSet(t *testing.T) {
 			SetASNLookup(nil)
 		}
 	}()
+	var torn atomic.Int32
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			_ = scanProcNetTCP(cfg, []byte(procNetTCPBadASNRow), false)
+			// Whichever resolver a scan saw, the one row yields the finding
+			// once or not at all, never duplicated.
+			n := 0
+			for _, f := range scanProcNetTCP(cfg, []byte(procNetTCPBadASNRow), false) {
+				if f.Check == "bad_asn_outbound" {
+					n++
+				}
+			}
+			if n > 1 {
+				torn.Add(1)
+			}
 		}
 	}()
 	wg.Wait()
+	if n := torn.Load(); n != 0 {
+		t.Fatalf("%d scans reported the bad-ASN row more than once", n)
+	}
+
+	// The writer's last call cleared the resolver, and the swaps left it usable.
+	if hasCheck(scanProcNetTCP(cfg, []byte(procNetTCPBadASNRow), false), "bad_asn_outbound") {
+		t.Fatal("cleared resolver still flags the row after the concurrent swaps")
+	}
+	SetASNLookup(func(string) (uint, string) { return 64500, "Bulletproof LLC" })
+	if !hasCheck(scanProcNetTCP(cfg, []byte(procNetTCPBadASNRow), false), "bad_asn_outbound") {
+		t.Fatal("resolver set after the concurrent swaps does not flag the row")
+	}
 }
 
 func hasCheck(findings []alert.Finding, check string) bool {

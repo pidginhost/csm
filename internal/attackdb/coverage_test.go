@@ -886,10 +886,27 @@ func TestSeedFromPermanentBlocklistSkipsExisting(t *testing.T) {
 // --- Global ------------------------------------------------------------
 
 func TestGlobalInitiallyNilBeforeInit(t *testing.T) {
-	// We cannot call Init from tests (sync.Once), but Global() before
-	// Init should simply return whatever the var currently holds. This
-	// test just makes sure Global() doesn't panic.
-	var _ = Global()
+	// We cannot call Init from tests (sync.Once), but Global() should
+	// return whatever the var currently holds.
+	globalMu.Lock()
+	prev := globalDB
+	globalMu.Unlock()
+	t.Cleanup(func() {
+		globalMu.Lock()
+		globalDB = prev
+		globalMu.Unlock()
+	})
+
+	if got := Global(); got != prev {
+		t.Fatalf("Global() = %p, want the current instance %p", got, prev)
+	}
+	want := &DB{}
+	globalMu.Lock()
+	globalDB = want
+	globalMu.Unlock()
+	if got := Global(); got != want {
+		t.Fatalf("Global() = %p, want the installed instance %p", got, want)
+	}
 }
 
 // Avoid an unused-import warning if `sync` ever becomes unused.

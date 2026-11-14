@@ -10,7 +10,6 @@ import (
 
 func TestVerifyDBObjectUnexpected(t *testing.T) {
 	details := "Account: bob\nSchema: bob_db\nKind: trigger\nName: evil_trg\nBody: BEGIN ... END"
-	msg := "Unexpected trigger evil_trg in bob.bob_db"
 
 	t.Run("resolved when object gone", func(t *testing.T) {
 		withRootQuery(t, func(_, query string, _ ...any) ([]string, error) {
@@ -19,7 +18,7 @@ func TestVerifyDBObjectUnexpected(t *testing.T) {
 			}
 			return nil, nil
 		})
-		res := verifyDBObject(msg, details, false)
+		res := verifyDBObject(details, false)
 		if !res.Checked || !res.Resolved {
 			t.Errorf("want checked+resolved, got %+v", res)
 		}
@@ -29,7 +28,7 @@ func TestVerifyDBObjectUnexpected(t *testing.T) {
 		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) {
 			return []string{"BEGIN harmless END"}, nil
 		})
-		res := verifyDBObject(msg, details, false)
+		res := verifyDBObject(details, false)
 		if !res.Checked || res.Resolved {
 			t.Errorf("unexpected presence stays active, got %+v", res)
 		}
@@ -39,7 +38,7 @@ func TestVerifyDBObjectUnexpected(t *testing.T) {
 		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) {
 			return nil, context.DeadlineExceeded
 		})
-		res := verifyDBObject(msg, details, false)
+		res := verifyDBObject(details, false)
 		if res.Checked {
 			t.Errorf("query error must not be checked, got %+v", res)
 		}
@@ -48,7 +47,6 @@ func TestVerifyDBObjectUnexpected(t *testing.T) {
 
 func TestVerifyDBObjectMalicious(t *testing.T) {
 	details := "Account: bob\nSchema: bob_db\nKind: function\nName: x_fn\nBody: ..."
-	msg := "Malicious function x_fn in bob.bob_db"
 
 	t.Run("resolved when gone", func(t *testing.T) {
 		withRootQuery(t, func(_, query string, _ ...any) ([]string, error) {
@@ -57,7 +55,7 @@ func TestVerifyDBObjectMalicious(t *testing.T) {
 			}
 			return nil, nil
 		})
-		res := verifyDBObject(msg, details, true)
+		res := verifyDBObject(details, true)
 		if !res.Checked || !res.Resolved {
 			t.Errorf("want checked+resolved, got %+v", res)
 		}
@@ -67,7 +65,7 @@ func TestVerifyDBObjectMalicious(t *testing.T) {
 		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) {
 			return []string{"BEGIN RETURN 1 END"}, nil
 		})
-		res := verifyDBObject(msg, details, true)
+		res := verifyDBObject(details, true)
 		if !res.Checked || !res.Resolved {
 			t.Errorf("clean body resolves, got %+v", res)
 		}
@@ -77,7 +75,7 @@ func TestVerifyDBObjectMalicious(t *testing.T) {
 		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) {
 			return []string{"BEGIN SELECT base64_decode(x) INTO OUTFILE '/tmp/x' END"}, nil
 		})
-		res := verifyDBObject(msg, details, true)
+		res := verifyDBObject(details, true)
 		if !res.Checked || res.Resolved {
 			t.Errorf("malicious body stays active, got %+v", res)
 		}
@@ -85,7 +83,7 @@ func TestVerifyDBObjectMalicious(t *testing.T) {
 }
 
 func TestVerifyDBObjectRejectsBadKind(t *testing.T) {
-	res := verifyDBObject("x", "Account: bob\nSchema: bob_db\nKind: tabl\nName: foo", true)
+	res := verifyDBObject("Account: bob\nSchema: bob_db\nKind: tabl\nName: foo", true)
 	if res.Checked {
 		t.Errorf("bad kind must not be checked, got %+v", res)
 	}

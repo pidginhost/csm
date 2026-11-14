@@ -154,8 +154,8 @@ func TestReputationCacheCapIncludesDirtyEntriesBeforeSave(t *testing.T) {
 			CheckedAt: base.Add(time.Duration(i) * time.Second),
 		}
 	}
-	if err := sdb.SetReputationBatch(entries); err != nil {
-		t.Fatalf("SetReputationBatch: %v", err)
+	if err := sdb.ApplyReputationChanges(entries, nil); err != nil {
+		t.Fatalf("ApplyReputationChanges: %v", err)
 	}
 
 	cache := loadReputationCache(statePath)

@@ -910,7 +910,7 @@ func (db *ThreatDB) UpdateFeeds() error {
 	fresh := make(map[string]feedResult)
 
 	for _, feed := range threatFeeds {
-		ips, nets, err := downloadFeed(client, feed.url, feed.name)
+		ips, nets, err := downloadFeed(client, feed.url)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "threatdb: error downloading %s: %v\n", feed.name, err)
 			continue // keep previous data for this feed
@@ -1182,7 +1182,7 @@ func (db *ThreatDB) rebuildFeedLookup(feedNames map[string]bool) (int, int) {
 	return totalIPs, len(nets)
 }
 
-func downloadFeed(client *http.Client, url, name string) ([]string, []*net.IPNet, error) {
+func downloadFeed(client *http.Client, url string) ([]string, []*net.IPNet, error) {
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, nil, err

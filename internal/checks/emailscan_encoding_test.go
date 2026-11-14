@@ -3,8 +3,6 @@ package checks
 import (
 	"strings"
 	"testing"
-
-	"github.com/pidginhost/csm/internal/config"
 )
 
 const encodedPhishHTML = "<html>please verify your account and confirm your identity at https://evil.workers.dev/login</html>"
@@ -25,7 +23,7 @@ func spacedBase64(s string) string {
 func requireDecodedPhishing(t *testing.T, msgID, header, body string) {
 	t.Helper()
 	mockEximSpool(t, msgID, header, body)
-	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	got := scanEximMessage(msgID, "shop@example.com")
 	if got == nil {
 		t.Fatal("phishing content behind malformed base64 must still be decoded and reported")
 	}
@@ -120,7 +118,7 @@ func TestScanEximMessage_Base64HeaderTextIsNotFraming(t *testing.T) {
 			header := eximHeader(msgID, "From: shop@example.com", `Content-Type: multipart/mixed; boundary="b"`)
 			body := msgID + "-D\n--b\nContent-Type: text/html\nContent-Transfer-Encoding: base64\n\n" + base64Wrap(first) + "\n--b\nContent-Type: text/plain\n" + fake + "\n\n" + second + "\n--b--\n"
 			mockEximSpool(t, msgID, header, body)
-			if got := scanEximMessage(msgID, "shop@example.com", &config.Config{}); got != nil {
+			if got := scanEximMessage(msgID, "shop@example.com"); got != nil {
 				t.Fatalf("header text manufactured phishing indicators: %s", got.Details)
 			}
 		})
@@ -145,7 +143,7 @@ func TestScanEximMessage_Base64DeletedHeadersIgnored(t *testing.T) {
 	header := eximHeader(msgID, "From: shop@example.com", "Content-Type: text/html") +
 		"040* Content-Transfer-Encoding: base64\n (deleted header)\n"
 	mockEximSpool(t, msgID, header, msgID+"-D\n"+base64Wrap(encodedPhishHTML))
-	if got := scanEximMessage(msgID, "shop@example.com", &config.Config{}); got != nil {
+	if got := scanEximMessage(msgID, "shop@example.com"); got != nil {
 		t.Fatalf("deleted encoding header caused a false alert: %s", got.Details)
 	}
 }

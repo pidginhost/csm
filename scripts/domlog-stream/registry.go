@@ -140,18 +140,17 @@ func openRegistry(fsys fileSystem, path, fingerprint string) (*identityRegistry,
 
 // add records issued pseudonyms; a pseudonym already issued for a
 // different digest is a collision between two names.
-func (r *identityRegistry) add(named map[string]string) (changed bool, err error) {
+func (r *identityRegistry) add(named map[string]string) error {
 	for name, digest := range named {
 		old, ok := r.Names[name]
 		if ok && old != digest {
-			return false, errCollision
+			return errCollision
 		}
 		if !ok {
 			r.Names[name] = digest
-			changed = true
 		}
 	}
-	return changed, nil
+	return nil
 }
 
 // save replaces the registry file atomically with a private copy.
