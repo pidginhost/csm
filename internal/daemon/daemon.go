@@ -3386,7 +3386,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			// without a firewall engine cannot escalate, and an operator
 			// may have turned automatic blocking off; all are expected
 			// no-ops, not failures worth logging.
-			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) && !errors.Is(err, checks.ErrAutoBlockDisabled) {
+			if !isExpectedEscalationRefusal(err) {
 				fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 			}
 			if res.Outcome != firewall.BlockOutcomeLive || !errors.Is(err, firewall.ErrActionAuditPending) {
@@ -3397,6 +3397,13 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, res.Outcome))
 	}
 	d.recordAppliedBlocks(recorded)
+}
+
+// isExpectedEscalationRefusal reports a challenge escalation that could not
+// block for an expected reason, including one left to admission.
+func isExpectedEscalationRefusal(err error) bool {
+	return isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker) || errors.Is(err, checks.ErrAutoBlockDisabled) ||
+		errors.Is(err, checks.ErrBlockTakenByAdmission)
 }
 
 // markAppliedBlocks sets the attack database's blocked marker for each
@@ -3463,6 +3470,10 @@ func (d *Daemon) applyIncidentBlock(ip, reason string, timeout time.Duration, fi
 		RootErr:      root.Err,
 	})
 	d.recordAppliedBlocks(res.Findings)
+	// A block admission takes is requested: the correlator latches it once.
+	if errors.Is(err, checks.ErrBlockTakenByAdmission) {
+		return true, nil
+	}
 	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))
 	return live, err
 }

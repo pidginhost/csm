@@ -242,7 +242,8 @@ func logCentralBlockFailure(ip string, err error) {
 }
 
 func isCentralBlockRefusal(err error) bool {
-	return isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker) || errors.Is(err, checks.ErrAutoBlockDisabled)
+	return isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker) || errors.Is(err, checks.ErrAutoBlockDisabled) ||
+		errors.Is(err, checks.ErrBlockTakenByAdmission)
 }
 
 // centralFirebreak returns a predicate that reports whether an IP must never be

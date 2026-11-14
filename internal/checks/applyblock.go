@@ -69,6 +69,10 @@ var ErrNoIPBlocker = errors.New("firewall engine not available")
 // Like ErrNoIPBlocker it means the block did not happen.
 var ErrAutoBlockDisabled = errors.New("automatic IP blocking is disabled")
 
+// ErrBlockTakenByAdmission reports that legacy must not apply this block.
+// It does not promise that admission applied or will apply it.
+var ErrBlockTakenByAdmission = errors.New("block left to admission")
+
 // ApplyBlock is the single chokepoint for auto-response IP blocks issued
 // outside the scan loop (challenge escalation, central intel, incident
 // spray). It performs the block and the same evidence bookkeeping a scan
@@ -102,7 +106,9 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	if IsTrustedProxy(req.IP, cfg) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, fmt.Errorf("%w: %s is a trusted proxy", firewall.ErrIPProtected, req.IP)
 	}
-	respondDerived(req)
+	if respondDerived(req) {
+		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrBlockTakenByAdmission
+	}
 	blocker := getIPBlocker()
 	if blocker == nil {
 		res := ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}
