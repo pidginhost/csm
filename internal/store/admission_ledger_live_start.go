@@ -33,15 +33,13 @@ func (l *AdmissionLedger) LiveStarted() bool {
 	return l.live
 }
 
-// StartLive runs the live start (design C7) once, when the owner first
-// executes, in one transaction: it carries the legacy hour's count over as
-// the greater of that count and the charges retained in its hour, counts
-// each legacy pending entry as refused for attribution, ends the answers
-// of earlier observe previews, clears the notices raised while admission
-// previewed, makes the previews' history eligible, and records the start
-// under the schema that older builds refuse. A ledger that has
-// started refuses with ErrTransitionConflict. It needs a reading this
-// handle recorded.
+// StartLive runs once, when the owner first executes, in one transaction:
+// it carries the greater of the legacy hour's count and the charges
+// retained in its hour, leaves pending legacy entries alone, ends earlier
+// observe previews' answers, clears their notices, makes their history
+// eligible, and records the start under the schema that older builds
+// refuse. A ledger that has started refuses with ErrTransitionConflict.
+// It needs a reading this handle recorded.
 func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

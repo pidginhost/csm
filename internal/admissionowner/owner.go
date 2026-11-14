@@ -553,10 +553,10 @@ var startLiveLedger = (*store.AdmissionLedger).StartLive
 // startLive runs the live start once per ledger, as soon as the
 // installed policy executes. Every drain and turn reads the clock through
 // tick first, so nothing is placed or served under that policy before it:
-// legacy blocking's hour and pending queue are carried over, and earlier
-// previews stop answering episodes and sending notices. A legacy state it
-// cannot read is not an empty one: the ledger keeps no saved credit, and
-// status names the error.
+// legacy blocking's hour is carried over, its pending queue stays legacy's,
+// and earlier previews stop answering episodes and sending notices. A
+// legacy state it cannot read is not an empty one: the ledger keeps no saved
+// credit, and status names the error.
 func (o *Owner) startLive() error {
 	if !o.executing() || o.ledger.LiveStarted() {
 		return nil
@@ -725,6 +725,11 @@ func (o *Owner) Stop() { o.halt(true) }
 // set; without it the ledger is left as a crash leaves it.
 func (o *Owner) halt(clean bool) {
 	o.stopOnce.Do(func() {
+		// Close acceptance before returning new blocks to legacy, even
+		// while an owner turn is still running. Later snapshots stay closed.
+		if o.ingress != nil {
+			o.ingress.Close()
+		}
 		o.stopping.Store(true)
 		o.summaryCancel()
 		o.quit <- clean
@@ -749,9 +754,6 @@ func (o *Owner) shutdown() {
 	if !o.started {
 		return
 	}
-	// No snapshot published during the stop reopens admission, so the
-	// drains below end even if a producer was not stopped first.
-	o.ingress.Close()
 	// An outcome still unwritten stays running for the next start to
 	// settle; the held arrivals are drained regardless.
 	if err := o.finishPending(); err != nil {
