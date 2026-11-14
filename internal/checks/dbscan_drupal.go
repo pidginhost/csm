@@ -136,25 +136,8 @@ func scanDrupalInstall(ctx context.Context, path string, store *state.Store) []a
 }
 
 func CheckDrupalContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var findings []alert.Finding
-
-	settings := cmsDropSuspended(cmsDiscover(ctx, "db_content_drupal", "*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php"))
-	if len(settings) == 0 {
-		return nil
-	}
-
-	// Rank by mtime desc so recently touched Drupal sites are processed
-	// first when the check timeout cuts iteration short.
-	for _, path := range rankCMSConfigs(ctx, "db_content_drupal", settings, accountScanMaxFiles(ctx, cfg)) {
-		if ctx.Err() != nil {
-			return findings
-		}
-		findings = append(findings, scanDrupalInstall(ctx, path, store)...)
-	}
-	return findings
+	return scanCMSInstalls(ctx, cfg, store, "db_content_drupal", scanDrupalInstall,
+		"*/public_html/sites/default/settings.php", "*/*/sites/default/settings.php")
 }
 
 // The marker distinguishes D8+ from D7 without reading its contents. A

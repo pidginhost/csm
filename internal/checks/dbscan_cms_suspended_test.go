@@ -9,8 +9,56 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
+
+// Every adapter on the shared install loop scans only as many installs as the
+// cap allows and reports the rest as a coverage gap.
+func TestCMSInstallLoopCapsInstallsForEveryAdapter(t *testing.T) {
+	withAccountHomeRoots(t, "/home", "/var/www/vhosts")
+	for _, a := range cmsAdapterCases() {
+		if a.name == "prestashop" || a.name == "magento" {
+			continue // own discovery loops
+		}
+		t.Run(a.name, func(t *testing.T) {
+			withCMSConfigOS(t, &twoOwnerCMSOS{files: a.files})
+			withMockCmd(t, &mockCmd{runWithEnv: func(_ string, args []string, _ ...string) ([]byte, error) {
+				return maliciousRowsFor(a.name, strings.Join(args, " "), 0), nil
+			}})
+			ctx, coverage := withIncompleteCheckCollector(context.Background())
+			cfg := &config.Config{}
+			cfg.Thresholds.AccountScanMaxFiles = 1
+			owners := map[string]bool{}
+			for _, f := range a.run(ctx, cfg, nil) {
+				owners[f.TenantID] = true
+			}
+			if len(owners) != 1 || !coverage.contains("db_content_"+a.name) {
+				t.Fatalf("capped scan reached owners %v with incomplete=%t, want one install and a coverage gap",
+					owners, coverage.contains("db_content_"+a.name))
+			}
+		})
+	}
+}
+
+// A cancelled check stops before the next install instead of scanning the rest.
+func TestScanCMSInstallsStopsWhenTheCheckIsCancelled(t *testing.T) {
+	withAccountHomeRoots(t, "/home", "/var/www/vhosts")
+	withCMSConfigOS(t, &twoOwnerCMSOS{files: cmsAdapterCases()[0].files})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scanned := 0
+	scanCMSInstalls(ctx, &config.Config{}, nil, "db_content_joomla",
+		func(context.Context, string, *state.Store) []alert.Finding {
+			scanned++
+			cancel()
+			return nil
+		}, "*/public_html/configuration.php", "*/*/configuration.php")
+	if scanned != 1 {
+		t.Fatalf("scanned %d installs after cancellation, want 1", scanned)
+	}
+}
 
 // A suspended account's database user is locked: its installs are skipped
 // without leaving the check incomplete, and other accounts are still scanned.

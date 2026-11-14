@@ -114,25 +114,8 @@ func scanOpenCartInstall(ctx context.Context, path string, store *state.Store) [
 }
 
 func CheckOpenCartContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var findings []alert.Finding
-
-	configs := cmsDropSuspended(cmsDiscover(ctx, "db_content_opencart", "*/public_html/config.php", "*/*/config.php"))
-	if len(configs) == 0 {
-		return nil
-	}
-
-	// Rank by mtime desc so recently touched OpenCart installs are processed
-	// first when the check timeout cuts iteration short.
-	for _, path := range rankCMSConfigs(ctx, "db_content_opencart", configs, accountScanMaxFiles(ctx, cfg)) {
-		if ctx.Err() != nil {
-			return findings
-		}
-		findings = append(findings, scanOpenCartInstall(ctx, path, store)...)
-	}
-	return findings
+	return scanCMSInstalls(ctx, cfg, store, "db_content_opencart", scanOpenCartInstall,
+		"*/public_html/config.php", "*/*/config.php")
 }
 
 // looksLikeOpenCart confirms both config.php files exist and both
