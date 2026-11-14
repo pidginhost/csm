@@ -56,7 +56,7 @@ func (d *Daemon) consumeAppliedBlocks(rows []admission.AuditRow) error {
 		return fmt.Errorf("recording applied threat batch: %w", writeErr)
 	}
 	if !d.appliedBlocks.add(standing) {
-		return errors.New("the applied-block consumer is full")
+		return errors.New("the applied-block consumer is full or stopped")
 	}
 	return nil
 }
@@ -103,13 +103,18 @@ type appliedBlockQueue struct {
 	stopped bool
 }
 
-// add never waits for consumers. A full queue leaves the durable audit
-// delivery unacknowledged for retry; shutdown discards best-effort work.
+// add never waits for consumers. A full or stopped queue refuses the batch,
+// which leaves the durable audit delivery unacknowledged, so the owner
+// retries it and the next start redelivers what shutdown left. Shutdown
+// discards only work already queued.
 func (q *appliedBlockQueue) add(blocks []checks.AdmissionBlock) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.stopped || len(blocks) == 0 {
+	if len(blocks) == 0 {
 		return true
+	}
+	if q.stopped {
+		return false
 	}
 	if len(blocks) > int(admission.MaxAuditSlots)-len(q.pending) {
 		return false

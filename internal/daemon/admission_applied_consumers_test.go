@@ -302,9 +302,34 @@ func TestAppliedConsumerShutdownReleasesTracker(t *testing.T) {
 		t.Fatal("the consumer did not stop after the scan released the tracker")
 	}
 	<-scanned
-	// A delivery after the consumer stopped keeps nothing in memory.
-	if err := fx.d.consumeAppliedBlocks(fx.rows); err != nil || fx.pending() != 0 {
-		t.Fatalf("late delivery: %v, %d pending", err, fx.pending())
+	// A delivery after the consumer stopped is refused and keeps nothing in
+	// memory, so the audit outbox redelivers it at the next start.
+	if err := fx.d.consumeAppliedBlocks(fx.rows); err == nil || fx.pending() != 0 {
+		t.Fatalf("late delivery: %v, %d pending; want a refusal with nothing kept", err, fx.pending())
+	}
+}
+
+// A block the owner applies while the daemon stops, after the consumer has
+// exited, is not lost: the delivery is refused, so the audit row stays
+// pending, and the next process records it once.
+func TestAppliedBlockDeliveredDuringShutdownIsRecordedNextStart(t *testing.T) {
+	_, cleanup := openTestBoltStore(t, t.TempDir())
+	t.Cleanup(cleanup)
+	fx := newConsumerFixture(t, "203.0.113.55")
+	stop := make(chan struct{})
+	close(stop)
+	fx.d.appliedBlocks.serve(fx.d, stop)
+	if err := fx.d.consumeAppliedBlocks(fx.rows); err == nil {
+		t.Fatal("a stopped consumer accepted a delivery it will never record")
+	}
+	next := &consumerFixture{dir: fx.dir, st: fx.st, rows: fx.rows, d: New(fx.d.cfg, fx.st, nil, "")}
+	next.serve(t)
+	if err := next.d.consumeAppliedBlocks(next.rows); err != nil {
+		t.Fatal(err)
+	}
+	tracked, strikes, notices := next.recorded(t, 1)
+	if len(tracked) != 1 || tracked[0] != "203.0.113.55" || strikes["203.0.113.55"] != 1 || notices != 1 {
+		t.Fatalf("tracker %v, strikes %v, notices %d; want the block recorded once", tracked, strikes, notices)
 	}
 }
 

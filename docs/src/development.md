@@ -668,8 +668,9 @@ lose those best-effort side effects but cannot repeat them on replay.
 An unreadable tracker is left untouched; a failed tracker save emits no
 strike or notice. The strike promotes nothing, since a permanent
 block is not an admission response. That goroutine waits for the tracker
-lock a scan holds; the owner never does, and blocks still queued when the
-daemon stops are not recorded there. One durable transaction per delivery batch precedes threat
+lock a scan holds; the owner never does. Blocks already queued when the
+daemon stops are not recorded there; a delivery after the consumer stops is
+refused and stays pending in the audit outbox, so the next start records it. One durable transaction per delivery batch precedes threat
 memory publication; read or write errors leave delivery pending and threat
 memory unchanged. Local evidence survives feed withdrawal;
 permanent local evidence and longer temporary rows remain unchanged.
