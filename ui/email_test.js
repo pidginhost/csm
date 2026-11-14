@@ -4496,3 +4496,74 @@ test('a Stalwart host charts delivered, Junk, rejected and discarded', async () 
     const sum = label => dataset(chart, label).reduce((a, b) => a + b, 0);
     assert.deepEqual(['Delivered', 'Filed to Junk', 'Rejected', 'Discarded'].map(sum), [5, 2, 1, 1]);
 });
+
+test('Stalwart cards and chart tolerate missing fields from an older daemon', async () => {
+    for (const totals of [undefined, null, {}, { scanned: 900, clean: 800, tagged: 70, rejected: 30 }]) {
+        const page = emailPage({ features: STALWART });
+        page.respond('/api/v1/email/overview', 200, overview({}, { totals, mode: 'off', series: undefined }));
+        await settle();
+        assert.equal(kpi(page, 'kpi-scanned').value, '0');
+        assert.equal(kpi(page, 'kpi-tagged').value, '0');
+        assert.equal(kpi(page, 'kpi-spam').value, '-');
+        assert.equal(kpi(page, 'kpi-spam').sub, 'none logged yet');
+        const subtitle = page.document.getElementById('email-subtitle').textContent;
+        assert.match(subtitle, /No inbound mail in the last 24 hours/);
+        assert.doesNotMatch(page.document.getElementById('email-kpis').textContent + subtitle,
+            /NaN|undefined|scanned|clean|Antispam is off/i);
+        const chart = page.Chart.charts.at(-1);
+        assert.deepEqual(Array.from(chart.data.datasets, d => d.label),
+            ['Delivered', 'Filed to Junk', 'Rejected', 'Discarded', 'Malware', 'Other rejects']);
+        for (const ds of chart.data.datasets) {
+            assert.ok(ds.data.length > 0);
+            assert.ok(ds.data.every(n => n === 0), ds.label);
+        }
+    }
+});
+
+test('Stalwart cards keep large verdict counts separate from rspamd counts', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({
+        delivered: 1234567, junk: 2345678, filter_rejected: 3456789, discarded: 4567890, unmatched: 5678901,
+        scanned: 9, clean: 8, tagged: 7, rejected: 6, would_reject: 5, would_tag: 4
+    }, { mode: 'dry-run' }));
+    await settle();
+    for (const [id, value, title] of [
+        ['kpi-scanned', '1.2M', '1,234,567'],
+        ['kpi-tagged', '2.3M', '2,345,678'],
+        ['kpi-spam', '3.5M', '3,456,789']
+    ]) {
+        assert.equal(kpi(page, id).value, value);
+        assert.equal(page.document.querySelector('#' + id + ' [data-kpi-value]').getAttribute('title'), title);
+    }
+    assert.equal(kpi(page, 'kpi-scanned').sub, 'to the inbox, 5,678,901 not matched');
+    assert.equal(kpi(page, 'kpi-spam').sub, '4,567,890 discarded');
+    assert.equal(page.document.getElementById('email-subtitle').textContent,
+        'Mail flowing. 2,345,678 filed to Junk and 3,456,789 rejected in the last 24 hours.');
+    assert.equal(page.document.querySelector('#kpi-spam [data-kpi-badge]'), null);
+});
+
+test('Stalwart chart sums sparse verdicts without borrowing rspamd decisions', async () => {
+    const page = emailPage({ features: STALWART, now: '2026-11-14T12:30:00Z',
+        storage: { 'csm-prefs': JSON.stringify({ timezone: 'UTC' }) } });
+    const from = Date.parse(query(page.pending('/api/v1/email/overview')[0].url).get('from'));
+    const t = (from + 5 * HOUR_MS) / 1000;
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({}, { series: [
+        { t, clean: 900, tagged: 800, rejected: 700 },
+        { t: t + 900, delivered: 1234567, junk: 2 },
+        { t: t + 1800, delivered: 2345678, filter_rejected: 3, discarded: 4 },
+        { t: t + 3600, clean: 600, tagged: 500, rejected: 400, junk: 5, malware: 6, other: 7 }
+    ] }));
+    await settle();
+    const chart = page.Chart.charts.at(-1);
+    assert.deepEqual(Array.from(chart.data.datasets, d => d.label),
+        ['Delivered', 'Filed to Junk', 'Rejected', 'Discarded', 'Malware', 'Other rejects']);
+    for (const [label, fifth, sixth] of [
+        ['Delivered', 3580245, 0], ['Filed to Junk', 2, 5], ['Rejected', 3, 0],
+        ['Discarded', 4, 0], ['Malware', 0, 6], ['Other rejects', 0, 7]
+    ]) {
+        const expected = Array(chart.data.labels.length).fill(0);
+        expected[5] = fifth;
+        expected[6] = sixth;
+        assert.deepEqual(dataset(chart, label), expected, label);
+    }
+});

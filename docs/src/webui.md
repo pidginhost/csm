@@ -135,6 +135,15 @@ shown elsewhere. Hidden settings keep the values they have in `csm.yaml`.
 On a Stalwart host the first three Email Security cards show the mail
 Stalwart's spam filter delivered to the inbox, rejected or discarded, and
 filed to the Junk folder.
+The state line and mail decisions chart use Stalwart's filter verdicts,
+independently of CSM's antispam mode. The Spam rejected card opens Overview
+and has no mode badge. It shows a dash and "none logged yet" until CSM has a
+retained rejection or discard, including events outside the selected range.
+After that, it shows the range's rejection count and the discarded count
+below it. The Mail delivered card also names unmatched verdicts.
+Missing verdict counts from an older daemon display as zero; they never
+fall back to rspamd counts. Large card counts are shortened, with the full
+count available in the value's tooltip.
 
 On Email Security, failed refreshes mark protection status as unavailable
 and hide stale chart data. An older response cannot overwrite newer health

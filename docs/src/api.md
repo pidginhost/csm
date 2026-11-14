@@ -1540,6 +1540,21 @@ POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin
 DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
 
+For Stalwart, the overview's `totals.delivered`, `totals.junk`,
+`totals.filter_rejected`, `totals.discarded` and `totals.unmatched` count
+its own filter verdicts in the selected range. `unmatched` counts verdicts
+that could not be paired with a delivery or rejection. Chart points use
+`delivered`, `junk`, `filter_rejected` and `discarded`, omitting these keys
+when zero. `totals.rejected` and the chart's `rejected` key count rspamd
+decisions, not Stalwart filter rejects.
+
+The top-level `filter_rejects_seen` is true when any retained bucket contains
+a Stalwart filter rejection or discard, even outside the selected range.
+False means no such event is retained, not that the filter rejected no mail.
+The Email page shows a dash and "none logged yet" for rejected mail until
+this flag is true. Older responses may omit the flag or verdict counts;
+the page treats the flag as false and missing counts as zero.
+
 The `mail.forwarders.delete.v1` capability advertises the forwarder delete
 endpoint. A 500 can follow a delete that partly ran, so read the inventory
 again before retrying. A domain's default address (`*@domain`) is changed in
