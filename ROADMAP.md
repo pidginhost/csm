@@ -288,7 +288,7 @@ finally, no handler performs a host mutation directly.
 
 ### Parser and input hardening
 
-**Problem:** 83 test files carry fuzz targets, and YARA-X scanning, PHP
+**Problem:** 96 test files carry fuzz targets, and YARA-X scanning, PHP
 parsing, mail extraction and phishing-kit archive listing run in unprivileged
 workers, but no inventory maps every parser of external input (archives,
 logs, configuration, CMS state, PHP, JavaScript, mail, challenge and control
@@ -466,19 +466,6 @@ in the same commit.
 
 **Size:** M.
 
-### Realtime coverage for files renamed into a watched tree
-
-**Problem:** atomic saves are covered (see
-[realtime coverage](docs/src/detection-realtime.md)); a file moved into an
-eligible path without a create or close-write event is caught only by the
-rolling content scan, because the watcher subscribes to no rename events.
-
-**Acceptance:** name-event and file-handle support is probed at runtime
-first; arrival from outside the scope, same-tree moves, lost events and
-unsupported kernels are tested; the rolling scan fallback stays.
-
-**Size:** M.
-
 ### Scheduled scans do not consult package checksums
 
 **Problem:** the realtime path skips files whose hash matches the official
@@ -629,7 +616,7 @@ noise per platform feeds the clean corpus calibration.
 ### Resource and performance budgets
 
 **Problem:** overload has been found by operators (out-of-memory restarts, a
-copy-on-write regression) rather than by tests; 41 test files contain
+copy-on-write regression) rather than by tests; 43 test files contain
 benchmarks and no budget is written down.
 
 **Acceptance:** written CPU, memory, I/O and event-latency budgets for a
@@ -663,6 +650,20 @@ carry a Go or linter version; they agree today, and nothing checks drift.
 check, and CI records the selected Go and linter versions.
 
 **Size:** S.
+
+### Configuration defaults from one source
+
+**Problem:** a default is written in the packaged `csm.yaml.default`, in the
+built-in defaults and in the parser that tells an omitted key from an
+explicit zero; a parity test pins every difference with a reason, but each
+new key is still written three times.
+
+**Acceptance:** built-in defaults and omitted-key handling derive from one
+table; an omitted key, an explicit zero and an explicit empty list each keep
+their current meaning, proven per key; the parity test covers only the
+packaged-policy differences.
+
+**Size:** M.
 
 ### WordPress companion plugin for signed-cookie operator bypass
 
