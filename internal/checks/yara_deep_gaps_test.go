@@ -39,6 +39,34 @@ func TestYARAGapFindingNamesEachGapKind(t *testing.T) {
 
 // A gap that names a file must not make the run partial: the scan covered
 // everything else and is entitled to retire those findings.
+// With no file counted, the finding has to count the lost locations instead
+// of reporting "0 file(s)".
+func TestGapFindingWithOnlyLostRangesCountsLocations(t *testing.T) {
+	yara := newYARAGapCollector()
+	yara.recordUnknownRange("reading /home/exampleuser failed")
+	js := newJSTaintGapCollector()
+	js.recordUnknownRange("reading /home/exampleuser failed")
+	for want, got := range map[string]string{
+		"YARA deep scan could not cover 1 location(s)":             yara.finding().Message,
+		"JavaScript taint deep scan could not cover 1 location(s)": js.finding().Message,
+	} {
+		if got != want {
+			t.Errorf("message = %q, want %q", got, want)
+		}
+	}
+}
+
+// A walk that supplies no aliases still names its gap by the spelling it
+// recorded, so a finding stored under that spelling is carried forward.
+func TestYARAGapIsFoundByItsRecordedSpellingWithoutAliases(t *testing.T) {
+	gaps := newYARAGapCollector()
+	gaps.resolveAliases = func(string) ([]string, bool) { return nil, true }
+	gaps.record("relative/gap.php", "read_error")
+	if !gaps.hasPath("relative/gap.php") {
+		t.Fatal("a recorded gap was not found by the spelling it was recorded under")
+	}
+}
+
 func TestYARAKnownPathGapsDoNotMakeTheRunPartial(t *testing.T) {
 	g := newYARAGapCollector()
 	g.record("/home/a/big.zip", "oversize")

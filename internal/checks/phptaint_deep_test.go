@@ -133,6 +133,22 @@ func TestPHPTaintCarriesForwardPriorFindingOnAGap(t *testing.T) {
 	}
 }
 
+// A rolling window can leave two stored variants at one path. The gap carries
+// the one observed last, since that is the file's current state.
+func TestPHPTaintCarriesForwardNewestPriorFindingPerPath(t *testing.T) {
+	gaps := newPHPTaintGapCollector()
+	gaps.record("/home/u/public_html/x.php", phptaint.StatusTimeout.String())
+	newer := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	prior := []alert.Finding{
+		{Check: "php_remote_taint", FilePath: "/home/u/public_html/x.php", Message: "older", Timestamp: newer.Add(-time.Hour)},
+		{Check: "php_remote_taint", FilePath: "/home/u/public_html/x.php", Message: "newer", Timestamp: newer},
+	}
+	carried := carryForwardPHPTaintFindings(prior, gaps)
+	if len(carried) != 1 || carried[0].Message != "newer" || !carried[0].ScanCarryForward {
+		t.Fatalf("carried = %+v, want only the newest variant, marked carried forward", carried)
+	}
+}
+
 func TestPHPTaintGapFindingNamesStatusesAndCounts(t *testing.T) {
 	gaps := newPHPTaintGapCollector()
 	gaps.record("/a.php", phptaint.StatusTimeout.String())
