@@ -232,31 +232,31 @@ func TestDemoteTmpExecGates(t *testing.T) {
 
 	t.Run("non_root_file_never_demotes", func(t *testing.T) {
 		override(t, true, true)
-		if ok, _ := demoteTmpExec(1000, 42, now); ok {
+		if ok, _ := demoteTmpExec(1000, tmpExecAncestry(42), now); ok {
 			t.Fatal("uid != 0 must never demote: non-root attackers cannot qualify")
 		}
 	})
 	t.Run("unknown_pid_never_demotes", func(t *testing.T) {
 		override(t, true, true)
-		if ok, _ := demoteTmpExec(0, 0, now); ok {
+		if ok, _ := demoteTmpExec(0, tmpExecEvidence(fileEvent{pid: 0}, 0), now); ok {
 			t.Fatal("pid 0 (no process attribution) must never demote")
 		}
 	})
 	t.Run("no_pkg_window_never_demotes", func(t *testing.T) {
 		override(t, false, true)
-		if ok, _ := demoteTmpExec(0, 42, now); ok {
+		if ok, _ := demoteTmpExec(0, tmpExecAncestry(42), now); ok {
 			t.Fatal("ancestry alone without active package window must not demote")
 		}
 	})
 	t.Run("no_ancestry_never_demotes", func(t *testing.T) {
 		override(t, true, false)
-		if ok, _ := demoteTmpExec(0, 42, now); ok {
+		if ok, _ := demoteTmpExec(0, tmpExecAncestry(42), now); ok {
 			t.Fatal("package window alone without ancestry must not demote")
 		}
 	})
 	t.Run("all_gates_pass_demotes_with_reason", func(t *testing.T) {
 		override(t, true, true)
-		ok, reason := demoteTmpExec(0, 42, now)
+		ok, reason := demoteTmpExec(0, tmpExecAncestry(42), now)
 		if !ok {
 			t.Fatal("root file + window + ancestry must demote")
 		}
@@ -289,14 +289,17 @@ func TestAnalyzeFileTmpExecDemotedToWarning(t *testing.T) {
 	}
 	wantPID := int32(4242)
 
-	oldDemote := tmpExecDemote
-	tmpExecDemote = func(uid uint32, pid int32, now time.Time) (bool, string) {
-		if uid != st.Uid || pid != wantPID {
+	oldDemote, oldAncestry := tmpExecDemote, tmpExecAncestry
+	tmpExecAncestry = func(pid int32) ancestryEvidence {
+		return ancestryEvidence{packageManager: pid == wantPID}
+	}
+	tmpExecDemote = func(uid uint32, ev ancestryEvidence, _ time.Time) (bool, string) {
+		if uid != st.Uid || (uid == 0 && !ev.packageManager) {
 			return false, ""
 		}
 		return true, "package manager ancestry during active package window"
 	}
-	t.Cleanup(func() { tmpExecDemote = oldDemote })
+	t.Cleanup(func() { tmpExecDemote, tmpExecAncestry = oldDemote, oldAncestry })
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
@@ -399,11 +402,12 @@ func TestAnalyzeFileTmpExecRootOwnedWorkDirIsReported(t *testing.T) {
 			}
 			fd := openRawFd(t, path)
 
-			oldDemote := tmpExecDemote
-			tmpExecDemote = func(uint32, int32, time.Time) (bool, string) {
+			oldDemote, oldAncestry := tmpExecDemote, tmpExecAncestry
+			tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{} }
+			tmpExecDemote = func(uint32, ancestryEvidence, time.Time) (bool, string) {
 				return tc.demote, "package manager ancestry during active package window"
 			}
-			t.Cleanup(func() { tmpExecDemote = oldDemote })
+			t.Cleanup(func() { tmpExecDemote, tmpExecAncestry = oldDemote, oldAncestry })
 
 			ch := make(chan alert.Finding, 4)
 			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
@@ -489,11 +493,11 @@ func TestDemoteTmpExecInitramfsArm(t *testing.T) {
 	tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{initramfsBuilder: true} }
 	t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry = oldW, oldA })
 
-	ok, reason := demoteTmpExec(0, 42, time.Now())
+	ok, reason := demoteTmpExec(0, tmpExecAncestry(42), time.Now())
 	if !ok || !strings.Contains(reason, "initramfs") {
 		t.Fatalf("root file from an initramfs build = (%v, %q), want demotion naming it", ok, reason)
 	}
-	if ok, _ := demoteTmpExec(1000, 42, time.Now()); ok {
+	if ok, _ := demoteTmpExec(1000, tmpExecAncestry(42), time.Now()); ok {
 		t.Fatal("a non-root file must never demote")
 	}
 }
@@ -542,5 +546,83 @@ func TestCachedPackageEvidenceDoesNotHideLiveInitramfs(t *testing.T) {
 	got := ancestryEvidenceFor(300)
 	if !got.packageManager || !got.initramfsBuilder {
 		t.Fatalf("lost independent ancestry evidence: %+v", got)
+	}
+}
+
+// A walk that stops at an exited process says so: only then may the writer be
+// judged by what its work directory already proved.
+func TestProcAncestryReportsVanishedProcess(t *testing.T) {
+	type proc = struct {
+		comm string
+		ppid int32
+	}
+	for _, tt := range []struct {
+		name   string
+		procs  map[int32]proc
+		break_ func(t *testing.T, root string)
+		want   ancestryEvidence
+	}{
+		{name: "writer already exited", procs: map[int32]proc{}, want: ancestryEvidence{vanished: true}},
+		{
+			name:  "ancestor exited",
+			procs: map[int32]proc{300: {"cp", 200}},
+			want:  ancestryEvidence{vanished: true},
+		},
+		{
+			name:  "writer exited between reads",
+			procs: map[int32]proc{300: {"cp", 1}},
+			break_: func(t *testing.T, root string) {
+				if err := os.Remove(filepath.Join(root, "300", "status")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: ancestryEvidence{vanished: true},
+		},
+		{
+			name:  "evidence found before the chain broke is kept",
+			procs: map[int32]proc{300: {"dnf", 200}},
+			want:  ancestryEvidence{packageManager: true, vanished: true},
+		},
+		{name: "live chain that proves nothing", procs: map[int32]proc{300: {"cp", 200}, 200: {"bash", 1}}},
+		{
+			name:  "unreadable parent link is not an exit",
+			procs: map[int32]proc{300: {"cp", 1}},
+			break_: func(t *testing.T, root string) {
+				status := "Name:\tcp\nPPid:\tnot-a-pid\n"
+				if err := os.WriteFile(filepath.Join(root, "300", "status"), []byte(status), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := fakeProc(t, tt.procs)
+			if tt.break_ != nil {
+				tt.break_(t, root)
+			}
+			overrideProcRoot(t, root)
+			if got := procAncestryEvidence(300, nil); got != tt.want {
+				t.Fatalf("procAncestryEvidence = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A chain cut off by the depth cap was read in full as far as it goes: it is
+// not an exited writer.
+func TestProcAncestryDepthCapIsNotVanished(t *testing.T) {
+	procs := map[int32]struct {
+		comm string
+		ppid int32
+	}{}
+	for pid := int32(100); pid < 100+int32(maxAncestryDepth)+3; pid++ {
+		procs[pid] = struct {
+			comm string
+			ppid int32
+		}{comm: "bash", ppid: pid + 1}
+	}
+	overrideProcRoot(t, fakeProc(t, procs))
+	if got := procAncestryEvidence(100, nil); got.vanished {
+		t.Fatalf("depth-capped walk = %+v, want no vanished mark", got)
 	}
 }

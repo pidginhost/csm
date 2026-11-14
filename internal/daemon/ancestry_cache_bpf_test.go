@@ -142,7 +142,7 @@ func TestCachedInitramfsAncestryNeedsLiveCredentials(t *testing.T) {
 					cache.PutFromProc(builder, 1, 0, "", "", "dracut", "/usr/bin/dracut", nil)
 				}
 				cache.PutFromExec(writer, builder, 0, "cp", "/usr/bin/cp")
-				if got, _ := demoteTmpExec(0, writer, time.Now()); got != tc.want {
+				if got, _ := demoteTmpExec(0, tmpExecAncestry(writer), time.Now()); got != tc.want {
 					t.Fatalf("demotion = %v, want %v", got, tc.want)
 				}
 				// Reused PIDs must not inherit the cached builder's identity.
@@ -153,11 +153,11 @@ func TestCachedInitramfsAncestryNeedsLiveCredentials(t *testing.T) {
 				writeProcStatus(t, reused, writer, builder, "Uid:\t0\t0\t0\t0\n")
 				writeProcStatus(t, reused, builder, 1, "Uid:\t0\t0\t0\t0\n")
 				overrideProcRoot(t, reused)
-				if got, _ := demoteTmpExec(0, writer, time.Now()); got {
+				if got, _ := demoteTmpExec(0, tmpExecAncestry(writer), time.Now()); got {
 					t.Fatal("stale cache demoted reused PIDs")
 				}
 				overrideProcRoot(t, t.TempDir())
-				if got, _ := demoteTmpExec(0, writer, time.Now()); got {
+				if got, _ := demoteTmpExec(0, tmpExecAncestry(writer), time.Now()); got {
 					t.Fatal("stale cache demoted a vanished writer")
 				}
 			})

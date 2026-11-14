@@ -39,6 +39,10 @@ type ancestryEvidence struct {
 	packageManager   bool
 	panelTool        bool
 	initramfsBuilder bool
+	// vanished reports that the walk stopped at a process that had already
+	// exited. It proves nothing by itself: it only tells a live writer that
+	// proved nothing apart from one that could no longer be asked.
+	vanished bool
 }
 
 func (e ancestryEvidence) none() bool {
@@ -57,6 +61,7 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
 		commRaw, err := os.ReadFile(dir + "/comm")
 		if err != nil {
+			ev.vanished = true
 			return ev
 		}
 		comm := strings.TrimSpace(string(commRaw))
@@ -72,6 +77,7 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
 		status, err := os.ReadFile(dir + "/status")
 		if err != nil {
+			ev.vanished = true
 			return ev
 		}
 		ppid := int32(-1)
@@ -191,9 +197,9 @@ func ancestryProvenanceReason(pid uint32) string {
 }
 
 // demoteTmpExec decides whether an executable_in_tmp_realtime finding is
-// demoted from Critical to Warning. The file must be root-owned in every
-// case -- a non-root attacker can never qualify -- and then one of three
-// provenance arms has to hold:
+// demoted from Critical to Warning on what its writer's ancestry proved. The
+// file must be root-owned in every case -- a non-root attacker can never
+// qualify -- and then one of three provenance arms has to hold:
 //
 //   - the writer descends from the control panel's own tooling, proven by an
 //     ancestor's executable path,
@@ -202,18 +208,14 @@ func ancestryProvenanceReason(pid uint32) string {
 //     attacker-settable, so it is never the sole gate,
 //   - or its live ancestry through an initramfs builder runs entirely as root.
 //
-// The walk runs for every root-owned executable written under a temp root:
-// the last arm needs no window or panel, so no cheaper gate can rule it out.
-//
 // The finding is rescored, never dropped by this decision, so the evidence
 // trail survives even if the heuristic is wrong.
-func demoteTmpExec(uid uint32, pid int32, now time.Time) (bool, string) {
-	if uid != 0 || pid <= 0 {
+func demoteTmpExec(uid uint32, ev ancestryEvidence, now time.Time) (bool, string) {
+	if uid != 0 {
 		return false, ""
 	}
 	window := tmpExecPkgWindow(now)
 	panelRooted := len(panelToolRoots()) > 0
-	ev := tmpExecAncestry(pid)
 	switch {
 	case panelRooted && ev.panelTool:
 		return true, "control panel maintenance ancestry"

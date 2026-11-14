@@ -355,6 +355,9 @@ type FileMonitor struct {
 	// Per-path alert deduplication: "check:filepath" → last alert time
 	alertDedup sync.Map
 
+	// tmpVouches holds the temp work directories a proven writer wrote into.
+	tmpVouches tmpVouches
+
 	// accountRootPatterns and docRootPatterns describe where accounts and their
 	// document roots live on this platform. The realtime detectors used to
 	// hardcode /home and /public_html, which made every one of them dead on
@@ -607,6 +610,10 @@ type fileEvent struct {
 	// to have existed under its PID.
 	at          time.Time
 	writerChain []int
+	// tmpAncestry is what the writer's process chain proved when the event
+	// was admitted, for a root-owned file under a temp root. Nil when no
+	// capture ran.
+	tmpAncestry *ancestryEvidence
 	// cacheable is set only by a completed clean content scan. Other
 	// detector paths may depend on state outside the placement cache key.
 	cacheable *bool
@@ -1103,6 +1110,7 @@ func (fm *FileMonitor) admitEvent(fd int, event fileEvent, admit bool, pid int32
 	ticket := fm.analyzerHealth.Begin(time.Now())
 	event.queueTicket, event.pid, event.mask, event.at = ticket, pid, mask, readAt
 	captureRestoreWriterChain(&event)
+	captureTmpExecAncestry(&event)
 	select {
 	case fm.analyzerCh <- event:
 		admitted = true
@@ -2059,7 +2067,25 @@ func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
 				ProcessInfo: procInfo,
 			}
 			dedupPath := path
-			if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
+			now := time.Now()
+			work := tmpWorkDir(path)
+			ev := tmpExecEvidence(event, tmpStat.Uid)
+			ok, reason := tmpExecDemote(tmpStat.Uid, ev, now)
+			switch {
+			case ok:
+				fm.tmpVouches.grant(work, reason, now)
+			case tmpStat.Uid == 0 && ev.vanished:
+				// The writer exited before its ancestry could be read. It
+				// is judged by a writer already proven in the same
+				// root-private work directory; a writer that is still
+				// running and proved nothing never is.
+				if vouched, covered := fm.tmpVouches.covers(work, now); covered {
+					ok, reason = true, vouched+" in this work directory, writer exited"
+				} else {
+					finding.Details += " [writer exited before its ancestry was read]"
+				}
+			}
+			if ok {
 				// Maintenance writes hundreds of executables into one work
 				// directory. One finding stands for the directory per
 				// cooldown so the burst cannot crowd other findings out of
@@ -2069,7 +2095,7 @@ func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
 				finding.Details += " [demoted: " + reason + "; one finding per work directory]"
 				// NUL cannot occur in a file path. Separate warning cooldowns
 				// even when a top-level file has no directory group.
-				dedupPath = tmpWorkDir(path) + "\x00maintenance"
+				dedupPath = work + "\x00maintenance"
 			}
 			if fm.prepareFileFindingWithDedup(&finding, dedupPath) {
 				fm.enqueuePreparedFileFinding(finding)

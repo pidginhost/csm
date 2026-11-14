@@ -162,18 +162,14 @@ func TestTmpExecutableConfigContentAndSuppression(t *testing.T) {
 // writeTmpExec creates an executable and runs it through the analyzer.
 func writeTmpExec(t *testing.T, fm *FileMonitor, path string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho hello\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd()), pid: 4242})
+	writeTmpExecAs(t, fm, path, 4242)
+}
+
+// writeTmpExecAs is writeTmpExec for a chosen writer PID.
+func writeTmpExecAs(t *testing.T, fm *FileMonitor, path string, pid int32) {
+	t.Helper()
+	makeTmpExec(t, path)
+	analyzeTmpExec(t, fm, path, pid)
 }
 
 func tmpWorkDirForTest(t *testing.T) string {
@@ -189,11 +185,14 @@ func tmpWorkDirForTest(t *testing.T) string {
 func overrideTmpExecDemote(t *testing.T, demote func(path string) bool) *string {
 	t.Helper()
 	current := new(string)
-	old := tmpExecDemote
-	tmpExecDemote = func(uint32, int32, time.Time) (bool, string) {
+	old, oldAncestry := tmpExecDemote, tmpExecAncestry
+	// A live writer that proves nothing: the stubbed decision is the only
+	// thing that can demote.
+	tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{} }
+	tmpExecDemote = func(uint32, ancestryEvidence, time.Time) (bool, string) {
 		return demote(*current), "test maintenance"
 	}
-	t.Cleanup(func() { tmpExecDemote = old })
+	t.Cleanup(func() { tmpExecDemote, tmpExecAncestry = old, oldAncestry })
 	return current
 }
 
@@ -307,5 +306,310 @@ func TestTmpExecutableTopLevelSeverityEscalation(t *testing.T) {
 	got = drainFindings(ch)
 	if len(got) != 1 || got[0].Severity != alert.Critical {
 		t.Fatalf("severity escalation: %+v", got)
+	}
+}
+
+const (
+	tmpProvenPID int32 = 5001 // descends from an initramfs build
+	tmpGonePID   int32 = 5002 // exited before its ancestry was read
+	tmpLivePID   int32 = 5003 // still running, proves nothing
+)
+
+// stubTmpExecWriters replaces the process table with three fixed writers and
+// leaves the real demotion decision in place.
+func stubTmpExecWriters(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: the files under test must be root-owned")
+	}
+	oldW, oldA, oldR := tmpExecPkgWindow, tmpExecAncestry, panelToolRoots
+	tmpExecPkgWindow = func(time.Time) bool { return false }
+	panelToolRoots = func() []string { return nil }
+	tmpExecAncestry = func(pid int32) ancestryEvidence {
+		switch pid {
+		case tmpProvenPID:
+			return ancestryEvidence{initramfsBuilder: true}
+		case tmpGonePID:
+			return ancestryEvidence{vanished: true}
+		}
+		return ancestryEvidence{}
+	}
+	t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry, panelToolRoots = oldW, oldA, oldR })
+}
+
+// endAlertCooldown lets the next finding through as if the cooldown had run out.
+func endAlertCooldown(fm *FileMonitor) {
+	fm.alertDedup.Range(func(k, _ any) bool {
+		fm.alertDedup.Delete(k)
+		return true
+	})
+}
+
+// A build copies most of its files with tools that exit as soon as the file is
+// closed, so their ancestry can no longer be read. Such a file is judged by a
+// writer that was proven in the same work directory; a writer that is still
+// running and proves nothing is not.
+func TestTmpExecutableVanishedWriterFollowsWorkDir(t *testing.T) {
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	nested := filepath.Join(work, "initramfs", "usr", "bin")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+
+	early := filepath.Join(nested, "early")
+	writeTmpExecAs(t, fm, early, tmpGonePID)
+	got := drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Critical || got[0].FilePath != early {
+		t.Fatalf("exited writer before any proof: %+v, want its own Critical", got)
+	}
+	if !strings.Contains(got[0].Details, "writer exited") {
+		t.Fatalf("Details = %q, want a note that the writer had exited", got[0].Details)
+	}
+
+	writeTmpExecAs(t, fm, filepath.Join(nested, "bash"), tmpProvenPID)
+	got = drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("proven writer: %+v, want one Warning", got)
+	}
+
+	for i := 0; i < 50; i++ {
+		writeTmpExecAs(t, fm, filepath.Join(nested, fmt.Sprintf("lib%d.so", i)), tmpGonePID)
+	}
+	if got = drainFindings(ch); len(got) != 0 {
+		t.Fatalf("exited writers in a proven work directory queued %+v, want them grouped with its Warning", got)
+	}
+
+	endAlertCooldown(fm)
+	late := filepath.Join(work, "late")
+	writeTmpExecAs(t, fm, late, tmpGonePID)
+	got = drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Warning || got[0].FilePath != late {
+		t.Fatalf("exited writer after the cooldown: %+v, want the next grouped Warning", got)
+	}
+	for _, want := range []string{"initramfs build ancestry", "writer exited", "work directory"} {
+		if !strings.Contains(got[0].Details, want) {
+			t.Fatalf("Details = %q, want %q", got[0].Details, want)
+		}
+	}
+
+	planted := filepath.Join(nested, "planted")
+	writeTmpExecAs(t, fm, planted, tmpLivePID)
+	got = drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Critical || got[0].FilePath != planted {
+		t.Fatalf("running writer that proves nothing: %+v, want its own Critical", got)
+	}
+}
+
+// Only a directory nobody but root can write to carries a proven writer's
+// verdict, and only for root-owned files.
+func TestTmpExecutableVouchNeedsRootPrivateWorkDir(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		prepare func(t *testing.T, work string)
+		file    func(t *testing.T, path string)
+	}{
+		{name: "world-writable directory", prepare: func(t *testing.T, work string) { chmodForTest(t, work, 0o777) }},
+		{name: "sticky world-writable directory", prepare: func(t *testing.T, work string) { chmodForTest(t, work, 0o1777) }},
+		{name: "group-writable directory", prepare: func(t *testing.T, work string) { chmodForTest(t, work, 0o770) }},
+		{name: "directory owned by another user", prepare: func(t *testing.T, work string) { chownForTest(t, work) }},
+		{name: "file owned by another user", file: chownForTest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stubTmpExecWriters(t)
+			work := tmpWorkDirForTest(t)
+			if tt.prepare != nil {
+				tt.prepare(t, work)
+			}
+			ch := make(chan alert.Finding, 8)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			writeTmpExecAs(t, fm, filepath.Join(work, "bash"), tmpProvenPID)
+			if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+				t.Fatalf("proven writer: %+v, want one Warning", got)
+			}
+
+			path := filepath.Join(work, "tool")
+			makeTmpExec(t, path)
+			if tt.file != nil {
+				tt.file(t, path)
+			}
+			// As captured at admission, so the file's owner at analysis time
+			// is what decides.
+			gone := ancestryEvidence{vanished: true}
+			fm.analyzeFile(fileEvent{path: path, fd: openRawFd(t, path), pid: tmpGonePID, tmpAncestry: &gone})
+			got := drainFindings(ch)
+			if len(got) != 1 || got[0].Severity != alert.Critical || got[0].FilePath != path {
+				t.Fatalf("exited writer: %+v, want its own Critical", got)
+			}
+		})
+	}
+}
+
+// A file placed directly in a temp root has no work directory, so nothing can
+// vouch for it.
+func TestTmpExecutableTopLevelFileIsNeverVouched(t *testing.T) {
+	stubTmpExecWriters(t)
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	var paths []string
+	for i := 0; i < 2; i++ {
+		f, err := os.CreateTemp("/tmp", "csm-toplevel-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := f.Name()
+		_ = f.Close()
+		t.Cleanup(func() { _ = os.Remove(path) })
+		paths = append(paths, path)
+	}
+	writeTmpExecAs(t, fm, paths[0], tmpProvenPID)
+	writeTmpExecAs(t, fm, paths[1], tmpGonePID)
+	got := drainFindings(ch)
+	if len(got) != 2 || got[0].Severity != alert.Warning || got[1].Severity != alert.Critical {
+		t.Fatalf("top-level files: %+v, want a Warning then a Critical", got)
+	}
+}
+
+// A vouch names the directory itself, not its path, lasts a short time after
+// the last proof, and the table stays small.
+func TestTmpVouchesIdentityExpiryAndBound(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: a vouched directory must be root-owned")
+	}
+	now := time.Unix(1_700_000_000, 0)
+	work := tmpWorkDirForTest(t)
+	var v tmpVouches
+
+	if _, ok := v.covers(work+"/", now); ok {
+		t.Fatal("covered a directory nobody vouched for")
+	}
+	v.grant(work+"/", "initramfs build ancestry", now)
+	if reason, ok := v.covers(work+"/", now.Add(tmpVouchTTL-time.Second)); !ok || reason != "initramfs build ancestry" {
+		t.Fatalf("covers = (%q, %v), want the granted reason", reason, ok)
+	}
+	if _, ok := v.covers(work+"/", now.Add(tmpVouchTTL+time.Second)); ok {
+		t.Fatal("vouch outlived its time limit")
+	}
+
+	// The name now belongs to a different directory; the old one keeps the vouch.
+	moved := work + ".moved"
+	if err := os.Rename(work, moved); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := v.covers(work+"/", now); ok {
+		t.Fatal("a new directory under a vouched name was covered")
+	}
+	if _, ok := v.covers(moved+"/", now); !ok {
+		t.Fatal("the vouched directory lost its vouch when renamed")
+	}
+
+	for i := 0; i < tmpVouchCap+8; i++ {
+		v.grant(tmpWorkDirForTest(t)+"/", "x", now.Add(time.Duration(i)*time.Millisecond))
+	}
+	if len(v.entries) > tmpVouchCap {
+		t.Fatalf("vouch table holds %d entries, cap is %d", len(v.entries), tmpVouchCap)
+	}
+	newest := tmpWorkDirForTest(t) + "/"
+	v.grant(newest, "newest", now.Add(time.Second))
+	if _, ok := v.covers(newest, now.Add(time.Second)); !ok {
+		t.Fatal("a full table refused the newest vouch")
+	}
+}
+
+// Copy tools exit within moments of closing the file, long before an analyzer
+// worker reaches the event, so the writer's ancestry is read on admission.
+func TestTmpExecAncestryCapturedAtAdmission(t *testing.T) {
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	path := filepath.Join(work, "tool")
+	makeTmpExec(t, path)
+
+	walks := 0
+	tmpExecAncestry = func(pid int32) ancestryEvidence {
+		walks++
+		return ancestryEvidence{initramfsBuilder: pid == tmpProvenPID}
+	}
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch, analyzerCh: make(chan fileEvent, 1)}
+	fm.handleEvent(openRawFd(t, path), tmpProvenPID, FAN_CLOSE_WRITE)
+	event := <-fm.analyzerCh
+	if walks != 1 || event.tmpAncestry == nil || !event.tmpAncestry.initramfsBuilder {
+		t.Fatalf("ancestry not captured at admission: walks=%d captured=%+v", walks, event.tmpAncestry)
+	}
+
+	// The writer has exited while the event waited in the analyzer queue.
+	tmpExecAncestry = func(int32) ancestryEvidence {
+		t.Error("walked the writer after admission")
+		return ancestryEvidence{vanished: true}
+	}
+	fm.analyzeFile(event)
+	if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("findings = %+v, want one Warning from the captured ancestry", got)
+	}
+}
+
+// The capture is paid only for root-owned files under a temp root.
+func TestTmpExecAncestryCaptureIsScoped(t *testing.T) {
+	stubTmpExecWriters(t)
+	tmpExecAncestry = func(int32) ancestryEvidence {
+		t.Error("walked a writer whose file can never be demoted")
+		return ancestryEvidence{}
+	}
+	foreign := filepath.Join(tmpWorkDirForTest(t), "tool")
+	makeTmpExec(t, foreign)
+	chownForTest(t, foreign)
+	// t.TempDir can itself sit under /tmp.
+	outsideDir, err := os.MkdirTemp("/var/cache", "csm-outside-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outsideDir) })
+	outside := filepath.Join(outsideDir, "tool")
+	makeTmpExec(t, outside)
+	for _, path := range []string{foreign, outside} {
+		event := fileEvent{path: path, fd: openRawFd(t, path), pid: tmpProvenPID}
+		captureTmpExecAncestry(&event)
+		if event.tmpAncestry != nil {
+			t.Fatalf("captured ancestry for %s", path)
+		}
+	}
+}
+
+func makeTmpExec(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho hello\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chmodForTest(t, path, 0o755)
+}
+
+func analyzeTmpExec(t *testing.T, fm *FileMonitor, path string, pid int32) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd()), pid: pid})
+}
+
+func chmodForTest(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// chownForTest hands path to the nobody user.
+func chownForTest(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chown(path, 65534, 65534); err != nil {
+		t.Fatal(err)
 	}
 }
