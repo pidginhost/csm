@@ -420,21 +420,21 @@ When a new sender takes the count past the budget, CSM drops records until
 nine tenths of the budget remain. Each record has a level: the weight its
 verdicts still have, rounded up to whole messages, and at least 2 once it
 has two or more verdicts. Records of the lowest level go first. Inside a
-level, records in the network that holds the most such records go first,
-counted per IPv6 /48 and per IPv4 /16, then the record with the least
+level, records in the network that holds the most spam-only records go
+first, counted per IPv6 /48 and per IPv4 /16, then the record with the least
 weight.
 
 A flood of single messages from one network, one /48 or /16, loses its own
-records first, because that network is the most crowded. A flood spread over
-many networks competes with the other records of the same level: the most
-faded go first, whoever sent them. A flood of single messages cannot remove
-a sender with two or more verdicts, a listed sender or a sender's ham
-history while records with two or more verdicts fill less than nine tenths
-of the budget; above that, one pass trims the weakest of them once. To
-displace evidence of a level, a sender must deliver as many messages as that
-level from each of its own addresses or /64 networks, which is evidence
-about itself. Senders that share a crowded /16 or /48 with a flood can lose
-records of the same level with it.
+records first once that network holds more spam-only records than any other.
+A flood spread over many networks competes with the other records of the
+same level: the most faded go first, whoever sent them. A flood of single
+messages cannot remove a sender with two or more verdicts, a listed sender
+or a sender's ham history while records with two or more verdicts fill less
+than nine tenths of the budget; above that, one pass trims the weakest of
+them once. To displace evidence of a level, a sender must deliver as many
+messages as that level from each of its own addresses or /64 networks, which
+is evidence about itself. Senders that share a crowded /16 or /48 with a
+flood can lose records of the same level with it.
 
 CSM raises a `spam_evidence_evicted` warning at the first drop, then at most
 once a day while drops continue, and writes it to the daemon log as well.
