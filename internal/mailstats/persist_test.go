@@ -669,6 +669,7 @@ func TestFlushConcurrentWithRecords(t *testing.T) {
 			for j := 0; j < 200; j++ {
 				c.RecordScan(now.Add(-time.Duration(j)*time.Minute), antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
 				c.RecordReject(Reject{At: now, Class: ClassSpam})
+				c.RecordFilterVerdict(now, FilterRejected)
 			}
 		})
 	}
@@ -688,7 +689,7 @@ func TestFlushConcurrentWithRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	tot := c2.Overview(now.Add(-24*time.Hour), now.Add(time.Hour)).Totals
-	if tot.Scanned != 800 || tot.Rejects[ClassSpam] != 800 {
+	if tot.Scanned != 800 || tot.Rejects[ClassSpam] != 800 || tot.FilterRejected != 800 || tot.Rejected != 0 {
 		t.Fatalf("%+v", tot)
 	}
 }
@@ -996,7 +997,7 @@ func TestFilterVerdictsSurviveFlushAndLoad(t *testing.T) {
 	}
 	from, to := now.Add(-time.Hour), now.Add(time.Hour)
 	want := c.Overview(from, to).Totals
-	if want.Delivered != 1 || want.Junk != 1 || want.Rejected != 1 || want.Discarded != 1 || want.Unmatched != 1 {
+	if want.Delivered != 1 || want.Junk != 1 || want.FilterRejected != 1 || want.Rejected != 0 || want.Discarded != 1 || want.Unmatched != 1 {
 		t.Fatalf("setup totals %+v", want)
 	}
 

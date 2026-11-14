@@ -285,6 +285,7 @@ func TestCounterConcurrentUse(t *testing.T) {
 				c.RecordReject(Reject{At: now, Class: ClassRateLimited, Temporary: true})
 				c.RecordLoginFailure(now, true, 1)
 				c.RecordQuarantine(now, "")
+				c.RecordFilterVerdict(now, FilterRejected)
 				c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
 				c.Rejects(now.Add(-time.Hour), now.Add(time.Hour), nil, 10)
 			}
@@ -293,7 +294,7 @@ func TestCounterConcurrentUse(t *testing.T) {
 	wg.Wait()
 	tot := c.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals
 	if tot.Rejected != 400 || tot.Rejects[ClassSpam] != 400 || tot.Temporary[ClassRateLimited] != 400 ||
-		tot.LoginsMailbox != 400 || tot.Quarantined != 400 {
+		tot.LoginsMailbox != 400 || tot.Quarantined != 400 || tot.FilterRejected != 400 {
 		t.Fatalf("%+v", tot)
 	}
 }
@@ -703,11 +704,11 @@ func TestFilterVerdictTotals(t *testing.T) {
 	}
 	ov := c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
 	tot := ov.Totals
-	if tot.Delivered != 3 || tot.Junk != 2 || tot.Rejected != 1 || tot.Discarded != 1 || tot.Unmatched != 1 ||
+	if tot.Delivered != 3 || tot.Junk != 2 || tot.FilterRejected != 1 || tot.Rejected != 0 || tot.Discarded != 1 || tot.Unmatched != 1 ||
 		tot.Scanned != 0 || tot.Clean != 0 || tot.Tagged != 0 || tot.ScanErrors != 0 {
 		t.Fatalf("totals %+v", tot)
 	}
-	want := Point{T: time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC).Unix(), Delivered: 3, Junk: 2, Rejected: 1, Discarded: 1}
+	want := Point{T: time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC).Unix(), Delivered: 3, Junk: 2, FilterRejected: 1, Discarded: 1}
 	if len(ov.Series) != 1 || ov.Series[0] != want {
 		t.Fatalf("series %+v, want [%+v]", ov.Series, want)
 	}
@@ -763,7 +764,7 @@ func TestPointOmitsFilterKeysWhenZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"delivered"`, `"junk"`, `"discarded"`} {
+	for _, key := range []string{`"delivered"`, `"junk"`, `"filter_rejected"`, `"discarded"`} {
 		if strings.Contains(string(got), key) {
 			t.Errorf("point %s has %s", got, key)
 		}
