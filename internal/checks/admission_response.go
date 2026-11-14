@@ -78,19 +78,17 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 	}
 	defer timeHandoff(time.Now())
 	executes := a.ExecutesBlocks()
+	// Spray lifetime and budget stay with legacy. Use the handoff's owner
+	// and execution snapshot so a concurrent publication cannot take it.
+	if kind == admission.KindBlockIP && f.BlockTTL > 0 && executes {
+		return admission.Evidence{}, false
+	}
 	e, err := a.Mint(f)
 	if err != nil {
 		a.Refuse(kind, f, via, err)
 		return admission.Evidence{}, taken(executes, kind, err, nil)
 	}
 	return e, taken(executes, kind, nil, a.Respond(kind, target, e, via))
-}
-
-// admissionExecutesBlocks reports whether the wired admission applies the
-// block picks it takes.
-func admissionExecutesBlocks() bool {
-	a := getResponseAdmission()
-	return a != nil && a.ExecutesBlocks()
 }
 
 // taken reports whether legacy must leave a response of kind to admission:

@@ -458,7 +458,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// a block admission takes leaves them alone. Mail spray keeps its
 		// legacy block, whose lifetime and budget admission does not model,
 		// so an executing admission is not handed it.
-		if !challengeSelected(cfg, f) && (f.BlockTTL == 0 || !admissionExecutesBlocks()) {
+		if !challengeSelected(cfg, f) {
 			if _, taken := respond(admission.KindBlockIP, f, ip, 0); taken {
 				continue
 			}

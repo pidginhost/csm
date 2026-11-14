@@ -81,6 +81,61 @@ func TestScanKeepsMailSprayLegacyWhileAdmissionExecutes(t *testing.T) {
 	}
 }
 
+type scanSwitchAdmission struct {
+	*fakeAdmission
+	afterRead func()
+}
+
+func (a scanSwitchAdmission) ExecutesBlocks() bool {
+	executes := a.fakeAdmission.ExecutesBlocks()
+	a.afterRead()
+	return executes
+}
+
+// A concurrent owner replacement or policy publication cannot turn a spray
+// preview into a taken block and lose its legacy lifetime and budget.
+func TestScanSprayUsesOneAdmissionSnapshot(t *testing.T) {
+	for _, replace := range []bool{false, true} {
+		t.Run(map[bool]string{false: "policy publication", true: "owner replacement"}[replace], func(t *testing.T) {
+			cfg := pendingTestConfig(t)
+			blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+			applyBlockTestSetup(t, blocker)
+			preview := withAdmission(t)
+			executing := &fakeAdmission{executes: true}
+			SetResponseAdmission(scanSwitchAdmission{preview, func() {
+				if replace {
+					SetResponseAdmission(executing)
+				} else {
+					preview.mu.Lock()
+					preview.executes = true
+					preview.mu.Unlock()
+				}
+			}})
+			const ip = "203.0.113.97"
+			const ttl = 720 * time.Hour
+			before := time.Now()
+			AutoBlockIPs(cfg, []alert.Finding{{Check: "smtp_bruteforce", Severity: alert.Critical, SourceIP: ip, Message: "SMTP password spray from " + ip, BlockTTL: ttl, Timestamp: time.Now()}})
+			after := time.Now()
+			if got := len(executing.responses()); got != 0 {
+				t.Errorf("replacement owner received %d spray blocks", got)
+			}
+			if got := len(preview.responses()); got != 1 {
+				t.Errorf("preview owner received %d spray blocks, want 1", got)
+			}
+			if len(blocker.calls) != 1 || blocker.calls[0].ip != ip || blocker.calls[0].timeout != ttl {
+				t.Fatalf("engine calls = %+v, want the legacy spray block", blocker.calls)
+			}
+			state := loadBlockState(cfg.StatePath)
+			if len(state.IPs) != 1 || state.IPs[0].IP != ip || !state.IPs[0].LoginSpray || len(state.Pending) != 0 || state.BlocksThisHour != 0 || state.LoginSprayBlocksThisHour != 1 {
+				t.Fatalf("legacy spray state = %+v", state)
+			}
+			if expires := state.IPs[0].ExpiresAt; expires.Before(before.Add(ttl)) || expires.After(after.Add(ttl)) {
+				t.Fatalf("spray expiry = %v, want between %v and %v", expires, before.Add(ttl), after.Add(ttl))
+			}
+		})
+	}
+}
+
 // Exhausting legacy's budget must not queue a taken finding for a later
 // duplicate block. A refused finding must still enter that queue.
 func TestScanOwnershipWithExhaustedLegacyBudget(t *testing.T) {
