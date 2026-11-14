@@ -87,6 +87,7 @@ func toContext(e processEntry) *ProcessContext {
 		PID:         e.PID,
 		PPID:        e.PPID,
 		UID:         e.UID,
+		UIDKnown:    e.UIDKnown,
 		User:        e.User,
 		Account:     e.Account,
 		Comm:        e.Comm,

@@ -429,3 +429,66 @@ func TestAnalyzeFileTmpExecRootOwnedWorkDirIsReported(t *testing.T) {
 		})
 	}
 }
+
+// writeProcStatus replaces one fake process's status file so a test can state
+// the credentials the walker reads.
+func writeProcStatus(t *testing.T, root string, pid, ppid int32, uidLine string) {
+	t.Helper()
+	status := fmt.Sprintf("Name:\tx\nPid:\t%d\nPPid:\t%d\n%s", pid, ppid, uidLine)
+	if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("%d", pid), "status"), []byte(status), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An initramfs builder is named only by its comm, which any process can set.
+// The name counts only on a process whose real and effective user is root.
+func TestProcAncestryInitramfsBuilderNeedsRoot(t *testing.T) {
+	cases := []struct {
+		name    string
+		comm    string
+		uidLine string
+		want    bool
+	}{
+		{"dracut_as_root", "dracut", "Uid:\t0\t0\t0\t0\n", true},
+		{"mkinitramfs_as_root", "mkinitramfs", "Uid:\t0\t0\t0\t0\n", true},
+		{"dracut_as_user", "dracut", "Uid:\t1000\t1000\t1000\t1000\n", false},
+		{"setuid_helper_named_dracut", "dracut", "Uid:\t1000\t0\t0\t0\n", false},
+		{"dropped_privileges", "dracut", "Uid:\t0\t1000\t1000\t1000\n", false},
+		{"no_uid_line", "dracut", "", false},
+		{"malformed_uid_line", "dracut", "Uid:\troot\troot\n", false},
+		{"other_root_process", "bash", "Uid:\t0\t0\t0\t0\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := fakeProc(t, map[int32]struct {
+				comm string
+				ppid int32
+			}{
+				300: {"cp", 200},
+				200: {tc.comm, 1},
+			})
+			writeProcStatus(t, root, 200, 1, tc.uidLine)
+			overrideProcRoot(t, root)
+			if got := procAncestryEvidence(300, nil).initramfsBuilder; got != tc.want {
+				t.Fatalf("initramfsBuilder = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The initramfs arm stands without a package window or a panel, but never for
+// a file a non-root user owns.
+func TestDemoteTmpExecInitramfsArm(t *testing.T) {
+	oldW, oldA := tmpExecPkgWindow, tmpExecAncestry
+	tmpExecPkgWindow = func(time.Time) bool { return false }
+	tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{initramfsBuilder: true} }
+	t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry = oldW, oldA })
+
+	ok, reason := demoteTmpExec(0, 42, time.Now())
+	if !ok || !strings.Contains(reason, "initramfs") {
+		t.Fatalf("root file from an initramfs build = (%v, %q), want demotion naming it", ok, reason)
+	}
+	if ok, _ := demoteTmpExec(1000, 42, time.Now()); ok {
+		t.Fatal("a non-root file must never demote")
+	}
+}

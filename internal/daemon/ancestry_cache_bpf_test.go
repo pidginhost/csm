@@ -104,3 +104,21 @@ func TestCachedPanelAncestryAvoidsProcWalk(t *testing.T) {
 		t.Fatalf("unresolved cache must fall back to procfs: evidence=%+v calls=%d", ev, calls)
 	}
 }
+
+func TestCachedInitramfsAncestryNeedsRoot(t *testing.T) {
+	oldCache := ancestryCache.Load()
+	t.Cleanup(func() { ancestryCache.Store(oldCache) })
+	cache := processctx.NewCache(8, time.Minute)
+	wireAncestryCache(cache)
+	const builder, writer = 987601, 987602
+
+	cache.PutFromExec(builder, 1, 1000, "dracut", "/usr/bin/dracut")
+	cache.PutFromExec(writer, builder, 0, "cp", "/usr/bin/cp")
+	if ev := cachedAncestryEvidence(writer, nil); ev.initramfsBuilder {
+		t.Error("a builder name on a non-root process was trusted")
+	}
+	cache.PutFromExec(builder, 1, 0, "dracut", "/usr/bin/dracut")
+	if ev := cachedAncestryEvidence(writer, nil); !ev.initramfsBuilder {
+		t.Error("a root initramfs builder in the chain must be recognised")
+	}
+}

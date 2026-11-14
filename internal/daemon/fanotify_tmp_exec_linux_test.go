@@ -158,3 +158,126 @@ func TestTmpExecutableConfigContentAndSuppression(t *testing.T) {
 		})
 	}
 }
+
+// writeTmpExec creates an executable and runs it through the analyzer.
+func writeTmpExec(t *testing.T, fm *FileMonitor, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho hello\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd()), pid: 4242})
+}
+
+func tmpWorkDirForTest(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "csm-workdir-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+func overrideTmpExecDemote(t *testing.T, demote func(path string) bool) *string {
+	t.Helper()
+	current := new(string)
+	old := tmpExecDemote
+	tmpExecDemote = func(uint32, int32, time.Time) (bool, string) {
+		return demote(*current), "test maintenance"
+	}
+	t.Cleanup(func() { tmpExecDemote = old })
+	return current
+}
+
+// Maintenance writes hundreds of executables into one work directory. Demoted
+// findings are grouped by that directory so they cannot fill the queue, while
+// an executable that was not demoted in the same directory is still reported.
+func TestTmpExecutableDemotedBurstGroupsByWorkDir(t *testing.T) {
+	work := tmpWorkDirForTest(t)
+	nested := filepath.Join(work, "initramfs", "usr", "bin")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := tmpWorkDirForTest(t)
+	demoted := true
+	overrideTmpExecDemote(t, func(string) bool { return demoted })
+
+	ch := make(chan alert.Finding, 500)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	for i := 0; i < 600; i++ {
+		dir := work
+		if i%2 == 1 {
+			dir = nested
+		}
+		writeTmpExec(t, fm, filepath.Join(dir, fmt.Sprintf("tool%d", i)))
+	}
+	got := drainFindings(ch)
+	if len(got) != 1 || atomic.LoadInt64(&fm.droppedAlerts) != 0 {
+		t.Fatalf("burst queued %d findings and dropped %d; want 1 and 0", len(got), atomic.LoadInt64(&fm.droppedAlerts))
+	}
+	if got[0].Severity != alert.Warning || got[0].FilePath != filepath.Join(work, "tool0") {
+		t.Fatalf("grouped finding = %+v, want a Warning naming the first file", got[0])
+	}
+	if !strings.Contains(got[0].Details, "work directory") {
+		t.Fatalf("Details = %q, want a note that the finding stands for its work directory", got[0].Details)
+	}
+
+	writeTmpExec(t, fm, filepath.Join(other, "tool"))
+	got = drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("a second work directory must get its own finding, got %+v", got)
+	}
+
+	demoted = false
+	planted := filepath.Join(nested, "planted")
+	writeTmpExec(t, fm, planted)
+	got = drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Critical || got[0].FilePath != planted {
+		t.Fatalf("an executable that is not demoted must be reported on its own, got %+v", got)
+	}
+}
+
+// A file directly in a temp root has no work directory to stand for, so each
+// one keeps its own finding.
+func TestTmpExecutableDemotedTopLevelFilesStaySeparate(t *testing.T) {
+	overrideTmpExecDemote(t, func(string) bool { return true })
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	for i := 0; i < 2; i++ {
+		f, err := os.CreateTemp("/tmp", "csm-toplevel-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := f.Name()
+		_ = f.Close()
+		t.Cleanup(func() { _ = os.Remove(path) })
+		writeTmpExec(t, fm, path)
+	}
+	if got := drainFindings(ch); len(got) != 2 {
+		t.Fatalf("top-level temp executables queued %d findings, want 2", len(got))
+	}
+}
+
+func TestTmpWorkDir(t *testing.T) {
+	cases := map[string]string{
+		"/tmp/tool":                     "/tmp/tool",
+		"/tmp/work/tool":                "/tmp/work/",
+		"/tmp/work/a/b/tool":            "/tmp/work/",
+		"/var/tmp/build.x/usr/bin/tool": "/var/tmp/build.x/",
+		"/dev/shm/x/y":                  "/dev/shm/x/",
+		"/home/user/tmp/x/y":            "/home/user/tmp/x/y",
+	}
+	for path, want := range cases {
+		if got := tmpWorkDir(path); got != want {
+			t.Errorf("tmpWorkDir(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

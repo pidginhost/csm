@@ -25,3 +25,16 @@ func isPackageManagerComm(comm string) bool {
 	_, ok := pkgManagerComms[comm]
 	return ok
 }
+
+// initramfsBuilderComms are the tools that assemble a boot image in a
+// temporary work directory, copying hundreds of system executables into it.
+// The name alone proves nothing; callers also require the process to be root.
+var initramfsBuilderComms = map[string]struct{}{
+	"dracut":      {},
+	"mkinitramfs": {},
+}
+
+func isInitramfsBuilderComm(comm string) bool {
+	_, ok := initramfsBuilderComms[comm]
+	return ok
+}

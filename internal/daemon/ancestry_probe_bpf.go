@@ -27,6 +27,9 @@ func cacheAncestryEvidence(pid uint32, panelRoots []string) ancestryEvidence {
 		if isPackageManagerComm(cur.Comm) {
 			ev.packageManager = true
 		}
+		if cur.UIDKnown && cur.UID == 0 && isInitramfsBuilderComm(cur.Comm) {
+			ev.initramfsBuilder = true
+		}
 		if !ev.panelTool && cur.ExeResolved && exeInPanelRoot(cur.Exe, panelRoots) {
 			if mode, uid, err := exeStat(cur.Exe); err == nil {
 				ev.panelTool = panelToolExeTrusted(cur.Exe, panelRoots, mode, uid)

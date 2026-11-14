@@ -8,14 +8,15 @@ import (
 )
 
 // The ancestry walk costs up to maxAncestryDepth procfs reads per event, and
-// it runs for every root-owned executable written under a temp root. When
-// neither arm can demote -- no package transaction in the window and no panel
-// tool root to match an exe against -- the walk cannot change the verdict, so
-// it must not run at all.
-func TestDemoteTmpExecSkipsWalkWhenNothingCanDemote(t *testing.T) {
+// it runs for every root-owned executable written under a temp root. The
+// initramfs arm needs neither a package window nor a panel, so the walk cannot
+// be skipped; it must still run exactly once, after one read of each gate, and
+// evidence must not demote without the gate that corroborates it.
+func TestDemoteTmpExecWalksOncePerDecision(t *testing.T) {
 	const (
-		panelReason = "control panel maintenance ancestry"
-		pkgReason   = "package manager ancestry during active package window"
+		panelReason     = "control panel maintenance ancestry"
+		pkgReason       = "package manager ancestry during active package window"
+		initramfsReason = "initramfs build ancestry"
 	)
 	tests := []struct {
 		name       string
@@ -27,12 +28,24 @@ func TestDemoteTmpExecSkipsWalkWhenNothingCanDemote(t *testing.T) {
 	}{
 		{
 			name:     "no window and no panel roots",
-			evidence: ancestryEvidence{packageManager: true},
+			evidence: ancestryEvidence{packageManager: true}, wantWalks: 1,
 		},
 		{
 			name:     "no window and empty panel roots",
 			roots:    []string{},
-			evidence: ancestryEvidence{packageManager: true},
+			evidence: ancestryEvidence{packageManager: true}, wantWalks: 1,
+		},
+		{
+			name:     "panel evidence without panel roots",
+			evidence: ancestryEvidence{panelTool: true}, wantWalks: 1,
+		},
+		{
+			name:     "initramfs builder without window or panel roots",
+			evidence: ancestryEvidence{initramfsBuilder: true}, wantWalks: 1, wantReason: initramfsReason,
+		},
+		{
+			name: "package reason precedes initramfs builder", window: true,
+			evidence: ancestryEvidence{packageManager: true, initramfsBuilder: true}, wantWalks: 1, wantReason: pkgReason,
 		},
 		{
 			name: "panel tool without package window", roots: cpanelRoots,

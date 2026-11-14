@@ -1307,6 +1307,21 @@ func underTempRoot(path string) bool {
 	return false
 }
 
+// tmpWorkDir names the directory directly under a temp root that holds path,
+// with a trailing slash so it can never equal a file's own path. A file placed
+// directly in a temp root has no such directory and is returned unchanged.
+func tmpWorkDir(path string) string {
+	for _, prefix := range tempRootPrefixes {
+		if rest, ok := strings.CutPrefix(path, prefix); ok {
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				return path[:len(prefix)+i+1]
+			}
+			return path
+		}
+	}
+	return path
+}
+
 // sensitivePHPDirs are directories that should never contain PHP, so a PHP
 // file in one is reported wherever the directory itself lives.
 var sensitivePHPDirs = []string{"/.ssh/", "/.cpanel/", "/.gnupg/", "/.cagefs/"}
@@ -2035,15 +2050,28 @@ func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
 			// or a live package transaction (an initramfs rebuild
 			// after a kernel update) are rescored to Warning, never
 			// suppressed. See demoteTmpExec for the gates.
-			severity := alert.Critical
-			details := fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid)
-			if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
-				severity = alert.Warning
-				details += " [demoted: " + reason + "]"
+			finding := alert.Finding{
+				Severity:    alert.Critical,
+				Check:       "executable_in_tmp_realtime",
+				Message:     fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
+				Details:     fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid),
+				FilePath:    path,
+				ProcessInfo: procInfo,
 			}
-			fm.sendAlertWithPath(severity, "executable_in_tmp_realtime",
-				fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-				details, path, procInfo)
+			dedupPath := path
+			if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
+				// Maintenance writes hundreds of executables into one work
+				// directory. One finding stands for the directory per
+				// cooldown so the burst cannot crowd other findings out of
+				// the queue. Only demoted findings share a key: anything
+				// else in the same directory keeps its own.
+				finding.Severity = alert.Warning
+				finding.Details += " [demoted: " + reason + "; one finding per work directory]"
+				dedupPath = tmpWorkDir(path)
+			}
+			if fm.prepareFileFindingWithDedup(&finding, dedupPath) {
+				fm.enqueuePreparedFileFinding(finding)
+			}
 		}
 	}
 }
