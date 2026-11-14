@@ -745,7 +745,6 @@ func (o *Owner) halt(clean bool) {
 }
 
 func (o *Owner) shutdown() {
-	o.executesBlocks.Store(false)
 	defer o.writeComparison(true)
 	if !o.started {
 		return
