@@ -336,6 +336,7 @@ func TestExecutionPolicyDisablesQueuedCentralBlock(t *testing.T) {
 	base.StatePath = dir
 	config.SetActive(base)
 	d := New(base, st, nil, "")
+	epochBeforeSave := d.executionPolicy().Epoch
 	opts := testAdmissionOptions(d, db)
 	// An executable owner with no engine yet: nothing can reach an engine.
 	opts.Blocks = func() admissionowner.BlockEngine { return nil }
@@ -366,8 +367,8 @@ func TestExecutionPolicyDisablesQueuedCentralBlock(t *testing.T) {
 	off := *base
 	off.Reputation.Central.Enabled = false
 	config.SetActive(&off)
-	if _, epoch := config.ActiveEpoch(); epoch != d.executionPolicy().Epoch {
-		t.Fatal("the save moved the epoch")
+	if _, epoch := config.ActiveEpoch(); epoch != epochBeforeSave {
+		t.Fatalf("the save moved the epoch from %d to %d", epochBeforeSave, epoch)
 	}
 	d.reloadAdmission()
 	ls := d.AdmissionStatus().Ledger
