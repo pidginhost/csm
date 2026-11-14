@@ -11,20 +11,6 @@ import (
 // Postfix reject reply. A milter reply carries the status alone.
 var postfixReplyCode = regexp.MustCompile(`^(?:[0-9]{3} )?(?:[0-9]\.[0-9]{1,3}\.[0-9]{1,3} )?`)
 
-// postfixRejectKinds are the phrases Postfix writes after the rejected
-// name, "<name>: ". The name is client text and is logged unquoted, so it
-// can hold a phrase too; Postfix's own phrase always follows it.
-var postfixRejectKinds = []struct {
-	phrase string
-	class  Class
-}{
-	{"Recipient address rejected: ", ClassUnknownRecipient},
-	{"Sender address rejected: ", ClassSenderVerify},
-	{"Helo command rejected: ", ClassBadHELO},
-	{"Relay access denied", ClassRelayDenied},
-	{"Client host rejected: ", ClassOther},
-}
-
 // ParsePostfixReject reads a Postfix log line for an SMTP command that
 // smtpd or postscreen rejected, or a message a milter rejected. The line
 // must come from one of those daemons and open with the reject keyword, so
@@ -58,17 +44,25 @@ func ParsePostfixReject(line string, loc *time.Location, fallback time.Time) (Re
 	if smtp {
 		r.Command = command
 	}
-	// A rejected address can hold the envelope marker. Cutting at the last
-	// one keeps Postfix's own reason in the reply whatever the address says.
-	if i := strings.LastIndex(reply, "; from=<"); i >= 0 {
-		r.Sender, r.Recipient = postfixEnvelope(reply[i+len("; from=<"):])
-		reply = reply[:i]
+	// The first metadata marker bounds the reply, so envelope and HELO
+	// text never becomes a reason. Before MAIL, Postfix may log only the
+	// protocol and HELO. Multiple markers can also be an unquoted address
+	// posing as metadata, so that reply cannot be classified safely.
+	end, markers := len(reply), 0
+	for _, marker := range []string{"; from=<", "; to=<", "; proto=", "; helo=<"} {
+		if i := strings.Index(reply, marker); i >= 0 {
+			end = min(end, i)
+			markers += strings.Count(reply, marker)
+		}
 	}
+	r.Sender, r.Recipient = postfixEnvelope(reply[end:])
+	reply = reply[:end]
 	r.Temporary = strings.HasPrefix(reply, "4")
 	reason := strings.TrimPrefix(reply, postfixReplyCode.FindString(reply))
 	r.At = LineTime(line, loc, fallback)
 	r.Detail = detail(reason)
 	switch {
+	case markers > 1:
 	case !smtp:
 		r.Class = classifyMilterReject(reason, r.Temporary)
 	case strings.HasPrefix(reason, "<"):
@@ -118,43 +112,78 @@ func postfixPeerIP(client string) string {
 	return ip
 }
 
-// postfixEnvelope reads "S> to=<R> ..." or postscreen's "S>, to=<R>, ...".
+// postfixEnvelope accepts only a complete envelope, respecting quoted
+// local parts. A marker inside an address is not a field boundary. If two
+// envelopes fit, leave the addresses empty rather than display client text
+// as a sender or recipient belonging to the reject.
 func postfixEnvelope(s string) (sender, recipient string) {
-	sender, rest, ok := strings.Cut(s, ">")
-	if !ok {
-		return "", ""
-	}
-	rest = strings.TrimPrefix(rest, ",")
-	if rest, ok = strings.CutPrefix(rest, " to=<"); ok {
-		recipient, _, _ = strings.Cut(rest, ">")
-	}
-	return sender, recipient
-}
-
-// classifyPostfixNamed classes a reply that names what it rejected. Every
-// kind phrase in it must be the same one: a second kind means the name
-// holds reason text, and then no phrase can be trusted.
-func classifyPostfixNamed(reason string) Class {
-	class, tail, found := ClassOther, "", false
-	for _, k := range postfixRejectKinds {
-		i := strings.LastIndex(reason, ">: "+k.phrase)
-		if i < 0 {
+	found := false
+	for {
+		_, after, ok := strings.Cut(s, "; from=<")
+		if !ok {
+			return sender, recipient
+		}
+		s = after
+		n := unquotedIndex(after, '>')
+		if n < 0 {
+			continue
+		}
+		from, rest := after[:n], strings.TrimPrefix(after[n+1:], ",")
+		to := ""
+		if addr, ok := strings.CutPrefix(rest, " to=<"); ok {
+			n = unquotedIndex(addr, '>')
+			if n < 0 {
+				continue
+			}
+			to, rest = addr[:n], strings.TrimPrefix(addr[n+1:], ",")
+		}
+		if !strings.HasPrefix(rest, " proto=") {
 			continue
 		}
 		if found {
+			return "", ""
+		}
+		sender, recipient, found = from, to, true
+	}
+}
+
+// Postfix logs the rejected name unquoted. Every ">: " can therefore end
+// that name, even one followed by an unfamiliar policy reason. Only agree
+// on a class when every possible boundary gives the same result.
+func classifyPostfixNamed(reason string) Class {
+	subject, rest, ok := strings.Cut(reason, ">: ")
+	if !ok || strings.ContainsAny(subject, " \t\r\n\"") {
+		return ClassOther
+	}
+	class := classifyPostfixReason(rest)
+	for {
+		_, rest, ok = strings.Cut(rest, ">: ")
+		if !ok {
+			return class
+		}
+		if classifyPostfixReason(rest) != class {
 			return ClassOther
 		}
-		class, tail, found = k.class, reason[i+len(">: ")+len(k.phrase):], true
 	}
-	if class != ClassUnknownRecipient {
-		return class
-	}
-	// Other recipient refusals, such as an access table entry, are not an
-	// unknown mailbox.
-	for _, text := range []string{"User unknown", "undeliverable address", "unverified address"} {
-		if strings.HasPrefix(tail, text) {
-			return ClassUnknownRecipient
+}
+
+func classifyPostfixReason(reason string) Class {
+	switch {
+	case strings.HasPrefix(reason, "Recipient address rejected: "):
+		tail := strings.TrimPrefix(reason, "Recipient address rejected: ")
+		for _, text := range []string{"User unknown", "undeliverable address", "unverified address"} {
+			if strings.HasPrefix(tail, text) {
+				return ClassUnknownRecipient
+			}
 		}
+	case strings.HasPrefix(reason, "Sender address rejected: "):
+		return ClassSenderVerify
+	case strings.HasPrefix(reason, "Helo command rejected: "):
+		return ClassBadHELO
+	case strings.HasPrefix(reason, "Relay access denied"):
+		return ClassRelayDenied
+	case strings.HasPrefix(reason, "Client host rejected: ") && strings.Contains(reason, "blocked using "):
+		return ClassBlocklisted
 	}
 	return ClassOther
 }

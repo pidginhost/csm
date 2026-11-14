@@ -60,15 +60,15 @@ var postfixRejectCases = []struct {
 	{"quoted recipient posing as a sender reject", pfSMTPD + `NOQUEUE: reject: RCPT from unknown[192.0.2.15]: 550 5.1.1 <"x>: Sender address rejected: y"@example.com>: Recipient address rejected: User unknown in virtual mailbox table` + pfTail,
 		ClassOther, false, "192.0.2.15", "a@example.net", "u@example.com", "", "RCPT", `<"x>: Sender address rejected`},
 	// The recipient is logged unquoted inside the reply, so it can hold reason
-	// text. Postfix's own reason still follows it and decides the class.
+	// text. Conflicting possible boundaries must stay unclassified.
 	{"spaced recipient posing as a blocklist reject", pfSMTPD + "NOQUEUE: reject: RCPT from unknown[192.0.2.15]: 550 5.1.1 <x>: Service unavailable; client [192.0.2.15] blocked using z@example.com>: Recipient address rejected: User unknown in virtual mailbox table" + pfTail,
-		ClassUnknownRecipient, false, "192.0.2.15", "a@example.net", "u@example.com", "", "RCPT", "<x>: Service unavailable"},
+		ClassOther, false, "192.0.2.15", "a@example.net", "u@example.com", "", "RCPT", "<x>: Service unavailable"},
 	{"spaced recipient posing as a sender reject", pfSMTPD + "NOQUEUE: reject: RCPT from unknown[192.0.2.15]: 550 5.1.1 <x>: Sender address rejected: Domain not found@example.com>: Recipient address rejected: User unknown in virtual mailbox table" + pfTail,
 		ClassOther, false, "192.0.2.15", "a@example.net", "u@example.com", "", "RCPT", "<x>: Sender address rejected"},
 	// A recipient holding the envelope marker must not cut Postfix's reason
 	// off and leave its own text as the only one.
 	{"recipient posing as the envelope", pfSMTPD + `NOQUEUE: reject: RCPT from unknown[192.0.2.16]: 550 5.1.1 <x>: Sender address rejected: y; from=<q@example.org>: Recipient address rejected: User unknown in virtual mailbox table; from=<a@example.net> to=<"x>: Sender address rejected: y; from=<q"@example.org> proto=ESMTP helo=<h>`,
-		ClassOther, false, "192.0.2.16", `q"@example.org`, "", "", "RCPT", "<x>: Sender address rejected"},
+		ClassOther, false, "192.0.2.16", "a@example.net", `"x>: Sender address rejected: y; from=<q"@example.org`, "", "RCPT", "<x>: Sender address rejected"},
 	{"backend reply repeating the reason", pfSMTPD + "NOQUEUE: reject: RCPT from unknown[192.0.2.17]: 550 5.1.1 <nobody@example.com>: Recipient address rejected: undeliverable address: host backend.example.com[192.0.2.99] said: 550 5.1.1 <nobody@example.com>: Recipient address rejected: User unknown in local recipient table (in reply to RCPT TO command)" + pfTail,
 		ClassUnknownRecipient, false, "192.0.2.17", "a@example.net", "u@example.com", "", "RCPT", "<nobody@example.com>"},
 	{"recipient refused by policy", pfSMTPD + "NOQUEUE: reject: RCPT from unknown[192.0.2.18]: 554 5.7.1 <u@example.com>: Recipient address rejected: Access denied" + pfTail,
@@ -117,6 +117,84 @@ func TestParsePostfixRejectIgnoresOtherLines(t *testing.T) {
 	} {
 		if r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback); ok {
 			t.Errorf("%s: parsed as %+v", name, r)
+		}
+	}
+}
+
+func TestPostfixRejectClientTextCannotChooseClass(t *testing.T) {
+	for name, reply := range map[string]string{
+		"unknown policy after fake sender reason":  "<x>: Sender address rejected: y@example.com>: Address rejected: Access denied",
+		"fake mailbox reason after policy refusal": "<x>: Recipient address rejected: User unknown@example.com>: Recipient address rejected: Access denied",
+		"fake reason in backend address":           "<u@example.com>: Recipient address rejected: Access denied: <x>: Recipient address rejected: User unknown@example.net>",
+	} {
+		t.Run(name, func(t *testing.T) {
+			line := pfSMTPD + "NOQUEUE: reject: RCPT from unknown[192.0.2.10]: 550 5.1.1 " + reply + pfTail
+			r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+			if !ok || r.Class != ClassOther {
+				t.Fatalf("got %+v, parsed %v; want other", r, ok)
+			}
+		})
+	}
+	for _, payload := range []string{
+		"x>: Sender address rejected: Domain not found; from=<y@example.net",
+		"x>: Recipient address rejected: User unknown; from=<y@example.net",
+		"x: virus found: y; from=<z@example.net",
+		"x blocked using bl.example.org; from=<y@example.net",
+	} {
+		for name, reply := range map[string]string{
+			"named policy":   "<u@example.com>: Address rejected: Access denied",
+			"service policy": "Service unavailable; Access denied",
+			"milter policy":  "Message refused by policy",
+		} {
+			prefix := pfSMTPD + "NOQUEUE: reject: RCPT"
+			if name == "milter policy" {
+				prefix = pfCleanup + "ABC123: milter-reject: END-OF-MESSAGE"
+			}
+			line := prefix + " from unknown[192.0.2.10]: 550 5.7.1 " + reply + strings.TrimSuffix(pfTail, "mail.example.net>") + payload + ">"
+			r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+			if !ok || r.Class != ClassOther {
+				t.Errorf("%s with HELO %q: got %+v, parsed %v; want other", name, payload, r, ok)
+			}
+		}
+	}
+}
+
+func TestPostfixRejectNamedClientBlocklist(t *testing.T) {
+	line := pfSMTPD + "NOQUEUE: reject: RCPT from unknown[192.0.2.10]: 554 5.7.1 <unknown[192.0.2.10]>: Client host rejected: blocked using bl.example.org" + pfTail
+	r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+	if !ok || r.Class != ClassBlocklisted {
+		t.Fatalf("got %+v, parsed %v; want blocklisted", r, ok)
+	}
+}
+
+func TestPostfixRejectQuotedEnvelope(t *testing.T) {
+	line := pfSMTPD + `NOQUEUE: reject: RCPT from unknown[192.0.2.10]: 550 5.7.1 Access denied; from=<"a>b"@example.net> to=<"c>d"@example.com> proto=ESMTP helo=<mail.example.net>`
+	r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+	if !ok || r.Sender != `"a>b"@example.net` || r.Recipient != `"c>d"@example.com` {
+		t.Fatalf("got %+v, parsed %v; want intact quoted envelope addresses", r, ok)
+	}
+}
+
+func TestPostfixRejectAmbiguousEnvelope(t *testing.T) {
+	line := pfSMTPD + "NOQUEUE: reject: RCPT from unknown[192.0.2.10]: 550 5.7.1 Access denied" + pfTail + "; from=<b@example.org> to=<c@example.com> proto=ESMTP helo=<mail.example.org>"
+	r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+	if !ok || r.Class != ClassOther || r.Sender != "" || r.Recipient != "" {
+		t.Fatalf("got %+v, parsed %v; want other with no ambiguous addresses", r, ok)
+	}
+}
+
+func TestPostfixRejectBeforeMailIgnoresHELO(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		class   Class
+	}{
+		{"NOQUEUE: milter-reject: EHLO from unknown[192.0.2.10]: 550 5.7.1 Message refused by policy; proto=ESMTP helo=<x: virus found: y>", ClassOther},
+		{"NOQUEUE: reject: EHLO from unknown[192.0.2.10]: 550 5.7.1 Service unavailable; proto=ESMTP helo=<x blocked using bl.example.org>", ClassOther},
+		{"NOQUEUE: milter-reject: EHLO from unknown[192.0.2.10]: 550 5.7.1 Spam message rejected; proto=ESMTP helo=<mail.example.net>", ClassSpam},
+	} {
+		r, ok := ParsePostfixReject(pfSMTPD+tc.message, rejectLoc, rejectFallback)
+		if !ok || r.Class != tc.class {
+			t.Errorf("got %+v, parsed %v; want %s", r, ok, tc.class)
 		}
 	}
 }

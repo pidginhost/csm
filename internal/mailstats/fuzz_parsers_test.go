@@ -57,17 +57,6 @@ func FuzzParsePostfixReject(f *testing.F) {
 		if net.ParseIP(r.IP) == nil {
 			t.Fatalf("ip %q is not an address", r.IP)
 		}
-		// Whatever the rejected name holds, a reply that carries two
-		// different reject kinds is never classed by either. The reply
-		// ends at the last envelope marker.
-		reply := line
-		if i := strings.LastIndex(line, "; from=<"); i >= 0 {
-			reply = line[:i]
-		}
-		if strings.Contains(reply, ">: Sender address rejected: ") && strings.Contains(reply, ">: Recipient address rejected: ") &&
-			(r.Class == ClassSenderVerify || r.Class == ClassUnknownRecipient) {
-			t.Fatalf("mixed kinds classed as %q: %q", r.Class, line)
-		}
 	})
 }
 
@@ -115,6 +104,42 @@ func FuzzLineTime(f *testing.F) {
 		got := LineTime(line, rejectLoc, rejectFallback)
 		if got.After(rejectFallback.Add(time.Hour)) {
 			t.Fatalf("future timestamp: %v", got)
+		}
+	})
+}
+
+// Client fields may contain Postfix syntax. None may change a policy
+// refusal into a more specific class, even when the reply is unquoted.
+func FuzzPostfixRejectUntrustedFields(f *testing.F) {
+	for _, payload := range []string{
+		"x", "x>: Sender address rejected: y", "x>: Recipient address rejected: User unknown",
+		"x>: Relay access denied", "x: virus found: y", "x blocked using bl.example.org",
+		"x>: Sender address rejected: y; from=<z@example.net",
+		"x>: Sender address rejected: y; proto=ESMTP helo=<z",
+		`x; from=<a@example.net> to=<b@example.com> proto=ESMTP helo=<x`,
+	} {
+		f.Add(payload)
+	}
+	f.Fuzz(func(t *testing.T, payload string) {
+		quoted := `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(payload) + `"@example.com`
+		const head = "NOQUEUE: reject: RCPT from "
+		const peer = "unknown[192.0.2.10]: 550 5.7.1 "
+		const reason = ": Address rejected: Access denied"
+		for _, line := range []string{
+			pfSMTPD + head + peer + "<" + payload + "@example.com>" + reason + pfTail,
+			pfSMTPD + head + peer + "<" + quoted + ">" + reason + pfTail,
+			pfSMTPD + head + payload + "[192.0.2.10]: 550 5.7.1 <u@example.com>" + reason + pfTail,
+			pfSMTPD + head + peer + "<u@example.com>" + reason + "; from=<" + quoted + "> to=<u@example.com> proto=ESMTP helo=<mail.example.net>",
+			pfSMTPD + head + peer + "<u@example.com>" + reason + "; from=<a@example.net> to=<" + quoted + "> proto=ESMTP helo=<mail.example.net>",
+			pfSMTPD + head + peer + "<u@example.com>" + reason + strings.TrimSuffix(pfTail, "mail.example.net>") + payload + ">",
+			pfCleanup + "ABC123: milter-reject: END-OF-MESSAGE from " + peer + "Message refused by policy" + strings.TrimSuffix(pfTail, "mail.example.net>") + payload + ">",
+			pfSMTPD + "NOQUEUE: milter-reject: EHLO from " + peer + "Message refused by policy; proto=ESMTP helo=<" + payload + ">",
+			pfSMTPD + "NOQUEUE: reject: EHLO from " + peer + "Service unavailable; proto=ESMTP helo=<" + payload + ">",
+		} {
+			r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+			if ok && r.Class != ClassOther {
+				t.Fatalf("client text changed policy refusal to %q: %q", r.Class, line)
+			}
 		}
 	})
 }

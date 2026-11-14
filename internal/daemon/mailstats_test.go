@@ -417,3 +417,14 @@ func TestMailStatsPostfixSkippedWhenEximWatched(t *testing.T) {
 		t.Errorf("senders = %+v, want none", rep)
 	}
 }
+
+func TestMailStatsPostfixSendWithRejectText(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	d.recordMailStatsMail(mailStatsPostfixSend+`"reject: text"@example.com`, now)
+	rep := d.mailStats.TopSenders(now.Add(-time.Hour), now, 10)
+	want := []mailstats.AccountSends{{Account: `"reject: text"@example.com`, Messages: 1}}
+	if rep.Total != 1 || rep.Unresolved != 0 || !reflect.DeepEqual(rep.Accounts, want) {
+		t.Fatalf("senders = %+v, want %+v", rep, want)
+	}
+}

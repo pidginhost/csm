@@ -70,8 +70,8 @@ func (d *Daemon) recordMailStatsPostfix(line string, at time.Time) {
 	if strings.Contains(line, "reject: ") {
 		if r, ok := mailstats.ParsePostfixReject(line, time.Local, at); ok {
 			d.mailStats.RecordReject(r)
+			return
 		}
-		return
 	}
 	_, msg := postfixSMTPDMessage(line)
 	if _, login := postfixSASLSuccess(msg); login != "" {
