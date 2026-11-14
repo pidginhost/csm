@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -235,20 +236,47 @@ func TestReloadSettingsSendsAction(t *testing.T) {
 }
 
 func TestSpamSettings(t *testing.T) {
-	f := newFake(t)
-	f.reply = func(method string, _ map[string]any) (string, any) {
-		return method, map[string]any{"list": []any{map[string]any{
-			"id": "singleton", "enable": true, "scoreSpam": 5.0, "scoreReject": 0.0, "scoreDiscard": 0.0, "greylistFor": nil}}}
+	for _, want := range []SpamSettings{
+		{Enabled: true, ScoreSpam: 5},
+		{Enabled: true, ScoreSpam: 5, ScoreReject: 12.5, ScoreDiscard: 18.25},
+		{},
+	} {
+		f := newFake(t)
+		f.reply = func(method string, _ map[string]any) (string, any) {
+			return method, map[string]any{"list": []any{map[string]any{
+				"id": "singleton", "enable": want.Enabled, "scoreSpam": want.ScoreSpam,
+				"scoreReject": want.ScoreReject, "scoreDiscard": want.ScoreDiscard, "greylistFor": nil}}}
+		}
+		got, err := f.client().SpamSettings(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("settings = %+v, want %+v", got, want)
+		}
+		if c := f.last(); c.Method != "x:SpamSettings/get" || asJSON(t, c.Args["ids"]) != `["singleton"]` {
+			t.Fatalf("call = %s %s", c.Method, asJSON(t, c.Args["ids"]))
+		}
 	}
-	got, err := f.client().SpamSettings(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != (SpamSettings{Enabled: true, ScoreSpam: 5, ScoreReject: 0, ScoreDiscard: 0}) {
-		t.Fatalf("settings = %+v", got)
-	}
-	if c := f.last(); c.Method != "x:SpamSettings/get" || asJSON(t, c.Args["ids"]) != `["singleton"]` {
-		t.Fatalf("call = %s %s", c.Method, asJSON(t, c.Args["ids"]))
+}
+
+func TestSpamSettingsRejectsIncompleteSettings(t *testing.T) {
+	for _, field := range []string{"enable", "scoreSpam", "scoreReject", "scoreDiscard"} {
+		for _, missing := range []bool{false, true} {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				settings := map[string]any{"id": "singleton", "enable": true, "scoreSpam": 5, "scoreReject": 0, "scoreDiscard": 0}
+				if missing {
+					delete(settings, field)
+				} else {
+					settings[field] = nil
+				}
+				return method, map[string]any{"list": []any{settings}}
+			}
+			if _, err := f.client().SpamSettings(context.Background()); err == nil {
+				t.Errorf("invalid %s accepted (missing=%v)", field, missing)
+			}
+		}
 	}
 }
 
@@ -332,5 +360,102 @@ func TestClassifySpamNotAcknowledged(t *testing.T) {
 	}
 	if _, err := f.client().ClassifySpam(context.Background(), BlocklistProbe); err == nil {
 		t.Fatal("a probe without a created result was accepted")
+	}
+}
+
+func TestSpamFilterStageOffRejectsUnexpectedShape(t *testing.T) {
+	for _, filter := range []string{
+		`null`, `{}`, `{"else":"false"}`, `{"match":null,"else":"false"}`,
+		`{"match":[],"else":"false"}`, `{"match":[{"if":"true","then":"true"}],"else":"false"}`,
+		`{"match":true,"else":"false"}`, `{"match":"false","else":"false"}`,
+		`{"match":{}}`, `{"match":{},"else":null}`, `{"match":{},"else":false}`,
+	} {
+		t.Run(filter, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				return method, map[string]any{"list": []any{map[string]any{"id": "singleton", "enableSpamFilter": json.RawMessage(filter)}}}
+			}
+			off, err := f.client().SpamFilterStageOff(context.Background())
+			if err == nil || off {
+				t.Fatalf("unexpected shape: off = %v, err = %v", off, err)
+			}
+		})
+	}
+}
+
+func TestClassifySpamRejectsIncompleteResult(t *testing.T) {
+	for _, result := range []string{
+		`null`, `{}`, `{"score":0,"tags":{}}`, `{"score":0,"result":"","tags":{}}`,
+		`{"result":"ham","tags":{}}`, `{"score":null,"result":"ham","tags":{}}`,
+		`{"score":0,"result":"ham"}`, `{"score":0,"result":"ham","tags":null}`,
+	} {
+		t.Run(result, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				return method, map[string]any{"created": map[string]any{"c": json.RawMessage(result)}}
+			}
+			if _, err := f.client().ClassifySpam(context.Background(), BlocklistProbe); err == nil {
+				t.Fatal("incomplete classification accepted")
+			}
+		})
+	}
+}
+
+func TestClassifySpamZeroScoreWithoutTags(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"c": map[string]any{
+			"score": 0, "result": "ham", "tags": map[string]any{},
+		}}}
+	}
+	got, err := f.client().ClassifySpam(context.Background(), BlocklistProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, SpamProbeResult{Score: 0, Result: "ham", Tags: []string{}}) {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestSpamCallsRedactServerText(t *testing.T) {
+	for _, operation := range []string{"settings", "stage", "classify", "classify failure", "classify output"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				switch operation {
+				case "classify output":
+					return method, map[string]any{"created": map[string]any{"c": map[string]any{
+						"score": 0, "result": testPassword, "tags": map[string]any{testPassword: map[string]any{}},
+					}}}
+				case "classify failure":
+					return method, map[string]any{"notCreated": map[string]any{"c": map[string]any{"type": "invalidProperties", "description": testPassword}}}
+				default:
+					return "error", map[string]any{"type": "serverFail", "description": testPassword}
+				}
+			}
+			c := f.client()
+			var err error
+			switch operation {
+			case "settings":
+				_, err = c.SpamSettings(context.Background())
+			case "stage":
+				_, err = c.SpamFilterStageOff(context.Background())
+			default:
+				var got SpamProbeResult
+				got, err = c.ClassifySpam(context.Background(), BlocklistProbe)
+				if operation == "classify output" {
+					if err != nil {
+						t.Fatal("classification failed")
+					}
+					if got.Result != "[redacted]" || !reflect.DeepEqual(got.Tags, []string{"[redacted]"}) {
+						t.Fatal("classification output was not redacted")
+					}
+					return
+				}
+			}
+			if err == nil || strings.Contains(err.Error(), testPassword) || !strings.Contains(err.Error(), "[redacted]") {
+				t.Fatal("server error was not returned and redacted")
+			}
+		})
 	}
 }
