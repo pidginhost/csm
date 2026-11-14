@@ -4402,3 +4402,228 @@ test('without cPanel no cPanel-only API is called, on load, refresh or a hidden-
         assert.equal(page.document.getElementById('email-tab-overview').getAttribute('aria-selected'), 'true', url);
     }
 });
+
+// ---------- Stalwart hosts ----------
+
+// Stalwart files spam to Junk or rejects it; nothing reports a scan count.
+const STALWART = { mail: true, stalwartFilter: true };
+
+function stalwartOverview(totals, extra) {
+    return overview(Object.assign({ delivered: 0, junk: 0, filter_rejected: 0, discarded: 0, unmatched: 0 }, totals),
+        Object.assign({ filter_rejects_seen: true }, extra));
+}
+
+test('a Stalwart host shows what its filter did with the mail', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview(
+        { delivered: 1200, junk: 41, filter_rejected: 3, discarded: 2, unmatched: 0 },
+        { filter_rejects_seen: true, mode: 'off' }));
+    await settle();
+    assert.equal(kpi(page, 'kpi-scanned').value, '1,200');
+    assert.match(kpi(page, 'kpi-scanned').text, /Mail delivered/);
+    // Delivered counts mail a mailbox's own rule filed to a folder too.
+    assert.equal(kpi(page, 'kpi-scanned').sub, 'not filed to Junk by the filter');
+    assert.equal(kpi(page, 'kpi-tagged').value, '41');
+    assert.match(kpi(page, 'kpi-tagged').text, /Filed to Junk/);
+    assert.equal(kpi(page, 'kpi-spam').value, '3');
+    assert.match(kpi(page, 'kpi-spam').sub, /2 discarded/);
+    const subtitle = page.document.getElementById('email-subtitle').textContent;
+    assert.match(subtitle, /41 filed to Junk and 3 rejected in the last 24 hours/);
+    const chartLabel = page.document.getElementById('email-decisions-chart').getAttribute('aria-label');
+    assert.match(chartLabel, /delivered, filed to Junk, rejected, discarded/);
+    assert.doesNotMatch(page.document.getElementById('email-kpis').textContent + subtitle + chartLabel, /scanned|clean|Antispam is off/i);
+    // CSM's antispam mode says nothing about Stalwart's filter: no badge, not even an empty dot.
+    assert.equal(page.document.querySelector('#kpi-spam [data-kpi-badge]'), null, 'a mode badge on a Stalwart host');
+});
+
+// The Rejects tab lists the mail server log's rejects; Stalwart's filter
+// rejects are not in it, so the card explains its number on Overview.
+test('on a Stalwart host the rejected card opens Overview', async () => {
+    const page = emailPage({ features: STALWART, url: 'https://csm.example.test/email?tab=rejects' });
+    await settle();
+    const link = page.document.querySelector('#kpi-spam a.card');
+    assert.equal(link.getAttribute('href'), '?tab=overview');
+    assert.equal(link.hasAttribute('data-rejects-class'), false);
+    assert.equal(link.getAttribute('title'), 'Spam rejected: open the Overview tab');
+    const before = page.requests.filter(r => r.url.includes('/api/v1/email/rejects')).length;
+    link.click();
+    await settle();
+    assert.equal(page.document.getElementById('email-tab-overview').getAttribute('aria-selected'), 'true');
+    assert.equal(urlTab(page), null);
+    assert.equal(page.requests.filter(r => r.url.includes('/api/v1/email/rejects')).length, before, 'the card reloaded the rejects');
+});
+
+test('rejected mail shows a dash until Stalwart has logged one', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({ filter_rejected: 0, discarded: 0 }, { filter_rejects_seen: false }));
+    await settle();
+    assert.equal(kpi(page, 'kpi-spam').value, '-');
+    assert.match(kpi(page, 'kpi-spam').sub, /none logged yet/);
+    assert.match(page.document.getElementById('email-subtitle').textContent, /No inbound mail in the last 24 hours/);
+
+    const seen = emailPage({ features: STALWART });
+    seen.respond('/api/v1/email/overview', 200, stalwartOverview({ delivered: 4, junk: 1 }, { filter_rejects_seen: false }));
+    await settle();
+    assert.equal(kpi(seen, 'kpi-spam').value, '-');
+    assert.match(seen.document.getElementById('email-subtitle').textContent, /1 filed to Junk and none logged rejected in the last 24 hours/);
+
+    const logged = emailPage({ features: STALWART });
+    logged.respond('/api/v1/email/overview', 200, stalwartOverview({ filter_rejected: 0, discarded: 0 }, { filter_rejects_seen: true }));
+    await settle();
+    assert.equal(kpi(logged, 'kpi-spam').value, '0');
+});
+
+test('verdicts lost under a flood are named', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({ delivered: 30, unmatched: 7 }));
+    await settle();
+    assert.match(kpi(page, 'kpi-scanned').sub, /7 not matched/);
+
+    // Mail whose verdict was lost still arrived.
+    const lost = emailPage({ features: STALWART });
+    lost.respond('/api/v1/email/overview', 200, stalwartOverview({ unmatched: 7 }));
+    await settle();
+    assert.doesNotMatch(lost.document.getElementById('email-subtitle').textContent, /No inbound mail/);
+});
+
+test('a Stalwart host charts delivered, Junk, rejected and discarded', async () => {
+    const page = emailPage({ features: STALWART });
+    await settle();
+    const from = Date.parse(query(page.pending('/api/v1/email/overview')[0].url).get('from'));
+    const t = (from + 5 * HOUR_MS) / 1000;
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({}, { series: [{ t, delivered: 5, junk: 2, filter_rejected: 1, discarded: 1 }] }));
+    await settle();
+    const chart = page.Chart.charts.at(-1);
+    assert.deepEqual(Array.from(chart.data.datasets, d => d.label), ['Delivered', 'Filed to Junk', 'Rejected', 'Discarded', 'Malware', 'Other rejects']);
+    const sum = label => dataset(chart, label).reduce((a, b) => a + b, 0);
+    assert.deepEqual(['Delivered', 'Filed to Junk', 'Rejected', 'Discarded'].map(sum), [5, 2, 1, 1]);
+});
+
+test('Stalwart cards and chart tolerate missing fields from an older daemon', async () => {
+    for (const totals of [undefined, null, {}, { scanned: 900, clean: 800, tagged: 70, rejected: 30 }]) {
+        const page = emailPage({ features: STALWART });
+        page.respond('/api/v1/email/overview', 200, overview({}, { totals, mode: 'off', series: undefined }));
+        await settle();
+        assert.equal(kpi(page, 'kpi-scanned').value, '0');
+        assert.equal(kpi(page, 'kpi-tagged').value, '0');
+        assert.equal(kpi(page, 'kpi-spam').value, '-');
+        assert.equal(kpi(page, 'kpi-spam').sub, 'none logged yet');
+        const subtitle = page.document.getElementById('email-subtitle').textContent;
+        assert.match(subtitle, /No inbound mail in the last 24 hours/);
+        assert.doesNotMatch(page.document.getElementById('email-kpis').textContent + subtitle,
+            /NaN|undefined|scanned|clean|Antispam is off/i);
+        const chart = page.Chart.charts.at(-1);
+        assert.deepEqual(Array.from(chart.data.datasets, d => d.label),
+            ['Delivered', 'Filed to Junk', 'Rejected', 'Discarded', 'Malware', 'Other rejects']);
+        for (const ds of chart.data.datasets) {
+            assert.ok(ds.data.length > 0);
+            assert.ok(ds.data.every(n => n === 0), ds.label);
+        }
+    }
+});
+
+test('Stalwart cards keep large verdict counts separate from rspamd counts', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({
+        delivered: 1234567, junk: 2345678, filter_rejected: 3456789, discarded: 4567890, unmatched: 5678901,
+        scanned: 9, clean: 8, tagged: 7, rejected: 6, would_reject: 5, would_tag: 4
+    }, { mode: 'dry-run' }));
+    await settle();
+    for (const [id, value, title] of [
+        ['kpi-scanned', '1.2M', '1,234,567'],
+        ['kpi-tagged', '2.3M', '2,345,678'],
+        ['kpi-spam', '3.5M', '3,456,789']
+    ]) {
+        assert.equal(kpi(page, id).value, value);
+        assert.equal(page.document.querySelector('#' + id + ' [data-kpi-value]').getAttribute('title'), title);
+    }
+    assert.equal(kpi(page, 'kpi-scanned').sub, 'not filed to Junk by the filter, 5,678,901 not matched');
+    assert.equal(kpi(page, 'kpi-spam').sub, '4,567,890 discarded');
+    assert.equal(page.document.getElementById('email-subtitle').textContent,
+        'Mail flowing. 2,345,678 filed to Junk and 3,456,789 rejected in the last 24 hours.');
+    assert.equal(page.document.querySelector('#kpi-spam [data-kpi-badge]'), null);
+});
+
+// The rspamd card and the Antispam line describe CSM's own antispam, which
+// a Stalwart host does not run beside its filter.
+test('a Stalwart host leaves out the rspamd card and the Antispam line', async () => {
+    const intervals = [];
+    const page = emailPage({ features: STALWART, intervals });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({ delivered: 12, junk: 3 }, { mode: 'off', smtp_restricted: true }));
+    await settle();
+    page.document.getElementById('email-refresh').click();
+    intervals.forEach(i => i.fn());
+    await settle();
+    const doc = page.document;
+    assert.equal(doc.getElementById('email-rspamd'), null);
+    assert.equal(doc.getElementById('prot-antispam'), null);
+    assert.equal(page.requests.filter(r => r.url.includes('/api/v1/email/rspamd')).length, 0, 'asked for rspamd');
+    assert.equal(kpi(page, 'kpi-scanned').value, '12');
+    assert.equal(kpi(page, 'kpi-tagged').value, '3');
+    assert.match(doc.getElementById('prot-smtp').textContent, /restricted/);
+    const text = doc.getElementById('email-kpis').textContent + doc.getElementById('email-pane-overview').textContent +
+        doc.getElementById('email-subtitle').textContent;
+    assert.doesNotMatch(text, /rspamd|Antispam|Failed to|unavailable/i);
+
+    // A failed overview read marks the protection lines that are there.
+    while (page.pending('/api/v1/email/overview').length) page.fail('/api/v1/email/overview');
+    await settle();
+    assert.match(doc.getElementById('prot-smtp').textContent, /Protection status unavailable/);
+
+    // Polling and returning to Overview must also work without rspamd.
+    for (const name of ['rejects', 'sending', 'findings', 'overview']) {
+        page.window.bootstrap.Tab.getOrCreateInstance(doc.getElementById('email-tab-' + name)).show();
+        intervals.forEach(i => i.fn());
+        await settle();
+        assert.equal(new URL(page.window.location.href).searchParams.get('tab'), name === 'overview' ? null : name);
+    }
+    while (page.pending('/api/v1/email/overview').length) {
+        page.respond('/api/v1/email/overview', 200,
+            stalwartOverview({ delivered: 15, junk: 4 }, { mode: 'off', smtp_restricted: false }));
+    }
+    await settle();
+    assert.equal(kpi(page, 'kpi-scanned').value, '15');
+    assert.equal(kpi(page, 'kpi-tagged').value, '4');
+    assert.equal(doc.querySelector('#prot-smtp [data-prot-value]').textContent, 'open');
+    assert.equal(doc.querySelector('#prot-smtp .csm-load-error'), null);
+    assert.equal(doc.querySelector('#email-kpis .csm-load-error'), null);
+    assert.equal(page.requests.filter(r => r.url.includes('/api/v1/email/rspamd')).length, 0, 'asked for rspamd after switching tabs');
+
+    // The chart takes the row the rspamd card no longer shares.
+    const column = d => d.getElementById('email-decisions-chart').closest('.row > div');
+    assert.ok(column(doc).classList.contains('col-12'));
+    assert.equal(column(doc).classList.contains('col-lg-8'), false);
+
+    const cpanel = emailPage();
+    await settle();
+    assert.ok(column(cpanel.document).classList.contains('col-lg-8'));
+    assert.ok(cpanel.document.getElementById('email-rspamd'));
+    assert.ok(cpanel.document.getElementById('prot-antispam'));
+    assert.equal(cpanel.pending('/api/v1/email/rspamd').length, 1);
+});
+
+test('Stalwart chart sums sparse verdicts without borrowing rspamd decisions', async () => {
+    const page = emailPage({ features: STALWART, now: '2026-11-14T12:30:00Z',
+        storage: { 'csm-prefs': JSON.stringify({ timezone: 'UTC' }) } });
+    const from = Date.parse(query(page.pending('/api/v1/email/overview')[0].url).get('from'));
+    const t = (from + 5 * HOUR_MS) / 1000;
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({}, { series: [
+        { t, clean: 900, tagged: 800, rejected: 700 },
+        { t: t + 900, delivered: 1234567, junk: 2 },
+        { t: t + 1800, delivered: 2345678, filter_rejected: 3, discarded: 4 },
+        { t: t + 3600, clean: 600, tagged: 500, rejected: 400, junk: 5, malware: 6, other: 7 }
+    ] }));
+    await settle();
+    const chart = page.Chart.charts.at(-1);
+    assert.deepEqual(Array.from(chart.data.datasets, d => d.label),
+        ['Delivered', 'Filed to Junk', 'Rejected', 'Discarded', 'Malware', 'Other rejects']);
+    for (const [label, fifth, sixth] of [
+        ['Delivered', 3580245, 0], ['Filed to Junk', 2, 5], ['Rejected', 3, 0],
+        ['Discarded', 4, 0], ['Malware', 0, 6], ['Other rejects', 0, 7]
+    ]) {
+        const expected = Array(chart.data.labels.length).fill(0);
+        expected[5] = fifth;
+        expected[6] = sixth;
+        assert.deepEqual(dataset(chart, label), expected, label);
+    }
+});

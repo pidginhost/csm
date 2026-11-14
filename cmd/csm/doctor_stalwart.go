@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus
 	in := stalwartInputs(cfg, platform.Detect().WebServerUsers(), &automation)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	newAPI := func(url, user, password string) stalwartsetup.API {
+	newAPI := func(url, user, password string) stalwartDoctorAPI {
 		return stalwartapi.NewWithPeerCheck(url, user, password, checkStalwartPeer)
 	}
 	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, defaultCheckStalwartListener, cfg.Stalwart, in)...)
@@ -78,8 +79,11 @@ func stalwartLogDoctorCheck(mta platform.MTAKind, sc config.StalwartConfig, now 
 	if err != nil {
 		return append(checks, DoctorCheck{Name: "stalwart log format", Status: "fail", Message: "Could not read " + path + ": " + err.Error()})
 	}
-	checks = append(checks, stalwartFormatCheck(lines))
-	return append(checks, stalwartFailedLoginCheck(path))
+	checks = append(checks, stalwartFormatCheck(lines), stalwartFailedLoginCheck(path))
+	if c, ok := stalwartClassifierCheck(path); ok {
+		checks = append(checks, c)
+	}
+	return checks
 }
 
 func stalwartLogAgeCheck(path, prefix string, now time.Time) DoctorCheck {
@@ -136,34 +140,101 @@ func stalwartFailedLoginCheck(path string) DoctorCheck {
 	return check
 }
 
-func logHasEvent(path, name string) (bool, error) {
+// stalwartClassifierCheck reports the newest classifier run that ended for
+// lack of samples. A training start after it may have succeeded silently,
+// so then it says nothing.
+func stalwartClassifierCheck(path string) (DoctorCheck, bool) {
+	var last *stalwartlog.Event
+	err := scanLogEvents(path, []string{"spam.model-not-ready", "spam.train-started"}, func(ev stalwartlog.Event, complete bool) bool {
+		last = nil
+		if complete && ev.Name == "spam.model-not-ready" {
+			last = &ev
+		}
+		return true
+	})
+	if err != nil || last == nil {
+		return DoctorCheck{}, false
+	}
+	// Both lists are [ham, spam].
+	details, limit := last.Lists["details"], last.Lists["limit"]
+	if len(details) != 2 || len(limit) != 2 {
+		return DoctorCheck{}, false
+	}
+	var n [4]uint64
+	for i, v := range [...]string{details[0], limit[0], details[1], limit[1]} {
+		if n[i], err = strconv.ParseUint(v, 10, 64); err != nil {
+			return DoctorCheck{}, false
+		}
+	}
+	return DoctorCheck{Name: "stalwart spam classifier", Status: "ok",
+		Message: fmt.Sprintf("Stalwart's spam classifier is still learning: %d of %d ham and %d of %d spam samples", n[0], n[1], n[2], n[3])}, true
+}
+
+func logHasEvent(path, name string) (found bool, err error) {
+	err = scanLogEvents(path, []string{name}, func(_ stalwartlog.Event, complete bool) bool {
+		found = complete
+		return !found
+	})
+	return found, err
+}
+
+// scanLogEvents calls fn in file order until it returns false. A recognized
+// header with a malformed body is passed with complete=false: classifier
+// status must still supersede an older record, but login checks ignore it.
+func scanLogEvents(path string, names []string, fn func(ev stalwartlog.Event, complete bool) bool) error {
 	f, err := os.Open(path) // #nosec G304 -- operator-configured Stalwart log path
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer func() { _ = f.Close() }()
-	marker := "(" + name + ")"
+	type eventMarker struct {
+		name string
+		text []byte
+	}
+	markers := make([]eventMarker, len(names))
+	for i, name := range names {
+		markers[i] = eventMarker{name: name, text: []byte("(" + name + ")")}
+	}
 	r := bufio.NewReaderSize(f, 64*1024)
 	discard := false
 	for {
 		line, prefix, err := r.ReadLine()
 		if errors.Is(err, io.EOF) {
-			return false, nil
+			return nil
 		}
 		if err != nil {
-			return false, err
+			return err
 		}
-		// Oversized records must not hide later logins or let their tail
+		// Oversized records must not hide later events or let their tail
 		// masquerade as a separate event.
 		if discard || prefix {
 			discard = prefix
 			continue
 		}
-		if !bytes.Contains(line, []byte(marker)) {
-			continue
-		}
-		if ev, ok := stalwartlog.Parse(string(line)); ok && ev.Name == name {
-			return true, nil
+		for _, marker := range markers {
+			start := bytes.Index(line, marker.text)
+			if start < 0 {
+				continue
+			}
+			end := start + len(marker.text)
+			if end < len(line) && line[end] != ' ' {
+				continue
+			}
+			ev, complete := stalwartlog.Parse(string(line))
+			if !complete {
+				var ok bool
+				ev, ok = stalwartlog.Parse(string(line[:end]))
+				if !ok {
+					continue
+				}
+			}
+			if ev.Name != marker.name {
+				continue
+			}
+			if !fn(ev, complete) {
+				return nil
+			}
+			break
 		}
 	}
 }
@@ -197,9 +268,16 @@ func tailLines(path string, n int, maxBytes int64) ([]string, error) {
 	return lines, nil
 }
 
+// stalwartDoctorAPI is what doctor asks Stalwart: the setup steps, read
+// only, and one spam classification.
+type stalwartDoctorAPI interface {
+	stalwartsetup.API
+	ClassifySpam(context.Context, stalwartapi.SpamProbe) (stalwartapi.SpamProbeResult, error)
+}
+
 // stalwartSettingsDoctorChecks reports each setup step read-only. It needs
 // an admin login, which only the environment supplies.
-func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartsetup.API, checkListener func(url string) error, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
+func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartDoctorAPI, checkListener func(url string) error, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
 	user, password := getenv("STALWART_USER"), getenv("STALWART_PASSWORD")
 	if user == "" || password == "" {
 		return []DoctorCheck{{Name: "stalwart settings", Status: "ok",
@@ -221,13 +299,68 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 		in.LockManaged = false
 		in.LockedPorts = nil
 	}
-	plan, err := stalwartsetup.Inspect(ctx, newAPI(sc.APIURL, user, password), in)
+	api := newAPI(sc.APIURL, user, password)
+	plan, err := stalwartsetup.Inspect(ctx, api, in)
 	if err != nil {
 		return []DoctorCheck{{Name: "stalwart settings", Status: "warn",
 			Message: "Cannot read Stalwart's settings at " + sc.APIURL + ": " + strings.ReplaceAll(err.Error(), password, "[redacted]"),
 			Fix:     "check stalwart.api_url and the admin login"}}
 	}
-	return stalwartStepChecks(plan)
+	checks := stalwartStepChecks(plan)
+	// A filter that is off, or in an unknown state, may make no lookups.
+	for _, st := range plan.Steps {
+		if st.Name == "spam filter" && st.State != stalwartsetup.Warn {
+			checks = append(checks, stalwartBlocklistCheck(ctx, api, user, password))
+		}
+	}
+	return checks
+}
+
+// stalwartBlocklistCheck has Stalwart classify one test message, which it
+// neither delivers nor learns from. Through a resolver the blocklists refuse,
+// such as a public one, the matched rules include ones named *_BLOCKED. The
+// verdict and score are ignored: the test sender fails SPF and DMARC.
+func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI, user, password string) DoctorCheck {
+	res, err := api.ClassifySpam(ctx, stalwartapi.BlocklistProbe)
+	if err != nil {
+		return DoctorCheck{Name: "stalwart blocklists", Status: "warn", Message: "Could not test Stalwart's DNS blocklists: " + stalwartDiagnosticText(stalwartapi.Redact(err.Error(), user, password), 512)}
+	}
+	var blocked []string
+	for _, tag := range res.Tags {
+		if strings.Contains(tag, "_BLOCKED") {
+			// Bound terminal output, not detection: every tag before the
+			// first blocked one is still examined.
+			if len(blocked) == 8 {
+				blocked = append(blocked, "...")
+				break
+			}
+			blocked = append(blocked, stalwartDiagnosticText(stalwartapi.Redact(tag, user, password), 96))
+		}
+	}
+	if len(blocked) == 0 {
+		return DoctorCheck{Name: "stalwart blocklists", Status: "ok", Message: "Stalwart's DNS blocklists answer"}
+	}
+	return DoctorCheck{Name: "stalwart blocklists", Status: "warn",
+		Message: "Stalwart's DNS blocklists refuse this server's resolver (" + strings.Join(blocked, ", ") + "), so they add nothing to spam scores",
+		Fix:     "point Stalwart at a local recursive resolver, then restart Stalwart"}
+}
+
+// stalwartDiagnosticText escapes terminal controls and bounds server text.
+// Redaction must happen first, before escaping or truncation changes secrets.
+func stalwartDiagnosticText(text string, maxBytes int) string {
+	truncated := len(text) > maxBytes
+	if truncated {
+		text = text[:maxBytes]
+	}
+	quoted := strconv.QuoteToASCII(text)
+	text = quoted[1 : len(quoted)-1]
+	if len(text) > maxBytes {
+		truncated = true
+	}
+	if truncated {
+		text = text[:min(len(text), maxBytes-3)] + "..."
+	}
+	return text
 }
 
 func stalwartStepChecks(plan stalwartsetup.Plan) []DoctorCheck {

@@ -24,6 +24,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - The Web UI now shows a CSM icon in browser tabs and bookmarks.
 - The firewall can open one TCP port to listed addresses or ranges with `firewall.tcp_in_allow`; those sources keep reaching that port while blocked.
 - On Postfix servers, Email Security now lists rejected mail and the mailboxes that send mail.
+- `csm stalwart setup` now makes Stalwart log the mail its spam filter rejects or discards and reports the filter's state. Run it again on hosts set up earlier.
+- `csm doctor` on Stalwart hosts now warns when the spam filter's DNS blocklists get no answers, and says when its classifier is still learning.
+- On Stalwart hosts CSM now records which addresses deliver spam, shown in the Threat page Spam column and in IP lookup.
+- On Stalwart hosts the Email page now shows inbound mail delivered, filed to Junk, rejected and discarded by Stalwart's spam filter.
 
 ### Changed
 

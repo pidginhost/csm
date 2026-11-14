@@ -1528,7 +1528,7 @@ POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its exte
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
 GET  /api/v1/email/checks        Email checks the Email page shows, each with its group kind ("" = never grouped) (read scope)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
-GET  /api/v1/email/overview      Mail decision totals and 15-minute chart series for from/to (default the last 24 h), antispam mode, live queue and mail-related block counts (read scope)
+GET  /api/v1/email/overview      Mail decision totals and 15-minute chart series for from/to (default the last 24 h), antispam mode, live queue and mail-related block counts, and Stalwart's filter verdicts: totals delivered, junk, filter_rejected, discarded and unmatched, series delivered, junk, filter_rejected and discarded, and filter_rejects_seen (read scope)
 GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, recipient, source IP, detail), newest first, kept 7 days; class=content (spam and malware, default)|all|<class>[,<class>...], from/to (default the last 24 h), limit (default 50, max 200); totals has the permanent rejects of every class in the range (admin scope)
 GET  /api/v1/email/senders       Messages each hosting account sent in from/to (default the last 24 h), busiest first, up to 100 rows, with total, unresolved and abuse_events, the outbound abuse events relay-abuse lists for the range, counted up to 5,000 like relay-abuse, with abuse_events_truncated true when that cap cut the count, and abuse_by_account, those events counted per account they name and per kind, before any list limit (admin scope)
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit; total counts up to 5,000 and total_truncated is true when that cap cut it, while truncated is also set when only limit cut the list (read scope)
@@ -1539,6 +1539,21 @@ GET  /api/v1/email/quarantine/{id}          One quarantined message
 POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin scope, CSRF)
 DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
+
+For Stalwart, the overview's `totals.delivered`, `totals.junk`,
+`totals.filter_rejected`, `totals.discarded` and `totals.unmatched` count
+its own filter verdicts in the selected range. `unmatched` counts messages
+whose verdict CSM could not tie to a sending address. Chart points use
+`delivered`, `junk`, `filter_rejected` and `discarded`, omitting these keys
+when zero. `totals.rejected` and the chart's `rejected` key count rspamd
+decisions, not Stalwart filter rejects.
+
+The top-level `filter_rejects_seen` is true when any retained bucket contains
+a Stalwart filter rejection or discard, even outside the selected range.
+False means no such event is retained, not that the filter rejected no mail.
+The Email page shows a dash and "none logged yet" for rejected mail until
+this flag is true. Older responses may omit the flag or verdict counts;
+the page treats the flag as false and missing counts as zero.
 
 The `mail.forwarders.delete.v1` capability advertises the forwarder delete
 endpoint. A 500 can follow a delete that partly ran, so read the inventory

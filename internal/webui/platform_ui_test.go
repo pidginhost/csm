@@ -84,8 +84,12 @@ var anyMailEmailIDs = []string{
 	"email-tab-rejects", "email-pane-rejects",
 	"email-tab-sending", "email-pane-sending",
 	"email-tab-findings", "email-pane-findings",
-	"kpi-tagged", "kpi-malware", "kpi-other", "kpi-logins", "prot-antispam", "prot-smtp",
+	"kpi-tagged", "kpi-malware", "kpi-other", "kpi-logins", "prot-smtp",
 }
+
+// rspamdEmailIDs describe CSM's own antispam, which a Stalwart host does
+// not run beside its filter.
+var rspamdEmailIDs = []string{"email-rspamd", "prot-antispam"}
 
 func TestEmailPageRendersByFeature(t *testing.T) {
 	s := newTestServer(t, "tok")
@@ -112,6 +116,11 @@ func TestEmailPageRendersByFeature(t *testing.T) {
 				t.Errorf("%s: %s rendered without its backend", host.name, id)
 			}
 		}
+		for _, id := range rspamdEmailIDs {
+			if has(out, id) != (host.mta != platform.MTAStalwart) {
+				t.Errorf("%s: %s rendered %v", host.name, id, has(out, id))
+			}
+		}
 		if strings.Contains(out, "tab=queue") || strings.Contains(out, "tab=held") {
 			t.Errorf("%s: page links to a tab it does not render", host.name)
 		}
@@ -119,7 +128,7 @@ func TestEmailPageRendersByFeature(t *testing.T) {
 
 	setTestPlatform(s, platform.PanelCPanel, platform.MTAExim)
 	out := renderRealPage(t, s, "email")
-	for _, id := range append(append([]string{}, anyMailEmailIDs...), cpanelOnlyEmailIDs...) {
+	for _, id := range append(append(append([]string{}, anyMailEmailIDs...), cpanelOnlyEmailIDs...), rspamdEmailIDs...) {
 		if !has(out, id) {
 			t.Errorf("cpanel: %s missing", id)
 		}

@@ -1363,6 +1363,9 @@ func (d *Daemon) Run() error {
 	// The log watchers have stopped, so this save holds every frozen message
 	// they reported and the next start does not report them again.
 	d.persistEximFrozenDedup()
+	if d.stalwart != nil {
+		d.drainStalwartVerdicts(d.currentCfg())
+	}
 	d.persistMailStats()
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.

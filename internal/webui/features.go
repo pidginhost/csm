@@ -32,6 +32,7 @@ func uiFeatures(info platform.Info, mta platform.MTAKind) map[string]bool {
 		"mailSuspensions": cp,
 		"emailAV":         cp,
 		"cphulk":          info.IsCPanel(),
+		"stalwartFilter":  mta == platform.MTAStalwart,
 	}
 }
 

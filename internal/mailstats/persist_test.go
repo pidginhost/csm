@@ -669,6 +669,7 @@ func TestFlushConcurrentWithRecords(t *testing.T) {
 			for j := 0; j < 200; j++ {
 				c.RecordScan(now.Add(-time.Duration(j)*time.Minute), antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
 				c.RecordReject(Reject{At: now, Class: ClassSpam})
+				c.RecordFilterVerdict(now, FilterRejected)
 			}
 		})
 	}
@@ -688,7 +689,7 @@ func TestFlushConcurrentWithRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	tot := c2.Overview(now.Add(-24*time.Hour), now.Add(time.Hour)).Totals
-	if tot.Scanned != 800 || tot.Rejects[ClassSpam] != 800 {
+	if tot.Scanned != 800 || tot.Rejects[ClassSpam] != 800 || tot.FilterRejected != 800 || tot.Rejected != 0 {
 		t.Fatalf("%+v", tot)
 	}
 }
@@ -980,5 +981,29 @@ func TestOldBucketWithoutSendsLoads(t *testing.T) {
 	var b bucket
 	if err := json.Unmarshal(db.buckets[bucketKey(now)], &b); err != nil || b.Sends["alpha"] != 1 || b.Scans["enforce:none"] != 2 {
 		t.Fatalf("stored %+v (%v)", b, err)
+	}
+}
+
+func TestFilterVerdictsSurviveFlushAndLoad(t *testing.T) {
+	now := time.Date(2026, 11, 14, 10, 5, 0, 0, time.UTC)
+	db := newFakeStore()
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	for _, outcome := range []string{FilterDelivered, FilterJunk, FilterRejected, FilterDiscarded, FilterUnmatched} {
+		c.RecordFilterVerdict(now, outcome)
+	}
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	want := c.Overview(from, to).Totals
+	if want.Delivered != 1 || want.Junk != 1 || want.FilterRejected != 1 || want.Rejected != 0 || want.Discarded != 1 || want.Unmatched != 1 {
+		t.Fatalf("setup totals %+v", want)
+	}
+
+	c2 := New(func() time.Time { return now })
+	mustLoad(t, c2, db, now)
+	if got := c2.Overview(from, to).Totals; jsonOf(t, got) != jsonOf(t, want) {
+		t.Errorf("totals\n got %+v\nwant %+v", got, want)
 	}
 }
