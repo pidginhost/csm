@@ -15,16 +15,18 @@ const statsCacheTTL = 30 * time.Second
 
 // AttackStats contains aggregate statistics for the API and dashboard.
 type AttackStats struct {
-	TotalIPs      int                `json:"total_ips"`
-	TotalEvents   int                `json:"total_events"`
-	Last24hEvents int                `json:"last_24h_events"`
-	Last7dEvents  int                `json:"last_7d_events"`
-	BlockedIPs    int                `json:"blocked_ips"`
-	ByType        map[AttackType]int `json:"by_type"`     // lifetime, aggregated from IPRecord.AttackCounts
-	ByType24h     map[AttackType]int `json:"by_type_24h"` // last 24h, aggregated from the events log
-	TopAttackers  []*IPRecord        `json:"top_attackers"`
-	HourlyBuckets [24]int            `json:"hourly_buckets"` // last 24h, index 0 = oldest hour
-	DailyBuckets  [7]int             `json:"daily_buckets"`  // last 7 days, index 0 = oldest day
+	TotalIPs       int                `json:"total_ips"`
+	TotalEvents    int                `json:"total_events"`
+	Last24hEvents  int                `json:"last_24h_events"`
+	Last7dEvents   int                `json:"last_7d_events"`
+	BlockedIPs     int                `json:"blocked_ips"`
+	MailOnlyIPs    int                `json:"mail_only_ips"`     // records held only for spam verdicts
+	MailOnlyNew24h int                `json:"mail_only_new_24h"` // of those, first seen in the last 24h
+	ByType         map[AttackType]int `json:"by_type"`           // lifetime, aggregated from IPRecord.AttackCounts
+	ByType24h      map[AttackType]int `json:"by_type_24h"`       // last 24h, aggregated from the events log
+	TopAttackers   []*IPRecord        `json:"top_attackers"`
+	HourlyBuckets  [24]int            `json:"hourly_buckets"` // last 24h, index 0 = oldest hour
+	DailyBuckets   [7]int             `json:"daily_buckets"`  // last 7 days, index 0 = oldest day
 }
 
 var (
@@ -70,6 +72,12 @@ func (db *DB) computeStats() AttackStats {
 		stats.TotalEvents += rec.EventCount
 		if rec.AutoBlocked {
 			stats.BlockedIPs++
+		}
+		if mailOnly(rec, now) {
+			stats.MailOnlyIPs++
+			if rec.FirstSeen.After(cutoff24h) {
+				stats.MailOnlyNew24h++
+			}
 		}
 		for atype, count := range rec.AttackCounts {
 			stats.ByType[atype] += count

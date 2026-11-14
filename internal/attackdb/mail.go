@@ -48,6 +48,15 @@ func recordMailAuthLocked(rec *IPRecord, check string, at time.Time) {
 	}
 }
 
+// mailOnly reports whether rec exists only because of spam verdicts.
+func mailOnly(rec *IPRecord, now time.Time) bool {
+	m := rec.Mail
+	if m == nil || rec.EventCount != 0 || rec.AutoBlocked {
+		return false
+	}
+	return m.AuthAttacks == 0 || now.Sub(m.LastAuthAttack) > mailAuthWindow
+}
+
 // decayTo brings m's masses forward to at.
 func decayTo(m *MailEvidence, at time.Time) {
 	if !m.MassAt.IsZero() && at.After(m.MassAt) {
