@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
@@ -367,6 +368,28 @@ func TestStalwartVerdictHeldIDCollision(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The queue id is a slice of the whole log line, whose length the sender
+// influences. Holding that string would pin the line until the hold ends.
+func TestStalwartVerdictKeepsNoCallerString(t *testing.T) {
+	v := newStalwartVerdicts()
+	line := strings.Repeat("x", 1<<16) + " 1001"
+	id := line[len(line)-len("1001"):]
+	if !v.queued(id, stalwartlog.Session{LocalPort: 25}, stalwartTestStart, stalwartTestStart) {
+		t.Fatal("queued refused the first message")
+	}
+	if len(v.m) != 1 {
+		t.Fatalf("held %d messages, want 1", len(v.m))
+	}
+	for key, h := range v.m {
+		if key != "1001" || h.id != "1001" {
+			t.Fatalf("held key %q id %q, want 1001", key, h.id)
+		}
+		if unsafe.StringData(key) == unsafe.StringData(id) || unsafe.StringData(h.id) == unsafe.StringData(id) {
+			t.Fatal("held queue id shares the log line's buffer")
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +69,8 @@ func (v *stalwartVerdicts) queued(id string, s stalwartlog.Session, at, now time
 	if len(v.m) >= stalwartVerdictMax {
 		return false
 	}
+	// The id is a slice of the whole log line; holding it would pin the line.
+	id = strings.Clone(id)
 	h := &stalwartHeld{id: id, session: s, read: now, v: stalwartVerdict{ip: s.RemoteIP, at: at}}
 	v.m[id] = h
 	v.order = append(v.order, h)
