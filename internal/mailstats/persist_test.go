@@ -982,3 +982,27 @@ func TestOldBucketWithoutSendsLoads(t *testing.T) {
 		t.Fatalf("stored %+v (%v)", b, err)
 	}
 }
+
+func TestFilterVerdictsSurviveFlushAndLoad(t *testing.T) {
+	now := time.Date(2026, 11, 14, 10, 5, 0, 0, time.UTC)
+	db := newFakeStore()
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	for _, outcome := range []string{FilterDelivered, FilterJunk, FilterRejected, FilterDiscarded, FilterUnmatched} {
+		c.RecordFilterVerdict(now, outcome)
+	}
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	want := c.Overview(from, to).Totals
+	if want.Delivered != 1 || want.Junk != 1 || want.Rejected != 1 || want.Discarded != 1 || want.Unmatched != 1 {
+		t.Fatalf("setup totals %+v", want)
+	}
+
+	c2 := New(func() time.Time { return now })
+	mustLoad(t, c2, db, now)
+	if got := c2.Overview(from, to).Totals; jsonOf(t, got) != jsonOf(t, want) {
+		t.Errorf("totals\n got %+v\nwant %+v", got, want)
+	}
+}
