@@ -444,13 +444,15 @@ warning includes everything dropped since the previous one. A flood that
 ends within a day is reported by its first warning only; the total since the
 daemon started is `mail_evicted` in `/api/v1/threat/stats`.
 
-Look at the named network. A network that held many of the dropped records
-is the likely source; if it is hostile, block it in the
-[firewall](firewall.md). When the named network held only a few, the senders
-are spread over many networks and no single one stands out. Records with
-attack findings, a block or a mail login attack in the last 30 days are
-never dropped. Records with two or more verdicts are dropped only once such
-records fill nine tenths of the budget.
+Look at the named network and its count. The count is how many records
+holding only spam evidence the network had when the drop began, not how many
+of the dropped records were its own. A large count points at that network as
+the likely source; if it is hostile, block it in the
+[firewall](firewall.md). A small count means the senders are spread over
+many networks and no single one stands out. Records with attack findings, a
+block or a mail login attack in the last 30 days are never dropped. Records
+with two or more verdicts are dropped only once such records fill nine
+tenths of the budget.
 
 ### Scores
 

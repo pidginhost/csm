@@ -66,7 +66,7 @@ func (d *Daemon) recordMailVerdict(adb *attackdb.DB, ip string, spam bool, at ti
 		Check:    "spam_evidence_evicted",
 		Message: fmt.Sprintf("Spam evidence budget reached: dropped %d records, weakest evidence first; the most crowded network, %s, held %d",
 			ev.Dropped, ev.Network, ev.NetworkRecords),
-		Details:   "Records with attack findings, a block or a recent mail login attack are never dropped. Records with two or more verdicts are dropped only when such records fill nine tenths of the budget. A network holding many of the dropped records is the likely source; a small count means the senders are spread over many networks.",
+		Details:   "Records with attack findings, a block or a recent mail login attack are never dropped. Records with two or more verdicts are dropped only when such records fill nine tenths of the budget. The named network held the most spam-only records when the drop began: a large count points at it as the source, a small count means the senders are spread over many networks.",
 		Timestamp: at,
 	}
 	// Logged first: a full alert channel refuses the finding.
