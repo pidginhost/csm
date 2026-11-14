@@ -121,8 +121,11 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 		AskVerdict: func(ctx context.Context, ip, reason string) (verdict.Response, error) {
 			return client.Ask(ctx, verdict.Request{IP: ip, Reason: reason, Severity: "auto", Source: "auto_response"})
 		},
+		// Switches outside auto_response change without a new epoch, so
+		// queued work is tested against the config live at each turn.
 		Allows: func(c admission.Candidate) bool {
-			return checks.AutomaticResponseAllowed(cfg, c.Key.Kind, c.Entry, c.Check)
+			live := config.Active()
+			return checks.AutomaticResponseAllowed(live, c.Key.Kind, c.Entry, c.Check)
 		},
 	}
 }

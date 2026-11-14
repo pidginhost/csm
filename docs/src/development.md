@@ -1302,9 +1302,9 @@ firewall kind, `block_cpanel_logins` for the checks that need it, and each
 derived entry's own opt-in; challenges follow challenge routing). Under a
 valid policy, a pick it no longer allows ends refused as `disabled` before
 any panel ask, engine check, forecast, preview or reservation, live or dry
-run. Most of these switches change only with an epoch; challenge, incident
-and central settings change only at a restart, which is why every pick is
-tested rather than every epoch.
+run. The test reads the configuration live at each turn, not the epoch's:
+challenge, incident, central and per-check settings can change without a
+new epoch, and a saved change applies from the next turn.
 
 Disabled responses end together before capacity selection, including
 challenge previews. Spent ceiling or history budgets, retry backoff and
