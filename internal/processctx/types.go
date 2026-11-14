@@ -41,8 +41,6 @@ type ProcessContext struct {
 	// Exec events carry the requested filename, which can name a symlink or
 	// script. Only procfs enrichment supplies the resolved executable.
 	ExeResolved bool `json:"-"`
-	// UIDKnown separates a recorded root UID from a UID nobody recorded.
-	UIDKnown bool `json:"-"`
 }
 
 // MaxParentDepth caps the parent chain walked during materialization.

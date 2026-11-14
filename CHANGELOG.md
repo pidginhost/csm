@@ -18,7 +18,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A client seen only through a trusted proxy's forwarded address is no longer firewall-blocked when its challenge times out.
 - Automatic responses no longer challenge or block an address listed in web_server.trusted_proxies, such as a proxy in front of cPanel logins.
 - Central intelligence and incident responses no longer act on an outside reputation match alone; a local attack from the same address is now required.
-- Executables in temporary directories are now always reported, whatever their owner or file name; panel, package or initramfs maintenance lowers them to one warning per work directory.
+- Temporary executables remain visible, with trusted maintenance grouped as warnings and unrelated activity reported separately at Critical severity.
 
 ### Added
 

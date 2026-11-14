@@ -2067,7 +2067,9 @@ func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
 				// else in the same directory keeps its own.
 				finding.Severity = alert.Warning
 				finding.Details += " [demoted: " + reason + "; one finding per work directory]"
-				dedupPath = tmpWorkDir(path)
+				// NUL cannot occur in a file path. Separate warning cooldowns
+				// even when a top-level file has no directory group.
+				dedupPath = tmpWorkDir(path) + "\x00maintenance"
 			}
 			if fm.prepareFileFindingWithDedup(&finding, dedupPath) {
 				fm.enqueuePreparedFileFinding(finding)

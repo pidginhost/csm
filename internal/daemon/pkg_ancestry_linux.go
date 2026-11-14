@@ -33,7 +33,7 @@ var (
 // ancestryEvidence is what one walk of a process chain proved. The signals
 // are kept apart because they are corroborated differently: a comm can be set
 // by the process itself, so a package manager's needs a package transaction
-// in the same window and an initramfs builder's needs the process to be root,
+// in the same window and an initramfs builder's needs a live root process chain,
 // while an exe under a panel root cannot be faked and stands on its own.
 type ancestryEvidence struct {
 	packageManager   bool
@@ -51,6 +51,7 @@ func (e ancestryEvidence) none() bool {
 // that proved nothing leaves the alert at its original severity.
 func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 	var ev ancestryEvidence
+	rootChain := true
 	for depth := 0; depth < maxAncestryDepth && pid > 1; depth++ {
 		dir := fmt.Sprintf("%s/%d", procRootDir, pid)
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
@@ -75,8 +76,11 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		}
 		ppid := int32(-1)
 		root := false
+		statusComm := ""
 		for _, line := range strings.Split(string(status), "\n") {
 			switch {
+			case strings.HasPrefix(line, "Name:"):
+				statusComm = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
 			case strings.HasPrefix(line, "PPid:"):
 				n, convErr := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "PPid:")), 10, 32)
 				if convErr != nil {
@@ -87,7 +91,11 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 				root = statusUIDIsRoot(line)
 			}
 		}
-		if root && isInitramfsBuilderComm(comm) {
+		// A privileged ancestor does not vouch for descendants that dropped
+		// privileges. Read the name with the credentials, not from an earlier
+		// comm lookup that may have addressed a previous occupant of the PID.
+		rootChain = rootChain && root
+		if rootChain && isInitramfsBuilderComm(statusComm) {
 			ev.initramfsBuilder = true
 		}
 		pid = ppid
@@ -132,21 +140,26 @@ var panelToolRoots = func() []string { return platform.Detect().PanelToolRoots()
 // process exit.
 func wireAncestryProvenance() { checks.AncestryProvenance = ancestryProvenanceReason }
 
-// ancestryEvidenceFor reports what pid's process chain proves. The BPF
-// processctx cache is preferred because it survives process exit; hosts
-// without BPF fall back to a live /proc walk, which is racy for short-lived
-// writers but fails closed into the original severity.
+// ancestryEvidenceFor preserves cached panel and package evidence after
+// process exit. Initramfs evidence requires a live root process chain;
+// missing credentials leave that arm at the original severity.
 func ancestryEvidenceFor(pid int32) ancestryEvidence {
 	if pid <= 0 {
 		return ancestryEvidence{}
 	}
 	roots := panelToolRoots()
+	var cached ancestryEvidence
 	if probe := cachedAncestryEvidence; probe != nil {
-		if ev := probe(uint32(pid), roots); !ev.none() {
-			return ev
+		cached = probe(uint32(pid), roots)
+		if cached.panelTool {
+			return cached
 		}
 	}
-	return procAncestryEvidence(pid, roots)
+	// The cache has neither both current credentials nor a pinned parent
+	// chain. Only live procfs evidence can authorize initramfs demotion.
+	live := procAncestryEvidence(pid, roots)
+	live.packageManager = live.packageManager || cached.packageManager
+	return live
 }
 
 // cachedAncestryEvidence reads the same evidence out of the BPF processctx
@@ -187,7 +200,7 @@ func ancestryProvenanceReason(pid uint32) string {
 //   - or it descends from a package manager AND a package-manager log was
 //     touched within the provenance window. The comm behind that arm is
 //     attacker-settable, so it is never the sole gate,
-//   - or it descends from an initramfs builder that itself runs as root.
+//   - or its live ancestry through an initramfs builder runs entirely as root.
 //
 // The walk runs for every root-owned executable written under a temp root:
 // the last arm needs no window or panel, so no cheaper gate can rule it out.

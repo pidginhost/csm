@@ -269,6 +269,8 @@ func TestTmpExecutableDemotedTopLevelFilesStaySeparate(t *testing.T) {
 func TestTmpWorkDir(t *testing.T) {
 	cases := map[string]string{
 		"/tmp/tool":                     "/tmp/tool",
+		"/var/tmp/tool":                 "/var/tmp/tool",
+		"/dev/shm/tool":                 "/dev/shm/tool",
 		"/tmp/work/tool":                "/tmp/work/",
 		"/tmp/work/a/b/tool":            "/tmp/work/",
 		"/var/tmp/build.x/usr/bin/tool": "/var/tmp/build.x/",
@@ -279,5 +281,31 @@ func TestTmpWorkDir(t *testing.T) {
 		if got := tmpWorkDir(path); got != want {
 			t.Errorf("tmpWorkDir(%q) = %q, want %q", path, got, want)
 		}
+	}
+}
+
+// A maintenance warning must not consume a later Critical file cooldown.
+func TestTmpExecutableTopLevelSeverityEscalation(t *testing.T) {
+	demoted := true
+	overrideTmpExecDemote(t, func(string) bool { return demoted })
+	f, err := os.CreateTemp("/tmp", "csm-escalation-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Name()
+	_ = f.Close()
+	t.Cleanup(func() { _ = os.Remove(path) })
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	writeTmpExec(t, fm, path)
+	got := drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("maintenance: %+v", got)
+	}
+	demoted = false
+	writeTmpExec(t, fm, path)
+	got = drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("severity escalation: %+v", got)
 	}
 }

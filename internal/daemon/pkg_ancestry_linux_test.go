@@ -184,8 +184,8 @@ func TestProcAncestryDepthCap(t *testing.T) {
 	}
 }
 
-func TestAncestryEvidencePrefersCachedProbe(t *testing.T) {
-	// Cached probe says yes -> no /proc walk needed (procRootDir is empty).
+func TestAncestryEvidencePreservesCachedPackageProbe(t *testing.T) {
+	// Package evidence survives process exit even when live credentials are gone.
 	overrideProcRoot(t, t.TempDir())
 	oldProbe := cachedAncestryEvidence
 	cachedAncestryEvidence = func(pid uint32, _ []string) ancestryEvidence {
@@ -434,7 +434,11 @@ func TestAnalyzeFileTmpExecRootOwnedWorkDirIsReported(t *testing.T) {
 // the credentials the walker reads.
 func writeProcStatus(t *testing.T, root string, pid, ppid int32, uidLine string) {
 	t.Helper()
-	status := fmt.Sprintf("Name:\tx\nPid:\t%d\nPPid:\t%d\n%s", pid, ppid, uidLine)
+	comm, err := os.ReadFile(filepath.Join(root, fmt.Sprintf("%d", pid), "comm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := fmt.Sprintf("Name:\t%s\nPid:\t%d\nPPid:\t%d\n%s", strings.TrimSpace(string(comm)), pid, ppid, uidLine)
 	if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("%d", pid), "status"), []byte(status), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -467,6 +471,7 @@ func TestProcAncestryInitramfsBuilderNeedsRoot(t *testing.T) {
 				300: {"cp", 200},
 				200: {tc.comm, 1},
 			})
+			writeProcStatus(t, root, 300, 200, "Uid:\t0\t0\t0\t0\n")
 			writeProcStatus(t, root, 200, 1, tc.uidLine)
 			overrideProcRoot(t, root)
 			if got := procAncestryEvidence(300, nil).initramfsBuilder; got != tc.want {
@@ -490,5 +495,52 @@ func TestDemoteTmpExecInitramfsArm(t *testing.T) {
 	}
 	if ok, _ := demoteTmpExec(1000, 42, time.Now()); ok {
 		t.Fatal("a non-root file must never demote")
+	}
+}
+
+func TestProcInitramfsRejectsUntrustedWriter(t *testing.T) {
+	for _, uidLine := range []string{"", "Uid:\t1000\t0\t0\t0\n", "Uid:\t1000\t1000\t1000\t1000\n"} {
+		root := fakeProc(t, map[int32]struct {
+			comm string
+			ppid int32
+		}{300: {"cp", 200}, 200: {"dracut", 1}})
+		writeProcStatus(t, root, 300, 200, uidLine)
+		writeProcStatus(t, root, 200, 1, "Uid:\t0\t0\t0\t0\n")
+		overrideProcRoot(t, root)
+		if procAncestryEvidence(300, nil).initramfsBuilder {
+			t.Fatalf("untrusted writer qualified: %q", uidLine)
+		}
+	}
+}
+
+func TestProcInitramfsDoesNotMixProcessNames(t *testing.T) {
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{300: {"cp", 1}})
+	writeProcStatus(t, root, 300, 1, "Uid:\t0\t0\t0\t0\n")
+	// The earlier comm read can name a different process after PID reuse.
+	if err := os.WriteFile(filepath.Join(root, "300", "comm"), []byte("dracut\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overrideProcRoot(t, root)
+	if procAncestryEvidence(300, nil).initramfsBuilder {
+		t.Fatal("mixed process snapshots qualified")
+	}
+}
+
+func TestCachedPackageEvidenceDoesNotHideLiveInitramfs(t *testing.T) {
+	oldProbe := cachedAncestryEvidence
+	cachedAncestryEvidence = func(uint32, []string) ancestryEvidence { return ancestryEvidence{packageManager: true} }
+	t.Cleanup(func() { cachedAncestryEvidence = oldProbe })
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{300: {"dracut", 1}})
+	writeProcStatus(t, root, 300, 1, "Uid:\t0\t0\t0\t0\n")
+	overrideProcRoot(t, root)
+	got := ancestryEvidenceFor(300)
+	if !got.packageManager || !got.initramfsBuilder {
+		t.Fatalf("lost independent ancestry evidence: %+v", got)
 	}
 }
