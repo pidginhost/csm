@@ -161,6 +161,12 @@ func TestStalwartDoctorSettingsFromPlan(t *testing.T) {
 	if c := stalwartCheckNamed(t, checks, "stalwart proxy protocol listeners"); c.Status != "ok" {
 		t.Fatalf("done step = %+v, want ok", c)
 	}
+	if c := stalwartCheckNamed(t, checks, "stalwart spam verdict logging"); c.Status != "warn" || c.Fix != "run csm stalwart setup" {
+		t.Fatalf("spam verdict logging = %+v, want warn with the setup fix", c)
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart spam filter"); c.Status != "warn" || c.Fix != "" {
+		t.Fatalf("spam filter off = %+v, want warn with no fix", c)
+	}
 
 	checks = run(&setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer"}}, stalwartsetup.Inputs{BlockExpiry: 24 * time.Hour})
 	if c := stalwartCheckNamed(t, checks, "stalwart webmail client addresses"); c.Status != "ok" || !strings.Contains(c.Message, "local_port_locks") {

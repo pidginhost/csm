@@ -36,7 +36,7 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Inspect: %v", err)
 	}
-	want := []State{Done, Skipped, Done, Done}
+	want := []State{Done, Skipped, Done, Done, Done, Done}
 	for i, s := range p.Steps {
 		t.Logf("%s: %s: %s", s.Name, s.State, s.Detail)
 		if s.State != want[i] {

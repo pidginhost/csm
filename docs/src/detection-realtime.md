@@ -622,7 +622,7 @@ Stalwart logs failed logins at debug level by default, so password guessing over
 
 ### Preparing Stalwart
 
-`csm stalwart setup` changes three settings through Stalwart's admin API at `stalwart.api_url` (default `http://127.0.0.1:8080`), then reloads Stalwart's settings once. The API address, including a `--url` override, must not contain a login, query or fragment. Remote addresses require HTTPS and cannot use this host's port locks as protection. Run it as root with a Stalwart admin login:
+`csm stalwart setup` changes four settings through Stalwart's admin API at `stalwart.api_url` (default `http://127.0.0.1:8080`), then reloads Stalwart's settings once. The API address, including a `--url` override, must not contain a login, query or fragment. Remote addresses require HTTPS and cannot use this host's port locks as protection. Run it as root with a Stalwart admin login:
 
 ```
 STALWART_USER=admin csm stalwart setup --dry-run --password-file /root/stalwart-admin.pw
@@ -636,8 +636,9 @@ STALWART_USER=admin csm stalwart setup --password-file /root/stalwart-admin.pw
 
    With one hop Stalwart reads the last `X-Forwarded-For` entry, so the web server in front of it must set that header itself. nginx passes a client's header through unchanged unless told otherwise; add `proxy_set_header X-Forwarded-For $remote_addr;` (or `$proxy_add_x_forwarded_for`) to the Stalwart location. Without it a remote client chooses the address Stalwart logs and bans. Setup cannot check this. The users in the lock line must not run site code: run PHP-FPM pools as their own users, not as the web server's user.
 3. **Ban expiry.** Sets Stalwart's failed-login, abuse and scan ban periods to `auto_response.block_expiry`, so its bans end when CSM's blocks do. Loiter bans are left alone.
+4. **Spam verdict logging.** Sets the `spam.classify` event to info unless it is already logged at info, warn or error. By default Stalwart logs the mail its spam filter rejects or discards only at debug level. Setup changes nothing about how mail is handled.
 
-Setup also reports listeners that accept the PROXY protocol, which it does not change.
+Setup also reports listeners that accept the PROXY protocol, which it does not change, and whether Stalwart's spam filter is on and at which scores it files spam to Junk, rejects or discards. Doctor prints the same. A filter that is off is a warning; setup never switches it on or off.
 
 `csm doctor` checks the same steps read-only when `STALWART_USER` and `STALWART_PASSWORD` are set; a step setup would change is a warning. From the log alone it also warns when Stalwart's HTTP listener logs a login from another host on a port CSM does not lock, and when Stalwart bans a CDN or proxy address, which locks out every client behind it.
 

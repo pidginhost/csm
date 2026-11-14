@@ -25,6 +25,8 @@ type API interface {
 	SetBanPeriods(ctx context.Context, d time.Duration) error
 	Listeners(ctx context.Context) ([]stalwartapi.Listener, error)
 	ProxyTrustedNetworks(ctx context.Context) ([]string, error)
+	SpamSettings(ctx context.Context) (stalwartapi.SpamSettings, error)
+	SpamFilterStageOff(ctx context.Context) (bool, error)
 	ReloadSettings(ctx context.Context) ([]string, error)
 }
 
@@ -67,6 +69,7 @@ type Plan struct {
 
 const (
 	failedLoginEvent = "auth.failed"
+	spamVerdictEvent = "spam.classify"
 	stalwartUser     = "stalwart"
 )
 
@@ -97,11 +100,21 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	spam, err := api.SpamSettings(ctx)
+	if err != nil {
+		return Plan{}, err
+	}
+	stageOff, err := api.SpamFilterStageOff(ctx)
+	if err != nil {
+		return Plan{}, err
+	}
 	return Plan{Steps: []Step{
 		failedLoginStep(levels),
 		clientAddressStep(httpSettings, listeners, in),
 		banExpiryStep(bans, in.BlockExpiry),
 		proxyStep(listeners, proxy),
+		tracingStep("spam verdict logging", spamVerdictEvent, levels, "; rejected and discarded spam is not logged until then"),
+		spamFilterStep(spam, stageOff),
 	}}, nil
 }
 
@@ -135,27 +148,54 @@ func (p *Plan) Apply(ctx context.Context, api API) ([]string, error) {
 }
 
 func failedLoginStep(levels []stalwartapi.TracingLevel) Step {
-	s := Step{Name: "failed-login logging"}
+	return tracingStep("failed-login logging", failedLoginEvent, levels, "")
+}
+
+// tracingStep raises event to info unless its override already logs it; why
+// ends the detail of a step that still has to change.
+func tracingStep(name, event string, levels []stalwartapi.TracingLevel, why string) Step {
+	s := Step{Name: name}
 	id, level := "", ""
 	for _, l := range levels {
-		if l.Event == failedLoginEvent {
+		if l.Event == event {
 			id, level = l.ID, l.Level
 			break
 		}
 	}
 	switch level {
 	case "info", "warn", "error":
-		s.State, s.Detail = Done, fmt.Sprintf("%s is logged at %s", failedLoginEvent, level)
+		s.State, s.Detail = Done, fmt.Sprintf("%s is logged at %s", event, level)
 		return s
 	case "":
-		s.Detail = fmt.Sprintf("%s has no log level of its own; set it to info", failedLoginEvent)
+		s.Detail = fmt.Sprintf("%s has no log level of its own; set it to info%s", event, why)
 	default:
-		s.Detail = fmt.Sprintf("%s is logged at %s; set it to info", failedLoginEvent, level)
+		s.Detail = fmt.Sprintf("%s is logged at %s; set it to info%s", event, level, why)
 	}
 	s.State = Change
 	s.apply = func(ctx context.Context, api API) error {
-		return api.SetTracingLevel(ctx, id, failedLoginEvent, "info")
+		return api.SetTracingLevel(ctx, id, event, "info")
 	}
+	return s
+}
+
+// spamFilterStep reports Stalwart's spam filter. It has no apply: setup never
+// switches the filter or changes what happens to a message.
+func spamFilterStep(sp stalwartapi.SpamSettings, stageOff bool) Step {
+	s := Step{Name: "spam filter"}
+	if !sp.Enabled || stageOff {
+		s.State = Warn
+		s.Detail = "Stalwart's spam filter is off, so inbound mail is not filtered; switch it on in Stalwart's admin interface"
+		return s
+	}
+	// A score of 0 switches that action off.
+	act := func(verb string, score float64) string {
+		if score > 0 {
+			return verb + " at " + strconv.FormatFloat(score, 'f', -1, 64)
+		}
+		return "never " + verb
+	}
+	s.State = Done
+	s.Detail = "on; " + act("files spam to Junk", sp.ScoreSpam) + ", " + act("rejects", sp.ScoreReject) + ", " + act("discards", sp.ScoreDiscard)
 	return s
 }
 

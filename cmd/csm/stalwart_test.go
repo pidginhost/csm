@@ -28,6 +28,8 @@ const setupTestPassword = "s3cret-test"
 // listener on 8080.
 type setupFakeAPI struct {
 	http      stalwartapi.HTTPSettings
+	spam      stalwartapi.SpamSettings
+	stageOff  bool
 	readErr   error
 	writeErr  error
 	reloadErr error
@@ -62,6 +64,12 @@ func (f *setupFakeAPI) Listeners(context.Context) ([]stalwartapi.Listener, error
 	}, f.readErr
 }
 func (f *setupFakeAPI) ProxyTrustedNetworks(context.Context) ([]string, error) { return nil, f.readErr }
+func (f *setupFakeAPI) SpamSettings(context.Context) (stalwartapi.SpamSettings, error) {
+	return f.spam, f.readErr
+}
+func (f *setupFakeAPI) SpamFilterStageOff(context.Context) (bool, error) {
+	return f.stageOff, f.readErr
+}
 func (f *setupFakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	f.writes = append(f.writes, "reload")
 	return []string{"store: reloaded with a note"}, f.reloadErr
@@ -88,7 +96,7 @@ func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
 func newSetupHarness(t *testing.T) *setupHarness {
 	t.Helper()
 	h := &setupHarness{
-		api: &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}},
+		api: &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, spam: stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5}},
 		env: map[string]string{"STALWART_USER": "admin", "STALWART_PASSWORD": setupTestPassword},
 	}
 	cfg := &config.Config{}
@@ -194,13 +202,27 @@ func TestStalwartSetupDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestStalwartSetupPrintsSpamSteps(t *testing.T) {
+	h := newSetupHarness(t)
+	code, out := h.run("--dry-run")
+	if code != 0 || !strings.Contains(out, "spam verdict logging: change: ") || !strings.Contains(out, "spam filter: done: ") {
+		t.Fatalf("code %d, out %q; want 0 with both spam steps", code, out)
+	}
+
+	h = newSetupHarness(t)
+	h.api.spam.Enabled = false
+	if code, out := h.run("--dry-run"); code != 0 || !strings.Contains(out, "spam filter: warn: ") {
+		t.Fatalf("filter off: code %d, out %q; want 0 with the spam filter warned", code, out)
+	}
+}
+
 func TestStalwartSetupAppliesAndReloadsOnce(t *testing.T) {
 	h := newSetupHarness(t)
 	code, out := h.run("--url", "http://127.0.0.1:18080")
 	if code != 0 {
 		t.Fatalf("code = %d, out %q", code, out)
 	}
-	if want := []string{"tracing", "http", "bans", "reload"}; !reflect.DeepEqual(h.api.writes, want) {
+	if want := []string{"tracing", "http", "bans", "tracing", "reload"}; !reflect.DeepEqual(h.api.writes, want) {
 		t.Fatalf("writes = %q, want %q", h.api.writes, want)
 	}
 	if h.gotURL != "http://127.0.0.1:18080" {
