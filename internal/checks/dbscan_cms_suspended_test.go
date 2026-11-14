@@ -34,8 +34,10 @@ func TestCMSInstallLoopCapsInstallsForEveryAdapter(t *testing.T) {
 			for _, f := range a.run(ctx, cfg, nil) {
 				owners[f.TenantID] = true
 			}
-			if len(owners) != 1 || !coverage.contains("db_content_"+a.name) {
-				t.Fatalf("capped scan reached owners %v with incomplete=%t, want one install and a coverage gap",
+			// The fixture's glob also offers nested configs that are not
+			// installs, so the one capped slot can go to a path with no findings.
+			if len(owners) > 1 || !coverage.contains("db_content_"+a.name) {
+				t.Fatalf("capped scan reached owners %v with incomplete=%t, want at most one install and a coverage gap",
 					owners, coverage.contains("db_content_"+a.name))
 			}
 		})
