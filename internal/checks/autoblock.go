@@ -436,6 +436,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if durable, ok := blocker.(durableActionBlocker); ok {
 		durableActions = durable.DurableActionsEnabled()
 	}
+	// An address admission accepted a block for has one enforcer: legacy
+	// drops its queued retry and every other finding for that address this
+	// scan. An address admission refused as an edge or a proxied client has
+	// no admission block, so its other findings keep theirs.
+	takenIPs := make(map[string]bool)
 	for _, f := range findings {
 		work.progress()
 		if f.AutoIPResponseEvaluated || !BlockableFinding(cfg, f) {
@@ -459,9 +464,21 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// legacy block, whose lifetime and budget admission does not model,
 		// so an executing admission is not handed it.
 		if !challengeSelected(cfg, f) {
-			if _, taken := respond(admission.KindBlockIP, f, ip, 0); taken {
+			if _, taken, accepted := respond(admission.KindBlockIP, f, ip, 0); taken {
+				if !accepted {
+					continue
+				}
+				takenIPs[ip] = true
+				if p, ok := ipsToBlock[ip]; ok {
+					work.candidateOutcome(p.queueCandidate, nil)
+					work.finishCandidate(p.queueCandidate)
+					delete(ipsToBlock, ip)
+				}
 				continue
 			}
+		}
+		if takenIPs[ip] {
+			continue
 		}
 
 		// Don't re-block already blocked IPs.

@@ -69,26 +69,27 @@ func timeHandoff(start time.Time) {
 
 // respond asks admission for a response of kind to the address or prefix
 // f names, through via when it is set, and returns the minted evidence for
-// a derived response to answer later, and whether legacy must leave the
-// block to admission.
-func respond(kind admission.Kind, f alert.Finding, target string, via admission.Entry) (admission.Evidence, bool) {
+// a derived response to answer later, whether legacy must leave the block
+// to admission, and whether admission accepted it to apply.
+func respond(kind admission.Kind, f alert.Finding, target string, via admission.Entry) (admission.Evidence, bool, bool) {
 	a := getResponseAdmission()
 	if a == nil {
-		return admission.Evidence{}, false
+		return admission.Evidence{}, false, false
 	}
 	defer timeHandoff(time.Now())
 	executes := a.ExecutesBlocks()
 	// Spray lifetime and budget stay with legacy. Use the handoff's owner
 	// and execution snapshot so a concurrent publication cannot take it.
 	if kind == admission.KindBlockIP && f.BlockTTL > 0 && executes {
-		return admission.Evidence{}, false
+		return admission.Evidence{}, false, false
 	}
 	e, err := a.Mint(f)
 	if err != nil {
 		a.Refuse(kind, f, via, err)
-		return admission.Evidence{}, taken(executes, kind, err, nil)
+		return admission.Evidence{}, taken(executes, kind, err, nil), false
 	}
-	return e, taken(executes, kind, nil, a.Respond(kind, target, e, via))
+	t := taken(executes, kind, nil, a.Respond(kind, target, e, via))
+	return e, t, t
 }
 
 // taken reports whether legacy must leave a response of kind to admission:

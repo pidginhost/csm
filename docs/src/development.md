@@ -1892,9 +1892,12 @@ fallback, without changing the finding or its audit identity. Distinct
 observations still submit even when their address is already challenged.
 While admission executes blocks, a block it accepts, or refuses because the
 client is behind a trusted proxy or is a CDN edge, skips the legacy block:
-no engine call, tracker row, queued retry or hourly charge. Every other
-mint or synchronous ingress refusal keeps the legacy block, and mail spray
-blocks stay legacy. Acceptance is not application: a later hold, dry-run
+no engine call, tracker row, queued retry or hourly charge. For a block it
+accepts, the scan also drops every other legacy block of that address in the
+same pass: its queued retry, findings admission could not take and mail
+spray findings. Every
+other mint or synchronous ingress refusal keeps the legacy block, and mail
+spray blocks stay legacy. Acceptance is not application: a later hold, dry-run
 change or queue displacement never returns that request to legacy. A derived
 block admission takes ends before the engine as an expected refusal: timeout
 escalation and central intel log nothing, and the incident correlator counts
