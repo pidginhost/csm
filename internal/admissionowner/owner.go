@@ -137,7 +137,8 @@ type Options struct {
 	// Blocks returns the firewall engine that runs block_ip picks, or nil
 	// while none runs. Without a provider every pick is a preview. With
 	// one, the policy and liveExecution guard decide whether block picks
-	// forecast, preview or execute.
+	// forecast, preview or execute. The provider must be safe to call
+	// concurrently and return promptly: response funnels also read it.
 	Blocks func() BlockEngine
 	// Policy reads the published execution policy. An owner with
 	// Blocks binds to it at every turn and reload, and does not start
@@ -160,18 +161,20 @@ type request struct {
 // It serves its queue as observe previews unless an engine runs its block
 // picks (Options.Blocks).
 type Owner struct {
-	opts      Options
-	stopping  atomic.Bool
-	reg       *admission.Registry
-	producers map[admission.ProducerID]*admission.Producer
-	ingress   *admission.Ingress
-	requests  chan request
-	quit      chan bool
-	done      chan struct{}
-	stopOnce  sync.Once
-	current   atomic.Pointer[health.AdmissionStatus]
-	audit     *queuehealth.Sampled
-	notices   *sender
+	opts     Options
+	stopping atomic.Bool
+	// executesBlocks publishes mayExecute() for the response funnels.
+	executesBlocks atomic.Bool
+	reg            *admission.Registry
+	producers      map[admission.ProducerID]*admission.Producer
+	ingress        *admission.Ingress
+	requests       chan request
+	quit           chan bool
+	done           chan struct{}
+	stopOnce       sync.Once
+	current        atomic.Pointer[health.AdmissionStatus]
+	audit          *queuehealth.Sampled
+	notices        *sender
 	// verdictQueue samples the verdict jobs of an executing owner.
 	verdictQueue *queuehealth.Sampled
 	compare      comparison
@@ -742,6 +745,7 @@ func (o *Owner) halt(clean bool) {
 }
 
 func (o *Owner) shutdown() {
+	o.executesBlocks.Store(false)
 	defer o.writeComparison(true)
 	if !o.started {
 		return
@@ -1254,6 +1258,14 @@ func (o *Owner) Mint(f alert.Finding) (admission.Evidence, error) {
 	// Claims resolve against the inventory the ingress judges scopes by.
 	in.Inventory = o.ingress.Inventory()
 	return p.Mint(in)
+}
+
+// ExecutesBlocks reports whether legacy must leave new block picks to this
+// owner: a valid live policy is installed and an engine is present. It is
+// false once the owner stops. It says nothing about one request: a request
+// accepted earlier stays the owner's through later holds or displacement.
+func (o *Owner) ExecutesBlocks() bool {
+	return o.executesBlocks.Load() && o.opts.Blocks() != nil
 }
 
 // Refuse counts a response of kind through via that could not be answered

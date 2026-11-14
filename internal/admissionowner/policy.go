@@ -136,6 +136,7 @@ func (o *Owner) refreshPolicy() error {
 			o.publishExecutionHold()
 		}
 		o.syncPreviews()
+		o.executesBlocks.Store(o.mayExecute())
 	}()
 	if o.opts.Policy == nil {
 		o.policyErr = fmt.Errorf("%w: no policy provider", ErrPolicy)

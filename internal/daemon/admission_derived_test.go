@@ -49,6 +49,8 @@ func (a *recordingAdmission) Mint(f alert.Finding) (admission.Evidence, error) {
 	return mintRoot(a.t, f)
 }
 
+func (a *recordingAdmission) ExecutesBlocks() bool { return false }
+
 func (a *recordingAdmission) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
