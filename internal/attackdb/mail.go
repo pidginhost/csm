@@ -93,11 +93,13 @@ func isNetworkKey(key string) bool {
 // large legitimate senders never fill the attack DB. Neither touches
 // EventCount, AttackCounts or ThreatScore, and no event is queued. Invalid
 // addresses are ignored; a zero timestamp uses the current time, as
-// RecordFinding does.
-func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
+// RecordFinding does. A verdict that puts the mail-only records over the
+// budget starts an eviction pass; the result is non-nil when that pass has
+// evictions to report.
+func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) *Eviction {
 	ip = normalizeRecordIP(ip)
 	if ip == "" {
-		return
+		return nil
 	}
 	key := mailRecordKey(ip)
 	if at.IsZero() {
@@ -108,11 +110,13 @@ func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
 	rec, ok := db.records[key]
 	if !ok {
 		if !spam {
-			return
+			return nil
 		}
 		rec = &IPRecord{IP: key, FirstSeen: at, AttackCounts: make(map[AttackType]int), Accounts: make(map[string]int)}
 		db.records[key] = rec
 	}
+	// A stored record with no mail section joins the mail-only records too.
+	counted := ok && mailOnly(rec, at)
 	m := rec.mail()
 	decayTo(m, at)
 	// Delayed verdicts must have the same age as the accumulated evidence.
@@ -133,6 +137,14 @@ func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
 	}
 	delete(db.deletedIPs, key)
 	db.markDirtyLocked(key)
+	if counted || !mailOnly(rec, at) {
+		return nil
+	}
+	db.mailOnlyCount++
+	if db.mailBudget <= 0 || db.mailOnlyCount <= db.mailBudget {
+		return nil
+	}
+	return db.evictMailLocked(at)
 }
 
 // SpamScore is m's spam score at now, 0 to 100.

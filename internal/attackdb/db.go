@@ -197,6 +197,14 @@ type DB struct {
 	dirty            bool
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
+
+	// Spam-evidence budget, under mu. mailOnlyCount is never below the number
+	// of mail-only records; a pass, a load and a prune make it exact.
+	mailBudget       int
+	mailOnlyCount    int
+	mailEvicted      int
+	mailEvictPending int       // evicted since the last report
+	mailEvictReport  time.Time // when an eviction was last reported
 }
 
 // markDirtyLocked records that ip's record changed and must be persisted on the
@@ -346,6 +354,7 @@ func NewForTest(records map[string]*IPRecord) *DB {
 	for k, v := range records {
 		db.records[k] = cloneIPRecord(v)
 	}
+	db.mailOnlyCount = db.countMailOnlyLocked(time.Now())
 	return db
 }
 
@@ -662,6 +671,7 @@ func (db *DB) pruneExpiredAt(now time.Time) {
 			db.markDeletedLocked(ip)
 		}
 	}
+	db.mailOnlyCount = db.countMailOnlyLocked(now)
 	db.mu.Unlock()
 }
 

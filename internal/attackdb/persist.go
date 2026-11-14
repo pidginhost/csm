@@ -41,6 +41,7 @@ func (db *DB) load() {
 			}
 			db.records[ip] = rec
 		}
+		db.mailOnlyCount = db.countMailOnlyLocked(time.Now())
 		return
 	}
 
@@ -78,6 +79,7 @@ func (db *DB) load() {
 		records[ip] = rec
 	}
 	db.records = records
+	db.mailOnlyCount = db.countMailOnlyLocked(time.Now())
 	db.mu.Unlock()
 }
 
