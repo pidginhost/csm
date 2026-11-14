@@ -273,7 +273,7 @@
     // what its own filter did; it has no scan count and no CSM mode.
     function renderFilterKPIs(ov) {
         var t = ov.totals || {};
-        var deliveredSub = 'to the inbox';
+        var deliveredSub = 'not filed to Junk by the filter';
         if (t.unmatched > 0) deliveredSub += ', ' + num(t.unmatched) + ' not matched';
         setKPI('kpi-scanned', t.delivered || 0, deliveredSub);
         // A reject is logged only once its log level is raised, so a zero
@@ -542,6 +542,8 @@
     }
 
     function loadRspamd() {
+        // Stalwart filters its own mail; the page shows no rspamd there.
+        if (CSM.feature('stalwartFilter')) return;
         var seq = ++_rspamdSeq;
         CSM.get('/api/v1/email/rspamd')
             .then(function(r) {

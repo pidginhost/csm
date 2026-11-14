@@ -170,6 +170,7 @@
                         </div>
                     </div>
                 </div>
+                {{if feature "stalwartFilter"}}{{else}}
                 <div class="col-lg-4">
                     <div class="card">
                         <div class="card-header">
@@ -180,6 +181,7 @@
                         </div>
                     </div>
                 </div>
+                {{end}}
             </div>
 
             <!-- Needs attention (left) + protection (right) -->
@@ -208,11 +210,13 @@
                             <h2 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Protection</h2>
                         </div>
                         <div class="card-body" id="email-protection">
+                            {{if feature "stalwartFilter"}}{{else}}
                             <div class="d-flex align-items-center gap-2 mb-2" id="prot-antispam">
                                 <span class="status-dot"></span>
                                 <span class="text-muted">Antispam</span>
                                 <span class="ms-auto text-end" data-prot-value>--</span>
                             </div>
+                            {{end}}
                             {{if feature "emailAV"}}
                             <div class="d-flex align-items-center gap-2 mb-2" id="prot-av">
                                 <span class="status-dot"></span>

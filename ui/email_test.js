@@ -4421,6 +4421,8 @@ test('a Stalwart host shows what its filter did with the mail', async () => {
     await settle();
     assert.equal(kpi(page, 'kpi-scanned').value, '1,200');
     assert.match(kpi(page, 'kpi-scanned').text, /Mail delivered/);
+    // Delivered counts mail a mailbox's own rule filed to a folder too.
+    assert.equal(kpi(page, 'kpi-scanned').sub, 'not filed to Junk by the filter');
     assert.equal(kpi(page, 'kpi-tagged').value, '41');
     assert.match(kpi(page, 'kpi-tagged').text, /Filed to Junk/);
     assert.equal(kpi(page, 'kpi-spam').value, '3');
@@ -4535,11 +4537,44 @@ test('Stalwart cards keep large verdict counts separate from rspamd counts', asy
         assert.equal(kpi(page, id).value, value);
         assert.equal(page.document.querySelector('#' + id + ' [data-kpi-value]').getAttribute('title'), title);
     }
-    assert.equal(kpi(page, 'kpi-scanned').sub, 'to the inbox, 5,678,901 not matched');
+    assert.equal(kpi(page, 'kpi-scanned').sub, 'not filed to Junk by the filter, 5,678,901 not matched');
     assert.equal(kpi(page, 'kpi-spam').sub, '4,567,890 discarded');
     assert.equal(page.document.getElementById('email-subtitle').textContent,
         'Mail flowing. 2,345,678 filed to Junk and 3,456,789 rejected in the last 24 hours.');
     assert.equal(page.document.querySelector('#kpi-spam [data-kpi-badge]'), null);
+});
+
+// The rspamd card and the Antispam line describe CSM's own antispam, which
+// a Stalwart host does not run beside its filter.
+test('a Stalwart host leaves out the rspamd card and the Antispam line', async () => {
+    const intervals = [];
+    const page = emailPage({ features: STALWART, intervals });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({ delivered: 12, junk: 3 }, { mode: 'off', smtp_restricted: true }));
+    await settle();
+    page.document.getElementById('email-refresh').click();
+    intervals.forEach(i => i.fn());
+    await settle();
+    const doc = page.document;
+    assert.equal(doc.getElementById('email-rspamd'), null);
+    assert.equal(doc.getElementById('prot-antispam'), null);
+    assert.equal(page.requests.filter(r => r.url.includes('/api/v1/email/rspamd')).length, 0, 'asked for rspamd');
+    assert.equal(kpi(page, 'kpi-scanned').value, '12');
+    assert.equal(kpi(page, 'kpi-tagged').value, '3');
+    assert.match(doc.getElementById('prot-smtp').textContent, /restricted/);
+    const text = doc.getElementById('email-kpis').textContent + doc.getElementById('email-pane-overview').textContent +
+        doc.getElementById('email-subtitle').textContent;
+    assert.doesNotMatch(text, /rspamd|Antispam|Failed to|unavailable/i);
+
+    // A failed overview read marks the protection lines that are there.
+    while (page.pending('/api/v1/email/overview').length) page.fail('/api/v1/email/overview');
+    await settle();
+    assert.match(doc.getElementById('prot-smtp').textContent, /Protection status unavailable/);
+
+    const cpanel = emailPage();
+    await settle();
+    assert.ok(cpanel.document.getElementById('email-rspamd'));
+    assert.ok(cpanel.document.getElementById('prot-antispam'));
+    assert.equal(cpanel.pending('/api/v1/email/rspamd').length, 1);
 });
 
 test('Stalwart chart sums sparse verdicts without borrowing rspamd decisions', async () => {
