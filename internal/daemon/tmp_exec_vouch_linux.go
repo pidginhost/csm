@@ -121,6 +121,14 @@ func tmpVouchDirectory(event fileEvent) *os.File {
 	tempMount := ""
 	parts := strings.Split(strings.TrimPrefix(event.path, "/"), "/")
 	for i, part := range parts {
+		if i == len(parts)-1 {
+			if tempMount == "" || !tmpEventFilePlaced(fd, part, event.fd, tempMount) {
+				return nil
+			}
+			result := workFD
+			workFD = nil
+			return result
+		}
 		next, err := unix.Openat(fd, part, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err != nil {
 			return nil
@@ -134,16 +142,6 @@ func tmpVouchDirectory(event fileEvent) *os.File {
 		var st unix.Stat_t
 		if unix.Fstat(fd, &st) != nil || st.Uid != 0 {
 			return nil
-		}
-		if i == len(parts)-1 {
-			var original unix.Stat_t
-			if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o022 != 0 ||
-				unix.Fstat(event.fd, &original) != nil || !sameTmpFile(st, original) {
-				return nil
-			}
-			result := workFD
-			workFD = nil
-			return result
 		}
 		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
 			return nil
@@ -169,6 +167,33 @@ func tmpVouchDirectory(event fileEvent) *os.File {
 		}
 	}
 	return nil
+}
+
+// tmpEventFilePlaced reports whether the event's open file is the root-owned
+// regular file that name refers to in dir, or was until it was removed. An
+// installer may create a file, remove it and have a copy tool write it again:
+// the removed file has no name left to compare, its path was reported by the
+// kernel when the write was seen, and only root can remove a name from a
+// directory that passed the checks above.
+func tmpEventFilePlaced(dir int, name string, eventFD int, mount string) bool {
+	var original, parent unix.Stat_t
+	if unix.Fstat(eventFD, &original) != nil || unix.Fstat(dir, &parent) != nil {
+		return false
+	}
+	if original.Mode&unix.S_IFMT != unix.S_IFREG || original.Uid != 0 || original.Mode&0o022 != 0 ||
+		original.Dev != parent.Dev {
+		return false
+	}
+	if original.Nlink == 0 {
+		return true
+	}
+	fd, err := unix.Openat(dir, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = unix.Close(fd) }()
+	var st unix.Stat_t
+	return tmpMountID(fd) == mount && unix.Fstat(fd, &st) == nil && sameTmpFile(st, original)
 }
 
 // fdinfo belongs to our own pinned O_PATH descriptor, not to the writer.

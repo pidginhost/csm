@@ -523,3 +523,83 @@ func TestTmpOccupantScansAreSpaced(t *testing.T) {
 		t.Fatal("the occupant's proof did not vouch for the directory")
 	}
 }
+
+// An installer creates each file, removes it when a fast copy is refused, and
+// has a copy tool write it again. The first write then belongs to a file with
+// no name left. It was in the work directory when the kernel reported it, so
+// its proven writer still vouches and its exited writer is still covered.
+func TestTmpVouchAcceptsFileRemovedByTheBuild(t *testing.T) {
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	t.Cleanup(fm.tmpVouches.close)
+
+	// removed returns a descriptor for an executable whose name is taken by
+	// a new file, as after create, remove and copy.
+	removed := func(name string) (string, int) {
+		path := filepath.Join(work, name)
+		makeTmpExec(t, path)
+		fd := openRawFd(t, path)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		makeTmpExec(t, path)
+		return path, fd
+	}
+
+	path, fd := removed("bash")
+	fm.analyzeFile(fileEvent{path: path, fd: fd, pid: tmpProvenPID})
+	if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("proven writer of a removed file: %+v, want one Warning", got)
+	}
+	endAlertCooldown(fm)
+	writeTmpExecAs(t, fm, path, tmpGonePID)
+	if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("copy written by an exited tool: %+v, want the grouped Warning", got)
+	}
+	endAlertCooldown(fm)
+	path, fd = removed("hook.sh")
+	fm.analyzeFile(fileEvent{path: path, fd: fd, pid: tmpGonePID})
+	if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("exited writer of a removed file: %+v, want the grouped Warning", got)
+	}
+}
+
+// A removed file is covered only on the same terms as a named one: root-owned,
+// not writable by others, in a directory chain that passes every check.
+func TestTmpVouchRemovedFileStillNeedsSafePlacement(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		prepare func(t *testing.T, work, path string)
+	}{
+		{"file writable by others", func(t *testing.T, _, path string) { chmodForTest(t, path, 0o777) }},
+		{"file owned by another user", func(t *testing.T, _, path string) { chownForTest(t, path) }},
+		{"directory writable by others", func(t *testing.T, work, _ string) { chmodForTest(t, work, 0o777) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stubTmpExecWriters(t)
+			work := tmpWorkDirForTest(t)
+			ch := make(chan alert.Finding, 8)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			t.Cleanup(fm.tmpVouches.close)
+			writeTmpExecAs(t, fm, filepath.Join(work, "proof"), tmpProvenPID)
+			if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+				t.Fatalf("proof: %+v", got)
+			}
+			path := filepath.Join(work, "tool")
+			makeTmpExec(t, path)
+			tt.prepare(t, work, path)
+			fd := openRawFd(t, path)
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			gone := ancestryEvidence{vanished: true}
+			fm.analyzeFile(fileEvent{path: path, fd: fd, pid: tmpGonePID, tmpAncestry: &gone})
+			got := drainFindings(ch)
+			if len(got) != 1 || got[0].Severity != alert.Critical {
+				t.Fatalf("removed file: %+v, want one Critical", got)
+			}
+		})
+	}
+}
