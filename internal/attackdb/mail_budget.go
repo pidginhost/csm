@@ -1,10 +1,12 @@
 package attackdb
 
 import (
+	"bytes"
 	"cmp"
 	"math"
 	"net/netip"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -30,10 +32,12 @@ func (db *DB) SetMailBudget(n int) {
 // coveringNetwork is the network a record shares with its likely
 // co-senders: the /48 around an IPv6 record, the /16 around an IPv4 one.
 func coveringNetwork(key string) netip.Prefix {
-	addr, err := netip.ParseAddr(key)
-	if err != nil {
+	var addr netip.Addr
+	if isNetworkKey(key) {
 		network, _ := netip.ParsePrefix(key)
 		addr = network.Addr()
+	} else {
+		addr, _ = netip.ParseAddr(key)
 	}
 	addr = addr.Unmap()
 	bits := 48
@@ -43,14 +47,42 @@ func coveringNetwork(key string) netip.Prefix {
 	return netip.PrefixFrom(addr, bits).Masked()
 }
 
-func (db *DB) countMailOnlyLocked(now time.Time) int {
-	n := 0
+// Count records that can become mail-only, including stored login evidence
+// without events. Its protection can expire between passes, so excluding it
+// here would let the running count fall below the eligible population.
+func (db *DB) recountMailOnlyLocked() {
+	db.mailOnlyCount = 0
+	db.mailAuthTimes = db.mailAuthTimes[:0]
 	for _, rec := range db.records {
-		if mailOnly(rec, now) {
-			n++
+		if rec.Mail == nil || rec.EventCount != 0 || rec.AutoBlocked {
+			continue
+		}
+		db.mailOnlyCount++
+		if rec.Mail.AuthAttacks > 0 {
+			db.mailAuthTimes = append(db.mailAuthTimes, rec.Mail.LastAuthAttack)
 		}
 	}
-	return n
+	slices.SortFunc(db.mailAuthTimes, time.Time.Compare)
+}
+
+// Subtract still-protected records without scanning the database on each
+// verdict. A sorted clock index also handles verdicts arriving out of order.
+func (db *DB) mailCountAtLocked(at time.Time) int {
+	firstProtected := sort.Search(len(db.mailAuthTimes), func(i int) bool {
+		return at.Sub(db.mailAuthTimes[i]) <= mailAuthWindow
+	})
+	return db.mailOnlyCount - (len(db.mailAuthTimes) - firstProtected)
+}
+
+func (db *DB) uncountMailLocked(rec *IPRecord) {
+	if rec.Mail == nil || rec.EventCount != 0 || rec.AutoBlocked {
+		return
+	}
+	db.mailOnlyCount--
+	if rec.Mail.AuthAttacks > 0 {
+		i, _ := slices.BinarySearchFunc(db.mailAuthTimes, rec.Mail.LastAuthAttack, time.Time.Compare)
+		db.mailAuthTimes = slices.Delete(db.mailAuthTimes, i, i+1)
+	}
 }
 
 // mailLevel is the evidence level of m at the time its masses are decayed
@@ -59,7 +91,7 @@ func (db *DB) countMailOnlyLocked(now time.Time) int {
 // each never outrank a sender seen twice.
 func mailLevel(m *MailEvidence) float64 {
 	least := 1.0
-	if m.Spam+m.Ham >= 2 {
+	if m.Spam >= 2 || m.Ham >= 2 || m.Spam == 1 && m.Ham == 1 {
 		least = 2
 	}
 	return max(least, math.Ceil(m.SpamMass+m.HamMass))
@@ -83,6 +115,7 @@ func mailLevel(m *MailEvidence) float64 {
 // It returns a report at most once in mailReportEvery. The caller holds
 // db.mu.
 func (db *DB) evictMailLocked(at time.Time) *Eviction {
+	defer db.recountMailOnlyLocked()
 	type candidate struct {
 		key     string
 		network netip.Prefix
@@ -103,17 +136,10 @@ func (db *DB) evictMailLocked(at time.Time) *Eviction {
 		crowds[network]++
 		all = append(all, candidate{key: key, network: network, level: mailLevel(&m), mass: m.SpamMass + m.HamMass})
 	}
-	db.mailOnlyCount = len(all)
 	if len(all) <= db.mailBudget {
 		return nil
 	}
 
-	var report Eviction
-	for network, n := range crowds {
-		if text := network.String(); n > report.NetworkRecords || n == report.NetworkRecords && text < report.Network {
-			report.Network, report.NetworkRecords = text, n
-		}
-	}
 	for i := range all {
 		all[i].crowd = crowds[all[i].network]
 	}
@@ -134,13 +160,24 @@ func (db *DB) evictMailLocked(at time.Time) *Eviction {
 		delete(db.records, c.key)
 		db.markDeletedLocked(c.key)
 	}
-	db.mailOnlyCount -= dropped
 	db.mailEvicted += dropped
 	db.mailEvictPending += dropped
-	// Before the first report mailEvictReport is zero, ages before any verdict.
-	if at.Sub(db.mailEvictReport) < mailReportEvery {
+	if !db.mailEvictReport.IsZero() && at.Sub(db.mailEvictReport) < mailReportEvery {
 		return nil
 	}
+	// Prefix text is needed only for a report. Append into stack buffers to
+	// keep a wide sender spread from allocating one string per network.
+	var report Eviction
+	var best, scratch [64]byte
+	bestLen := 0
+	for network, n := range crowds {
+		text := network.AppendTo(scratch[:0])
+		if n > report.NetworkRecords || n == report.NetworkRecords && bytes.Compare(text, best[:bestLen]) < 0 {
+			bestLen = copy(best[:], text)
+			report.NetworkRecords = n
+		}
+	}
+	report.Network = string(best[:bestLen])
 	report.Dropped = db.mailEvictPending
 	db.mailEvictPending, db.mailEvictReport = 0, at
 	return &report

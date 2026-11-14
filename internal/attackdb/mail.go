@@ -116,7 +116,7 @@ func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) *Eviction {
 		db.records[key] = rec
 	}
 	// A stored record with no mail section joins the mail-only records too.
-	counted := ok && mailOnly(rec, at)
+	counted := ok && rec.Mail != nil
 	m := rec.mail()
 	decayTo(m, at)
 	// Delayed verdicts must have the same age as the accumulated evidence.
@@ -137,11 +137,10 @@ func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) *Eviction {
 	}
 	delete(db.deletedIPs, key)
 	db.markDirtyLocked(key)
-	if counted || !mailOnly(rec, at) {
-		return nil
+	if !counted && rec.EventCount == 0 && !rec.AutoBlocked {
+		db.mailOnlyCount++
 	}
-	db.mailOnlyCount++
-	if db.mailBudget <= 0 || db.mailOnlyCount <= db.mailBudget {
+	if db.mailBudget <= 0 || db.mailCountAtLocked(at) <= db.mailBudget {
 		return nil
 	}
 	return db.evictMailLocked(at)

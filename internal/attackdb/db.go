@@ -199,9 +199,11 @@ type DB struct {
 	wg               sync.WaitGroup
 
 	// Spam-evidence budget, under mu. mailOnlyCount is never below the number
-	// of mail-only records. Verdicts, findings and blocks keep it exact;
-	// removals leave it too high until a pass, a load or a prune recounts.
+	// of mail-only records. It also counts records with temporary login
+	// protection; mailAuthTimes indexes their clocks. Operator removals leave
+	// both counts too high until a pass, a load or a prune recounts.
 	mailBudget       int
+	mailAuthTimes    []time.Time
 	mailOnlyCount    int
 	mailEvicted      int
 	mailEvictPending int       // evicted since the last report
@@ -355,7 +357,7 @@ func NewForTest(records map[string]*IPRecord) *DB {
 	for k, v := range records {
 		db.records[k] = cloneIPRecord(v)
 	}
-	db.mailOnlyCount = db.countMailOnlyLocked(time.Now())
+	db.recountMailOnlyLocked()
 	return db
 }
 
@@ -404,9 +406,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 		db.records[ip] = rec
 	}
 	// An event takes a record out of the mail-only records for good.
-	if mailOnly(rec, now) {
-		db.mailOnlyCount--
-	}
+	db.uncountMailLocked(rec)
 	rec.LastSeen = now
 	rec.EventCount++
 	rec.AttackCounts[attackType]++
@@ -431,9 +431,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 func (db *DB) MarkBlocked(ip string) {
 	db.mu.Lock()
 	if rec, ok := db.records[ip]; ok && !rec.AutoBlocked {
-		if mailOnly(rec, time.Now()) {
-			db.mailOnlyCount--
-		}
+		db.uncountMailLocked(rec)
 		rec.AutoBlocked = true
 		rec.ThreatScore = ComputeScore(rec)
 		delete(db.deletedIPs, ip)
@@ -679,7 +677,7 @@ func (db *DB) pruneExpiredAt(now time.Time) {
 			db.markDeletedLocked(ip)
 		}
 	}
-	db.mailOnlyCount = db.countMailOnlyLocked(now)
+	db.recountMailOnlyLocked()
 	db.mu.Unlock()
 }
 
