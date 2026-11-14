@@ -64,15 +64,15 @@ func kcareReportsCopyFailPatched(out []byte) bool {
 // and asks configHasBuiltInAFAlgAEAD whether the AEAD interface is
 // statically linked.
 //
-// Returns (false, nil) when no config file is readable — the caller
+// Returns false when no config file is readable — the caller
 // treats "config unknown" the same as "modular" so an inability to read
 // the config never silently downgrades a real protection state.
-func kernelHasBuiltInAFAlgAEAD() (bool, error) {
+func kernelHasBuiltInAFAlgAEAD() bool {
 	cfg, _ := readKernelConfigText()
 	if cfg == "" {
-		return false, nil
+		return false
 	}
-	return configHasBuiltInAFAlgAEAD(cfg), nil
+	return configHasBuiltInAFAlgAEAD(cfg)
 }
 
 // readKernelConfigText returns the running kernel's .config text from

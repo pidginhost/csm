@@ -1476,7 +1476,7 @@ func accountFromPath(dir string) string {
 
 // findWPTransients recursively searches dir for wp-config.php files and
 // queries the WordPress database for bloated transients.
-func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64, depth int, findings *[]alert.Finding) {
+func findWPTransients(dir string, warnBytes, critBytes int64, depth int, findings *[]alert.Finding) {
 	if depth < 0 {
 		return
 	}
@@ -1494,7 +1494,7 @@ func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64
 			if skipDirs[name] {
 				continue
 			}
-			findWPTransients(fullPath, cfg, warnBytes, critBytes, depth-1, findings)
+			findWPTransients(fullPath, warnBytes, critBytes, depth-1, findings)
 			continue
 		}
 
@@ -1582,7 +1582,7 @@ func CheckWPTransientBloat(ctx context.Context, cfg *config.Config, _ *state.Sto
 
 	var findings []alert.Finding
 	for _, dir := range homeDirs {
-		findWPTransients(dir, cfg, warnBytes, critBytes, 2, &findings)
+		findWPTransients(dir, warnBytes, critBytes, 2, &findings)
 	}
 	return findings
 }

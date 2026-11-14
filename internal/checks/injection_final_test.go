@@ -13,7 +13,7 @@ import (
 
 func TestFixHtaccessNoFile(t *testing.T) {
 	withMockOS(t, &mockOS{})
-	result := fixHtaccess("/tmp/nonexistent/.htaccess", "suspicious directive")
+	result := fixHtaccess("/tmp/nonexistent/.htaccess")
 	if result.Success {
 		t.Error("nonexistent file should not succeed")
 	}

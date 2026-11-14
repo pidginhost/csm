@@ -227,13 +227,13 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 
 	// 3. state files (skip runtime-owned files captured separately or not at all).
 	stateSkip := append([]string{"csm.db", stateLockFileName, "exports"}, transientStatePaths...)
-	if _, err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, stateSkip, man.ExportTS); err != nil {
+	if err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, stateSkip, man.ExportTS); err != nil {
 		return nil, err
 	}
 
 	// 4. rules files (optional).
 	if opts.RulesPath != "" {
-		if _, err = walkDirIntoTar(tw, opts.RulesPath, rulesEntryPrefix, nil, man.ExportTS); err != nil {
+		if err = walkDirIntoTar(tw, opts.RulesPath, rulesEntryPrefix, nil, man.ExportTS); err != nil {
 			return nil, err
 		}
 	}
@@ -616,14 +616,12 @@ func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time) er
 
 // walkDirIntoTar streams every regular file under srcDir into the tar
 // under entryPrefix, skipping relative paths in the skip list. A skipped
-// directory excludes its complete tree. Returns
-// how many files were written.
-func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, modTime time.Time) (int, error) {
+// directory excludes its complete tree.
+func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, modTime time.Time) error {
 	skipSet := map[string]bool{}
 	for _, s := range skip {
 		skipSet[s] = true
 	}
-	count := 0
 	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -643,16 +641,12 @@ func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, m
 			return nil
 		}
 		entry := entryPrefix + filepath.ToSlash(rel)
-		if err := streamFileToTar(tw, entry, path, modTime); err != nil {
-			return err
-		}
-		count++
-		return nil
+		return streamFileToTar(tw, entry, path, modTime)
 	})
 	if err != nil && !os.IsNotExist(err) {
-		return count, err
+		return err
 	}
-	return count, nil
+	return nil
 }
 
 // atomicReplace renames src over dst, ensuring the parent directory is

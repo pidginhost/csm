@@ -254,7 +254,7 @@ func hiddenOffsiteLinksForSites(markup string, siteHosts []string) hiddenLinkHit
 		anchorHost, anchorText = "", strings.Builder{}
 		anchorDepth = -1
 	}
-	popOpenElement := func(name string) bool {
+	popOpenElement := func(name string) {
 		for i := len(stack) - 1; i >= 0; i-- {
 			if stack[i].name != name {
 				continue
@@ -263,9 +263,8 @@ func hiddenOffsiteLinksForSites(markup string, siteHosts []string) hiddenLinkHit
 				closeAnchor()
 			}
 			stack = stack[:i]
-			return true
+			return
 		}
-		return false
 	}
 
 	z := html.NewTokenizer(strings.NewReader(markup))

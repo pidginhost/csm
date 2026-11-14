@@ -361,7 +361,7 @@ func TestIsSymlinkSafe_CPanelSafeRoots(t *testing.T) {
 		"/var/run/mysqld/mysqld.sock",
 	}
 	for _, p := range cases {
-		if !isSymlinkSafe(p, "alice", "/home/alice") {
+		if !isSymlinkSafe(p, "/home/alice") {
 			t.Errorf("expected %s to be a safe symlink target", p)
 		}
 	}
@@ -714,7 +714,7 @@ func TestDownloadFeed_TrailingComments(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	}))
 
-	ips, _, err := downloadFeed(client, localHTTPTestURL, "test")
+	ips, _, err := downloadFeed(client, localHTTPTestURL)
 	if err != nil {
 		t.Fatal(err)
 	}

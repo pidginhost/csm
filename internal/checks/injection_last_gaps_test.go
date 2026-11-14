@@ -73,7 +73,7 @@ func TestApplyFixPermissions_PathIsRelative(t *testing.T) {
 // that real OS will reject, but let's take a simpler angle: feed a basename
 // mismatch to hit the "only applies to .htaccess" branch.
 func TestFixHtaccess_BasenameMismatch(t *testing.T) {
-	r := fixHtaccess("/home/alice/public_html/index.php", "evil directive")
+	r := fixHtaccess("/home/alice/public_html/index.php")
 	if r.Success {
 		t.Error("non-htaccess path should be rejected")
 	}
@@ -84,7 +84,7 @@ func TestFixHtaccess_BasenameMismatch(t *testing.T) {
 
 // TestFixHtaccess_EmptyPathGuard hits the top-level guard.
 func TestFixHtaccess_EmptyPathGuard(t *testing.T) {
-	r := fixHtaccess("", "whatever")
+	r := fixHtaccess("")
 	if r.Success {
 		t.Error("empty path should fail")
 	}

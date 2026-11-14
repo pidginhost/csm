@@ -111,7 +111,7 @@ func TestRegistrySaveRequiresDirectorySync(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer r.close()
-			if _, err = r.add(map[string]string{"acct-aaaaaa": strings.Repeat("a", 64)}); err != nil {
+			if err = r.add(map[string]string{"acct-aaaaaa": strings.Repeat("a", 64)}); err != nil {
 				t.Fatal(err)
 			}
 			called := false

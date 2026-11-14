@@ -102,7 +102,7 @@ func CheckOutboundEmailContent(ctx context.Context, cfg *config.Config, _ *state
 		scanned[msgID] = true
 
 		// Scan the message
-		result := scanEximMessage(msgID, sender, cfg)
+		result := scanEximMessage(msgID, sender)
 		if result != nil {
 			findings = append(findings, *result)
 		}
@@ -112,7 +112,7 @@ func CheckOutboundEmailContent(ctx context.Context, cfg *config.Config, _ *state
 }
 
 // scanEximMessage reads an Exim spool message and checks for suspicious content.
-func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
+func scanEximMessage(msgID, sender string) *alert.Finding {
 	var headerPath, bodyPath string
 	for _, dir := range eximSpoolMessageDirs(msgID) {
 		h := filepath.Join(dir, msgID+"-H")

@@ -161,10 +161,10 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 		"prestashop_settings_injection")
 	register(func(in VerifyInput) VerifyResult { return verifyPrestaShopContentInjection(in.Message, in.Details) },
 		"prestashop_content_injection")
-	register(func(in VerifyInput) VerifyResult { return verifyDBObject(in.Message, in.Details, false) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBObject(in.Details, false) },
 		"db_unexpected_trigger", "db_unexpected_event",
 		"db_unexpected_procedure", "db_unexpected_function")
-	register(func(in VerifyInput) VerifyResult { return verifyDBObject(in.Message, in.Details, true) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBObject(in.Details, true) },
 		"db_malicious_trigger", "db_malicious_event",
 		"db_malicious_procedure", "db_malicious_function")
 	register(func(in VerifyInput) VerifyResult { return verifyDBMagicTokenUser(in.Message, in.Details) },

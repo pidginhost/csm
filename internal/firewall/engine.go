@@ -719,12 +719,8 @@ func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 
 	// Create chains and rules
 	e.createPreroutingChain()
-	if err := e.createInputChain(); err != nil {
-		return fmt.Errorf("creating input chain: %w", err)
-	}
-	if err := e.createOutputChain(); err != nil {
-		return fmt.Errorf("creating output chain: %w", err)
-	}
+	e.createInputChain()
+	e.createOutputChain()
 
 	// Queue initial set elements from persisted state into the same
 	// netlink batch as the table+set+chain creation above. Without
@@ -1087,7 +1083,7 @@ func (e *Engine) createPreroutingChain() {
 }
 
 // createInputChain builds the input filter chain with proper rule ordering.
-func (e *Engine) createInputChain() error {
+func (e *Engine) createInputChain() {
 	policy := nftables.ChainPolicyDrop
 	e.chainIn = e.conn.AddChain(&nftables.Chain{
 		Name:     "input",
@@ -1419,13 +1415,11 @@ func (e *Engine) createInputChain() error {
 	}
 
 	// Default policy is DROP - anything not matched above is dropped
-
-	return nil
 }
 
 // createOutputChain builds the output filter chain.
 // Restricts outbound to configured ports only (prevents C2 on non-standard ports).
-func (e *Engine) createOutputChain() error {
+func (e *Engine) createOutputChain() {
 	tcp6Out := effectiveIPv6Ports(e.cfg.TCPOut, e.cfg.TCP6Out)
 	udp6Out := effectiveIPv6Ports(e.cfg.UDPOut, e.cfg.UDP6Out)
 	if len(e.cfg.TCPOut) == 0 && len(e.cfg.UDPOut) == 0 && (!e.cfg.IPv6 || len(tcp6Out) == 0 && len(udp6Out) == 0) {
@@ -1440,7 +1434,7 @@ func (e *Engine) createOutputChain() error {
 			Policy:   &policy,
 		})
 		e.addLocalPortLockRules()
-		return nil
+		return
 	}
 
 	// Outbound filtering enabled
@@ -1624,8 +1618,6 @@ func (e *Engine) createOutputChain() error {
 			&expr.Reject{Type: 1}, // NFT_REJECT_TCP_RST
 		},
 	})
-
-	return nil
 }
 
 // --- Helper methods ---
@@ -2956,6 +2948,7 @@ func (e *Engine) blockPlanningStatesLocked() (FirewallState, FirewallState, erro
 	return state, copyFirewallState(*e.stateCache), nil
 }
 
+//nolint:unparam // keeps the result shape of blockIPTargetFromStates, which it forwards
 func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, string, error) {
 	state, policyState, err := e.blockPlanningStatesLocked()
 	if err != nil {

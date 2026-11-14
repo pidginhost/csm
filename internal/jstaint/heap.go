@@ -414,11 +414,11 @@ func applyTaintDepth(ts taintSet, minDepth, advance uint8) taintSet {
 	return out
 }
 
-func mergePresentValue(current value, present bool, next value) (value, bool) {
+func mergePresentValue(current value, present bool, next value) value {
 	if !present {
-		return next, true
+		return next
 	}
-	return mergeValue(current, next), true
+	return mergeValue(current, next)
 }
 
 func mergeObject(a, b *object) *object {
@@ -442,13 +442,13 @@ func mergeObject(a, b *object) *object {
 		n.elem = a.elem
 	}
 	if b.elemMay {
-		n.elem, _ = mergePresentValue(n.elem, a.elemMay, b.elem)
+		n.elem = mergePresentValue(n.elem, a.elemMay, b.elem)
 	}
 	if a.wildMay {
 		n.wild = a.wild
 	}
 	if b.wildMay {
-		n.wild, _ = mergePresentValue(n.wild, a.wildMay, b.wild)
+		n.wild = mergePresentValue(n.wild, a.wildMay, b.wild)
 	}
 	if n.wildMust {
 		n.wildReq = mergeValue(a.wildReq, b.wildReq)
@@ -809,23 +809,23 @@ func getField(o *object, key fieldKey) (value, bool) {
 		var out value
 		have := false
 		if o.elemMay {
-			out, have = mergePresentValue(out, have, o.elem)
+			out, have = mergePresentValue(out, have, o.elem), true
 		}
 		if o.wildMay {
-			out, _ = mergePresentValue(out, have, o.wild)
+			out = mergePresentValue(out, have, o.wild)
 		}
 		return out, false
 	default:
 		var out value
 		have := false
 		if o.elemMay {
-			out, have = mergePresentValue(out, have, o.elem)
+			out, have = mergePresentValue(out, have, o.elem), true
 		}
 		if o.wildMay {
-			out, have = mergePresentValue(out, have, o.wild)
+			out, have = mergePresentValue(out, have, o.wild), true
 		}
 		for _, fv := range o.fields {
-			out, have = mergePresentValue(out, have, fv)
+			out, have = mergePresentValue(out, have, fv), true
 		}
 		return out, false
 	}
@@ -878,7 +878,7 @@ func (o *object) deleteNamed(name string) {
 }
 
 func (o *object) weakElem(v value, definite bool) {
-	o.elem, o.elemMay = mergePresentValue(o.elem, o.elemMay, v)
+	o.elem, o.elemMay = mergePresentValue(o.elem, o.elemMay, v), true
 	if definite {
 		o.elemMust = true
 	}
@@ -888,7 +888,7 @@ func (o *object) weakElem(v value, definite bool) {
 // absorb it because the key may select any of them; a later strong named write
 // can then replace that field without clearing the wildcard for other names.
 func (o *object) writeWild(v value, definite bool) {
-	o.wild, o.wildMay = mergePresentValue(o.wild, o.wildMay, v)
+	o.wild, o.wildMay = mergePresentValue(o.wild, o.wildMay, v), true
 	if definite {
 		o.wildMust = true
 		o.wildReq = v

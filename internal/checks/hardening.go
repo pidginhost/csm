@@ -192,7 +192,7 @@ func scanForMaliciousSymlinks(dir, user, homeDir string, maxDepth int, findings 
 		target = filepath.Clean(target)
 
 		// Check if target is outside the user's home
-		if isSymlinkSafe(target, user, homeDir) {
+		if isSymlinkSafe(target, homeDir) {
 			continue
 		}
 
@@ -229,7 +229,7 @@ func scanForMaliciousSymlinks(dir, user, homeDir string, maxDepth int, findings 
 	}
 }
 
-func isSymlinkSafe(target, user, homeDir string) bool {
+func isSymlinkSafe(target, homeDir string) bool {
 	// Inside own home directory
 	if strings.HasPrefix(target, homeDir+"/") || target == homeDir {
 		return true

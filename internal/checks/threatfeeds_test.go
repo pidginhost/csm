@@ -27,7 +27,7 @@ invalid-entry
 		_, _ = w.Write([]byte(body))
 	}))
 
-	ips, nets, err := downloadFeed(client, localHTTPTestURL, "test-feed")
+	ips, nets, err := downloadFeed(client, localHTTPTestURL)
 	if err != nil {
 		t.Fatalf("downloadFeed: %v", err)
 	}
@@ -60,14 +60,14 @@ func TestDownloadFeedHTTPError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 
-	_, _, err := downloadFeed(client, localHTTPTestURL, "broken")
+	_, _, err := downloadFeed(client, localHTTPTestURL)
 	if err == nil {
 		t.Error("expected error for HTTP 500")
 	}
 }
 
 func TestDownloadFeedNetworkError(t *testing.T) {
-	_, _, err := downloadFeed(newFailingHTTPClient("forced feed transport failure"), localHTTPTestURL, "dead")
+	_, _, err := downloadFeed(newFailingHTTPClient("forced feed transport failure"), localHTTPTestURL)
 	if err == nil {
 		t.Error("expected network error")
 	}
@@ -76,7 +76,7 @@ func TestDownloadFeedNetworkError(t *testing.T) {
 func TestDownloadFeedEmptyBody(t *testing.T) {
 	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
-	ips, nets, err := downloadFeed(client, localHTTPTestURL, "empty")
+	ips, nets, err := downloadFeed(client, localHTTPTestURL)
 	if err != nil {
 		t.Fatalf("downloadFeed: %v", err)
 	}

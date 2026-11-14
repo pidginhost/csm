@@ -826,12 +826,11 @@ func TestFindWPTransientsWithResults(t *testing.T) {
 		},
 	})
 
-	cfg := &config.Config{}
 	warnBytes := int64(1) * 1024 * 1024
 	critBytes := int64(10) * 1024 * 1024
 
 	var findings []alert.Finding
-	findWPTransients("/home/alice/public_html", cfg, warnBytes, critBytes, 2, &findings)
+	findWPTransients("/home/alice/public_html", warnBytes, critBytes, 2, &findings)
 
 	hasHigh := false
 	hasWarn := false
@@ -1195,7 +1194,7 @@ func TestScanEximMessageReplyToMismatch(t *testing.T) {
 		},
 	})
 
-	result := scanEximMessage("ABC123", "alice@example.com", &config.Config{})
+	result := scanEximMessage("ABC123", "alice@example.com")
 	if result == nil {
 		t.Fatal("expected finding for Reply-To mismatch plus phishing URL")
 	}
@@ -1231,7 +1230,7 @@ func TestScanEximMessageSuspiciousMailer(t *testing.T) {
 		},
 	})
 
-	result := scanEximMessage("ABC123", "sender@example.com", &config.Config{})
+	result := scanEximMessage("ABC123", "sender@example.com")
 	if result == nil {
 		t.Fatal("expected finding for suspicious mailer")
 	}
@@ -1266,7 +1265,7 @@ func TestScanEximMessagePlainPHPMailerNotFlagged(t *testing.T) {
 		},
 	})
 
-	if result := scanEximMessage("ABC123", "sender@example.com", &config.Config{}); result != nil {
+	if result := scanEximMessage("ABC123", "sender@example.com"); result != nil {
 		t.Fatalf("plain PHPMailer must not be flagged, got: %s", result.Details)
 	}
 }
@@ -1299,7 +1298,7 @@ func TestScanEximMessageUserAgentFallback(t *testing.T) {
 		},
 	})
 
-	result := scanEximMessage("ABC123", "sender@example.com", &config.Config{})
+	result := scanEximMessage("ABC123", "sender@example.com")
 	if result == nil {
 		t.Fatal("expected finding for suspicious mailer via User-Agent fallback")
 	}
@@ -1334,7 +1333,7 @@ func TestScanEximMessageSpoofedBrand(t *testing.T) {
 
 	// Brand spoof (paypal, sender randomsite.com) plus a Reply-To mismatch =
 	// two independent indicators.
-	result := scanEximMessage("ABC123", "noreply@randomsite.com", &config.Config{})
+	result := scanEximMessage("ABC123", "noreply@randomsite.com")
 	if result == nil {
 		t.Fatal("expected finding for spoofed brand")
 	}
@@ -1369,7 +1368,7 @@ func TestScanEximMessagePhishingURLsAndLanguage(t *testing.T) {
 		},
 	})
 
-	result := scanEximMessage("ABC123", "sender@example.com", &config.Config{})
+	result := scanEximMessage("ABC123", "sender@example.com")
 	if result == nil {
 		t.Fatal("expected finding for phishing content")
 	}
@@ -1409,7 +1408,7 @@ func TestScanEximMessageBase64HTML(t *testing.T) {
 		},
 	})
 
-	if result := scanEximMessage("ABC123", "sender@example.com", &config.Config{}); result != nil {
+	if result := scanEximMessage("ABC123", "sender@example.com"); result != nil {
 		t.Fatalf("base64 encoding alone must not produce a finding, got: %s", result.Details)
 	}
 }
@@ -1440,7 +1439,7 @@ func TestScanEximMessageCriticalSeverity(t *testing.T) {
 		},
 	})
 
-	result := scanEximMessage("ABC123", "noreply@randomsite.com", &config.Config{})
+	result := scanEximMessage("ABC123", "noreply@randomsite.com")
 	if result == nil {
 		t.Fatal("expected finding with multiple indicators")
 	}
@@ -1456,7 +1455,7 @@ func TestScanEximMessageNoHeaders(t *testing.T) {
 		},
 	})
 
-	result := scanEximMessage("ABC123", "sender@example.com", &config.Config{})
+	result := scanEximMessage("ABC123", "sender@example.com")
 	if result != nil {
 		t.Error("expected nil for missing spool files")
 	}
@@ -1553,7 +1552,7 @@ func TestScanEximMessageFindsSplitSpool(t *testing.T) {
 		},
 	})
 
-	if scanEximMessage("1vOutA-000001-AB", "sender@example.com", &config.Config{}) == nil {
+	if scanEximMessage("1vOutA-000001-AB", "sender@example.com") == nil {
 		t.Fatal("message in a split spool subdirectory was not scanned")
 	}
 }

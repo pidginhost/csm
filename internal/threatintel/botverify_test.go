@@ -53,7 +53,7 @@ func TestVerify_PositiveGooglebot(t *testing.T) {
 		a:   map[string][]net.IP{"crawl-66-249-66-99.googlebot.com": {net.ParseIP(ip)}},
 	}
 	v := newVerifier(res, []string{"googlebot.com", "google.com"})
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestVerify_PTRMismatch(t *testing.T) {
 		ptr: map[string][]string{ip: {"some-evil-host.example.com."}},
 	}
 	v := newVerifier(res, []string{"googlebot.com"})
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestVerify_PTRMismatch(t *testing.T) {
 func TestVerify_PTRTransientErrorFailsOpen(t *testing.T) {
 	res := &mockResolver{err: errors.New("temporary resolver failure")}
 	v := newVerifier(res, []string{"googlebot.com"})
-	ok, err := v.verify(context.Background(), net.ParseIP("203.0.113.10"), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP("203.0.113.10"))
 	if err == nil {
 		t.Fatal("expected resolver error")
 	}
@@ -96,7 +96,7 @@ func TestVerify_ForwardNotFoundIsDefinitiveNegative(t *testing.T) {
 		ipErr: &net.DNSError{IsNotFound: true},
 	}
 	v := newVerifier(res, []string{"googlebot.com"})
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestVerify_ForwardTransientErrorFailsOpen(t *testing.T) {
 		ipErr: errors.New("temporary resolver failure"),
 	}
 	v := newVerifier(res, []string{"googlebot.com"})
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err == nil {
 		t.Fatal("expected resolver error")
 	}
@@ -127,7 +127,7 @@ func TestVerify_ForwardTransientErrorFailsOpen(t *testing.T) {
 func TestVerify_PTRNotFoundIsUnverifiable(t *testing.T) {
 	res := &mockResolver{err: &net.DNSError{IsNotFound: true}}
 	v := newVerifier(res, []string{"googlebot.com"})
-	ok, err := v.verify(context.Background(), net.ParseIP("203.0.113.10"), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP("203.0.113.10"))
 	if !errors.Is(err, ErrUnverifiable) {
 		t.Fatalf("error = %v, want ErrUnverifiable", err)
 	}
@@ -140,7 +140,7 @@ func TestVerify_EmptyPTRListIsUnverifiable(t *testing.T) {
 	ip := "203.0.113.10"
 	res := &mockResolver{ptr: map[string][]string{ip: nil}}
 	v := newVerifier(res, []string{"googlebot.com"})
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if !errors.Is(err, ErrUnverifiable) {
 		t.Fatalf("error = %v, want ErrUnverifiable", err)
 	}
@@ -158,7 +158,7 @@ func TestVerify_FacebookbotFbsvNetSuffix(t *testing.T) {
 		a:   map[string][]net.IP{"fwdproxy-ncg-116.fbsv.net": {net.ParseIP(ip)}},
 	}
 	v := newVerifier(res, BotDomains["facebookbot"])
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "facebookbot")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestVerify_AmazonbotDotAmazonSuffix(t *testing.T) {
 		a:   map[string][]net.IP{"35-172-125-172.crawl.amazonbot.amazon": {net.ParseIP(ip)}},
 	}
 	v := newVerifier(res, BotDomains["amazonbot"])
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "amazonbot")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestVerify_SerankingSuffix(t *testing.T) {
 		a:   map[string][]net.IP{"discovery-crawler32.blex.seranking.com": {net.ParseIP(ip)}},
 	}
 	v := newVerifier(res, BotDomains["seranking"])
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "seranking")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestVerify_SerankingImpostorRejected(t *testing.T) {
 		ptr: map[string][]string{ip: {"203-0-113-55-host.colocrossing.com."}},
 	}
 	v := newVerifier(res, BotDomains["seranking"])
-	ok, err := v.verify(context.Background(), net.ParseIP(ip), "seranking")
+	ok, err := v.verify(context.Background(), net.ParseIP(ip))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestVerify_DeadlineHonored(t *testing.T) {
 	v := newVerifier(res, []string{"googlebot.com"})
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
-	_, err := v.verify(ctx, net.ParseIP("66.249.66.99"), "googlebot")
+	_, err := v.verify(ctx, net.ParseIP("66.249.66.99"))
 	if err == nil {
 		t.Error("expected context deadline error")
 	}

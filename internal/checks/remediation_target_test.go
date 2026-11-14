@@ -83,7 +83,7 @@ func TestHtaccessCleanPinsValidatedFile(t *testing.T) {
 			if kind == "clean" {
 				res = CleanHtaccessFile(path)
 			} else {
-				res = fixHtaccess(path, "")
+				res = fixHtaccess(path)
 			}
 			if res.Success || !res.Refused {
 				t.Errorf("replacement not refused: %+v", res)
