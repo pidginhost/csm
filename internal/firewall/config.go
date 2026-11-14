@@ -47,6 +47,11 @@ type FirewallConfig struct {
 	// peers only. tcp/udp/icmp have their own keys and are not accepted here.
 	ProtocolAllow []ProtocolAllowRule `yaml:"protocol_allow"`
 
+	// TCPInAllow opens one TCP port to listed sources only. The accepts
+	// precede the blocklists, so a listed source keeps reaching that port
+	// when it is blocked, and stays blockable on every other port.
+	TCPInAllow []InAllowRule `yaml:"tcp_in_allow"`
+
 	// Passive FTP range
 	PassiveFTPStart int `yaml:"passive_ftp_start"`
 	PassiveFTPEnd   int `yaml:"passive_ftp_end"`
@@ -222,6 +227,38 @@ type OutAllowRule struct {
 type ProtocolAllowRule struct {
 	Protocol string   `yaml:"protocol"`
 	Peers    []string `yaml:"peers"`
+}
+
+// InAllowRule accepts inbound TCP on one port from its sources.
+// Each source is an IP or CIDR, parsed as a tcp_out_allow destination.
+type InAllowRule struct {
+	Port    int      `yaml:"port"`
+	Sources []string `yaml:"sources"`
+}
+
+// Networks returns the sources the engine renders an accept for: none when
+// the port is out of range, and otherwise every parseable source that is not
+// world-wide, IPv6 ones only while dual-stack filtering is on. Validation
+// reports what this leaves out; callers must not widen it.
+func (r InAllowRule) Networks(ipv6Enabled bool) []*net.IPNet {
+	if r.Port < 1 || r.Port > 65535 {
+		return nil
+	}
+	var out []*net.IPNet
+	for _, source := range r.Sources {
+		network, err := ParseOutAllowDst(source)
+		if err != nil {
+			continue
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			continue
+		}
+		if network.IP.To4() == nil && !ipv6Enabled {
+			continue
+		}
+		out = append(out, network)
+	}
+	return out
 }
 
 // allowedProtocol is an IP protocol protocol_allow can name, with the

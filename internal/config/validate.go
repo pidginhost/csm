@@ -1060,8 +1060,60 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 
 	results = append(results, outAllowResults(fw)...)
 	results = append(results, protocolAllowResults(fw)...)
+	results = append(results, inAllowResults(fw)...)
 
 	return results
+}
+
+// inAllowResults validates firewall.tcp_in_allow. The engine renders nothing
+// for an entry or source it cannot scope, and that silence reads as a port
+// that just does not answer, so every shape error is reported.
+func inAllowResults(fw *firewall.FirewallConfig) []ValidationResult {
+	var results []ValidationResult
+	for i, r := range fw.TCPInAllow {
+		if !validPort(r.Port) {
+			results = append(results, ValidationResult{"error", "firewall.tcp_in_allow",
+				fmt.Sprintf("entry %d: port %d is out of range (1-65535)", i, r.Port)})
+		}
+		prefix := fmt.Sprintf("entry %d (port %d)", i, r.Port)
+		if len(r.Sources) == 0 {
+			results = append(results, ValidationResult{"error", "firewall.tcp_in_allow",
+				fmt.Sprintf("%s: sources is required; list the addresses that may reach the port", prefix)})
+		}
+		for _, source := range r.Sources {
+			network, err := firewall.ParseOutAllowDst(source)
+			if err != nil {
+				results = append(results, ValidationResult{"error", "firewall.tcp_in_allow",
+					fmt.Sprintf("%s: source %q is not an IP address or CIDR", prefix, source)})
+				continue
+			}
+			if ones, _ := network.Mask.Size(); ones == 0 {
+				results = append(results, ValidationResult{"error", "firewall.tcp_in_allow",
+					fmt.Sprintf("%s: source %q matches every address; open the port in tcp_in instead", prefix, source)})
+				continue
+			}
+			if network.IP.To4() == nil && !fw.IPv6 {
+				results = append(results, ValidationResult{"warn", "firewall.tcp_in_allow",
+					fmt.Sprintf("%s: IPv6 source %q emits no rule while firewall.ipv6 is off", prefix, source)})
+			}
+		}
+	}
+	return results
+}
+
+// inAllowScoped reports whether tcp_in_allow opens port to at least one
+// source the engine renders a rule for. Naming a port there is how an
+// operator states who reaches the listener, so the lockout checks treat it
+// as deliberate, like an infra-only port, and for both IP families: a
+// warning would tell the operator to add the port to tcp_in, which undoes
+// the scoping.
+func inAllowScoped(fw *firewall.FirewallConfig, port int) bool {
+	for _, r := range fw.TCPInAllow {
+		if r.Port == port && len(r.Networks(fw.IPv6)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // protocolAllowResults validates firewall.protocol_allow. The engine renders
@@ -1316,6 +1368,8 @@ func firewallLockoutResults(cfg *Config) []ValidationResult {
 	// every stock install report WARN. Without infra_ips there is nothing left
 	// to reach it from, so the warning still stands.
 	infraOnly := portKnown && hasInfra && containsPort(fw.RestrictedTCP, port)
+	// A port opened to chosen sources in tcp_in_allow is as deliberate.
+	infraOnly = infraOnly || (portKnown && inAllowScoped(fw, port))
 
 	if cfg.WebUI.Enabled && portKnown && !infraOnly && !containsPort(fw.TCPIn, port) {
 		results = append(results, ValidationResult{"warn", "firewall.tcp_in",
@@ -1329,21 +1383,30 @@ func firewallLockoutResults(cfg *Config) []ValidationResult {
 	}
 
 	// restricted_tcp filters matching ports out of the public allow lists; it
-	// does not add reachability. Without infra_ips, only an overlap with an
-	// effective allow list changes a port from public to unreachable.
+	// does not add reachability. Without infra_ips, a port in an effective
+	// allow list goes from public to unreachable, unless a source-scoped
+	// accept still opens it: those run ahead of the port rules.
 	tcp6In := fw.TCP6In
 	if len(tcp6In) == 0 {
 		tcp6In = fw.TCPIn
 	}
-	restrictedAllowed := portsOverlap(fw.RestrictedTCP, fw.TCPIn) ||
-		(fw.IPv6 && portsOverlap(fw.RestrictedTCP, tcp6In))
-	if restrictedAllowed && !hasInfra {
-		msg := "restricted_tcp filters ports out of the public allow list, but no infra_ips are configured, so those ports are reachable from nowhere"
-		webUIAllowed := containsPort(fw.TCPIn, port) || (fw.IPv6 && containsPort(tcp6In, port))
-		if cfg.WebUI.Enabled && portKnown && webUIAllowed && containsPort(fw.RestrictedTCP, port) {
-			msg = fmt.Sprintf("web UI port %d is in restricted_tcp but no infra_ips are configured, so the web UI is reachable from nowhere", port)
+	if !hasInfra {
+		var unreachable []int
+		for _, restricted := range fw.RestrictedTCP {
+			if inAllowScoped(fw, restricted) {
+				continue
+			}
+			if containsPort(fw.TCPIn, restricted) || (fw.IPv6 && containsPort(tcp6In, restricted)) {
+				unreachable = append(unreachable, restricted)
+			}
 		}
-		results = append(results, ValidationResult{"warn", "firewall.restricted_tcp", msg})
+		if len(unreachable) > 0 {
+			msg := "restricted_tcp filters ports out of the public allow list, but no infra_ips are configured, so those ports are reachable from nowhere"
+			if cfg.WebUI.Enabled && portKnown && containsPort(unreachable, port) {
+				msg = fmt.Sprintf("web UI port %d is in restricted_tcp but no infra_ips are configured, so the web UI is reachable from nowhere", port)
+			}
+			results = append(results, ValidationResult{"warn", "firewall.restricted_tcp", msg})
+		}
 	}
 
 	return results
@@ -1391,13 +1454,17 @@ func probeSSHLockout(cfg *Config) []ValidationResult {
 		if hasInfra && containsPort(fw.RestrictedTCP, port) {
 			continue
 		}
+		// A port opened to chosen sources in tcp_in_allow is as deliberate.
+		if inAllowScoped(fw, port) {
+			continue
+		}
 		if !containsPort(fw.TCPIn, port) {
 			missingTCPIn = append(missingTCPIn, port)
 		}
 	}
 	if fw.IPv6 {
 		for _, port := range ipv6Ports {
-			if hasInfra && containsPort(fw.RestrictedTCP, port) {
+			if (hasInfra && containsPort(fw.RestrictedTCP, port)) || inAllowScoped(fw, port) {
 				continue
 			}
 			if len(fw.TCP6In) == 0 {
@@ -1457,15 +1524,6 @@ func webUIListenPort(listen string) (int, bool) {
 func containsPort(ports []int, want int) bool {
 	for _, p := range ports {
 		if p == want {
-			return true
-		}
-	}
-	return false
-}
-
-func portsOverlap(a, b []int) bool {
-	for _, port := range a {
-		if containsPort(b, port) {
 			return true
 		}
 	}

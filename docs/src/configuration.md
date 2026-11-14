@@ -832,6 +832,13 @@ firewall:
   # Restricted ports (infra IPs only)
   restricted_tcp: [2086,2087,2325,9443] # WHM and CSM Web UI ports
 
+  # One TCP port opened to listed sources only. See firewall.tcp_in_allow
+  # below.
+  tcp_in_allow: []
+  # tcp_in_allow:
+  #   - port: 3306
+  #     sources: [203.0.113.10, 198.51.100.0/28]
+
   # Outbound ports a service on this host needs. Checked, never added to
   # the policy: validation warns when an effective family policy omits one.
   # Integrations declare theirs in their own conf.d fragment.
@@ -1418,6 +1425,32 @@ The direct SMTP detector's `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
 BPF enforcement requires a BPF-capable connection tracker at
 runtime; `auto` falls back to legacy detection on older servers. See
 [BPF enforcement](bpf-enforcement.md).
+
+## firewall.tcp_in_allow
+
+`tcp_in_allow` opens one TCP port to listed sources only. Each entry names a `port` and its `sources`:
+
+```yaml
+firewall:
+  tcp_in_allow:
+    - port: 3306
+      sources:
+        - 203.0.113.10
+        - 198.51.100.0/28
+        - 2001:db8::11
+```
+
+Use it for a database, replication or monitoring port that a few known hosts need and nobody else should reach. The port does not need to be in `tcp_in`, and it may be in `restricted_tcp`. `infra_ips` is the wrong tool for this: it opens every port to the address.
+
+`port` is a single TCP port. `sources` is required and takes IPv4 and IPv6 addresses or CIDRs; a bare address means that one host, the same as `/32` or `/128`. A port out of range, an empty list, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors; open a port to everyone in `tcp_in` instead. IPv6 sources need `firewall.ipv6: true`; with it off, IPv6 is not filtered at all and validation warns.
+
+The Web UI and sshd lockout warnings treat a port with at least one usable source here as deliberate and stay quiet for it, in both IP families. An entry whose sources render no rule, such as IPv6 sources while `firewall.ipv6` is off, does not count. A usable source also keeps a port in `restricted_tcp` reachable without `infra_ips`.
+
+The accepts come right after `infra_ips` and before the blocked address, blocked subnet and country rules, and before the rate limits. A listed source therefore keeps reaching its port while it is blocked, and only that port: every other port still follows the blocklists. `csm firewall deny` on a listed source does not close the port for it. Remove the source from the entry and run `csm firewall restart` instead.
+
+Entries from `conf.d` fragments are added to the ones in `csm.yaml`. A change takes effect on `csm firewall restart`. `csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback, and the Web UI firewall page shows and counts the entries with its port exceptions. That page reads the config the daemon loaded, so after a firewall restart or rollback it can differ from the applied policy until the daemon reloads; the CLI shows what is applied. Hosts that support the key report the `firewall.tcp_in_allow.v1` capability.
+
+For a single address on one host without a config change, `csm firewall allow-port` still works. That allow is a soft one: it sits after the blocklists, so an operator block overrides it.
 
 ## firewall.protocol_allow
 

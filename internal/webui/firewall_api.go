@@ -77,6 +77,11 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	portAllowCount := len(state.PortAllowed)
+	for _, rule := range cfg.TCPInAllow {
+		portAllowCount += len(rule.Sources)
+	}
+
 	result := map[string]interface{}{
 		"enabled":              cfg.Enabled,
 		"ipv6":                 cfg.IPv6,
@@ -100,7 +105,7 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		"allowed_count":        allowPermanent + allowTemporary,
 		"allow_permanent":      allowPermanent,
 		"allow_temporary":      allowTemporary,
-		"port_allow_count":     len(state.PortAllowed),
+		"port_allow_count":     portAllowCount,
 		"infra_ips":            cfg.InfraIPs,
 		"infra_count":          len(cfg.InfraIPs),
 		"port_flood_rules":     len(cfg.PortFlood),
@@ -150,6 +155,19 @@ func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
 		})
 		if portAllowed[len(portAllowed)-1].Source == "" {
 			portAllowed[len(portAllowed)-1].Source = firewall.InferProvenance("allow_port", entry.Reason)
+		}
+	}
+	// Ports opened from config are exceptions too; state holds only the
+	// ones added with `csm firewall allow-port`.
+	for _, rule := range config.EffectiveFirewallConfig(s.liveCfg()).TCPInAllow {
+		for _, source := range rule.Sources {
+			portAllowed = append(portAllowed, firewallPortAllowView{
+				IP:     source,
+				Port:   rule.Port,
+				Proto:  "tcp",
+				Reason: "Declared in firewall.tcp_in_allow",
+				Source: firewall.SourceConfig,
+			})
 		}
 	}
 	sort.Slice(portAllowed, func(i, j int) bool {

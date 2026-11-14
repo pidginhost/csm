@@ -11,6 +11,7 @@ const (
 	SourceWhitelist    = "whitelist"
 	SourceDynDNS       = "dyndns"
 	SourceSystem       = "system"
+	SourceConfig       = "config"
 )
 
 // InferProvenance classifies a firewall entry source from structured action/reason text.

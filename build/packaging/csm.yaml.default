@@ -516,6 +516,14 @@ firewall:
     - 2087
     - 2325
     - 9443                      # CSM web UI
+  # One TCP port opened to listed sources only. sources takes IPs or CIDRs;
+  # the port does not need to be in tcp_in. Accepted ahead of the blocklists:
+  # a listed source keeps reaching the port while blocked, and stays
+  # blockable on every other port. IPv6 sources require ipv6: true.
+  tcp_in_allow: []
+  # tcp_in_allow:
+  #   - port: 3306
+  #     sources: [203.0.113.10, 198.51.100.0/28]
   required_tcp_out: []          # outbound ports a service on this host needs; checked, never merged
   # Passive FTP data ports. Left unset, 49152-65534 is opened on cPanel hosts
   # and hosts with pure-ftpd, proftpd or vsftpd installed, and stays closed

@@ -22,6 +22,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Added
 
 - The Web UI now shows a CSM icon in browser tabs and bookmarks.
+- The firewall can open one TCP port to listed addresses or ranges with `firewall.tcp_in_allow`; those sources keep reaching that port while blocked.
 
 ### Changed
 

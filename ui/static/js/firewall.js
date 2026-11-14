@@ -57,6 +57,7 @@ function sourceLabel(source) {
         whitelist: 'Whitelist',
         dyndns: 'DynDNS',
         system: 'System',
+        config: 'Config',
         unknown: 'Unknown'
     };
     return labels[source] || 'Unknown';
@@ -71,6 +72,7 @@ function sourceBadge(source) {
         whitelist: 'bg-green-lt',
         dyndns: 'bg-cyan-lt',
         system: 'bg-secondary-lt',
+        config: 'bg-purple-lt',
         unknown: 'bg-secondary-lt'
     };
     return '<span class="badge ' + (cls[source] || 'bg-secondary-lt') + '">' + CSM.esc(sourceLabel(source)) + '</span>';
