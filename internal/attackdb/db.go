@@ -172,6 +172,9 @@ type IPRecord struct {
 	ThreatScore         int                `json:"threat_score"`
 	AutoBlocked         bool               `json:"auto_blocked"`
 	Mail                *MailEvidence      `json:"mail,omitempty"`
+	// SpamNetwork names the /64 record a lookup took the spam evidence from.
+	// Only LookupIP sets it; it is never stored.
+	SpamNetwork string `json:"spam_network,omitempty"`
 }
 
 // DB is the in-memory attack database backed by JSON files.
@@ -422,15 +425,41 @@ func (db *DB) MarkBlocked(ip string) {
 	db.mu.Unlock()
 }
 
-// LookupIP returns the record for an IP, or nil if not tracked.
+// LookupIP returns a copy of the record stored under ip, or nil if there is
+// none. An IPv6 address also reads the spam evidence of its /64 record: the
+// result carries whichever of the two scores higher now, the network's on a
+// tie, and SpamNetwork names the network when its evidence was used.
 func (db *DB) LookupIP(ip string) *IPRecord {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	rec, ok := db.records[ip]
-	if !ok {
-		return nil
+	var out *IPRecord
+	if rec, ok := db.records[ip]; ok {
+		out = cloneIPRecord(rec)
 	}
-	return cloneIPRecord(rec)
+	key := mailRecordKey(ip)
+	if key == ip {
+		return out
+	}
+	network, ok := db.records[key]
+	if !ok || network.Mail == nil {
+		return out
+	}
+	if out == nil {
+		out = &IPRecord{
+			IP: ip, FirstSeen: network.FirstSeen, LastSeen: network.LastSeen,
+			AttackCounts: make(map[AttackType]int), Accounts: make(map[string]int),
+		}
+	} else if now := time.Now(); SpamScore(network.Mail, now) < SpamScore(out.Mail, now) {
+		// Evidence an earlier release stored for this one address is stronger.
+		return out
+	}
+	// Only the spam fields move: login attacks are counted per address.
+	m := out.mail()
+	authAttacks, lastAuthAttack := m.AuthAttacks, m.LastAuthAttack
+	*m = *network.Mail
+	m.AuthAttacks, m.LastAuthAttack = authAttacks, lastAuthAttack
+	out.SpamNetwork = key
+	return out
 }
 
 // TopAttackers returns the top N IPs by threat score.
@@ -582,12 +611,19 @@ func (db *DB) RemoveIP(ip string) {
 // ForgetIP atomically removes all scoring records for a parsed IP, including
 // legacy imports stored under equivalent spellings. Event history is retained.
 // The returned records are detached, so later findings cannot change them.
+// An IPv6 address also takes its /64 spam record: that evidence cannot be
+// split per address.
 func (db *DB) ForgetIP(ip net.IP) []*IPRecord {
+	// A nil address equals every key that is not an address: all networks.
+	if ip == nil {
+		return nil
+	}
+	network := mailRecordKey(ip.String())
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	var removed []*IPRecord
 	for key, rec := range db.records {
-		if ip.Equal(net.ParseIP(key)) {
+		if key == network || ip.Equal(net.ParseIP(key)) {
 			removed = append(removed, rec)
 			delete(db.records, key)
 			db.markDeletedLocked(key)

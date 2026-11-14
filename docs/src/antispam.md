@@ -378,6 +378,14 @@ spam verdicts and no ham reach 50, which lists the sender as `CSM_IP_SPAM`.
 Spam evidence never blocks an address, never changes its threat score and is
 never reported to AbuseIPDB.
 
+An IPv6 sender is recorded and listed per /64 network, for example
+`2001:db8:1:2::/64`, so a sender that rotates addresses builds one score.
+IPv4 senders, including IPv4-mapped IPv6 addresses, stay per address.
+Clearing or whitelisting an address inside the network forgets the network's
+evidence, and the CSM IP map does not list a network that holds an excluded
+address. Evidence recorded per IPv6 address by an earlier release stays
+until it expires.
+
 With `spam` in `reputation.report.classes`, a sender that rspamd keeps
 rejecting, and that has sent no clean mail recently, is reported to the
 central abuse database. Senders of the shared mail services are never
@@ -1003,7 +1011,9 @@ Each counted message, except one not matched, also records a verdict about
 the sending address, as on cPanel (see [Spam evidence](#spam-evidence)):
 Junk, rejected and discarded count as spam, delivered as ham. Junk is spam
 at Stalwart's Junk score, not at a CSM score. The same addresses are
-skipped: whitelisted, `infra_ips`, private and the server's own. Spam
+skipped: whitelisted, `infra_ips`, private and the server's own. IPv6
+senders are recorded and listed per /64 network, and clearing or
+whitelisting an address inside forgets the network's evidence. Spam
 evidence never blocks an address, never changes its threat score and is
 never reported. It does not need `email_protection.antispam`.
 

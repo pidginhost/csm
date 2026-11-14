@@ -10,13 +10,16 @@ import (
 )
 
 func TestMailVerdictsUseCanonicalIP(t *testing.T) {
+	// An IPv6 sender's verdicts go on its /64 record, beside the address
+	// record its login attack made; IPv4 keeps both on the address.
 	for _, tc := range []struct {
-		raw, canonical string
+		raw, canonical, spamKey string
+		records                 int
 	}{
-		{"::ffff:198.51.100.70", "198.51.100.70"},
-		{" 198.51.100.70:25 ", "198.51.100.70"},
-		{"2001:0db8:0:0:0:0:0:70", "2001:db8::70"},
-		{"[2001:db8::70]:25", "2001:db8::70"},
+		{"::ffff:198.51.100.70", "198.51.100.70", "198.51.100.70", 1},
+		{" 198.51.100.70:25 ", "198.51.100.70", "198.51.100.70", 1},
+		{"2001:0db8:0:0:0:0:0:70", "2001:db8::70", "2001:db8::/64", 2},
+		{"[2001:db8::70]:25", "2001:db8::70", "2001:db8::/64", 2},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			db := newTestDB(t)
@@ -24,14 +27,16 @@ func TestMailVerdictsUseCanonicalIP(t *testing.T) {
 			db.RecordFinding(alert.Finding{Check: "smtp_bruteforce", SourceIP: tc.canonical, Timestamp: mailNow})
 			db.RecordMailVerdict(tc.canonical, true, mailNow)
 			auth, spam := db.MapSources(mailNow)
-			want := []string{tc.canonical}
-			if !reflect.DeepEqual(auth, want) || !reflect.DeepEqual(spam, want) {
-				t.Errorf("map sources = %v, %v; want %v for both", auth, spam, want)
+			if !reflect.DeepEqual(auth, []string{tc.canonical}) || !reflect.DeepEqual(spam, []string{tc.spamKey}) {
+				t.Errorf("map sources = %v, %v; want [%s], [%s]", auth, spam, tc.canonical, tc.spamKey)
 			}
 			db.RecordMailVerdict(tc.raw, false, mailNow)
 			rec := db.LookupIP(tc.canonical)
-			if db.TotalIPs() != 1 || rec == nil || rec.Mail == nil || rec.Mail.Spam != 2 || rec.Mail.Ham != 1 || rec.Mail.AuthAttacks != 1 {
+			if db.TotalIPs() != tc.records || rec == nil || rec.Mail == nil || rec.Mail.Spam != 2 || rec.Mail.Ham != 1 || rec.Mail.AuthAttacks != 1 {
 				t.Fatalf("equivalent addresses split evidence: records=%d canonical=%+v", db.TotalIPs(), rec)
+			}
+			if m := db.records[tc.spamKey].Mail; m.Spam != 2 || m.Ham != 1 {
+				t.Fatalf("equivalent addresses split evidence: %s holds %+v", tc.spamKey, m)
 			}
 		})
 	}

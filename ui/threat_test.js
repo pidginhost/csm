@@ -373,3 +373,52 @@ test('IP detail lists mail login attacks and spam verdicts', async () => {
     assert.match(text, /Spam verdicts/);
     assert.match(text, /2 spam, 0 ham, score 50/);
 });
+
+test('a network row has a Network badge and no actions', async () => {
+    const network = attacker('2001:db8:1:2::/64');
+    network.mail = { spam: 2, ham: 0 };
+    network.spam_score = 50;
+    const { page } = await threatPage([network, attacker('192.0.2.20')]);
+    let lookups = 0;
+    page.document.getElementById('tr-lookup-form').addEventListener('submit', () => { lookups++; });
+
+    const rows = page.document.querySelectorAll('#attackers-tbody tr');
+    assert.equal(rows.length, 2);
+    const nameBadge = row => row.querySelectorAll('td')[1].querySelector('.badge');
+    const badge = nameBadge(rows[0]);
+    assert.ok(badge, 'the network row has no Network badge');
+    assert.equal(badge.textContent, 'Network');
+    assert.equal(badge.getAttribute('title'), 'Spam evidence for an IPv6 /64 network');
+    assert.match(rows[0].textContent, /2001:db8:1:2::\/64/);
+    for (const control of ['.bulk-ip-cb', '.quick-block-btn', '.quick-block-perm-btn', '.quick-wl-btn']) {
+        assert.equal(rows[0].querySelector(control), null, 'the network row has ' + control);
+        assert.ok(rows[1].querySelector(control), 'the address row lost ' + control);
+    }
+    assert.equal(nameBadge(rows[1]), null);
+
+    rows[0].click();
+    await settle();
+    assert.equal(lookups, 0, 'clicking a network row submitted the lookup form');
+    assert.equal(page.document.getElementById('tr-lookup-ip').value, '');
+    rows[1].click();
+    await settle();
+    assert.equal(lookups, 1, 'clicking an address row did not submit the lookup form');
+    assert.equal(page.document.getElementById('tr-lookup-ip').value, '192.0.2.20');
+
+    selectAll(page);
+    const selected = Array.from(page.document.querySelectorAll('.bulk-ip-cb')).filter(cb => cb.checked);
+    assert.deepEqual(selected.map(cb => cb.getAttribute('data-ip')), ['192.0.2.20']);
+});
+
+test('IP detail names the network its spam evidence is recorded for', async () => {
+    const spam = { spam: 2, ham: 0 };
+    const withNetwork = (await lookup({ spam_score: 50,
+        attack_record: { event_count: 0, attack_counts: {}, accounts: {}, mail: spam, spam_network: '2001:db8:1:2::/64' } })).html;
+    assert.match(withNetwork, /2 spam, 0 ham, score 50/);
+    assert.match(withNetwork.replace(/<[^>]+>/g, ''), /Spam evidence is recorded for 2001:db8:1:2::\/64/);
+
+    const own = (await lookup({ spam_score: 50,
+        attack_record: { event_count: 0, attack_counts: {}, accounts: {}, mail: spam } })).html;
+    assert.match(own, /2 spam, 0 ham, score 50/);
+    assert.doesNotMatch(own, /Spam evidence is recorded for/);
+});
