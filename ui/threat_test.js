@@ -422,3 +422,18 @@ test('IP detail names the network its spam evidence is recorded for', async () =
     assert.match(own, /2 spam, 0 ham, score 50/);
     assert.doesNotMatch(own, /Spam evidence is recorded for/);
 });
+
+test('a row without an IP does not hide valid attackers or gain actions', async () => {
+    const { page } = await threatPage([attacker(undefined), attacker('2001:db8:1:2::/64'), attacker('192.0.2.20')]);
+    const rows = page.document.querySelectorAll('#attackers-tbody tr');
+    assert.equal(rows.length, 2);
+    assert.match(rows[0].textContent, /2001:db8:1:2::\/64/);
+    assert.match(rows[1].textContent, /192.0.2.20/);
+    selectAll(page);
+    const selected = Array.from(page.document.querySelectorAll('.bulk-ip-cb')).filter(cb => cb.checked);
+    assert.deepEqual(selected.map(cb => cb.getAttribute('data-ip')), ['192.0.2.20']);
+    let exported;
+    page.window.CSM.exportTable = data => { exported = data; };
+    page.document.querySelector('[data-export]').click();
+    assert.deepEqual(Array.from(exported, row => row.ip), ['2001:db8:1:2::/64', '192.0.2.20']);
+});

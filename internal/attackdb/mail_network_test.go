@@ -269,3 +269,17 @@ func recordKeys(db *DB) []string {
 	slices.Sort(keys)
 	return keys
 }
+
+func TestForgetInvalidIPPreservesNetworkRecords(t *testing.T) {
+	for _, ip := range []net.IP{nil, {}, {1, 2, 3}} {
+		db := networkSpamDB(mailNow)
+		db.RecordMailVerdict("2001:db8:1:3::1", true, mailNow)
+		before := db.AllRecords()
+		if removed := db.ForgetIP(ip); len(removed) != 0 {
+			t.Fatalf("invalid IP %v removed %d records", []byte(ip), len(removed))
+		}
+		if db.TotalIPs() != len(before) || len(db.deletedIPs) != 0 {
+			t.Fatalf("invalid IP %v changed records or queued deletions", []byte(ip))
+		}
+	}
+}

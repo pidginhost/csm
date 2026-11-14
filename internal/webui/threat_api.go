@@ -99,11 +99,12 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/threat/ip?ip=1.2.3.4
 func (s *Server) apiThreatIP(w http.ResponseWriter, r *http.Request) {
-	ip := r.URL.Query().Get("ip")
-	if ip == "" || net.ParseIP(ip) == nil {
+	parsed := net.ParseIP(r.URL.Query().Get("ip"))
+	if parsed == nil {
 		writeJSONError(w, "invalid or missing ip parameter", http.StatusBadRequest)
 		return
 	}
+	ip := parsed.String()
 
 	intel := threat.Lookup(ip, s.cfg.StatePath)
 

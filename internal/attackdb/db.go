@@ -614,8 +614,8 @@ func (db *DB) RemoveIP(ip string) {
 // An IPv6 address also takes its /64 spam record: that evidence cannot be
 // split per address.
 func (db *DB) ForgetIP(ip net.IP) []*IPRecord {
-	// A nil address equals every key that is not an address: all networks.
-	if ip == nil {
+	// Empty IP slices also equal a failed parse of a network key.
+	if ip.To16() == nil {
 		return nil
 	}
 	network := mailRecordKey(ip.String())

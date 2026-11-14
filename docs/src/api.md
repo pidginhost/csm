@@ -1453,6 +1453,8 @@ In `/api/v1/threat/top-attackers`, `ip` is an IPv6 /64 in CIDR form, such as
 `2001:db8:1:2::/64`, for a record that holds the spam evidence of a network.
 `/api/v1/threat/ip` takes an address only. Its `attack_record.spam_network`
 names the /64 when the spam evidence shown was recorded for the network.
+Equivalent IPv6 spellings use the same address record and return the
+canonical address. The stronger spam evidence wins; ties use the network.
 
 The 24 hour endpoint returns `409 Conflict` when the address already has a
 permanent or longer firewall block. Unblock it explicitly before shortening

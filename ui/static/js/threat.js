@@ -273,7 +273,7 @@ function loadTopAttackers() {
     if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
     resetAttackerSelection();
     CSM.get('/api/v1/threat/top-attackers?limit=50' + (spamOnly ? '&spam_only=1' : '')).then(function(resp){
-    var data = resp.items;
+    var data = (resp.items || []).filter(function(r) { return r && typeof r.ip === 'string' && r.ip.length > 0; });
     if (seq !== _attackersLoadSeq) return;
     var tbody=document.getElementById('attackers-tbody');
     var fromEl = document.getElementById('attackers-from');
