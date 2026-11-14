@@ -124,3 +124,44 @@ func TestOwnerLeavesNewBlocksToLegacyDuringAPolicyHold(t *testing.T) {
 		t.Fatal("a valid newer policy did not resume block execution")
 	}
 }
+
+// Stop can wait for an owner turn. Neither its existing publication nor a
+// policy refreshed during that wait may claim new blocks.
+func TestOwnerStopsTakingBlocksBeforeItsTurnFinishes(t *testing.T) {
+	f := newOwnerFixture(t)
+	o := f.start(executeOptions(f, newFakeBlocks()))
+	if !o.ExecutesBlocks() {
+		t.Fatal("a live owner does not execute blocks")
+	}
+	entered, refresh, refreshed, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	turnDone, stopDone := make(chan error, 1), make(chan struct{})
+	go func() {
+		turnDone <- o.do(func() error {
+			close(entered)
+			<-refresh
+			err := o.refreshPolicy()
+			close(refreshed)
+			<-release
+			return err
+		})
+	}()
+	<-entered
+	go func() { o.Stop(); close(stopDone) }()
+	<-o.summaryCtx.Done()
+	if o.ExecutesBlocks() {
+		t.Error("a stopping owner still takes new blocks")
+	}
+	close(refresh)
+	<-refreshed
+	if o.ExecutesBlocks() {
+		t.Error("a policy refresh let a stopping owner take new blocks again")
+	}
+	close(release)
+	if err := <-turnDone; err != nil {
+		t.Fatal(err)
+	}
+	<-stopDone
+	if o.ExecutesBlocks() {
+		t.Fatal("a stopped owner still takes new blocks")
+	}
+}

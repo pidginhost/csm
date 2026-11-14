@@ -1262,10 +1262,11 @@ func (o *Owner) Mint(f alert.Finding) (admission.Evidence, error) {
 
 // ExecutesBlocks reports whether legacy must leave new block picks to this
 // owner: a valid live policy is installed and an engine is present. It is
-// false once the owner stops. It says nothing about one request: a request
+// false once shutdown begins. It says nothing about one request: a request
 // accepted earlier stays the owner's through later holds or displacement.
 func (o *Owner) ExecutesBlocks() bool {
-	return o.executesBlocks.Load() && o.opts.Blocks() != nil
+	// A turn already in flight can publish its policy after Stop begins.
+	return !o.stopping.Load() && o.executesBlocks.Load() && o.opts.Blocks() != nil
 }
 
 // Refuse counts a response of kind through via that could not be answered
