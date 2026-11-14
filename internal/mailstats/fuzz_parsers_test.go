@@ -36,6 +36,41 @@ func FuzzParseReject(f *testing.F) {
 	})
 }
 
+func FuzzParsePostfixReject(f *testing.F) {
+	for _, c := range postfixRejectCases {
+		f.Add(c.line)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		r, ok := ParsePostfixReject(line, rejectLoc, rejectFallback)
+		if n := len([]rune(r.Detail)); n > 120 {
+			t.Fatalf("detail has %d runes", n)
+		}
+		if strings.ContainsFunc(r.Detail, unicode.IsControl) {
+			t.Fatalf("detail contains a control character: %q", r.Detail)
+		}
+		if !ok {
+			return
+		}
+		if !slices.Contains(Classes, r.Class) {
+			t.Fatalf("class %q not in Classes", r.Class)
+		}
+		if net.ParseIP(r.IP) == nil {
+			t.Fatalf("ip %q is not an address", r.IP)
+		}
+		// Whatever the rejected name holds, a reply that carries two
+		// different reject kinds is never classed by either. The reply
+		// ends at the last envelope marker.
+		reply := line
+		if i := strings.LastIndex(line, "; from=<"); i >= 0 {
+			reply = line[:i]
+		}
+		if strings.Contains(reply, ">: Sender address rejected: ") && strings.Contains(reply, ">: Recipient address rejected: ") &&
+			(r.Class == ClassSenderVerify || r.Class == ClassUnknownRecipient) {
+			t.Fatalf("mixed kinds classed as %q: %q", r.Class, line)
+		}
+	})
+}
+
 func FuzzRejectUntrustedFields(f *testing.F) {
 	for _, payload := range []string{
 		"x",
