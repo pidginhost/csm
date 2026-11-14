@@ -4402,3 +4402,72 @@ test('without cPanel no cPanel-only API is called, on load, refresh or a hidden-
         assert.equal(page.document.getElementById('email-tab-overview').getAttribute('aria-selected'), 'true', url);
     }
 });
+
+// ---------- Stalwart hosts ----------
+
+// Stalwart files spam to Junk or rejects it; nothing reports a scan count.
+const STALWART = { mail: true, stalwartFilter: true };
+
+function stalwartOverview(totals, extra) {
+    return overview(Object.assign({ delivered: 0, junk: 0, filter_rejected: 0, discarded: 0, unmatched: 0 }, totals),
+        Object.assign({ filter_rejects_seen: true }, extra));
+}
+
+test('a Stalwart host shows what its filter did with the mail', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview(
+        { delivered: 1200, junk: 41, filter_rejected: 3, discarded: 2, unmatched: 0 },
+        { filter_rejects_seen: true, mode: 'off' }));
+    await settle();
+    assert.equal(kpi(page, 'kpi-scanned').value, '1,200');
+    assert.match(kpi(page, 'kpi-scanned').text, /Mail delivered/);
+    assert.equal(kpi(page, 'kpi-tagged').value, '41');
+    assert.match(kpi(page, 'kpi-tagged').text, /Filed to Junk/);
+    assert.equal(kpi(page, 'kpi-spam').value, '3');
+    assert.match(kpi(page, 'kpi-spam').sub, /2 discarded/);
+    const subtitle = page.document.getElementById('email-subtitle').textContent;
+    assert.match(subtitle, /41 filed to Junk and 3 rejected in the last 24 hours/);
+    assert.doesNotMatch(page.document.getElementById('email-kpis').textContent + subtitle, /scanned|clean|Antispam is off/i);
+    // CSM's antispam mode says nothing about Stalwart's filter: no badge, not even an empty dot.
+    assert.equal(page.document.querySelector('#kpi-spam [data-kpi-badge]'), null, 'a mode badge on a Stalwart host');
+});
+
+test('rejected mail shows a dash until Stalwart has logged one', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({ filter_rejected: 0, discarded: 0 }, { filter_rejects_seen: false }));
+    await settle();
+    assert.equal(kpi(page, 'kpi-spam').value, '-');
+    assert.match(kpi(page, 'kpi-spam').sub, /none logged yet/);
+    assert.match(page.document.getElementById('email-subtitle').textContent, /No inbound mail in the last 24 hours/);
+
+    const seen = emailPage({ features: STALWART });
+    seen.respond('/api/v1/email/overview', 200, stalwartOverview({ delivered: 4, junk: 1 }, { filter_rejects_seen: false }));
+    await settle();
+    assert.equal(kpi(seen, 'kpi-spam').value, '-');
+    assert.match(seen.document.getElementById('email-subtitle').textContent, /1 filed to Junk and none logged rejected in the last 24 hours/);
+
+    const logged = emailPage({ features: STALWART });
+    logged.respond('/api/v1/email/overview', 200, stalwartOverview({ filter_rejected: 0, discarded: 0 }, { filter_rejects_seen: true }));
+    await settle();
+    assert.equal(kpi(logged, 'kpi-spam').value, '0');
+});
+
+test('verdicts lost under a flood are named', async () => {
+    const page = emailPage({ features: STALWART });
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({ delivered: 30, unmatched: 7 }));
+    await settle();
+    assert.match(kpi(page, 'kpi-scanned').sub, /7 not matched/);
+});
+
+test('a Stalwart host charts delivered, Junk, rejected and discarded', async () => {
+    const page = emailPage({ features: STALWART });
+    await settle();
+    const from = Date.parse(query(page.pending('/api/v1/email/overview')[0].url).get('from'));
+    const t = (from + 5 * HOUR_MS) / 1000;
+    page.respond('/api/v1/email/overview', 200, stalwartOverview({}, { series: [{ t, delivered: 5, junk: 2, filter_rejected: 1, discarded: 1 }] }));
+    await settle();
+    const chart = page.Chart.charts.at(-1);
+    assert.deepEqual(Array.from(chart.data.datasets, d => d.label), ['Delivered', 'Filed to Junk', 'Rejected', 'Discarded', 'Malware', 'Other rejects']);
+    const sum = label => dataset(chart, label).reduce((a, b) => a + b, 0);
+    assert.deepEqual(['Delivered', 'Filed to Junk', 'Rejected', 'Discarded'].map(sum), [5, 2, 1, 1]);
+});

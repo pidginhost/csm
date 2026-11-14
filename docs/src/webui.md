@@ -132,6 +132,9 @@ Provider delays tabs, the antivirus lines of the Protection card, cPHulk
 actions on the Firewall page, the dashboard's Email AV chip, and the Email AV,
 cPanel and webmail login, and known API token settings need cPanel and are not
 shown elsewhere. Hidden settings keep the values they have in `csm.yaml`.
+On a Stalwart host the first three Email Security cards show the mail
+Stalwart's spam filter delivered to the inbox, rejected or discarded, and
+filed to the Junk folder.
 
 On Email Security, failed refreshes mark protection status as unavailable
 and hide stale chart data. An older response cannot overwrite newer health

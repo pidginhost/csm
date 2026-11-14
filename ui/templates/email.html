@@ -22,9 +22,9 @@
          that explains it; ?tab=auth is Findings on auth failures. -->
     <div class="row row-deck row-cards mb-3" id="email-kpis">
         <div class="col-6 col-lg" id="kpi-scanned">
-            <a href="?tab=overview" class="card card-link stat-card" title="Mail scanned: open the Overview tab">
+            {{if feature "stalwartFilter"}}<a href="?tab=overview" class="card card-link stat-card" title="Mail delivered: open the Overview tab">{{else}}<a href="?tab=overview" class="card card-link stat-card" title="Mail scanned: open the Overview tab">{{end}}
                 <div class="card-body">
-                    <div class="subheader">Mail scanned</div>
+                    <div class="subheader">{{if feature "stalwartFilter"}}Mail delivered{{else}}Mail scanned{{end}}</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
@@ -34,18 +34,18 @@
             <a href="?tab=rejects" class="card card-link stat-card" data-rejects-class="spam" title="Spam rejected: open the Rejects tab on spam">
                 <div class="card-body">
                     <div class="subheader">Spam rejected</div>
-                    <div class="d-flex align-items-center flex-wrap gap-2">
+                    {{if feature "stalwartFilter"}}<div class="h1 mb-0" data-kpi-value>-</div>{{else}}<div class="d-flex align-items-center flex-wrap gap-2">
                         <div class="h1 mb-0" data-kpi-value>-</div>
                         <span class="badge" data-kpi-badge></span>
-                    </div>
+                    </div>{{end}}
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
             </a>
         </div>
         <div class="col-6 col-lg" id="kpi-tagged">
-            <a href="?tab=overview" class="card card-link stat-card" title="Spam tagged: open the Overview tab">
+            {{if feature "stalwartFilter"}}<a href="?tab=overview" class="card card-link stat-card" title="Filed to Junk: open the Overview tab">{{else}}<a href="?tab=overview" class="card card-link stat-card" title="Spam tagged: open the Overview tab">{{end}}
                 <div class="card-body">
-                    <div class="subheader">Spam tagged</div>
+                    <div class="subheader">{{if feature "stalwartFilter"}}Filed to Junk{{else}}Spam tagged{{end}}</div>
                     <div class="h1 mb-0" data-kpi-value>-</div>
                     <div class="text-muted small" data-kpi-sub></div>
                 </div>
