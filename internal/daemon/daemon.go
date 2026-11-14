@@ -2128,7 +2128,7 @@ func (d *Daemon) deepScanner() {
 			if db := checks.GetThreatDB(); db != nil {
 				_ = db.UpdateFeeds()
 			}
-			// Prune expired attack DB records (90-day retention)
+			// Prune attack DB records past 90 days or kept only for faded spam evidence
 			if adb := attackdb.Global(); adb != nil {
 				adb.PruneExpired()
 				// A flood that stopped left drops no later verdict will report.

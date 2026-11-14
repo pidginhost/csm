@@ -435,7 +435,9 @@ verdicts, a listed sender or a sender's ham history while records with
 two or more verdicts fill less than nine tenths of the budget; above
 that, one pass trims the weakest of them once. Higher levels are reached
 only after every lower-level record has been dropped; they can still be
-dropped when they alone exceed the trim target. Senders that share a
+dropped when they alone exceed the trim target. A flood that sends as
+many messages from each address or /64 as a level competes with every
+record of that level, listed senders included. Senders that share a
 crowded /16 or /48 with a flood can lose records of the same level with
 it.
 
