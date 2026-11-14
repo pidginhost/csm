@@ -1798,6 +1798,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Checked before the /tmp early-return so a malicious .htaccess anywhere
 	// (including /tmp) is still analyzed for dangerous directives.
 	if nameLower == ".htaccess" {
+		fm.checkTmpExecutable(event, procInfo)
 		fm.checkHtaccess(event.fd, path, procInfo)
 		return
 	}
@@ -1805,6 +1806,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// .user.ini modification - check for dangerous PHP settings (C3 - read from fd).
 	// Also checked before /tmp so malicious .user.ini is detected anywhere.
 	if nameLower == ".user.ini" || nameLower == "php.ini" {
+		fm.checkTmpExecutable(event, procInfo)
 		fm.checkUserINI(event.fd, path, procInfo)
 		return
 	}
@@ -1832,27 +1834,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Executables in /tmp or /dev/shm - detect dropped malware/miners
 	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
 	if underTempRoot(path) {
-		var tmpStat unix.Stat_t
-		if err := unix.Fstat(event.fd, &tmpStat); err == nil {
-			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
-			isExec := tmpStat.Mode&0111 != 0
-			if !isDir && isExec {
-				// A directory name proves nothing about the writer, so no
-				// path is exempt. Root-owned drops from panel maintenance
-				// or a live package transaction (an initramfs rebuild
-				// after a kernel update) are rescored to Warning, never
-				// suppressed. See demoteTmpExec for the gates.
-				severity := alert.Critical
-				details := fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid)
-				if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
-					severity = alert.Warning
-					details += " [demoted: " + reason + "]"
-				}
-				fm.sendAlertWithPath(severity, "executable_in_tmp_realtime",
-					fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-					details, path, procInfo)
-			}
-		}
+		fm.checkTmpExecutable(event, procInfo)
 		// Hosted images still need payload checks when the configured root
 		// lives in a temporary directory, as do PHP source files anywhere.
 		if !isPHPSourceExtension(nameLower) && !imageInHostedTree {
@@ -2033,6 +2015,36 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if fm.underAccountOrConfiguredDocRoot(path) && isCGIExtension(nameLower) {
 		fm.checkCGIBackdoor(event.fd, path, procInfo)
 		return
+	}
+}
+
+// checkTmpExecutable is independent of configuration syntax: a shell can
+// execute a file even when its basename routes it to a configuration scanner.
+func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
+	path := event.path
+	if !underTempRoot(path) {
+		return
+	}
+	var tmpStat unix.Stat_t
+	if err := unix.Fstat(event.fd, &tmpStat); err == nil {
+		isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
+		isExec := tmpStat.Mode&0111 != 0
+		if !isDir && isExec {
+			// A directory name proves nothing about the writer, so no
+			// path is exempt. Root-owned drops from panel maintenance
+			// or a live package transaction (an initramfs rebuild
+			// after a kernel update) are rescored to Warning, never
+			// suppressed. See demoteTmpExec for the gates.
+			severity := alert.Critical
+			details := fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid)
+			if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
+				severity = alert.Warning
+				details += " [demoted: " + reason + "]"
+			}
+			fm.sendAlertWithPath(severity, "executable_in_tmp_realtime",
+				fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
+				details, path, procInfo)
+		}
 	}
 }
 
