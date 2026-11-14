@@ -199,7 +199,8 @@ type DB struct {
 	wg               sync.WaitGroup
 
 	// Spam-evidence budget, under mu. mailOnlyCount is never below the number
-	// of mail-only records; a pass, a load and a prune make it exact.
+	// of mail-only records. Verdicts, findings and blocks keep it exact;
+	// removals leave it too high until a pass, a load or a prune recounts.
 	mailBudget       int
 	mailOnlyCount    int
 	mailEvicted      int
@@ -402,6 +403,10 @@ func (db *DB) RecordFinding(f alert.Finding) {
 		}
 		db.records[ip] = rec
 	}
+	// An event takes a record out of the mail-only records for good.
+	if mailOnly(rec, now) {
+		db.mailOnlyCount--
+	}
 	rec.LastSeen = now
 	rec.EventCount++
 	rec.AttackCounts[attackType]++
@@ -426,6 +431,9 @@ func (db *DB) RecordFinding(f alert.Finding) {
 func (db *DB) MarkBlocked(ip string) {
 	db.mu.Lock()
 	if rec, ok := db.records[ip]; ok && !rec.AutoBlocked {
+		if mailOnly(rec, time.Now()) {
+			db.mailOnlyCount--
+		}
 		rec.AutoBlocked = true
 		rec.ThreatScore = ComputeScore(rec)
 		delete(db.deletedIPs, ip)

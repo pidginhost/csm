@@ -75,7 +75,10 @@ func mailLevel(m *MailEvidence) float64 {
 // record goes only when none of a lower level is left, and among equals a
 // sender spread over one network pays before anyone else. A crowd never
 // outranks a level: a network with many strong senders keeps them while
-// weaker records are left.
+// weaker records are left. A pass always trims to nine tenths, so senders
+// of one message each remove no record with two or more verdicts while such
+// records fill less than nine tenths of the budget; above that, one pass
+// trims the weakest of them once.
 //
 // It returns a report at most once in mailReportEvery. The caller holds
 // db.mu.

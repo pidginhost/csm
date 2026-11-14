@@ -314,8 +314,8 @@ func TestHeavierRecordsGoLastLowestMassFirst(t *testing.T) {
 
 // Each budget drops one record more than the one before, in eviction order:
 // lowest level first, inside a level the most crowded network first, then
-// the lowest mass. 198.51.0.0/16 holds six records, 203.0.0.0/16 five and
-// 192.0.0.0/16 four.
+// the lowest mass. The /16 of 198.51.100.0/24 holds six records, that of
+// 203.0.113.0/24 five and that of 192.0.2.0/24 four.
 func TestEvictionWeighsMassAtPassTime(t *testing.T) {
 	const (
 		created  = "192.0.2.1"     // one fresh verdict: mass 1, level 1
@@ -537,7 +537,7 @@ func TestMailOnlyCountRecountedOnLoadAndPrune(t *testing.T) {
 			db.RecordMailVerdict(spamOnly, false, now)
 			check("five new records", 5, 5)
 			finding(withFinding)
-			check("a finding on one of them", 5, 4)
+			check("a finding on one of them", 4, 4)
 			if err := db.Flush(); err != nil {
 				t.Fatal(err)
 			}
@@ -560,11 +560,18 @@ func TestMailOnlyCountRecountedOnLoadAndPrune(t *testing.T) {
 			db.RecordMailVerdict(bare, true, now)
 			check("a verdict on a bare record", 4, 4)
 
-			// The count is one too high again; the pass it starts finds the budget kept.
 			db.SetMailBudget(4)
 			finding(spamOnly)
-			check("a finding at the budget", 4, 3)
+			check("a finding at the budget", 3, 3)
 			if ev := db.RecordMailVerdict(thinIP(2), true, now); ev != nil {
+				t.Fatalf("a new record at the budget reported %+v", ev)
+			}
+			check("a new record at the budget", 4, 4)
+
+			// A removal leaves the count one too high; the pass it starts finds the budget kept.
+			db.RemoveIP(mailRecordKey(thinIP(0)))
+			check("a removal", 4, 3)
+			if ev := db.RecordMailVerdict(thinIP(3), true, now); ev != nil {
 				t.Fatalf("pass at the budget reported %+v", ev)
 			}
 			check("the pass", 4, 4)
@@ -573,6 +580,140 @@ func TestMailOnlyCountRecountedOnLoadAndPrune(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFindingOrBlockOnMailOnlyRecordKeepsCountExact(t *testing.T) {
+	const found, blocked, kept, network, fresh = "192.0.2.1", "192.0.2.2", "192.0.2.3", "2001:db8:1:2::1", "192.0.2.4"
+	db := NewForTest(nil)
+	finding := func(ip string) {
+		db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: ip, Timestamp: mailNow, Message: "x"})
+	}
+	check := func(when string, want int) {
+		t.Helper()
+		if got := mailOnlyAt(db, mailNow); db.mailOnlyCount != want || got != want {
+			t.Fatalf("%s: count = %d with %d mail-only records, want %d", when, db.mailOnlyCount, got, want)
+		}
+	}
+	for _, ip := range []string{found, blocked, kept, network} {
+		db.RecordMailVerdict(ip, true, mailNow)
+	}
+	check("four new records", 4)
+
+	finding(found)
+	check("a finding on a mail-only record", 3)
+	db.MarkBlocked(blocked)
+	check("a block on a mail-only record", 2)
+
+	// None of these takes a record out of the class.
+	finding(found)
+	check("a second finding", 2)
+	db.MarkBlocked(blocked)
+	check("a second block", 2)
+	db.MarkBlocked(found)
+	check("a block on a record with a finding", 2)
+	finding(blocked)
+	check("a finding on a blocked record", 2)
+	finding(fresh)
+	check("a finding from a new address", 2)
+	db.MarkBlocked("192.0.2.5")
+	check("a block on an unknown address", 2)
+	// Findings are per address: the /64 record stays mail-only.
+	finding(network)
+	db.MarkBlocked(network)
+	check("a finding and a block inside a /64 record", 2)
+}
+
+// A finding takes one record out of the class and the next new sender takes
+// its place, so the count never passes the budget and no pass has to run.
+func TestFindingAtBudgetDoesNotForceAPass(t *testing.T) {
+	const budget = 100
+	db := NewForTest(nil)
+	db.SetMailBudget(budget)
+	for n := range budget {
+		db.RecordMailVerdict(fmt.Sprintf("192.0.2.%d", n+1), true, mailNow)
+	}
+	check := func(when string, n, want int) {
+		t.Helper()
+		if got := mailOnlyAt(db, mailNow); db.mailOnlyCount != want || got != want {
+			t.Fatalf("pair %d, %s: count = %d with %d mail-only records, want %d", n, when, db.mailOnlyCount, got, want)
+		}
+	}
+	check("the budget filled", 0, budget)
+
+	for n := range 50 {
+		db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: fmt.Sprintf("192.0.2.%d", n+1), Timestamp: mailNow, Message: "x"})
+		// Only a new record at a count of the budget or more starts a pass.
+		check("the finding", n, budget-1)
+		if ev := db.RecordMailVerdict(fmt.Sprintf("198.51.100.%d", n+1), true, mailNow); ev != nil {
+			t.Fatalf("pair %d reported an eviction: %+v", n, ev)
+		}
+		check("the new sender", n, budget)
+	}
+	if len(db.records) != budget+50 || len(db.deletedIPs) != 0 || db.mailEvicted != 0 {
+		t.Errorf("%d records, %d deleted, %d evicted, want %d, 0, 0", len(db.records), len(db.deletedIPs), db.mailEvicted, budget+50)
+	}
+}
+
+// A pass always trims to nine tenths of the budget. Senders of one message
+// each reach records with two verdicts only when those alone fill more.
+func TestTrimReachesMultiVerdictRecordsOnlyAboveNineTenths(t *testing.T) {
+	// Sender n has two verdicts n hours old, so a higher n is the weaker record.
+	twoVerdicts := func(db *DB, senders int) []string {
+		var keys []string
+		for n := range senders {
+			ip := fmt.Sprintf("2001:db8:%x:1::1", 0x1000+n)
+			keys = append(keys, mailRecordKey(ip))
+			for range 2 {
+				db.RecordMailVerdict(ip, true, mailNow.Add(-time.Duration(n)*time.Hour))
+			}
+		}
+		return keys
+	}
+	present := func(db *DB, keys []string) int {
+		n := 0
+		for _, key := range keys {
+			if _, ok := db.records[key]; ok {
+				n++
+			}
+		}
+		return n
+	}
+
+	t.Run("under nine tenths", func(t *testing.T) {
+		db := NewForTest(nil)
+		db.SetMailBudget(100)
+		strong := twoVerdicts(db, 89)
+		for n := range 200 {
+			db.RecordMailVerdict(thinIP(n), true, mailNow)
+			if got := present(db, strong); got != 89 {
+				t.Fatalf("one-message sender %d left %d of 89 two-verdict records", n, got)
+			}
+		}
+		// A pass at sender 12 and at every eleventh after it.
+		if db.mailEvicted != 198 || len(db.records) != 91 {
+			t.Errorf("%d evicted, %d records left, want 198 and 91", db.mailEvicted, len(db.records))
+		}
+	})
+
+	t.Run("above nine tenths", func(t *testing.T) {
+		db := NewForTest(nil)
+		db.SetMailBudget(100)
+		strong := twoVerdicts(db, 95)
+		for n := range 6 {
+			db.RecordMailVerdict(thinIP(n), true, mailNow)
+		}
+		// The pass drops the six single verdicts, then the five oldest pairs.
+		if got := present(db, strong[:90]); got != 90 || present(db, strong[90:]) != 0 || len(db.records) != 90 {
+			t.Fatalf("%d of the 90 stronger and %d of the 5 weakest two-verdict records left, %d records in all, want 90, 0 and 90",
+				got, present(db, strong[90:]), len(db.records))
+		}
+		for n := range 100 {
+			db.RecordMailVerdict(thinIP(6+n), true, mailNow)
+			if got := present(db, strong[:90]); got != 90 {
+				t.Fatalf("one-message sender %d after the trim left %d of 90 two-verdict records", n, got)
+			}
+		}
+	})
 }
 
 // No mix of verdicts, findings, blocks, forgets and prunes leaves the count
