@@ -18,6 +18,7 @@ linters:
     - misspell
     - bodyclose
     - nilerr
+    - unparam
 
   settings:
     errcheck:
@@ -41,6 +42,21 @@ linters:
         linters:
           - errcheck
         source: '^\s*(case )?<-\w+:?\s*$'
+      # unparam guards production signatures. Test helpers take fixed
+      # arguments on purpose.
+      - path: _test\.go
+        linters:
+          - unparam
+      # A parameter every caller fills with one value is often the point: a
+      # named threshold, a permission, a bucket name.
+      - linters:
+          - unparam
+        text: always receives
+      # Control handlers share one signature so the dispatch switch stays
+      # uniform; some cannot fail.
+      - linters:
+          - unparam
+        text: 'ControlListener\)\.handle\w+ - result 1 \(error\) is always nil'
 
 formatters:
   enable:
