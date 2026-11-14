@@ -277,6 +277,7 @@ func TestLoginIndexMissKeepsLockAndCount(t *testing.T) {
 				rec.Mail.AuthAttacks, rec.Mail.LastAuthAttack = 1, mailNow.Add(-time.Hour)
 				stored[ip] = rec
 			}
+			stored["192.0.2.3"] = storedSpam("192.0.2.3", 1, 0, mailNow)
 			db := NewForTest(stored)
 			// Later than every indexed time, so the search ends past the index.
 			db.records[missed].Mail.LastAuthAttack = mailNow
@@ -290,9 +291,14 @@ func TestLoginIndexMissKeepsLockAndCount(t *testing.T) {
 			if rec := db.records[missed]; rec.EventCount == 0 && !rec.AutoBlocked {
 				t.Fatalf("record unchanged: %+v", rec)
 			}
-			// Past the login window the other record is the one mail-only record.
-			if truth := mailOnlyAt(db, mailNow.Add(mailAuthWindow+time.Hour)); truth != 1 || db.mailOnlyCount < truth {
-				t.Fatalf("count %d with %d mail-only records, want at least 1 of 1", db.mailOnlyCount, truth)
+			for _, check := range []struct {
+				at   time.Time
+				want int
+			}{{mailNow, 1}, {mailNow.Add(mailAuthWindow + time.Hour), 2}} {
+				truth := mailOnlyAt(db, check.at)
+				if got := db.mailCountAtLocked(check.at); truth != check.want || got < truth {
+					t.Fatalf("count %d with %d mail-only records at %s, want at least %d", got, truth, check.at, check.want)
+				}
 			}
 		})
 	}

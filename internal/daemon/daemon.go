@@ -2134,7 +2134,7 @@ func (d *Daemon) deepScanner() {
 				// A flood that stopped left drops no later verdict will report.
 				now := time.Now()
 				d.warnSpamEvidenceEvicted(adb.PendingEviction(now), now)
-				fmt.Fprintf(os.Stderr, "[%s] Attack DB after daily prune (%s)\n", ts(), adb.FormatTopLine())
+				fmt.Fprintf(os.Stderr, "[%s] Attack DB after deep-scan prune (%s)\n", ts(), adb.FormatTopLine())
 			}
 
 			// The full deep tier runs whether or not the file monitor is

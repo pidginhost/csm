@@ -386,7 +386,7 @@ that also has attack findings, a block or a mail login attack in the last 30
 days is kept. Every record leaves 90 days after its last spam verdict or
 finding; ham does not extend that limit. Stored evidence without a decay
 timestamp keeps its weight, as it does when scoring the sender. CSM checks
-daily and at start.
+at start and with every deep scan, hourly by default.
 
 An IPv6 sender is recorded and listed per /64 network, for example
 `2001:db8:1:2::/64`, so a sender that rotates addresses builds one score.

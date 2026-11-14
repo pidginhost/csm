@@ -78,13 +78,16 @@ func (db *DB) uncountMailLocked(rec *IPRecord) {
 	if rec.Mail == nil || rec.EventCount != 0 || rec.AutoBlocked {
 		return
 	}
-	db.mailOnlyCount--
 	if rec.Mail.AuthAttacks > 0 {
-		// On a miss the index is left as it is until the next recount.
-		if i, found := slices.BinarySearchFunc(db.mailAuthTimes, rec.Mail.LastAuthAttack, time.Time.Compare); found {
-			db.mailAuthTimes = slices.Delete(db.mailAuthTimes, i, i+1)
+		i, found := slices.BinarySearchFunc(db.mailAuthTimes, rec.Mail.LastAuthAttack, time.Time.Compare)
+		if !found {
+			// Keep the count with the stale index entry until recounting,
+			// or subtracting that entry can undercount eligible records.
+			return
 		}
+		db.mailAuthTimes = slices.Delete(db.mailAuthTimes, i, i+1)
 	}
+	db.mailOnlyCount--
 }
 
 // mailLevel is the evidence level of m at the time its masses are decayed

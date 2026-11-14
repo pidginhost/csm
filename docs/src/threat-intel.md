@@ -41,7 +41,9 @@ details.
 
 Verdict weights decay from their observation times, including when older
 verdicts arrive after newer ones. A missing observation time uses the current
-time. Spam refreshes the record's activity time; ham does not extend retention.
+time. Spam refreshes the record's activity time. Remaining ham weight keeps
+a spam-only record until both spam and ham evidence have faded, but never
+past the 90-day limit since the last spam verdict or finding.
 Mail evidence survives a restart with its original counts and observation times.
 
 ## IP Intelligence

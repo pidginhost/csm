@@ -252,6 +252,42 @@ func TestHandleThreatForgetNamesRemovedNetwork(t *testing.T) {
 	}
 }
 
+func TestHandleThreatForgetDoesNotEchoStoredNetworkText(t *testing.T) {
+	const ip = "2001:db8:1:2::9"
+	for _, tc := range []struct{ name, key, storedIP string }{
+		{"host only", ip, ip},
+		{"corrupt host", ip, "bad/64\nforged reply"},
+		{"corrupt network", "2001:db8:1:2::/64", "bad/64\nforged reply"},
+		{"unrelated network", "2001:db8:1:2::/64", "2001:db8:3:4::/64"},
+		{"IPv4", "192.0.2.1", "192.0.2.0/24"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := attackdb.NewForTest(map[string]*attackdb.IPRecord{
+				tc.key: {IP: tc.storedIP},
+			})
+			previous := attackdb.Global()
+			attackdb.SetGlobal(db)
+			t.Cleanup(func() { attackdb.SetGlobal(previous) })
+			requestIP := ip
+			if tc.name == "IPv4" {
+				requestIP = tc.key
+			}
+			raw, err := newListenerForTest(t).handleThreatForget([]byte(`{"ip":"` + requestIP + `"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := raw.(control.ThreatForgetResult)
+			want := "Cleared local threat record for " + requestIP + " (was score 0/100, 0 attack events); block, allow and whitelist entries are unchanged"
+			if !res.Found || res.Network != "" || res.Message != want {
+				t.Fatalf("reply = %+v, want no network and message %q", res, want)
+			}
+			if db.TotalIPs() != 0 {
+				t.Fatal("record survived forget")
+			}
+		})
+	}
+}
+
 // The address is the whole request. A malformed one must fail loudly rather
 // than silently clear nothing, which would read as success.
 func TestHandleThreatForgetRejectsInvalidIP(t *testing.T) {

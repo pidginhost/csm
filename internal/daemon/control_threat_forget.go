@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/control"
@@ -31,6 +30,11 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 		return nil, fmt.Errorf("invalid ip: %q", args.IP)
 	}
 	args.IP = ip.String()
+	network := ""
+	if ip.To4() == nil {
+		mask := net.CIDRMask(64, 128)
+		network = (&net.IPNet{IP: ip.Mask(mask), Mask: mask}).String()
+	}
 
 	adb := attackdb.Global()
 	if adb == nil {
@@ -44,9 +48,9 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 		res.Found = true
 		res.Score = max(res.Score, attackdb.ComputeScore(rec))
 		res.Events += rec.EventCount
-		// Only a network record is stored under a CIDR.
-		if strings.Contains(rec.IP, "/") {
-			res.Network = rec.IP
+		// Stored text can be corrupt; only name the expected network.
+		if network != "" && rec.IP == network {
+			res.Network = network
 		}
 	}
 
