@@ -4570,8 +4570,14 @@ test('a Stalwart host leaves out the rspamd card and the Antispam line', async (
     await settle();
     assert.match(doc.getElementById('prot-smtp').textContent, /Protection status unavailable/);
 
+    // The chart takes the row the rspamd card no longer shares.
+    const column = d => d.getElementById('email-decisions-chart').closest('.row > div');
+    assert.ok(column(doc).classList.contains('col-12'));
+    assert.equal(column(doc).classList.contains('col-lg-8'), false);
+
     const cpanel = emailPage();
     await settle();
+    assert.ok(column(cpanel.document).classList.contains('col-lg-8'));
     assert.ok(cpanel.document.getElementById('email-rspamd'));
     assert.ok(cpanel.document.getElementById('prot-antispam'));
     assert.equal(cpanel.pending('/api/v1/email/rspamd').length, 1);
