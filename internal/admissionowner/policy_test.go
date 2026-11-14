@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/verdict"
 )
@@ -20,7 +23,7 @@ func noVerdict(context.Context, string, string) (verdict.Response, error) {
 	return verdict.Response{}, errNoCallback
 }
 
-func allowAll(admission.Candidate) bool { return true }
+func allowAll(admission.Candidate, func() []admission.Evidence) bool { return true }
 
 // validPolicy is a live policy with the callback off that allows every
 // response.
@@ -466,5 +469,52 @@ func TestOwnerHoldsFirewallWorkOnARefusedPolicy(t *testing.T) {
 				t.Fatalf("promotion after a valid epoch = %+v", c)
 			}
 		})
+	}
+}
+
+// A policy whose block expiry is not positive is refused, so the owner
+// stops executing blocks and the funnels keep their legacy blocks until a
+// valid policy returns.
+func TestOwnerRejectsNonpositiveLease(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o, reader, _ := policyOwner(t, f, blocks, validPolicy(1))
+	checks.SetResponseAdmission(o)
+	t.Cleanup(func() { checks.SetResponseAdmission(nil) })
+	if !o.ExecutesBlocks() {
+		t.Fatal("fixture owner does not execute blocks")
+	}
+	epoch := uint64(1)
+	for i, lease := range []time.Duration{0, -time.Hour} {
+		epoch++
+		next := validPolicy(epoch)
+		next.BlockExpiry = lease
+		reader.publish(next)
+		if err := o.Reload(); !errors.Is(err, ErrPolicy) {
+			t.Fatalf("lease %s: Reload = %v, want ErrPolicy", lease, err)
+		}
+		if o.ExecutesBlocks() {
+			t.Fatalf("lease %s: owner executes blocks under a refused policy", lease)
+		}
+		finding := sshFinding(f.host.now(), fmt.Sprintf("offset=lease-%d", i), alert.High)
+		root, err := o.Mint(finding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if checks.AnswerRoot(admission.KindBlockIP, targetOf(root), root, admission.EntryIncident, time.Hour) {
+			t.Fatalf("lease %s: a block was taken from legacy under a refused policy", lease)
+		}
+	}
+	if _, applies := blocks.calls(); len(applies) != 0 {
+		t.Fatalf("refused policy applied %d blocks", len(applies))
+	}
+	epoch++
+	reader.publish(validPolicy(epoch))
+	if err := o.Reload(); err != nil {
+		t.Fatalf("Reload with a valid policy = %v", err)
+	}
+	if !o.ExecutesBlocks() {
+		t.Fatal("owner does not execute blocks after a valid policy returns")
 	}
 }

@@ -348,6 +348,10 @@ func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 		return i
 	}
 	start, stop := at("startAdmission"), at("stopAdmission")
+	// The applied-block consumer runs before the owner can deliver to it.
+	if at("appliedBlocks.serve") > start {
+		t.Errorf("the applied-block consumer starts after startAdmission")
+	}
 	for _, before := range []string{"publishActiveConfig"} {
 		if at(before) > start {
 			t.Errorf("startAdmission runs before %s", before)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -106,7 +107,7 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	if IsTrustedProxy(req.IP, cfg) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, fmt.Errorf("%w: %s is a trusted proxy", firewall.ErrIPProtected, req.IP)
 	}
-	if respondDerived(req) {
+	if respondDerived(req, parseExpiry(cfg.AutoResponse.BlockExpiry)) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrBlockTakenByAdmission
 	}
 	blocker := getIPBlocker()
@@ -144,6 +145,93 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	work.saveState(cfg.StatePath, state)
 	work.complete()
 	return res, err
+}
+
+// AdmissionBlock is a block the admission owner applied, as its verified
+// firewall row records it.
+type AdmissionBlock struct {
+	IP, Reason, Check, FindingID string
+	BlockedAt, ExpiresAt         time.Time
+}
+
+// RecordAdmissionBlocks records blocks the admission owner applied where a
+// legacy block is recorded: a tracker row, which netblock escalation
+// counts, a permanent-block strike, and the Critical auto_block finding it
+// returns for the caller's alert pipeline. A block already tracked at its
+// expiry is skipped, so a repeated delivery changes nothing. It promotes
+// nothing: a permanent block is not an admission response.
+func RecordAdmissionBlocks(cfg *config.Config, blocks []AdmissionBlock) []alert.Finding {
+	work := autoBlockQueues.acquire()
+	defer work.finish()
+	state, err := work.readState(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "autoblock: %v; skipping admission bookkeeping\n", err)
+		return nil
+	}
+	var fresh []AdmissionBlock
+	for _, b := range blocks {
+		work.progress()
+		if slices.ContainsFunc(state.IPs, func(r blockedIP) bool { return r.IP == b.IP && r.ExpiresAt.Equal(b.ExpiresAt) }) {
+			continue
+		}
+		state.IPs = append(state.IPs, blockedIP{IP: b.IP, FindingID: b.FindingID, Reason: b.Reason, BlockedAt: b.BlockedAt, ExpiresAt: b.ExpiresAt})
+		fresh = append(fresh, b)
+	}
+	if len(fresh) == 0 {
+		work.complete()
+		return nil
+	}
+	// Commit duplicate markers before any best-effort side effects. A crash
+	// may lose a strike or notice, but replay must never count it twice.
+	work.progress()
+	if err := work.writeState(cfg.StatePath, state); err != nil {
+		logBlockStateFailure(cfg.StatePath, err)
+		return nil
+	}
+	blocker := getIPBlocker()
+	var findings []alert.Finding
+	for _, b := range fresh {
+		work.progress()
+		details := fmt.Sprintf("Reason: %s", b.Reason)
+		if cc, ok := blocker.(cloudflareCoverChecker); ok && cc.CloudflareCovers(b.IP) {
+			details += " (warning: " + firewall.CloudflareCoverageWarning + ")"
+		}
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Critical,
+			Check:     "auto_block",
+			Message:   fmt.Sprintf("AUTO-BLOCK: %s blocked (expires in %s)", b.IP, b.ExpiresAt.Sub(b.BlockedAt)),
+			Details:   details,
+			Timestamp: time.Now(),
+			SourceIP:  b.IP,
+			Cause:     &alert.Cause{FindingID: b.FindingID, Check: b.Check},
+		})
+		permBlockStrike(cfg, b.IP, work.progress)
+	}
+	work.complete()
+	return findings
+}
+
+// permBlockStrike counts a temporary block of ip toward permanent-block
+// escalation and reports whether ip reached the configured count. A listed
+// C2 server is no offender.
+func permBlockStrike(cfg *config.Config, ip string, progress func()) bool {
+	if !cfg.AutoResponse.PermBlock || c2Listed(cfg, ip) {
+		return false
+	}
+	count, interval := permBlockLimits(cfg)
+	progress()
+	return checkPermBlockEscalation(cfg.StatePath, ip, count, interval)
+}
+
+// permBlockLimits is the configured permanent-block count and interval.
+func permBlockLimits(cfg *config.Config) (int, time.Duration) {
+	// Load fills the default and validation rejects anything lower, so
+	// this only catches a Config assembled in code.
+	count := cfg.AutoResponse.PermBlockCount
+	if count < config.MinBlockEscalationCount {
+		count = config.DefaultPermBlockCount
+	}
+	return count, parseExpiryWithDefault(cfg.AutoResponse.PermBlockInterval, config.DefaultPermBlockInterval)
 }
 
 // requestBlocker takes a full firewall request.
@@ -260,29 +348,19 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 
 	// Permanent block escalation: promote after N temp blocks within the
 	// interval. Every source counts - a challenge-timeout or central-intel
-	// block is the same repeat-offender evidence as a scan block. A listed
-	// C2 server is no offender.
-	if cfg.AutoResponse.PermBlock && !c2Listed(cfg, req.IP) {
-		// Load fills the default and validation rejects anything lower, so
-		// this only catches a Config assembled in code.
-		count := cfg.AutoResponse.PermBlockCount
-		if count < config.MinBlockEscalationCount {
-			count = config.DefaultPermBlockCount
-		}
-		interval := parseExpiryWithDefault(cfg.AutoResponse.PermBlockInterval, config.DefaultPermBlockInterval)
+	// block is the same repeat-offender evidence as a scan block.
+	if permBlockStrike(cfg, req.IP, progress) {
+		count, interval := permBlockLimits(cfg)
+		permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
 		progress()
-		if checkPermBlockEscalation(cfg.StatePath, req.IP, count, interval) {
-			permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
-			progress()
-			if promoteToPermanentBlock(blocker, req.IP, permReason, req.FindingID) {
-				res.Findings = append(res.Findings, alert.Finding{
-					Severity:  alert.Critical,
-					Check:     "auto_block",
-					Message:   fmt.Sprintf("AUTO-PERMBLOCK: %s promoted to permanent block (%d temp blocks)", req.IP, count),
-					Timestamp: time.Now(),
-					SourceIP:  req.IP,
-				})
-			}
+		if promoteToPermanentBlock(blocker, req.IP, permReason, req.FindingID) {
+			res.Findings = append(res.Findings, alert.Finding{
+				Severity:  alert.Critical,
+				Check:     "auto_block",
+				Message:   fmt.Sprintf("AUTO-PERMBLOCK: %s promoted to permanent block (%d temp blocks)", req.IP, count),
+				Timestamp: time.Now(),
+				SourceIP:  req.IP,
+			})
 		}
 	}
 

@@ -656,7 +656,21 @@ the independent audit queue reports a stall if a pending batch cannot advance.
 The daemon marks the address blocked in the attack database, as the legacy
 path marks a block that applied, and, while the action's verified firewall
 row still stands, records a threat database row that ends at the block's
-absolute expiry. One durable transaction per delivery batch precedes threat
+absolute expiry. After that write, a daemon goroutine records those
+standing blocks where a legacy block is recorded (`checks.RecordAdmissionBlocks`):
+a tracker row that netblock escalation counts, a permanent-block strike and
+the Critical `auto_block` finding that reaches history, alerts and the block
+digest. The in-memory backlog uses the existing audit delivery bound; a
+full consumer leaves the durable audit delivery pending for retry. A block
+already tracked at its expiry is skipped, so a repeated delivery changes
+nothing. The tracker batch is saved before strikes and notices: a crash can
+lose those best-effort side effects but cannot repeat them on replay.
+An unreadable tracker is left untouched; a failed tracker save emits no
+strike or notice. The strike promotes nothing, since a permanent
+block is not an admission response. That goroutine waits for the tracker
+lock a scan holds; the owner never does. Blocks already queued when the
+daemon stops are not recorded there; a delivery after the consumer stops is
+refused and stays pending in the audit outbox, so the next start records it. One durable transaction per delivery batch precedes threat
 memory publication; read or write errors leave delivery pending and threat
 memory unchanged. Local evidence survives feed withdrawal;
 permanent local evidence and longer temporary rows remain unchanged.
@@ -1302,9 +1316,13 @@ firewall kind, `block_cpanel_logins` for the checks that need it, and each
 derived entry's own opt-in; challenges follow challenge routing). Under a
 valid policy, a pick it no longer allows ends refused as `disabled` before
 any panel ask, engine check, forecast, preview or reservation, live or dry
-run. Most of these switches change only with an epoch; challenge, incident
-and central settings change only at a restart, which is why every pick is
-tested rather than every epoch.
+run. The test reads the configuration live at each turn, not the epoch's:
+challenge, incident, central and per-check settings can change without a
+new epoch, and a saved change applies from the next turn. A queued block of
+an address the live configuration now names as a trusted proxy, or of a
+known CDN or website-firewall edge that one of its roots may have seen
+relaying, also ends as `disabled`: the mint would refuse it now. Roots are
+read only for an edge address.
 
 Disabled responses end together before capacity selection, including
 challenge previews. Spent ceiling or history budgets, retry backoff and
@@ -1892,13 +1910,20 @@ fallback, without changing the finding or its audit identity. Distinct
 observations still submit even when their address is already challenged.
 While admission executes blocks, a block it accepts, or refuses because the
 client is behind a trusted proxy or is a CDN edge, skips the legacy block:
-no engine call, tracker row, queued retry or hourly charge. Every other
-mint or synchronous ingress refusal keeps the legacy block, and mail spray
-blocks stay legacy. Acceptance is not application: a later hold, dry-run
-change or queue displacement never returns that request to legacy. A derived
-block admission takes ends before the engine as an expected refusal: timeout
-escalation and central intel log nothing, and the incident correlator counts
-it as requested. Previews and challenges never change a responder decision.
+no engine call, tracker row, queued retry or hourly charge. For a block it
+accepts, the scan also drops every other legacy block of that address in the
+same pass: its queued retry, findings admission could not take and mail
+spray findings. Every other mint or synchronous ingress refusal keeps the
+legacy block. Mail spray blocks, and derived blocks asked to last longer
+than `auto_response.block_expiry`, stay legacy: admission would cut them to
+it. The funnel reads that lease as the scan loop does, with a 24-hour
+fallback for an empty, unparsable or nonpositive value; the daemon passes a
+nonpositive value to the policy unchanged, the policy refuses it, and the
+owner then executes nothing, so legacy keeps every block. Acceptance is not application: a later hold, dry-run change or queue
+displacement never returns that request to legacy. A derived block admission
+takes ends before the engine as an expected refusal: timeout escalation and
+central intel log nothing, and the incident correlator counts it as
+requested. Previews and challenges never change a responder decision.
 
 Subnet funnels submit every selected response before the existing responder evaluates its available execution budget. Constituent evidence follows the selected mail response; paths without eligible observations retain their designed refusal rather than minting a replacement root.
 
@@ -1910,7 +1935,7 @@ Incident event preparation retains the attesting finding's check and severity, i
 
 Hourly summaries count committed arrivals, memory-coalesced reports, mint refusals, displaced submissions and both observed and terminally refused picks. The displacement callback runs under the ingress mutex on the submitting goroutine and uses the funnel's clock; drain callbacks use the owner's fresh clock. Summary time never regresses: event hours are clamped to the latest admission-clock or funnel hour after a backward wall step, including clock readings from an incomplete startup. Immutable write acknowledgments cannot consume newer rows. Summaries continue during ledger or clock outages, and shutdown flushes completed decisions even when a final drain fails. Failed writes retain a bounded chronological set of completed hours, so missing recordings remain explicit lower bounds.
 
-Ingress placement on an ended or in-flight candidate is a counted invalid refusal. An episode that cannot be encoded is ledger damage. Shutdown closes ingress before returning new blocks to legacy, even while an owner turn is still running. Previously accepted work is drained for restart; new legacy-owned blocks cannot enter that queue. Incident background response loops stop before the owner.
+Ingress placement on an ended or in-flight candidate is a counted invalid refusal. An episode that cannot be encoded is ledger damage. Shutdown closes ingress before returning new blocks to legacy, even while an owner turn is still running. Previously accepted work is drained for restart; new legacy-owned blocks cannot enter that queue. Incident background response loops stop before the owner. An owner that executes blocks ends, as `disabled`, the incident and spray blocks an earlier process queued: the correlator reads its selectors at start, so that work may no longer be selected.
 
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.
 

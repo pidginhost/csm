@@ -45,8 +45,13 @@ func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := withAdmission(t)
 			a.executes, a.mintErr, a.respondErr = tc.executes, tc.mintErr, tc.respondErr
-			if _, taken := respond(tc.kind, f, f.SourceIP, 0); taken != tc.want {
+			_, taken, accepted := respond(tc.kind, f, f.SourceIP, 0)
+			if taken != tc.want {
 				t.Fatalf("respond taken = %v, want %v", taken, tc.want)
+			}
+			wantAccepted := tc.executes && tc.kind == admission.KindBlockIP && tc.mintErr == nil && tc.respondErr == nil
+			if accepted != wantAccepted {
+				t.Fatalf("respond accepted = %v, want %v", accepted, wantAccepted)
 			}
 		})
 	}

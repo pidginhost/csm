@@ -17,7 +17,11 @@ var errNothingDisabled = errors.New("no queued response is disabled")
 // work consume the turns or capacity of allowed work. All endings commit
 // together, including their counters and schema marker; a pass that ends
 // nothing commits nothing.
-func (l *AdmissionLedger) RefuseDisabled(allows func(admission.Candidate) bool) error {
+// allows may load a candidate's roots through its second argument, which
+// returns nil if they cannot be read. Both callbacks run synchronously
+// under the ledger lock and write transaction; neither may reenter the
+// ledger or retain the loader after allows returns.
+func (l *AdmissionLedger) RefuseDisabled(allows func(admission.Candidate, func() []admission.Evidence) bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now, err := l.clock()
@@ -35,7 +39,14 @@ func (l *AdmissionLedger) RefuseDisabled(allows func(admission.Candidate) bool) 
 		}
 		ended := false
 		for _, lc := range live {
-			if lc.c.State == admission.StateQueued && !allows(lc.c) {
+			roots := func() []admission.Evidence {
+				e, loadErr := loadRoots(tx, l.reg, lc.c.Roots)
+				if loadErr != nil {
+					return nil
+				}
+				return e
+			}
+			if lc.c.State == admission.StateQueued && !allows(lc.c, roots) {
 				if err = q.refuse(lc, admission.ReasonDisabled, 0); err != nil {
 					return err
 				}

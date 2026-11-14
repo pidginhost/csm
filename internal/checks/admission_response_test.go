@@ -37,6 +37,8 @@ type fakeAdmission struct {
 	// Respond report.
 	executes            bool
 	mintErr, respondErr error
+	// mintErrs refuses the mint of findings of the named checks only.
+	mintErrs map[string]error
 }
 
 func (a *fakeAdmission) ExecutesBlocks() bool {
@@ -53,6 +55,9 @@ func (a *fakeAdmission) Mint(f alert.Finding) (admission.Evidence, error) {
 	}
 	if a.mintErr != nil {
 		return admission.Evidence{}, a.mintErr
+	}
+	if err := a.mintErrs[f.Check]; err != nil {
+		return admission.Evidence{}, err
 	}
 	a.pending = &respondCall{check: f.Check, cursor: f.Observation.Cursor, rooted: true}
 	if a.mint != nil {

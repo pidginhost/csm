@@ -54,6 +54,48 @@ func AutomaticResponseAllowed(cfg *config.Config, kind admission.Kind, entry adm
 	return false
 }
 
+// BlocksAProxy reports whether queued block c would block a trusted proxy
+// under cfg, or a known CDN or website-firewall edge that one of its roots
+// may have seen relaying other people's requests, as the mint refuses it.
+// roots loads c's root evidence and is read only for an edge.
+func BlocksAProxy(cfg *config.Config, c admission.Candidate, roots func() []admission.Evidence) bool {
+	addr, ok := c.Key.Target.Addr()
+	if c.Key.Kind != admission.KindBlockIP || !ok {
+		return false
+	}
+	ip := addr.String()
+	if IsTrustedProxy(ip, cfg) {
+		return true
+	}
+	if !KnownProxyPeer(ip, cfg) {
+		return false
+	}
+	for _, e := range roots() {
+		if producerMayRelay(e.Producer()) {
+			return true
+		}
+	}
+	return false
+}
+
+// producerMayRelay reports whether an address producer p reads can be an
+// edge relaying other people's requests, as the mint judges it. The queue
+// holds no proxied client, so a producer's trusted-chain reading never
+// applies.
+func producerMayRelay(p admission.ProducerID) bool {
+	for _, entry := range producerTable {
+		if entry.Spec.ID != p {
+			continue
+		}
+		for _, kind := range []admission.Attribution{admission.AttributionPeer, admission.AttributionHTTPPeer, admission.AttributionDerived} {
+			if entry.Spec.Attribution.Has(kind) && mayBeProxyEdge(kind, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // blocksAtSeverity reports whether an incident block_at_severity setting
 // blocks at all; empty or unknown means detection only.
 func blocksAtSeverity(s string) bool {

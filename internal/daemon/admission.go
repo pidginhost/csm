@@ -121,8 +121,13 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 		AskVerdict: func(ctx context.Context, ip, reason string) (verdict.Response, error) {
 			return client.Ask(ctx, verdict.Request{IP: ip, Reason: reason, Severity: "auto", Source: "auto_response"})
 		},
-		Allows: func(c admission.Candidate) bool {
-			return checks.AutomaticResponseAllowed(cfg, c.Key.Kind, c.Entry, c.Check)
+		// Switches outside auto_response change without a new epoch, so
+		// queued work is tested against the config live at each turn.
+		// A queued block of an address that became a trusted proxy or a
+		// known edge ends too, as the mint would refuse it now.
+		Allows: func(c admission.Candidate, roots func() []admission.Evidence) bool {
+			live := config.Active()
+			return checks.AutomaticResponseAllowed(live, c.Key.Kind, c.Entry, c.Check) && !checks.BlocksAProxy(live, c, roots)
 		},
 	}
 }
