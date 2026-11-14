@@ -11,7 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Executable files disguised as web configuration in temporary directories now raise alerts, including maintenance warnings.
 - Command-and-control connection alerts now name the local socket, user and process, and automatic response forecasts include connections this server opens.
 - Central intelligence, incident blocking and subnet or permanent block escalation no longer treat a listed command-and-control server as an attacker; only the C2 check blocks it, when auto_response.block_ips is on.
 - Automatic response forecasts now also refuse web findings when an Apache log file is named through a variable CSM cannot resolve.
@@ -19,7 +18,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A client seen only through a trusted proxy's forwarded address is no longer firewall-blocked when its challenge times out.
 - Automatic responses no longer challenge or block an address listed in web_server.trusted_proxies, such as a proxy in front of cPanel logins.
 - Central intelligence and incident responses no longer act on an outside reputation match alone; a local attack from the same address is now required.
-- Root-owned executables created in temporary directories are now always reported; panel or package maintenance lowers them to a warning.
+- Executables in temporary directories are now always reported, whatever their owner or file name; panel or package maintenance lowers them to a warning.
 
 ### Added
 
