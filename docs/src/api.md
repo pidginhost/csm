@@ -1542,8 +1542,8 @@ DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin 
 
 For Stalwart, the overview's `totals.delivered`, `totals.junk`,
 `totals.filter_rejected`, `totals.discarded` and `totals.unmatched` count
-its own filter verdicts in the selected range. `unmatched` counts verdicts
-that could not be paired with a delivery or rejection. Chart points use
+its own filter verdicts in the selected range. `unmatched` counts messages
+whose verdict CSM could not tie to a sending address. Chart points use
 `delivered`, `junk`, `filter_rejected` and `discarded`, omitting these keys
 when zero. `totals.rejected` and the chart's `rejected` key count rspamd
 decisions, not Stalwart filter rejects.
