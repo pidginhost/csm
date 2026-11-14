@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"net/netip"
+	"os"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -63,11 +64,13 @@ func (d *Daemon) recordMailVerdict(adb *attackdb.DB, ip string, spam bool, at ti
 	finding := alert.Finding{
 		Severity: alert.Warning,
 		Check:    "spam_evidence_evicted",
-		Message: fmt.Sprintf("Spam evidence budget reached: dropped %d records of single or faded evidence; %s held %d",
+		Message: fmt.Sprintf("Spam evidence budget reached: dropped %d records, weakest evidence first; the most crowded network, %s, held %d",
 			ev.Dropped, ev.Network, ev.NetworkRecords),
-		Details:   "Listed senders and records with attack findings are kept. The network named held the most spam-evidence records and is the likely source.",
+		Details:   "Records with attack findings, a block or a recent mail login attack are never dropped. Records with two or more verdicts are dropped only when such records fill nine tenths of the budget. A network holding many of the dropped records is the likely source; a small count means the senders are spread over many networks.",
 		Timestamp: at,
 	}
+	// Logged first: a full alert channel refuses the finding.
+	fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", ts(), finding.Check, finding.Message)
 	if !alert.TryEnqueue(d.alertCh, finding) {
 		atomic.AddInt64(&d.droppedAlerts, 1)
 	}

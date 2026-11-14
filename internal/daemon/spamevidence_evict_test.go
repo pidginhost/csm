@@ -25,12 +25,13 @@ func evictionWarning(t *testing.T, d *Daemon) alert.Finding {
 // single-verdict senders in network at budget 10, which drops two.
 func checkEvictionWarning(t *testing.T, f alert.Finding, network string, at time.Time) {
 	t.Helper()
-	want := "Spam evidence budget reached: dropped 2 records of single or faded evidence; " + network + " held 11"
+	want := "Spam evidence budget reached: dropped 2 records, weakest evidence first; the most crowded network, " + network + ", held 11"
 	if f.Severity != alert.Warning || f.Message != want || !f.Timestamp.Equal(at) {
 		t.Fatalf("finding = %v %q at %v, want Warning %q at %v", f.Severity, f.Message, f.Timestamp, want, at)
 	}
-	if f.Details == "" || f.SourceIP != "" {
-		t.Fatalf("details %q, source address %q; want details and no source address", f.Details, f.SourceIP)
+	const details = "Records with attack findings, a block or a recent mail login attack are never dropped. Records with two or more verdicts are dropped only when such records fill nine tenths of the budget. A network holding many of the dropped records is the likely source; a small count means the senders are spread over many networks."
+	if f.Details != details || f.SourceIP != "" {
+		t.Fatalf("details %q, source address %q; want %q and no source address", f.Details, f.SourceIP, details)
 	}
 }
 
