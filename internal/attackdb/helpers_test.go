@@ -75,7 +75,7 @@ func TestDBFormatTopLine(t *testing.T) {
 	db.records["1.1.1.1"] = &IPRecord{IP: "1.1.1.1", AutoBlocked: true}
 	db.records["2.2.2.2"] = &IPRecord{IP: "2.2.2.2"}
 	got := db.FormatTopLine()
-	if got != "2 IPs tracked, 1 auto-blocked" {
+	if got != "2 IPs tracked, 1 auto-blocked, 0 spam evidence only (0 new in 24h)" {
 		t.Errorf("got %q", got)
 	}
 }

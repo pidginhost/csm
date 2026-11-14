@@ -2131,6 +2131,7 @@ func (d *Daemon) deepScanner() {
 			// Prune expired attack DB records (90-day retention)
 			if adb := attackdb.Global(); adb != nil {
 				adb.PruneExpired()
+				fmt.Fprintf(os.Stderr, "[%s] Attack DB after daily prune (%s)\n", ts(), adb.FormatTopLine())
 			}
 
 			// The full deep tier runs whether or not the file monitor is

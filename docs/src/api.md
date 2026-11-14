@@ -1445,6 +1445,10 @@ POST /api/v1/threat/unwhitelist-ip     Remove from whitelist
 POST /api/v1/threat/bulk-action        Bulk block (24h or permanent) / whitelist across many IPs
 ```
 
+`/api/v1/threat/stats` includes `mail_only_ips`, the attack database records
+that hold only spam evidence, and `mail_only_new_24h`, those first seen in the
+last 24 hours.
+
 The 24 hour endpoint returns `409 Conflict` when the address already has a
 permanent or longer firewall block. Unblock it explicitly before shortening
 its lifetime. Bulk actions use `action: "block"`, `"block_permanent"`, or

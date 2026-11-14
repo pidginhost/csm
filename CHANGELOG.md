@@ -28,6 +28,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - `csm doctor` on Stalwart hosts now warns when the spam filter's DNS blocklists get no answers, and says when its classifier is still learning.
 - On Stalwart hosts CSM now records which addresses deliver spam, shown in the Threat page Spam column and in IP lookup.
 - On Stalwart hosts the Email page now shows inbound mail delivered, filed to Junk, rejected and discarded by Stalwart's spam filter.
+- The threat statistics API and the daemon's attack DB log line now show how many records hold only spam evidence.
 
 ### Changed
 
