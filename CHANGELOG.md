@@ -24,7 +24,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - The Web UI now shows a CSM icon in browser tabs and bookmarks.
 - `csm stalwart setup` now makes Stalwart log the mail its spam filter rejects or discards, and reports whether the filter is on and at which scores it acts.
 - `csm doctor` on Stalwart hosts now warns when the spam filter's DNS blocklists get no answers, and says when its classifier is still learning.
-- On Stalwart hosts CSM now shows spam-filter message counts on the Email page and sender spam evidence on the Threat page and in IP lookup.
+- On Stalwart hosts CSM now records which addresses deliver spam, shown in the Threat page Spam column and in IP lookup.
 
 ### Changed
 
