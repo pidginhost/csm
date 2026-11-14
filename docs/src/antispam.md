@@ -1001,11 +1001,11 @@ discarded show a dash until Stalwart has logged one.
 
 Each counted message, except one not matched, also records a verdict about
 the sending address, as on cPanel (see [Spam evidence](#spam-evidence)):
-Junk, rejected and discarded count as spam, delivered as ham. Junk is spam at Stalwart's Junk
-score, not at a CSM score. The same addresses are skipped: whitelisted,
-`infra_ips`, private and the server's own. Spam evidence never blocks an
-address, never changes its threat score and is never reported. It does
-not need `email_protection.antispam`.
+Junk, rejected and discarded count as spam, delivered as ham. Junk is spam
+at Stalwart's Junk score, not at a CSM score. The same addresses are
+skipped: whitelisted, `infra_ips`, private and the server's own. Spam
+evidence never blocks an address, never changes its threat score and is
+never reported. It does not need `email_protection.antispam`.
 
 ### Not done on Stalwart
 
