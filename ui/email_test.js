@@ -4432,6 +4432,23 @@ test('a Stalwart host shows what its filter did with the mail', async () => {
     assert.equal(page.document.querySelector('#kpi-spam [data-kpi-badge]'), null, 'a mode badge on a Stalwart host');
 });
 
+// The Rejects tab lists the mail server log's rejects; Stalwart's filter
+// rejects are not in it, so the card explains its number on Overview.
+test('on a Stalwart host the rejected card opens Overview', async () => {
+    const page = emailPage({ features: STALWART, url: 'https://csm.example.test/email?tab=rejects' });
+    await settle();
+    const link = page.document.querySelector('#kpi-spam a.card');
+    assert.equal(link.getAttribute('href'), '?tab=overview');
+    assert.equal(link.hasAttribute('data-rejects-class'), false);
+    assert.equal(link.getAttribute('title'), 'Spam rejected: open the Overview tab');
+    const before = page.requests.filter(r => r.url.includes('/api/v1/email/rejects')).length;
+    link.click();
+    await settle();
+    assert.equal(page.document.getElementById('email-tab-overview').getAttribute('aria-selected'), 'true');
+    assert.equal(urlTab(page), null);
+    assert.equal(page.requests.filter(r => r.url.includes('/api/v1/email/rejects')).length, before, 'the card reloaded the rejects');
+});
+
 test('rejected mail shows a dash until Stalwart has logged one', async () => {
     const page = emailPage({ features: STALWART });
     page.respond('/api/v1/email/overview', 200, stalwartOverview({ filter_rejected: 0, discarded: 0 }, { filter_rejects_seen: false }));

@@ -31,7 +31,7 @@
             </a>
         </div>
         <div class="col-6 col-lg" id="kpi-spam">
-            <a href="?tab=rejects" class="card card-link stat-card" data-rejects-class="spam" title="Spam rejected: open the Rejects tab on spam">
+            {{if feature "stalwartFilter"}}<a href="?tab=overview" class="card card-link stat-card" title="Spam rejected: open the Overview tab">{{else}}<a href="?tab=rejects" class="card card-link stat-card" data-rejects-class="spam" title="Spam rejected: open the Rejects tab on spam">{{end}}
                 <div class="card-body">
                     <div class="subheader">Spam rejected</div>
                     {{if feature "stalwartFilter"}}<div class="h1 mb-0" data-kpi-value>-</div>{{else}}<div class="d-flex align-items-center flex-wrap gap-2">
