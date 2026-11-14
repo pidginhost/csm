@@ -1837,29 +1837,20 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
 			isExec := tmpStat.Mode&0111 != 0
 			if !isDir && isExec {
-				// Skip known root-owned work directories:
-				// - cPanel: SpamAssassin compiles .so regex modules, UPCP stages scripts
-				// - dracut: rebuilds initramfs after kernel updates, copies system binaries
-				// Non-root files in these paths are still suspicious.
-				isCpanelWork := strings.Contains(path, "/cpanel.TMP.work.") || strings.Contains(path, "/cPanel-")
-				isDracutWork := strings.Contains(path, "/dracut.")
-				if (isCpanelWork || isDracutWork) && tmpStat.Uid == 0 {
-					// Root-owned executable in system work dir - legitimate, skip
-				} else {
-					// Root-owned drops from a live package transaction
-					// (e.g. weak-modules extracting initramfs via cpio
-					// after a kernel update) are rescored to Warning,
-					// never suppressed. See demoteTmpExec for the gates.
-					severity := alert.Critical
-					details := fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid)
-					if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
-						severity = alert.Warning
-						details += " [demoted: " + reason + "]"
-					}
-					fm.sendAlertWithPath(severity, "executable_in_tmp_realtime",
-						fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-						details, path, procInfo)
+				// A directory name proves nothing about the writer, so no
+				// path is exempt. Root-owned drops from panel maintenance
+				// or a live package transaction (an initramfs rebuild
+				// after a kernel update) are rescored to Warning, never
+				// suppressed. See demoteTmpExec for the gates.
+				severity := alert.Critical
+				details := fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid)
+				if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
+					severity = alert.Warning
+					details += " [demoted: " + reason + "]"
 				}
+				fm.sendAlertWithPath(severity, "executable_in_tmp_realtime",
+					fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
+					details, path, procInfo)
 			}
 		}
 		// Hosted images still need payload checks when the configured root

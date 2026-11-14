@@ -368,3 +368,64 @@ func TestAnalyzeFileTmpExecNonRootStaysCritical(t *testing.T) {
 		t.Fatal("expected executable_in_tmp_realtime alert")
 	}
 }
+
+// A root-owned executable written under a temp root is reported whatever its
+// directory is called. A directory name proves nothing about who wrote the
+// file, so only the provenance check may rescore it.
+func TestAnalyzeFileTmpExecRootOwnedWorkDirIsReported(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: the file under test must be root-owned")
+	}
+	for _, tc := range []struct {
+		name     string
+		dir      string
+		demote   bool
+		severity alert.Severity
+	}{
+		{"panel work directory", "cpanel.TMP.work.", false, alert.Critical},
+		{"panel staging directory", "cPanel-", false, alert.Critical},
+		{"initramfs build directory", "dracut.", false, alert.Critical},
+		{"initramfs build with package provenance", "dracut.", true, alert.Warning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, err := os.MkdirTemp("/tmp", tc.dir)
+			if err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			path := filepath.Join(dir, "tool")
+			if err := os.WriteFile(path, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			fd := openRawFd(t, path)
+
+			oldDemote := tmpExecDemote
+			tmpExecDemote = func(uint32, int32, time.Time) (bool, string) {
+				return tc.demote, "package manager ancestry during active package window"
+			}
+			t.Cleanup(func() { tmpExecDemote = oldDemote })
+
+			ch := make(chan alert.Finding, 4)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			fm.analyzeFile(fileEvent{path: path, fd: fd, pid: 4242})
+
+			select {
+			case got := <-ch:
+				if got.Check != "executable_in_tmp_realtime" {
+					t.Errorf("Check = %q, want executable_in_tmp_realtime", got.Check)
+				}
+				if got.Severity != tc.severity {
+					t.Errorf("Severity = %v, want %v", got.Severity, tc.severity)
+				}
+				if got.FilePath != path {
+					t.Errorf("FilePath = %q, want %q", got.FilePath, path)
+				}
+				if demoted := strings.Contains(got.Details, "[demoted:"); demoted != tc.demote {
+					t.Errorf("Details = %q, demotion annotation = %v, want %v", got.Details, demoted, tc.demote)
+				}
+			case <-time.After(200 * time.Millisecond):
+				t.Fatal("root-owned executable in a temp work directory raised no finding")
+			}
+		})
+	}
+}
