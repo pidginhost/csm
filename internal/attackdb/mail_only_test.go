@@ -51,6 +51,37 @@ func TestMailOnly(t *testing.T) {
 	}
 }
 
+func TestMailOnlyAuthWindowMatchesMapSources(t *testing.T) {
+	const ip = "192.0.2.10"
+	for _, tt := range []struct {
+		name     string
+		age      time.Duration
+		wantAuth bool
+	}{
+		{"before expiry", mailAuthWindow - time.Nanosecond, true},
+		{"at expiry", mailAuthWindow, true},
+		{"after expiry", mailAuthWindow + time.Nanosecond, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &IPRecord{IP: ip, Mail: &MailEvidence{
+				Spam: 1, AuthAttacks: 1, LastAuthAttack: mailNow.Add(-tt.age),
+			}}
+			db := NewForTest(map[string]*IPRecord{ip: rec})
+			auth, _ := db.MapSources(mailNow)
+			if tt.wantAuth {
+				if len(auth) != 1 || auth[0] != ip {
+					t.Fatalf("auth sources = %v, want [%s]", auth, ip)
+				}
+			} else if len(auth) != 0 {
+				t.Fatalf("auth sources = %v, want none", auth)
+			}
+			if got := mailOnly(rec, mailNow); got != !tt.wantAuth {
+				t.Errorf("mailOnly = %v, want %v", got, !tt.wantAuth)
+			}
+		})
+	}
+}
+
 // Three spam-verdict records, one of them two days old, and one finding record.
 func mailOnlyStatsDB() *DB {
 	now := time.Now()
