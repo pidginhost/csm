@@ -117,13 +117,14 @@ func (q *notificationQueue) read(buf []byte, process func([]byte)) (int, error) 
 	return n, err
 }
 
-func (q *notificationQueue) write(buf []byte) (int, error) {
+func (q *notificationQueue) write(buf []byte) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		return 0, unix.EBADF
+		return unix.EBADF
 	}
-	return q.source.Write(buf)
+	_, err := q.source.Write(buf)
+	return err
 }
 
 // Watch changes and readiness polling share the same descriptor lifetime as reads.

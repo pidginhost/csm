@@ -1338,14 +1338,14 @@ func TestApplyFix_HtaccessOutsideAllowedRoot(t *testing.T) {
 }
 
 func TestFixHtaccess_NonexistentPath(t *testing.T) {
-	result := fixHtaccess("/home/testuser/public_html/.htaccess", "injection found")
+	result := fixHtaccess("/home/testuser/public_html/.htaccess")
 	if result.Success {
 		t.Error("should fail when file does not exist")
 	}
 }
 
 func TestFixHtaccess_EmptyPath(t *testing.T) {
-	result := fixHtaccess("", "injection found")
+	result := fixHtaccess("")
 	if result.Success {
 		t.Error("should fail with empty path")
 	}

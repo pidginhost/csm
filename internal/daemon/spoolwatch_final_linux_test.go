@@ -5,6 +5,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -265,16 +266,19 @@ func TestNewSpoolWatcherNoSpoolDirs(t *testing.T) {
 	cfg.EmailAV.FailMode = "open"
 
 	sw, err := NewSpoolWatcher(cfg, make(chan alert.Finding, 1), nil, nil, nil, nil, nil)
+	// No spool to watch, with or without fanotify: an error and no watcher.
 	if err == nil {
-		// Some kernels/users may have root + exim installed — accept both.
 		if sw != nil {
 			sw.Stop()
 		}
-		return
+		t.Fatal("NewSpoolWatcher succeeded with no Exim spool directory")
 	}
-	// Expected case: kernel might reject FanotifyInit without CAP_SYS_ADMIN.
-	// Either way, the error is returned (covers both failure branches).
-	_ = err
+	if sw != nil {
+		t.Fatalf("NewSpoolWatcher returned a watcher with error %v", err)
+	}
+	if !strings.Contains(err.Error(), "no Exim spool directories found") && !strings.Contains(err.Error(), "fanotify_init") {
+		t.Fatalf("error = %v, want the missing spool or the refused fanotify", err)
+	}
 }
 
 // --- drainAndClose: closes pipe fds exactly once --------------------------

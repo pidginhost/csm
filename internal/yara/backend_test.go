@@ -48,14 +48,25 @@ func TestActiveReturnsOverride(t *testing.T) {
 func TestActiveFallsBackToGlobal(t *testing.T) {
 	t.Cleanup(func() { SetActive(nil) })
 
+	mb := &mockBackend{}
+	SetActive(mb)
+	if Active() != Backend(mb) {
+		t.Fatal("override was not installed")
+	}
+
 	SetActive(nil)
-	// Global() is nil in the no-yara test binary (scanner_noyara has
-	// no init path), so Active() returns a typed-nil interface.
-	if b := Active(); b != nil {
-		// On a yara-tagged build with rules initialised, Global() is
-		// non-nil; that is a valid alternative outcome so we don't
-		// fail the test, we just skip the nil assertion.
-		t.Logf("Global backend present (%T); skipping nil fallback check", b)
+	b := Active()
+	if g := Global(); g != nil {
+		// A yara-tagged build with rules loaded: the fallback is that scanner.
+		if b != Backend(g) {
+			t.Fatalf("Active() after clearing = %T, want the global scanner", b)
+		}
+		return
+	}
+	// No global scanner: a nil interface, not a typed nil a caller's
+	// nil-check would miss.
+	if b != nil {
+		t.Fatalf("Active() after clearing = %T, want nil", b)
 	}
 }
 

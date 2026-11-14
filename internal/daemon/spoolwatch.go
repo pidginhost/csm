@@ -783,7 +783,7 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 	// kernel write; unsafe cast to a byte slice of the exact struct size.
 	respBytes := (*[responseSize]byte)(unsafe.Pointer(&resp))[:]
 	sw.initQueueHealth()
-	_, err := sw.kernelQueue.write(respBytes)
+	err := sw.kernelQueue.write(respBytes)
 	if err != nil {
 		// The kernel holds blocked processes until a response is written or
 		// the fanotify fd is closed. A failed write means the fd is broken -

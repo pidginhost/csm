@@ -825,10 +825,16 @@ func captureCSMLog(t *testing.T) func() string {
 
 func TestIncidentCorrelatorSingletonIsIdempotent(t *testing.T) {
 	resetIncidentForTest()
-	_ = IncidentCorrelator()
-	_ = IncidentCorrelator()
-	_ = IncidentCorrelator()
-	// No panic, no duplicate metric registration. The metrics seam is
-	// pinned in TestMain to a private NewRegistry; if this test ever
-	// hits metrics.Default it will panic on duplicate registration.
+	first := IncidentCorrelator()
+	if first == nil {
+		t.Fatal("IncidentCorrelator returned nil")
+	}
+	// Every caller gets the one correlator. Building a second would also
+	// register its metrics twice and panic: the metrics seam is pinned in
+	// TestMain to a private NewRegistry.
+	for i := 0; i < 2; i++ {
+		if got := IncidentCorrelator(); got != first {
+			t.Fatalf("call %d returned a different correlator", i+2)
+		}
+	}
 }

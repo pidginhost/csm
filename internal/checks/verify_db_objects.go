@@ -30,7 +30,7 @@ func runDBVerifyQueryRootGlobal(query string, args ...any) ([]string, error) {
 // function. For the unexpected tier any surviving object keeps the finding
 // active. For the malicious tier the finding clears when the object is gone or
 // its current body no longer matches a malware pattern.
-func verifyDBObject(message, details string, malicious bool) VerifyResult {
+func verifyDBObject(details string, malicious bool) VerifyResult {
 	schema := detailField(details, "Schema")
 	kind := detailField(details, "Kind")
 	name := detailField(details, "Name")

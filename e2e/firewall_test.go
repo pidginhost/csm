@@ -115,14 +115,13 @@ func TestNFTablesEngineLifecycle(t *testing.T) {
 	})
 }
 
-func TestNFTablesConnectExisting(t *testing.T) {
+func TestNFTablesEngineRestart(t *testing.T) {
 	cfg := &firewall.FirewallConfig{
 		Enabled: true,
 		TCPIn:   []int{22, 80, 443},
 	}
 	statePath := t.TempDir()
 
-	// Create and apply first
 	engine1, err := firewall.NewEngine(cfg, statePath)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
@@ -130,13 +129,35 @@ func TestNFTablesConnectExisting(t *testing.T) {
 	if err = engine1.Apply(); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-
-	// Connect to existing
-	engine2, err := firewall.ConnectExisting(cfg, statePath)
-	if err != nil {
-		t.Fatalf("ConnectExisting: %v", err)
+	const ip = "192.0.2.50"
+	if err = engine1.BlockIPForce(ip, "restart-test", 0); err != nil {
+		t.Fatalf("BlockIPForce: %v", err)
 	}
-	if engine2 == nil {
-		t.Fatal("ConnectExisting should return non-nil engine")
+	if blocked, liveErr := engine1.IsBlockedLive(ip); liveErr != nil || !blocked {
+		t.Fatalf("live block before restart = %v, %v; want true, nil", blocked, liveErr)
+	}
+
+	// A new daemon rebuilds the ruleset from persisted state on startup.
+	engine2, err := firewall.NewEngine(cfg, statePath)
+	if err != nil {
+		t.Fatalf("NewEngine after restart: %v", err)
+	}
+	if err = engine2.Apply(); err != nil {
+		t.Fatalf("Apply after restart: %v", err)
+	}
+	if !engine2.IsBlocked(ip) {
+		t.Fatal("persisted block missing after restart")
+	}
+	if blocked, liveErr := engine2.IsBlockedLive(ip); liveErr != nil || !blocked {
+		t.Fatalf("live block after restart = %v, %v; want true, nil", blocked, liveErr)
+	}
+	if err = engine2.UnblockIP(ip); err != nil {
+		t.Fatalf("UnblockIP after restart: %v", err)
+	}
+	if engine2.IsBlocked(ip) {
+		t.Fatal("persisted block survived unblock after restart")
+	}
+	if blocked, liveErr := engine2.IsBlockedLive(ip); liveErr != nil || blocked {
+		t.Fatalf("live block after unblock = %v, %v; want false, nil", blocked, liveErr)
 	}
 }

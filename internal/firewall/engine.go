@@ -364,93 +364,6 @@ func NewEngine(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	return e, nil
 }
 
-// ConnectExisting connects to an already-running CSM firewall.
-// Used by CLI commands to modify the live ruleset without reapplying all rules.
-func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
-	conn, err := newNFTConn()
-	if err != nil {
-		return nil, fmt.Errorf("nftables connection: %w", err)
-	}
-
-	// Find existing CSM table
-	tables, err := conn.ListTables()
-	if err != nil {
-		return nil, fmt.Errorf("listing tables: %w", err)
-	}
-
-	var table *nftables.Table
-	for _, t := range tables {
-		if t.Name == "csm" && t.Family == nftables.TableFamilyINet {
-			table = t
-			break
-		}
-	}
-	if table == nil {
-		return nil, fmt.Errorf("CSM firewall not running (table 'csm' not found) - run 'csm firewall restart' first")
-	}
-
-	setBlocked, err := conn.GetSetByName(table, "blocked_ips")
-	if err != nil {
-		return nil, fmt.Errorf("blocked_ips set not found: %w", err)
-	}
-	setBlockedNet, err := conn.GetSetByName(table, "blocked_nets")
-	if err != nil {
-		return nil, fmt.Errorf("blocked_nets set not found: %w", err)
-	}
-	setAllowed, err := conn.GetSetByName(table, "allowed_ips")
-	if err != nil {
-		return nil, fmt.Errorf("allowed_ips set not found: %w", err)
-	}
-	setInfra, err := conn.GetSetByName(table, "infra_ips")
-	if err != nil {
-		return nil, fmt.Errorf("infra_ips set not found: %w", err)
-	}
-
-	setDOSExempt, err := conn.GetSetByName(table, "dos_exempt_nets")
-	if err != nil {
-		return nil, fmt.Errorf("dos_exempt_nets set not found: %w", err)
-	}
-
-	e := &Engine{
-		conn:          conn,
-		cfg:           cfg,
-		table:         table,
-		setBlocked:    setBlocked,
-		setBlockedNet: setBlockedNet,
-		setAllowed:    setAllowed,
-		setInfra:      setInfra,
-		setDOSExempt:  setDOSExempt,
-		statePath:     filepath.Join(statePath, "firewall"),
-	}
-
-	// Try to find Cloudflare whitelist sets (optional)
-	if s, err := conn.GetSetByName(table, "cf_whitelist"); err == nil {
-		e.setCFWhitelist = s
-	}
-	if s, err := conn.GetSetByName(table, "cf_whitelist6"); err == nil {
-		e.setCFWhitelist6 = s
-	}
-
-	// Try to find IPv6 sets (optional - may not exist if IPv6 disabled)
-	if s, err := conn.GetSetByName(table, "blocked_ips6"); err == nil {
-		e.setBlocked6 = s
-	}
-	if s, err := conn.GetSetByName(table, "blocked_nets6"); err == nil {
-		e.setBlockedNet6 = s
-	}
-	if s, err := conn.GetSetByName(table, "allowed_ips6"); err == nil {
-		e.setAllowed6 = s
-	}
-	if s, err := conn.GetSetByName(table, "infra_ips6"); err == nil {
-		e.setInfra6 = s
-	}
-	if s, err := conn.GetSetByName(table, "dos_exempt_nets6"); err == nil {
-		e.setDOSExempt6 = s
-	}
-
-	return e, nil
-}
-
 // SetDryRunRecorder installs a callback that is invoked by BlockIP whenever
 // auto_response.dry_run is active. The daemon calls this after construction
 // to wire in store.RecordDryRunBlock without creating an import cycle between
@@ -806,12 +719,8 @@ func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 
 	// Create chains and rules
 	e.createPreroutingChain()
-	if err := e.createInputChain(); err != nil {
-		return fmt.Errorf("creating input chain: %w", err)
-	}
-	if err := e.createOutputChain(); err != nil {
-		return fmt.Errorf("creating output chain: %w", err)
-	}
+	e.createInputChain()
+	e.createOutputChain()
 
 	// Queue initial set elements from persisted state into the same
 	// netlink batch as the table+set+chain creation above. Without
@@ -1174,7 +1083,7 @@ func (e *Engine) createPreroutingChain() {
 }
 
 // createInputChain builds the input filter chain with proper rule ordering.
-func (e *Engine) createInputChain() error {
+func (e *Engine) createInputChain() {
 	policy := nftables.ChainPolicyDrop
 	e.chainIn = e.conn.AddChain(&nftables.Chain{
 		Name:     "input",
@@ -1506,13 +1415,11 @@ func (e *Engine) createInputChain() error {
 	}
 
 	// Default policy is DROP - anything not matched above is dropped
-
-	return nil
 }
 
 // createOutputChain builds the output filter chain.
 // Restricts outbound to configured ports only (prevents C2 on non-standard ports).
-func (e *Engine) createOutputChain() error {
+func (e *Engine) createOutputChain() {
 	tcp6Out := effectiveIPv6Ports(e.cfg.TCPOut, e.cfg.TCP6Out)
 	udp6Out := effectiveIPv6Ports(e.cfg.UDPOut, e.cfg.UDP6Out)
 	if len(e.cfg.TCPOut) == 0 && len(e.cfg.UDPOut) == 0 && (!e.cfg.IPv6 || len(tcp6Out) == 0 && len(udp6Out) == 0) {
@@ -1527,7 +1434,7 @@ func (e *Engine) createOutputChain() error {
 			Policy:   &policy,
 		})
 		e.addLocalPortLockRules()
-		return nil
+		return
 	}
 
 	// Outbound filtering enabled
@@ -1711,8 +1618,6 @@ func (e *Engine) createOutputChain() error {
 			&expr.Reject{Type: 1}, // NFT_REJECT_TCP_RST
 		},
 	})
-
-	return nil
 }
 
 // --- Helper methods ---
@@ -3043,6 +2948,7 @@ func (e *Engine) blockPlanningStatesLocked() (FirewallState, FirewallState, erro
 	return state, copyFirewallState(*e.stateCache), nil
 }
 
+//nolint:unparam // keeps the result shape of blockIPTargetFromStates, which it forwards
 func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, string, error) {
 	state, policyState, err := e.blockPlanningStatesLocked()
 	if err != nil {

@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,7 +185,22 @@ func TestAttachProcessCtxOnCacheMissEnqueuesAndLeavesNil(t *testing.T) {
 
 func TestAttachProcessCtxFindingStaysSerializableWhenNil(t *testing.T) {
 	f := alert.Finding{Check: "outbound_connection", Message: "test", Timestamp: time.Now()}
-	// Caller never sets Process: deserializing should not include the key.
-	// Smoke check via String() to confirm no panic.
-	_ = f.String()
+	// Caller never sets Process: the serialized finding carries no key for it.
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"process"`) {
+		t.Fatalf("finding without process context serialized a process key: %s", data)
+	}
+	var back alert.Finding
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Process != nil || back.Check != "outbound_connection" {
+		t.Fatalf("round trip = %+v, want the same finding with no process", back)
+	}
+	if s := f.String(); !strings.Contains(s, "outbound_connection") {
+		t.Fatalf("String() = %q, want the check named", s)
+	}
 }

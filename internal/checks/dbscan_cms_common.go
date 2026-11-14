@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -86,6 +87,31 @@ func rankCMSConfigs(ctx context.Context, owner string, paths []string, maxFiles 
 		markCheckIncomplete(ctx, owner)
 	}
 	return ranked
+}
+
+// scanCMSInstalls runs scan on every install of one CMS that patterns
+// discover, skipping suspended accounts. Installs are ranked by mtime desc so
+// recently touched ones are processed first when the check timeout cuts
+// iteration short.
+func scanCMSInstalls(ctx context.Context, cfg *config.Config, store *state.Store, check string,
+	scan func(context.Context, string, *state.Store) []alert.Finding, patterns ...string) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var findings []alert.Finding
+
+	configs := cmsDropSuspended(cmsDiscover(ctx, check, patterns...))
+	if len(configs) == 0 {
+		return nil
+	}
+
+	for _, path := range rankCMSConfigs(ctx, check, configs, accountScanMaxFiles(ctx, cfg)) {
+		if ctx.Err() != nil {
+			return findings
+		}
+		findings = append(findings, scan(ctx, path, store)...)
+	}
+	return findings
 }
 
 // cmsAdminFindings reports CMS administrator rows. With a store, the first

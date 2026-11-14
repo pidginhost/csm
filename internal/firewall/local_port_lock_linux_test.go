@@ -82,9 +82,7 @@ func buildOutputChainForTest(t *testing.T, cfg *FirewallConfig) []netlink.Messag
 	conn, captured := nftConnCapturingRules(t)
 	e := &Engine{cfg: cfg, conn: conn}
 	e.table = conn.AddTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
-	if err := e.createOutputChain(); err != nil {
-		t.Fatal(err)
-	}
+	e.createOutputChain()
 	if err := conn.Flush(); err != nil {
 		t.Fatal(err)
 	}

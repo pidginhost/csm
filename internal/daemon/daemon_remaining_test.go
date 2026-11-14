@@ -2,8 +2,15 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,22 +73,44 @@ func TestPublishGeoIP_NilDB(t *testing.T) {
 func TestDoGeoIPUpdate_EmptyCredentials(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	d := New(cfg, nil, nil, "")
-	// geoip.Update with empty accountID/licenseKey returns nil immediately.
+	prev := getGeoIPDB()
+	// With no credentials there is nothing to download and nothing to create.
 	d.doGeoIPUpdate()
-	// Should complete without panic.
+	if _, err := os.Stat(filepath.Join(cfg.StatePath, "geoip")); !os.IsNotExist(err) {
+		t.Fatalf("geoip dir after an update with no credentials: err = %v, want it absent", err)
+	}
+	if getGeoIPDB() != prev {
+		t.Fatal("an update with no credentials replaced the GeoIP database")
+	}
 }
 
 // ---------------------------------------------------------------------------
-// doSignatureUpdate — exercises with invalid URL (fails gracefully)
+// doSignatureUpdate handles a failed download without reloading rules.
 // ---------------------------------------------------------------------------
 
-func TestDoSignatureUpdate_InvalidURL(t *testing.T) {
+func TestDoSignatureUpdate_DownloadFailure(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = t.TempDir()
-	cfg.Signatures.UpdateURL = "http://localhost:1/nonexistent"
+	cfg.Signatures.UpdateURL = "https://updates.example.com/rules.yaml"
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Signatures.SigningKey = hex.EncodeToString(publicKey)
 	d := New(cfg, nil, nil, "")
-	// Should fail gracefully with error logged to stderr.
+	requests := failUpdateRequests(t, http.MethodGet)
+	// The download fails: no rule file lands and no reload follows, so the
+	// daemon raises nothing.
 	d.doSignatureUpdate()
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("download attempts = %d, want 1", got)
+	}
+	if entries, err := os.ReadDir(cfg.Signatures.RulesDir); err != nil || len(entries) != 0 {
+		t.Fatalf("rules dir after a failed update = %v, %v; want empty", entries, err)
+	}
+	if n := len(d.alertCh); n != 0 {
+		t.Fatalf("failed update queued %d findings, want 0", n)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -92,9 +121,15 @@ func TestDoForgeUpdate_NilYaraScanner(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = t.TempDir()
 	d := New(cfg, nil, nil, "")
-	// yara.Global() returns nil when not initialized.
+	// With no YARA backend, or with one and no reachable feed, nothing is
+	// written and nothing is raised.
 	d.doForgeUpdate()
-	// Should return early without panic.
+	if entries, err := os.ReadDir(cfg.Signatures.RulesDir); err != nil || len(entries) != 0 {
+		t.Fatalf("rules dir after doForgeUpdate = %v, %v; want empty", entries, err)
+	}
+	if n := len(d.alertCh); n != 0 {
+		t.Fatalf("doForgeUpdate queued %d findings, want 0", n)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -104,9 +139,23 @@ func TestDoForgeUpdate_NilYaraScanner(t *testing.T) {
 func TestReloadSignatures_NilGlobals(t *testing.T) {
 	cfg := &config.Config{}
 	d := New(cfg, nil, nil, "")
-	// Both signatures.Global() and yara.Global() return nil.
+	if yamlRuleCount() != 0 {
+		t.Fatalf("test needs no YAML scanner loaded, have %d rules", yamlRuleCount())
+	}
+	// A reload that leaves realtime scanning with no rules says so, once.
 	d.reloadSignatures()
-	// Should not panic.
+	select {
+	case f := <-d.alertCh:
+		if f.Check != "realtime_rules_missing" || f.Severity != alert.High || !strings.Contains(f.Message, "no YAML rules") {
+			t.Fatalf("finding = %+v, want a High realtime_rules_missing naming YAML", f)
+		}
+	default:
+		t.Fatal("reload with no rules raised no finding")
+	}
+	d.reloadSignatures()
+	if n := len(d.alertCh); n != 0 {
+		t.Fatalf("second reload repeated the finding %d times", n)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +219,29 @@ func TestRefreshCloudflareIPs_NilFWEngine(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	d := New(cfg, nil, nil, "")
 	d.fwEngine = nil
-	// FetchCloudflareIPs will attempt HTTP and may fail; the method
-	// should handle errors gracefully without panic.
+
+	prevFetch := fetchCloudflareIPs
+	fetchCloudflareIPs = func(context.Context) ([]string, []string, error) {
+		return []string{"192.0.2.0/24"}, []string{"2001:db8::/32"}, nil
+	}
+	t.Cleanup(func() {
+		fetchCloudflareIPs = prevFetch
+		checks.SetCloudflareNets(nil)
+	})
+
+	// With no firewall engine the fetched ranges still guard auto-blocking
+	// and are cached for the next start.
 	d.refreshCloudflareIPs(context.Background())
+	if !checks.IsCloudflareIP(net.ParseIP("192.0.2.9")) || !checks.IsCloudflareIP(net.ParseIP("2001:db8::9")) {
+		t.Fatal("fetched ranges were not installed as the auto-block guard")
+	}
+	if checks.IsCloudflareIP(net.ParseIP("198.51.100.9")) {
+		t.Fatal("an address outside the fetched ranges is treated as Cloudflare")
+	}
+	v4, v6 := firewall.LoadCFState(cfg.StatePath)
+	if !slices.Equal(v4, []string{"192.0.2.0/24"}) || !slices.Equal(v6, []string{"2001:db8::/32"}) {
+		t.Fatalf("cached ranges = %v / %v, want the fetched ones", v4, v6)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -208,9 +277,19 @@ func TestStartFileMonitor_FailsGracefully(t *testing.T) {
 	d := New(cfg, nil, nil, "")
 	d.startFileMonitor()
 
+	d.watcherMu.Lock()
+	attached, recorded := d.watcherStatus["fanotify"]
+	d.watcherMu.Unlock()
+	if !recorded {
+		t.Fatal("startFileMonitor recorded no fanotify watcher state")
+	}
+	if attached != (d.fileMonitor != nil) || d.FanotifyActive() != attached {
+		t.Fatalf("fanotify status = %v, FanotifyActive = %v, monitor present = %v", attached, d.FanotifyActive(), d.fileMonitor != nil)
+	}
+
 	if d.fileMonitor == nil {
-		// No fanotify here (macOS, or a kernel or permission that refuses it).
-		// Degrading instead of panicking is what this test exists for.
+		// No fanotify here (macOS, or a kernel or permission that refuses it):
+		// the daemon degrades and reports the watcher detached.
 		return
 	}
 
@@ -271,15 +350,26 @@ func TestStartLogWatchers_NoLogFilesPresent(t *testing.T) {
 	d.logWatchersMu.Lock()
 	count := len(d.logWatchers)
 	d.logWatchersMu.Unlock()
-	// No log files should be found on macOS.
-	if count != 0 {
-		t.Logf("unexpected %d log watchers started (may be valid on Linux CI)", count)
+	if got := d.LogWatcherCount(); got != count {
+		t.Errorf("LogWatcherCount() = %d, want %d", got, count)
 	}
 	// Clean up: stop any watchers that were created.
 	close(d.stopCh)
 	d.logWatchersMu.Lock()
 	watchers := d.logWatchers
 	d.logWatchersMu.Unlock()
+	// A watcher exists only for a log that is on disk: a missing log gets
+	// none, on any host.
+	seen := make(map[string]bool)
+	for _, w := range watchers {
+		if _, err := os.Stat(w.path); err != nil {
+			t.Errorf("watcher started for a log that is not there: %s (%v)", w.path, err)
+		}
+		if seen[w.path] {
+			t.Errorf("two watchers started for %s", w.path)
+		}
+		seen[w.path] = true
+	}
 	for _, w := range watchers {
 		w.Stop()
 	}
@@ -473,9 +563,30 @@ func TestGeoipUpdater_StopsOnSignalWithCredentials(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDeployConfigs_NoCPanel(t *testing.T) {
-	// On macOS, /usr/local/cpanel doesn't exist so the function
-	// should skip WHM deployment without panic.
+	_, cpanelErr := os.Stat("/usr/local/cpanel")
+	_, appsErr := os.Stat("/var/cpanel/apps")
+	hadApps := appsErr == nil
+
 	deployConfigs()
+
+	if cpanelErr == nil {
+		// A cPanel host: the WHM AppConfig is in place after a deploy.
+		if _, err := os.Stat("/var/cpanel/apps/csm.conf"); err != nil {
+			t.Errorf("WHM AppConfig missing on a cPanel host: %v", err)
+		}
+		return
+	}
+	// Without cPanel the WHM plugin is not deployed and its directories are
+	// not created.
+	if _, err := os.Stat("/usr/local/cpanel"); !os.IsNotExist(err) {
+		t.Errorf("deployConfigs created /usr/local/cpanel (stat err = %v)", err)
+	}
+	if _, err := os.Stat("/var/cpanel/apps/csm.conf"); !os.IsNotExist(err) {
+		t.Errorf("deployConfigs wrote the WHM AppConfig without cPanel (stat err = %v)", err)
+	}
+	if _, err := os.Stat("/var/cpanel/apps"); !hadApps && !os.IsNotExist(err) {
+		t.Errorf("deployConfigs created /var/cpanel/apps without cPanel (stat err = %v)", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -495,14 +606,33 @@ func TestSyncEmailAVWebState_BothNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartWebUI_EnabledNilStore(t *testing.T) {
-	cfg := &config.Config{}
+	// The generated certificate goes under the state path, not the working
+	// directory.
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.WebUI.Enabled = true
 	cfg.WebUI.Listen = "127.0.0.1:0"
 	d := New(cfg, nil, nil, "")
-	// webui.New with nil store may fail. Should not panic.
 	d.startWebUI()
-	// webServer may or may not be set depending on whether webui.New
-	// handles nil store. Key thing is no panic.
+	// A nil state store is tolerated: the server is built and serving.
+	if d.webServer == nil {
+		t.Fatal("startWebUI left no web server with the Web UI enabled")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.webServer.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("web server goroutine did not end after Shutdown")
+	}
 }
 
 // ---------------------------------------------------------------------------

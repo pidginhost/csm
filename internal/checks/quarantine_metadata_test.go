@@ -103,7 +103,7 @@ func TestQuarantineWritersPreserveOriginalMetadata(t *testing.T) {
 				qDir = htaccessBackupDirRoot
 			case "legacy-htaccess":
 				reason = "Pre-clean .htaccess backup"
-				if result := fixHtaccess(path, "test"); !result.Success {
+				if result := fixHtaccess(path); !result.Success {
 					t.Fatal(result)
 				}
 				qDir = htaccessBackupDirRoot

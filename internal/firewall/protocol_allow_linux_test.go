@@ -163,9 +163,7 @@ func TestProtocolAllowPrecedesBlocklists(t *testing.T) {
 	e.setBlocked, e.setBlocked6 = set("blocked_ips"), set("blocked_ips6")
 	e.setBlockedNet, e.setBlockedNet6 = set("blocked_nets"), set("blocked_nets6")
 	e.setCountry = set("country_block")
-	if err := e.createInputChain(); err != nil {
-		t.Fatal(err)
-	}
+	e.createInputChain()
 	if err := conn.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -192,9 +190,7 @@ func TestProtocolAllowOpensRestrictedOutput(t *testing.T) {
 	conn, captured := nftConnCapturingRules(t)
 	e := &Engine{cfg: &FirewallConfig{TCPOut: []int{443}, ProtocolAllow: vrrpPeers("192.0.2.11")}, conn: conn}
 	e.table = conn.AddTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
-	if err := e.createOutputChain(); err != nil {
-		t.Fatal(err)
-	}
+	e.createOutputChain()
 	if err := conn.Flush(); err != nil {
 		t.Fatal(err)
 	}

@@ -483,7 +483,7 @@ func (a *analysis) evalUserCall(callee js.IExpr, args []value, st *state) (value
 		if fn.async {
 			branchRet = value{}
 		}
-		ret, haveRet = mergePresentValue(ret, haveRet, branchRet)
+		ret, haveRet = mergePresentValue(ret, haveRet, branchRet), true
 		effects = mergeState(effects, branch)
 		if !a.alive() {
 			break
@@ -527,7 +527,7 @@ func (a *analysis) analyzeCallee(fn *funcInfo, args []value, st *state) value {
 		if exits[i].returned {
 			exitRet = exits[i].ret
 		}
-		ret, haveRet = mergePresentValue(ret, haveRet, exitRet)
+		ret, haveRet = mergePresentValue(ret, haveRet, exitRet), true
 	}
 
 	// The callee shares the caller's heap identities, so its object mutations and

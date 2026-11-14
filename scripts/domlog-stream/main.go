@@ -208,7 +208,7 @@ func run(args []string, stdout io.Writer, e env) error {
 			return errCollision
 		}
 	}
-	if _, err = reg.add(ps.named); err != nil {
+	if err = reg.add(ps.named); err != nil {
 		return err
 	}
 	records, err := newStaged(e.fs, o.out)
@@ -242,7 +242,7 @@ func run(args []string, stdout io.Writer, e env) error {
 	}
 	// Episode pseudonyms are issued as labels match; check them under the
 	// same lock before any output is published.
-	if _, err = reg.add(ps.named); err != nil {
+	if err = reg.add(ps.named); err != nil {
 		return fail(err)
 	}
 	m.Identities = identities(ps.named)

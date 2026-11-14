@@ -68,10 +68,10 @@ func TestEngineUpdateCloudflareSetNilSetReturnsError(t *testing.T) {
 	}
 }
 
-// Regression: ConnectExisting loads each CF set independently, so the v4 set
-// can be present while the v6 set is nil. The old code only nil-checked v4
-// and then called FlushSet(setCFWhitelist6)/SetAddElements on the nil v6 set,
-// which panics. The guard must require both sets and return an error.
+// Regression: the v4 set can be present while the v6 set is nil. The old
+// code only nil-checked v4 and then called
+// FlushSet(setCFWhitelist6)/SetAddElements on the nil v6 set, which panics.
+// The guard must require both sets and return an error.
 func TestEngineUpdateCloudflareSetNilV6SetReturnsError(t *testing.T) {
 	e := &Engine{statePath: t.TempDir(), setCFWhitelist: &nftables.Set{}}
 	// setCFWhitelist6 is nil

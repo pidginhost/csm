@@ -212,7 +212,7 @@ func TestUndoReblockInvalidTimeoutFallsBackTo24Hours(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			resp, err := s.runUndoEntry(nil, store.UndoEntry{Inverse: inverse, Payload: payload})
+			resp, err := s.runUndoEntry(store.UndoEntry{Inverse: inverse, Payload: payload})
 			if err != nil {
 				t.Fatalf("runUndoEntry returned error for self-written timeout: %v", err)
 			}

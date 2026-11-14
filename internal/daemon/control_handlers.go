@@ -211,7 +211,7 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("integrity verify failed: %w", vErr)
 	}
 
-	// Dry-run threads through RunTierDryRun, so a concurrent periodic
+	// Dry-run threads through RunTierDryRunWithContext, so a concurrent periodic
 	// scanner running in live mode never sees this caller's dry-run state.
 	start := time.Now()
 	var (

@@ -1580,6 +1580,18 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	if inc == nil || c.cfg.OnIncidentBlock == nil {
 		return nil
 	}
+	reason := "incident " + string(inc.Kind) + " " + inc.Severity.String() + " (" + why + ")"
+	return c.requestBlockLocked(inc, ip, now, c.pendingIncidentBlocks, c.cfg.AutoBlock.BlockExpiry,
+		reason, "incident_block_requested", c.cfg.OnIncidentBlock)
+}
+
+// requestBlockLocked marks inc as having a block in flight in pending and
+// returns the callback that asks onBlock for it, or nil when the previous
+// block has not lapsed or a request is already in flight. Caller holds c.mu
+// and must invoke the callback after unlocking. action is appended only when
+// onBlock reports a live block request, so a declined attempt can retry on a
+// later finding once the in-flight marker is cleared.
+func (c *Correlator) requestBlockLocked(inc *Incident, ip string, now time.Time, pending map[string]bool, expiry time.Duration, reason, action string, onBlock func(ip, reason string, ttl time.Duration, findingID string, root PreparedRoot) bool) func() {
 	if !inc.AutoBlock.lapsed(now) {
 		return nil
 	}
@@ -1589,16 +1601,14 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
 		return nil
 	}
-	c.pendingIncidentBlocks[inc.ID] = true
+	pending[inc.ID] = true
 	prior := inc.AutoBlock
 	incidentID := inc.ID
 	attempt := inc.AutoBlock.Count + 1
-	ttl := blockTTLForAttempt(attempt, c.cfg.AutoBlock.BlockExpiry)
-	reason := "incident " + string(inc.Kind) + " " + inc.Severity.String() + " (" + why + ")"
+	ttl := blockTTLForAttempt(attempt, expiry)
 	if attempt > 1 {
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
-	onBlock := c.cfg.OnIncidentBlock
 	findingID, root := c.attesting(inc, ip)
 	return func() {
 		var live bool
@@ -1609,8 +1619,8 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		defer func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			valid := c.pendingIncidentBlocks[incidentID]
-			delete(c.pendingIncidentBlocks, incidentID)
+			valid := pending[incidentID]
+			delete(pending, incidentID)
 			if !valid || !callbackReturned || !live {
 				return
 			}
@@ -1624,7 +1634,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 			}
 			current.Actions = append(current.Actions, IncidentAction{
 				Time:    now,
-				Action:  "incident_block_requested",
+				Action:  action,
 				Result:  "ok",
 				Details: ip + " " + reason + " " + blockDurationLabel(ttl),
 			})
@@ -1632,7 +1642,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 			c.persistLocked(*current)
 		}()
 		c.mu.Lock()
-		valid := c.pendingIncidentBlocks[incidentID] && c.incidents[incidentID] == inc && incidentStatusActive(inc.Status) && inc.AutoBlock == prior
+		valid := pending[incidentID] && c.incidents[incidentID] == inc && incidentStatusActive(inc.Status) && inc.AutoBlock == prior
 		c.mu.Unlock()
 		if !valid {
 			return
@@ -1842,65 +1852,7 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	if inc == nil || c.cfg.OnSprayBlock == nil {
 		return nil
 	}
-	if !inc.AutoBlock.lapsed(now) {
-		return nil
-	}
-	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
-		return nil
-	}
-	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
-		return nil
-	}
-	c.pendingSprayBlocks[inc.ID] = true
-	prior := inc.AutoBlock
-	attempt := inc.AutoBlock.Count + 1
-	ttl := blockTTLForAttempt(attempt, c.spray.cfg.BlockExpiry)
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
-	if attempt > 1 {
-		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
-	}
-	onSprayBlock := c.cfg.OnSprayBlock
-	findingID, root := c.attesting(inc, ip)
-	incidentID := inc.ID
-	return func() {
-		var live bool
-		callbackReturned := false
-		// Mirror the panic-safety guarantee from triggerIncidentBlockLocked:
-		// the in-flight slot must clear even if onSprayBlock panics so a
-		// recurring panic class does not latch the credential_spray
-		// incident out of the auto-block path forever.
-		defer func() {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			valid := c.pendingSprayBlocks[incidentID]
-			delete(c.pendingSprayBlocks, incidentID)
-			if !valid || !callbackReturned || !live {
-				return
-			}
-			current, ok := c.incidents[incidentID]
-			if !ok || current != inc || !incidentStatusActive(current.Status) || current.AutoBlock != prior {
-				return
-			}
-			current.AutoBlock = AutoBlockState{Count: attempt, LastAt: now}
-			if ttl > 0 {
-				current.AutoBlock.ExpiresAt = now.Add(ttl)
-			}
-			current.Actions = append(current.Actions, IncidentAction{
-				Time:    now,
-				Action:  "credential_spray_block_requested",
-				Result:  "ok",
-				Details: ip + " " + reason + " " + blockDurationLabel(ttl),
-			})
-			c.markPersistedLocked(incidentID, c.now())
-			c.persistLocked(*current)
-		}()
-		c.mu.Lock()
-		valid := c.pendingSprayBlocks[incidentID] && c.incidents[incidentID] == inc && incidentStatusActive(inc.Status) && inc.AutoBlock == prior
-		c.mu.Unlock()
-		if !valid {
-			return
-		}
-		live = onSprayBlock(ip, reason, ttl, findingID, root)
-		callbackReturned = true
-	}
+	return c.requestBlockLocked(inc, ip, now, c.pendingSprayBlocks, c.spray.cfg.BlockExpiry,
+		reason, "credential_spray_block_requested", c.cfg.OnSprayBlock)
 }

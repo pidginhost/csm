@@ -190,8 +190,26 @@ func TestEnricherStopIsIdempotent(t *testing.T) {
 	e := NewEnricher(c, &fakeReader{}, EnricherConfig{Workers: 1, QueueCap: 4})
 	e.Start()
 	e.Start()
-	e.Stop()
-	e.Stop() // must not panic or block
+
+	done := make(chan struct{})
+	go func() {
+		e.Stop()
+		e.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Stop blocked")
+	}
+	if e.Enqueue(EnrichRequest{PID: 1234, UID: 1001, Comm: "ncat"}) {
+		t.Fatal("stopped enricher accepted a request")
+	}
+	// A stopped pool does not restart.
+	e.Start()
+	if e.Enqueue(EnrichRequest{PID: 1234, UID: 1001, Comm: "ncat"}) {
+		t.Fatal("Start after Stop revived the enricher")
+	}
 }
 
 func TestEnricherEnqueueAfterStopReturnsFalse(t *testing.T) {

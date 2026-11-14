@@ -535,8 +535,16 @@ func TestProcessEventsSkipsNegativeFd(t *testing.T) {
 	meta.Fd = -1
 	meta.Pid = 0
 
-	// Must not panic.
 	fm.processEvents(buf)
+
+	// An event with no descriptor has no file to analyze: nothing is queued
+	// and nothing is raised.
+	if n := len(fm.analyzerCh); n != 0 {
+		t.Fatalf("event without a descriptor queued %d files for analysis", n)
+	}
+	if n := len(fm.alertCh); n != 0 {
+		t.Fatalf("event without a descriptor raised %d findings", n)
+	}
 }
 
 // --- Stop: writing to pipe (already closed via pipeClosed=1) is a no-op --

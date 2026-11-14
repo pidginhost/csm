@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -69,13 +70,19 @@ func TestParseEximLogLineDelivery(t *testing.T) {
 func TestParseEximLogLineFrozen(t *testing.T) {
 	cfg := &config.Config{}
 	line := `2026-04-12 10:00:00 ABC123 Message is frozen`
+	resetEximFrozenDedup()
+	t.Cleanup(resetEximFrozenDedup)
 	findings := parseEximLogLine(line, cfg)
-	_ = findings // exercises frozen message path
+	if len(findings) != 1 || findings[0].Check != "exim_frozen_realtime" || findings[0].Severity != alert.Warning {
+		t.Fatalf("frozen line findings = %+v, want one Warning exim_frozen_realtime", findings)
+	}
 }
 
 func TestParseEximLogLineAuthFail(t *testing.T) {
 	cfg := &config.Config{}
 	line := `2026-04-12 10:00:00 H=host [203.0.113.5] F=<> rejected RCPT: relay not permitted`
-	findings := parseEximLogLine(line, cfg)
-	_ = findings
+	// A refused relay attempt is the MTA doing its job: nothing to report.
+	if findings := parseEximLogLine(line, cfg); len(findings) != 0 {
+		t.Fatalf("refused relay line produced findings: %+v", findings)
+	}
 }

@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,10 +62,22 @@ func TestInlineQuarantineWithRealData(t *testing.T) {
 	osFS = realOS{}
 	defer func() { osFS = old }()
 
+	qdir := filepath.Join(dir, "quarantine")
+	withAutoRespQuarantineDir(t, qdir)
+
+	// No rule category in the finding: not a high-confidence match, so the
+	// file is left where it is.
 	f := alert.Finding{Check: "webshell", FilePath: path}
-	msg, ok := InlineQuarantine(f, path, data)
-	_ = msg
-	_ = ok
+	qPath, ok := InlineQuarantine(f, path, data)
+	if ok || qPath != "" {
+		t.Fatalf("InlineQuarantine = %q, %v; want no quarantine", qPath, ok)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(data) {
+		t.Fatalf("file after refused quarantine = %q, %v; want it untouched", got, err)
+	}
+	if entries, _ := os.ReadDir(qdir); len(entries) != 0 {
+		t.Fatalf("quarantine holds %d entries after a refused move", len(entries))
+	}
 }
 
 // --- collectRecentIPs with multiple log sources ----------------------

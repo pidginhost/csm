@@ -356,7 +356,7 @@ func (a *analysis) readField(st *state, recv value, key fieldKey) value {
 		}
 		fv, definite := getField(o, key)
 		fv = applyRefDepth(fv, ref)
-		out, have = mergePresentValue(out, have, fv)
+		out, have = mergePresentValue(out, have, fv), true
 		if !definite || !fv.allocOnly {
 			definiteAlloc = false
 		}

@@ -3,8 +3,11 @@
 package daemon
 
 import (
-	"os"
+	"errors"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // These tests cover the Linux-only helper loadLocalDomainsForWatcher
@@ -67,17 +70,30 @@ func TestForwarderWatcherReadEventsEmptyBuffer(t *testing.T) {
 // TestForwarderWatcherNewCloseRoundTrip covers the fd lifecycle when
 // /etc/valiases happens to exist: Run must exit cleanly when stopCh closes.
 func TestForwarderWatcherNewCloseRoundTrip(t *testing.T) {
-	// Skip unless /etc/valiases is present.
-	if _, err := os.Stat("/etc/valiases"); err != nil {
-		t.Skip("/etc/valiases not present")
-	}
-	// Can't actually create an inotify watcher without root usually,
-	// but try anyway. If it fails, that covers the error path.
+	withValiasesDir(t, t.TempDir())
 	fw, err := NewForwarderWatcher(nil, nil)
 	if err != nil {
-		return
+		t.Fatalf("NewForwarderWatcher on an existing directory: %v", err)
 	}
+	fd := fw.inotifyFd
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
+		t.Fatalf("inotify descriptor is not open after construction: %v", err)
+	}
+
 	stopCh := make(chan struct{})
 	close(stopCh)
-	fw.Run(stopCh) // should close fd and return
+	done := make(chan struct{})
+	go func() {
+		fw.Run(stopCh)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after stop")
+	}
+	// Run owns the descriptor and closes it on the way out.
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("inotify descriptor after Run: err = %v, want EBADF", err)
+	}
 }

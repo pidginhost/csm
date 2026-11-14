@@ -126,7 +126,21 @@ func TestDynDNSResolverRunStops(t *testing.T) {
 	d := NewDynDNSResolver([]string{"localhost"}, eng)
 	stopCh := make(chan struct{})
 	close(stopCh) // close immediately
-	d.Run(stopCh) // should return immediately
+
+	done := make(chan struct{})
+	go func() {
+		d.Run(stopCh)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after stop")
+	}
+	// Stopped before the first tick: no lookup, no allow.
+	if len(eng.allowed) != 0 || len(eng.removed) != 0 {
+		t.Fatalf("stopped resolver changed the firewall: allowed=%v removed=%v", eng.allowed, eng.removed)
+	}
 }
 
 func TestDynDNSResolverRunClosedStopSkipsInitialLookup(t *testing.T) {

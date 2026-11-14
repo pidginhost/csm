@@ -839,32 +839,6 @@ func (s *Store) AppendHistory(findings []alert.Finding) {
 	}
 }
 
-func (s *Store) PrintStatus() {
-	if len(s.entries) == 0 {
-		fmt.Println("No state entries. Run 'csm baseline' first.")
-		return
-	}
-
-	baselineCount := 0
-	activeCount := 0
-	for key, entry := range s.entries {
-		if entry.IsBaseline {
-			baselineCount++
-			continue
-		}
-		if key[0] == '_' {
-			continue
-		}
-		activeCount++
-		fmt.Printf("  [ACTIVE] %s (first: %s, last: %s)\n",
-			key,
-			entry.FirstSeen.Format("2006-01-02 15:04"),
-			entry.LastSeen.Format("2006-01-02 15:04"),
-		)
-	}
-	fmt.Printf("\nBaseline entries: %d, Active findings: %d\n", baselineCount, activeCount)
-}
-
 // Entries returns a snapshot copy of current state entries (thread-safe).
 func (s *Store) Entries() map[string]*Entry {
 	s.mu.RLock()
@@ -1026,35 +1000,6 @@ func (s *Store) SetLatestFindings(findings []alert.Finding) {
 
 	s.latestFindings = orderAndCapLatest(existing)
 	s.latestScanTime = time.Now()
-	s.persistLatestLocked()
-}
-
-// PurgeFindingsByChecks removes all findings whose Check field matches
-// any of the given check names and persists the result to disk.
-// Used to clear stale performance findings before merging fresh results
-// from a scan tier.
-func (s *Store) PurgeFindingsByChecks(checks []string) {
-	if len(checks) == 0 {
-		return
-	}
-	s.latestMu.Lock()
-	defer s.latestMu.Unlock()
-
-	remove := make(map[string]bool, len(checks))
-	for _, c := range checks {
-		remove[c] = true
-	}
-
-	n := 0
-	for _, f := range s.latestFindings {
-		if !remove[f.Check] {
-			s.latestFindings[n] = f
-			n++
-		}
-	}
-	s.latestFindings = s.latestFindings[:n]
-
-	// Persist to disk so purged findings don't reappear after restart.
 	s.persistLatestLocked()
 }
 

@@ -4,8 +4,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/pidginhost/csm/internal/config"
 )
 
 // --- checkDpkgVerify with mock command --------------------------------
@@ -65,8 +63,7 @@ func TestScanEximMessageWithMock(t *testing.T) {
 		},
 	})
 
-	cfg := &config.Config{}
-	result := scanEximMessage("ABC123-DEF456-GH", "alice@example.com", cfg)
+	result := scanEximMessage("ABC123-DEF456-GH", "alice@example.com")
 	_ = result
 }
 

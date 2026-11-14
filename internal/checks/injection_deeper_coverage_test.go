@@ -1057,19 +1057,42 @@ func TestAutoFixPermissionsWithRealFile(t *testing.T) {
 	cfg.AutoResponse.EnforcePermissions = true
 
 	tmpDir := t.TempDir()
+	withFixPermissionsAllowedRoots(t, tmpDir)
 	tmpFile := tmpDir + "/test.php"
 	_ = os.WriteFile(tmpFile, []byte("<?php ?>"), 0666)
+	if err := os.Chmod(tmpFile, 0666); err != nil { // defeat umask
+		t.Fatal(err)
+	}
 
 	findings := []alert.Finding{{
 		Check:   "world_writable_php",
 		Message: fmt.Sprintf("World-writable PHP: %s", tmpFile),
 	}}
 
-	// resolveExistingFixPath requires the file to be under allowed roots.
-	// Since it checks /home roots, use the message extraction which may not
-	// match /home. Exercise the code path anyway.
 	actions, keys := AutoFixPermissions(cfg, findings)
-	_, _ = actions, keys
+
+	info, err := os.Stat(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fix acts on the path it reads out of the message, which only
+	// recognises account and temp roots. A temp dir elsewhere (macOS) is
+	// left alone, a temp dir under /tmp is fixed.
+	if extractFilePath(findings[0].Message) != tmpFile {
+		if len(actions) != 0 || len(keys) != 0 || info.Mode().Perm() != 0666 {
+			t.Fatalf("unrecognised path: actions=%v keys=%v mode=%o, want no change", actions, keys, info.Mode().Perm())
+		}
+		return
+	}
+	if info.Mode().Perm() != 0644 {
+		t.Fatalf("mode after fix = %o, want 644", info.Mode().Perm())
+	}
+	if len(actions) != 1 || !strings.Contains(actions[0].Message, "AUTO-FIX: "+tmpFile+" permissions set to 644 (was 666)") {
+		t.Fatalf("actions = %+v, want one AUTO-FIX from 666 to 644", actions)
+	}
+	if len(keys) != 1 || keys[0] != findings[0].Key() {
+		t.Fatalf("fixed keys = %v, want [%s]", keys, findings[0].Key())
+	}
 }
 
 func TestAutoFixPermissionsGroupWritable(t *testing.T) {

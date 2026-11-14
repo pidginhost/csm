@@ -96,10 +96,7 @@ func TestKernelHasBuiltInAFAlgAEAD_ReadsBootConfig(t *testing.T) {
 		},
 	})
 
-	got, err := kernelHasBuiltInAFAlgAEAD()
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
+	got := kernelHasBuiltInAFAlgAEAD()
 	if !got {
 		t.Error("expected built-in detection to succeed")
 	}
@@ -127,10 +124,7 @@ func TestKernelHasBuiltInAFAlgAEAD_FallsBackToProcConfigGz(t *testing.T) {
 		},
 	})
 
-	got, err := kernelHasBuiltInAFAlgAEAD()
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
+	got := kernelHasBuiltInAFAlgAEAD()
 	if !got {
 		t.Error("expected built-in detection via /proc/config.gz to succeed")
 	}
@@ -147,10 +141,7 @@ func TestKernelHasBuiltInAFAlgAEAD_NoConfigAvailableIsFalseNotError(t *testing.T
 		},
 	})
 
-	got, err := kernelHasBuiltInAFAlgAEAD()
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
+	got := kernelHasBuiltInAFAlgAEAD()
 	if got {
 		t.Error("config-unreadable host must default to NOT-built-in")
 	}

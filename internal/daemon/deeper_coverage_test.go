@@ -363,12 +363,18 @@ func TestClearFailures_RemovesEntry(t *testing.T) {
 
 func TestClearFailures_NoOpForMissing(t *testing.T) {
 	p := &PAMListener{
-		cfg:      &config.Config{},
-		alertCh:  make(chan alert.Finding, 5),
-		failures: make(map[string]*pamFailureTracker),
+		cfg:     &config.Config{},
+		alertCh: make(chan alert.Finding, 5),
+		failures: map[string]*pamFailureTracker{
+			"203.0.113.20": {count: 3, users: map[string]bool{"root": true}},
+		},
 	}
-	// Should not panic
+	// An address with no record changes nothing for the ones that have one.
 	p.clearFailuresForUser("203.0.113.99", "root")
+	tracker, ok := p.failures["203.0.113.20"]
+	if len(p.failures) != 1 || !ok || tracker.count != 3 || !tracker.users["root"] {
+		t.Fatalf("failures after clearing an unknown address = %+v", p.failures)
+	}
 }
 
 // ---------------------------------------------------------------------------

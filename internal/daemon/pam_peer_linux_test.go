@@ -5,11 +5,8 @@ package daemon
 import "testing"
 
 func TestIsTrustedPAMPeerLinuxNil(t *testing.T) {
-	// On Linux, isTrustedPAMPeer checks ucred — nil conn should not panic
-	defer func() {
-		if r := recover(); r != nil {
-			t.Log("isTrustedPAMPeer panicked on nil, expected for Linux")
-		}
-	}()
-	_ = isTrustedPAMPeer(nil)
+	// A peer with no Unix credentials to read is not trusted.
+	if isTrustedPAMPeer(nil) {
+		t.Fatal("nil connection was trusted as a PAM peer")
+	}
 }

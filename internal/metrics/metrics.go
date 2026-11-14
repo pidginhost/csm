@@ -304,15 +304,16 @@ func (h *Histogram) writeTo(w *bufferedWriter) {
 // Labelled variants (vectors)
 // -----------------------------------------------------------------------
 
-// CounterVec is a family of counters indexed by a fixed set of label
-// keys. Label values are provided per sample.
-type CounterVec struct {
+// labelledVec is the label bookkeeping CounterVec, HistogramVec and GaugeVec
+// share: one child per label-value combination, bounded by maxChildren.
+type labelledVec[T any] struct {
+	kind      string // "counter", "histogram" or "gauge"; names the vec in panics
 	name      string
 	help      string
 	labelKeys []string
 
 	mu          sync.Mutex
-	children    map[string]*Counter
+	children    map[string]*T
 	keys        []string // insertion-ordered; stable for scrape ordering within a vec
 	maxChildren int      // 0 = unlimited
 }
@@ -327,17 +328,16 @@ const defaultVecCardinalityCap = 1000
 // single sentinel bucket so cardinality stays bounded.
 const overflowLabelValue = "_overflow_"
 
-// NewCounterVec constructs a vector counter. labelKeys must be non-
-// empty; use NewCounter for an unlabelled counter.
-func NewCounterVec(name, help string, labelKeys []string) *CounterVec {
+func newLabelledVec[T any](kind, name, help string, labelKeys []string) labelledVec[T] {
 	if len(labelKeys) == 0 {
-		panic(fmt.Sprintf("metrics: counter vec %q needs at least one label key", name))
+		panic(fmt.Sprintf("metrics: %s vec %q needs at least one label key", kind, name))
 	}
-	return &CounterVec{
+	return labelledVec[T]{
+		kind:        kind,
 		name:        name,
 		help:        help,
 		labelKeys:   append([]string{}, labelKeys...),
-		children:    map[string]*Counter{},
+		children:    map[string]*T{},
 		maxChildren: defaultVecCardinalityCap,
 	}
 }
@@ -345,46 +345,67 @@ func NewCounterVec(name, help string, labelKeys []string) *CounterVec {
 // SetMaxChildren overrides the per-vec cardinality cap. Pass 0 to
 // disable the cap entirely (only safe when label values come from a
 // fixed enum the operator controls).
-func (cv *CounterVec) SetMaxChildren(n int) {
-	cv.mu.Lock()
-	defer cv.mu.Unlock()
-	cv.maxChildren = n
+func (v *labelledVec[T]) SetMaxChildren(n int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.maxChildren = n
 }
 
 // ChildCount returns the current number of distinct label-value
 // children, including the overflow sentinel if used. Exposed for
 // tests and operator health checks.
-func (cv *CounterVec) ChildCount() int {
-	cv.mu.Lock()
-	defer cv.mu.Unlock()
-	return len(cv.children)
+func (v *labelledVec[T]) ChildCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return len(v.children)
 }
 
-// With returns the child counter for the given label values. Values
-// are identified by the concatenation of label values; caller supplies
-// them in the same order as labelKeys from NewCounterVec. Once the cap
-// is reached, additional label-value combinations collapse to a
-// single "_overflow_" bucket so the map stays bounded.
-func (cv *CounterVec) With(values ...string) *Counter {
-	if len(values) != len(cv.labelKeys) {
-		panic(fmt.Sprintf("metrics: counter vec %q: got %d label values, want %d", cv.name, len(values), len(cv.labelKeys)))
+// child returns the child for the given label values, creating it with
+// newChild. Values are identified by the concatenation of label values;
+// caller supplies them in the same order as labelKeys. Once the cap is
+// reached, additional label-value combinations collapse to a single
+// "_overflow_" bucket so the map stays bounded.
+func (v *labelledVec[T]) child(values []string, newChild func() *T) *T {
+	if len(values) != len(v.labelKeys) {
+		panic(fmt.Sprintf("metrics: %s vec %q: got %d label values, want %d", v.kind, v.name, len(values), len(v.labelKeys)))
 	}
 	key := joinLabelValues(values)
-	cv.mu.Lock()
-	defer cv.mu.Unlock()
-	if c, ok := cv.children[key]; ok {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if c, ok := v.children[key]; ok {
 		return c
 	}
-	if cv.maxChildren > 0 && len(cv.children) >= explicitChildLimit(cv.maxChildren) {
-		key = joinLabelValues(overflowLabelValuesForArity(len(cv.labelKeys)))
-		if c, ok := cv.children[key]; ok {
+	if v.maxChildren > 0 && len(v.children) >= explicitChildLimit(v.maxChildren) {
+		key = joinLabelValues(overflowLabelValuesForArity(len(v.labelKeys)))
+		if c, ok := v.children[key]; ok {
 			return c
 		}
 	}
-	c := &Counter{name: cv.name, help: cv.help}
-	cv.children[key] = c
-	cv.keys = append(cv.keys, key)
+	c := newChild()
+	v.children[key] = c
+	v.keys = append(v.keys, key)
 	return c
+}
+
+// each calls fn with the label pairs of every child, in sorted key order.
+// The children are snapshotted under the lock and fn runs outside it.
+func (v *labelledVec[T]) each(fn func(pairs []labelPair, child *T)) {
+	v.mu.Lock()
+	keys := append([]string(nil), v.keys...)
+	childMap := make(map[string]*T, len(v.children))
+	for k, c := range v.children {
+		childMap[k] = c
+	}
+	v.mu.Unlock()
+	sort.Strings(keys)
+	for _, k := range keys {
+		values := splitLabelValues(k)
+		pairs := make([]labelPair, len(v.labelKeys))
+		for i, lk := range v.labelKeys {
+			pairs[i] = labelPair{key: lk, value: values[i]}
+		}
+		fn(pairs, childMap[k])
+	}
 }
 
 // overflowLabelValuesForArity returns a values slice of length n with
@@ -405,120 +426,67 @@ func explicitChildLimit(maxChildren int) int {
 	return maxChildren - 1
 }
 
+// CounterVec is a family of counters indexed by a fixed set of label
+// keys. Label values are provided per sample.
+type CounterVec struct {
+	labelledVec[Counter]
+}
+
+// NewCounterVec constructs a vector counter. labelKeys must be non-
+// empty; use NewCounter for an unlabelled counter.
+func NewCounterVec(name, help string, labelKeys []string) *CounterVec {
+	return &CounterVec{labelledVec: newLabelledVec[Counter]("counter", name, help, labelKeys)}
+}
+
+// With returns the child counter for the given label values, in the
+// same order as labelKeys from NewCounterVec.
+func (cv *CounterVec) With(values ...string) *Counter {
+	return cv.child(values, func() *Counter { return &Counter{name: cv.name, help: cv.help} })
+}
+
 func (cv *CounterVec) writeTo(w *bufferedWriter) {
 	w.writeMeta(cv.name, cv.help, typeCounter)
-	cv.mu.Lock()
-	keys := append([]string(nil), cv.keys...)
-	childMap := make(map[string]*Counter, len(cv.children))
-	for k, v := range cv.children {
-		childMap[k] = v
-	}
-	cv.mu.Unlock()
-	sort.Strings(keys)
-	for _, k := range keys {
-		values := splitLabelValues(k)
-		pairs := make([]labelPair, len(cv.labelKeys))
-		for i, lk := range cv.labelKeys {
-			pairs[i] = labelPair{key: lk, value: values[i]}
-		}
-		w.writeSample(cv.name, pairs, childMap[k].Value())
-	}
+	cv.each(func(pairs []labelPair, c *Counter) {
+		w.writeSample(cv.name, pairs, c.Value())
+	})
 }
 
 // HistogramVec is the labelled variant of Histogram. All children
 // share the same upper-bound set.
 type HistogramVec struct {
-	name      string
-	help      string
-	labelKeys []string
-	upper     []float64
-
-	mu          sync.Mutex
-	children    map[string]*Histogram
-	keys        []string
-	maxChildren int
+	labelledVec[Histogram]
+	upper []float64
 }
 
 // NewHistogramVec constructs a vector histogram.
 func NewHistogramVec(name, help string, labelKeys []string, upperBounds []float64) *HistogramVec {
-	if len(labelKeys) == 0 {
-		panic(fmt.Sprintf("metrics: histogram vec %q needs at least one label key", name))
+	hv := &HistogramVec{
+		labelledVec: newLabelledVec[Histogram]("histogram", name, help, labelKeys),
+		upper:       append([]float64{}, upperBounds...),
 	}
 	for i := 1; i < len(upperBounds); i++ {
 		if upperBounds[i] <= upperBounds[i-1] {
 			panic(fmt.Sprintf("metrics: histogram vec %q bounds must be strictly increasing", name))
 		}
 	}
-	return &HistogramVec{
-		name:        name,
-		help:        help,
-		labelKeys:   append([]string{}, labelKeys...),
-		upper:       append([]float64{}, upperBounds...),
-		children:    map[string]*Histogram{},
-		maxChildren: defaultVecCardinalityCap,
-	}
+	return hv
 }
 
-// SetMaxChildren overrides the per-vec cardinality cap.
-func (hv *HistogramVec) SetMaxChildren(n int) {
-	hv.mu.Lock()
-	defer hv.mu.Unlock()
-	hv.maxChildren = n
-}
-
-// ChildCount returns the current number of distinct label-value children.
-func (hv *HistogramVec) ChildCount() int {
-	hv.mu.Lock()
-	defer hv.mu.Unlock()
-	return len(hv.children)
-}
-
-// With returns the child histogram for the given label values. See
-// CounterVec.With for cap semantics.
+// With returns the child histogram for the given label values.
 func (hv *HistogramVec) With(values ...string) *Histogram {
-	if len(values) != len(hv.labelKeys) {
-		panic(fmt.Sprintf("metrics: histogram vec %q: got %d label values, want %d", hv.name, len(values), len(hv.labelKeys)))
-	}
-	key := joinLabelValues(values)
-	hv.mu.Lock()
-	defer hv.mu.Unlock()
-	if h, ok := hv.children[key]; ok {
-		return h
-	}
-	if hv.maxChildren > 0 && len(hv.children) >= explicitChildLimit(hv.maxChildren) {
-		key = joinLabelValues(overflowLabelValuesForArity(len(hv.labelKeys)))
-		if h, ok := hv.children[key]; ok {
-			return h
+	return hv.child(values, func() *Histogram {
+		return &Histogram{
+			name:      hv.name,
+			help:      hv.help,
+			upper:     hv.upper,
+			bucketCnt: make([]uint64, len(hv.upper)+1),
 		}
-	}
-	h := &Histogram{
-		name:      hv.name,
-		help:      hv.help,
-		upper:     hv.upper,
-		bucketCnt: make([]uint64, len(hv.upper)+1),
-	}
-	hv.children[key] = h
-	hv.keys = append(hv.keys, key)
-	return h
+	})
 }
 
 func (hv *HistogramVec) writeTo(w *bufferedWriter) {
 	w.writeMeta(hv.name, hv.help, typeHistogram)
-	hv.mu.Lock()
-	keys := append([]string(nil), hv.keys...)
-	childMap := make(map[string]*Histogram, len(hv.children))
-	for k, v := range hv.children {
-		childMap[k] = v
-	}
-	hv.mu.Unlock()
-	sort.Strings(keys)
-	for _, k := range keys {
-		values := splitLabelValues(k)
-		labelPairs := make([]labelPair, len(hv.labelKeys))
-		for i, lk := range hv.labelKeys {
-			labelPairs[i] = labelPair{key: lk, value: values[i]}
-		}
-		h := childMap[k]
+	hv.each(func(labelPairs []labelPair, h *Histogram) {
 		for i, up := range h.upper {
 			pairs := append([]labelPair(nil), labelPairs...)
 			pairs = append(pairs, labelPair{"le", formatFloat(up)})
@@ -529,7 +497,7 @@ func (hv *HistogramVec) writeTo(w *bufferedWriter) {
 		w.writeSample(hv.name+"_bucket", pairsInf, float64(atomicLoad(&h.bucketCnt[len(h.upper)])))
 		w.writeSample(hv.name+"_sum", labelPairs, math.Float64frombits(atomicLoad(&h.sum)))
 		w.writeSample(hv.name+"_count", labelPairs, float64(atomicLoad(&h.count)))
-	}
+	})
 }
 
 // atomicLoad is a small helper so the HistogramVec writeTo reads match
@@ -539,86 +507,24 @@ func atomicLoad(p *uint64) uint64 { return atomic.LoadUint64(p) }
 
 // GaugeVec is the labelled variant of Gauge.
 type GaugeVec struct {
-	name      string
-	help      string
-	labelKeys []string
-
-	mu          sync.Mutex
-	children    map[string]*Gauge
-	keys        []string
-	maxChildren int
+	labelledVec[Gauge]
 }
 
 // NewGaugeVec constructs a vector gauge.
 func NewGaugeVec(name, help string, labelKeys []string) *GaugeVec {
-	if len(labelKeys) == 0 {
-		panic(fmt.Sprintf("metrics: gauge vec %q needs at least one label key", name))
-	}
-	return &GaugeVec{
-		name:        name,
-		help:        help,
-		labelKeys:   append([]string{}, labelKeys...),
-		children:    map[string]*Gauge{},
-		maxChildren: defaultVecCardinalityCap,
-	}
+	return &GaugeVec{labelledVec: newLabelledVec[Gauge]("gauge", name, help, labelKeys)}
 }
 
-// SetMaxChildren overrides the per-vec cardinality cap.
-func (gv *GaugeVec) SetMaxChildren(n int) {
-	gv.mu.Lock()
-	defer gv.mu.Unlock()
-	gv.maxChildren = n
-}
-
-// ChildCount returns the current number of distinct label-value children.
-func (gv *GaugeVec) ChildCount() int {
-	gv.mu.Lock()
-	defer gv.mu.Unlock()
-	return len(gv.children)
-}
-
-// With returns the child gauge for the given label values. See
-// CounterVec.With for cap semantics.
+// With returns the child gauge for the given label values.
 func (gv *GaugeVec) With(values ...string) *Gauge {
-	if len(values) != len(gv.labelKeys) {
-		panic(fmt.Sprintf("metrics: gauge vec %q: got %d label values, want %d", gv.name, len(values), len(gv.labelKeys)))
-	}
-	key := joinLabelValues(values)
-	gv.mu.Lock()
-	defer gv.mu.Unlock()
-	if g, ok := gv.children[key]; ok {
-		return g
-	}
-	if gv.maxChildren > 0 && len(gv.children) >= explicitChildLimit(gv.maxChildren) {
-		key = joinLabelValues(overflowLabelValuesForArity(len(gv.labelKeys)))
-		if g, ok := gv.children[key]; ok {
-			return g
-		}
-	}
-	g := &Gauge{name: gv.name, help: gv.help}
-	gv.children[key] = g
-	gv.keys = append(gv.keys, key)
-	return g
+	return gv.child(values, func() *Gauge { return &Gauge{name: gv.name, help: gv.help} })
 }
 
 func (gv *GaugeVec) writeTo(w *bufferedWriter) {
 	w.writeMeta(gv.name, gv.help, typeGauge)
-	gv.mu.Lock()
-	keys := append([]string(nil), gv.keys...)
-	childMap := make(map[string]*Gauge, len(gv.children))
-	for k, v := range gv.children {
-		childMap[k] = v
-	}
-	gv.mu.Unlock()
-	sort.Strings(keys)
-	for _, k := range keys {
-		values := splitLabelValues(k)
-		pairs := make([]labelPair, len(gv.labelKeys))
-		for i, lk := range gv.labelKeys {
-			pairs[i] = labelPair{key: lk, value: values[i]}
-		}
-		w.writeSample(gv.name, pairs, childMap[k].Value())
-	}
+	gv.each(func(pairs []labelPair, g *Gauge) {
+		w.writeSample(gv.name, pairs, g.Value())
+	})
 }
 
 // -----------------------------------------------------------------------

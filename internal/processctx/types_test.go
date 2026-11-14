@@ -2,6 +2,7 @@ package processctx
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,16 @@ func TestProcessContextJSONIncludesPopulatedFields(t *testing.T) {
 
 func TestProcessEntryHasNoExportedJSONTags(t *testing.T) {
 	// processEntry is the cache shape; it must not be marshaled directly.
-	// Compile-time check via reflect would over-assert; the contract is:
-	// public callers only ever see ProcessContext.
-	_ = processEntry{}
+	// Public callers only ever see ProcessContext, so a json tag here means
+	// someone started serializing the cache.
+	typ := reflect.TypeOf(processEntry{})
+	if typ.NumField() == 0 {
+		t.Fatal("processEntry has no fields to check")
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if tag, ok := f.Tag.Lookup("json"); ok {
+			t.Errorf("processEntry.%s carries json tag %q", f.Name, tag)
+		}
+	}
 }

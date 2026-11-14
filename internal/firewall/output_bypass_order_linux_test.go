@@ -81,9 +81,7 @@ func TestOutputFamilyBypassesPreserveSMTPPrecedence(t *testing.T) {
 			conn, captured := nftConnCapturingRules(t)
 			e := &Engine{cfg: tc.cfg, conn: conn}
 			e.table = conn.AddTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
-			if err := e.createOutputChain(); err != nil {
-				t.Fatal(err)
-			}
+			e.createOutputChain()
 			if err := conn.Flush(); err != nil {
 				t.Fatal(err)
 			}

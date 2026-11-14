@@ -924,11 +924,14 @@ func TestGenerateCandidatesDomainWithoutDot(t *testing.T) {
 
 func TestAutoQuarantineFilesCleanPathNoInjection(t *testing.T) {
 	dir := t.TempDir()
+	qdir := filepath.Join(dir, "quarantine")
+	withAutoRespQuarantineDir(t, qdir)
 	corePath := filepath.Join(dir, "wp-includes", "version.php")
+	original := []byte("<?php\n$wp_version = '6.4.3';\n")
 	_ = os.MkdirAll(filepath.Dir(corePath), 0755)
-	_ = os.WriteFile(corePath, []byte("<?php\n$wp_version = '6.4.3';\n"), 0644)
+	_ = os.WriteFile(corePath, original, 0644)
 
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 
@@ -939,10 +942,28 @@ func TestAutoQuarantineFilesCleanPathNoInjection(t *testing.T) {
 		FilePath: corePath,
 	}}
 
-	// File is a WP core file. CleanInfectedFile returns no changes.
-	// The loop will "continue" without quarantining.
+	// A core path is cleaned, not quarantined, and the cleaner finds no
+	// injection to remove: the file stays and the operator is told to review.
 	actions := AutoQuarantineFiles(cfg, findings)
-	_ = actions
+	if len(actions) != 1 {
+		t.Fatalf("actions = %+v, want one manual-review notice", actions)
+	}
+	if actions[0].Check != "auto_response" || actions[0].Severity != alert.Warning ||
+		!strings.Contains(actions[0].Message, "AUTO-CLEAN refused for "+corePath) {
+		t.Fatalf("action = %+v, want an AUTO-CLEAN refusal for the core file", actions[0])
+	}
+	if !findings[0].AutoFileResponseEvaluated {
+		t.Fatal("finding was not marked evaluated")
+	}
+	if got, err := os.ReadFile(corePath); err != nil || string(got) != string(original) {
+		t.Fatalf("core file after response = %q, %v; want it untouched", got, err)
+	}
+	entries, _ := os.ReadDir(qdir)
+	for _, e := range entries {
+		if !e.IsDir() {
+			t.Fatalf("quarantine holds %s; a file with no injection must not be moved", e.Name())
+		}
+	}
 }
 
 func TestAutoQuarantineFilesSkipsSymlinkTarget(t *testing.T) {
@@ -994,10 +1015,14 @@ func TestAutoQuarantineFilesRealtimeSkipsBackdoor(t *testing.T) {
 
 func TestAutoQuarantineFilesRealtimeQuarantinesDropper(t *testing.T) {
 	dir := t.TempDir()
+	qdir := filepath.Join(dir, "quarantine")
+	withAutoRespQuarantineDir(t, qdir)
 	filePath := filepath.Join(dir, "dropper.php")
 	_ = os.WriteFile(filePath, []byte(generateHighEntropyPHP(10000)), 0644)
 
-	cfg := &config.Config{}
+	// The response gate needs its own state directory: with none it pauses,
+	// and the pause notice is rate limited across the whole test binary.
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 
@@ -1011,20 +1036,25 @@ func TestAutoQuarantineFilesRealtimeQuarantinesDropper(t *testing.T) {
 
 	actions := AutoQuarantineFiles(cfg, findings)
 	if len(actions) != 1 {
-		t.Skipf("quarantine may fail on dev (dir permissions); actions=%d", len(actions))
+		t.Fatalf("actions = %+v, want one quarantine", actions)
 	}
 	if !strings.Contains(actions[0].Message, "AUTO-QUARANTINE") {
 		t.Errorf("expected AUTO-QUARANTINE action, got %q", actions[0].Message)
+	}
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Errorf("dropper still in place after quarantine: stat err = %v", err)
 	}
 }
 
 func TestAutoQuarantineFilesDirectoryQuarantine(t *testing.T) {
 	dir := t.TempDir()
+	qdir := filepath.Join(dir, "quarantine")
+	withAutoRespQuarantineDir(t, qdir)
 	phishDir := filepath.Join(dir, "phishing-kit")
 	_ = os.MkdirAll(phishDir, 0755)
 	_ = os.WriteFile(filepath.Join(phishDir, "index.html"), []byte("<html>phish</html>"), 0644)
 
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.QuarantineFiles = true
 
@@ -1035,9 +1065,17 @@ func TestAutoQuarantineFilesDirectoryQuarantine(t *testing.T) {
 		FilePath: phishDir,
 	}}
 
-	// On dev, quarantine to /opt/csm/quarantine may fail.
+	// A whole directory is never moved: the response is refused and paused.
 	actions := AutoQuarantineFiles(cfg, findings)
-	_ = actions
+	if len(actions) != 1 || actions[0].Check != "auto_response_paused" {
+		t.Fatalf("actions = %+v, want one auto_response_paused refusal", actions)
+	}
+	if data, err := os.ReadFile(filepath.Join(phishDir, "index.html")); err != nil || string(data) != "<html>phish</html>" {
+		t.Fatalf("directory contents after refusal = %q, %v; want them untouched", data, err)
+	}
+	if entries, _ := os.ReadDir(qdir); len(entries) != 0 {
+		t.Fatalf("quarantine holds %d entries after a refused directory", len(entries))
+	}
 }
 
 func TestAutoQuarantineFilesAllCheckTypesNonexistent(t *testing.T) {

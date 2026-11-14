@@ -888,15 +888,38 @@ func readRateLimitCount(t *testing.T, dir string) int {
 func TestSendHeartbeatDisabledIsNoOp(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Alerts.Heartbeat.Enabled = false
-	cfg.Alerts.Heartbeat.URL = "http://127.0.0.1:1/hb"
-	SendHeartbeat(cfg) // must not touch the network
+	cfg.Alerts.Heartbeat.URL = "http://192.0.2.1/hb"
+
+	var count atomic.Int32
+	restore := SetWebhookTransportForTest(countingWebhookTransport{requests: &count})
+	defer restore()
+
+	SendHeartbeat(cfg)
+	if got := count.Load(); got != 0 {
+		t.Fatalf("disabled heartbeat sent %d requests, want 0", got)
+	}
+
+	// The same config sends once enabled, so the zero above is the switch.
+	cfg.Alerts.Heartbeat.Enabled = true
+	SendHeartbeat(cfg)
+	if got := count.Load(); got != 1 {
+		t.Fatalf("enabled heartbeat sent %d requests, want 1", got)
+	}
 }
 
 func TestSendHeartbeatEmptyURLIsNoOp(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Alerts.Heartbeat.Enabled = true
 	cfg.Alerts.Heartbeat.URL = ""
+
+	var count atomic.Int32
+	restore := SetWebhookTransportForTest(countingWebhookTransport{requests: &count})
+	defer restore()
+
 	SendHeartbeat(cfg)
+	if got := count.Load(); got != 0 {
+		t.Fatalf("heartbeat with no URL sent %d requests, want 0", got)
+	}
 }
 
 func TestSendHeartbeatHitsURL(t *testing.T) {
@@ -918,9 +941,20 @@ func TestSendHeartbeatHitsURL(t *testing.T) {
 func TestSendHeartbeatHTTPErrorIsSwallowed(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Alerts.Heartbeat.Enabled = true
-	cfg.Alerts.Heartbeat.URL = "http://127.0.0.1:1/hb"
-	// Must not panic / hang / return anything observable.
+	cfg.Alerts.Heartbeat.URL = "http://192.0.2.1/hb"
+
+	var attempts atomic.Int32
+	restore := SetWebhookTransportForTest(phpanelHealthTransport(func(r *http.Request) (*http.Response, error) {
+		attempts.Add(1)
+		return nil, fmt.Errorf("connection refused")
+	}))
+	defer restore()
+
+	// One attempt, no retry storm, and the transport error does not escape.
 	SendHeartbeat(cfg)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("failing heartbeat made %d attempts, want 1", got)
+	}
 }
 
 // --- SplitByClass / loadBlockedIPs ------------------------------------

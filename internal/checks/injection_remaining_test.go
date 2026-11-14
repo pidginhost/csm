@@ -59,13 +59,13 @@ func TestExtractUserFromPath_Remaining(t *testing.T) {
 // --- isSymlinkSafe ---------------------------------------------------
 
 func TestIsSymlinkSafeWithinHome(t *testing.T) {
-	if !isSymlinkSafe("/home/alice/public_html/link", "alice", "/home/alice") {
+	if !isSymlinkSafe("/home/alice/public_html/link", "/home/alice") {
 		t.Error("symlink within home should be safe")
 	}
 }
 
 func TestIsSymlinkSafeOutsideHome(t *testing.T) {
-	if isSymlinkSafe("/etc/passwd", "alice", "/home/alice") {
+	if isSymlinkSafe("/etc/passwd", "/home/alice") {
 		t.Error("symlink to /etc/passwd should not be safe")
 	}
 }
@@ -171,9 +171,8 @@ func TestFindWPTransientsNoWPConfig(t *testing.T) {
 		},
 	})
 
-	cfg := &config.Config{}
 	var findings []alert.Finding
-	findWPTransients("/home/alice/public_html", cfg, 10*1024*1024, 50*1024*1024, 3, &findings)
+	findWPTransients("/home/alice/public_html", 10*1024*1024, 50*1024*1024, 3, &findings)
 	if len(findings) != 0 {
 		t.Errorf("no wp-config should produce 0, got %d", len(findings))
 	}

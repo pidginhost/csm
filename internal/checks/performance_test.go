@@ -429,8 +429,35 @@ func TestCheckLoadAverage_Disabled(t *testing.T) {
 
 func TestCheckSwapAndOOM_NoCrash(t *testing.T) {
 	cfg := testPerfConfig()
-	// Should not panic regardless of system state; ignore returned findings.
-	_ = CheckSwapAndOOM(context.Background(), cfg, nil)
+	meminfo := func(swapFree string) {
+		withMockOS(t, &mockOS{
+			open: func(name string) (*os.File, error) {
+				if name != "/proc/meminfo" {
+					return nil, os.ErrNotExist
+				}
+				tmp := filepath.Join(t.TempDir(), "meminfo")
+				data := "MemTotal: 4096000 kB\nMemAvailable: 2048000 kB\nSwapTotal: 1000000 kB\nSwapFree: " + swapFree + " kB\n"
+				if err := os.WriteFile(tmp, []byte(data), 0644); err != nil {
+					return nil, err
+				}
+				return os.Open(tmp)
+			},
+		})
+	}
+	// dmesg has nothing to say, so only swap decides.
+	withMockCmd(t, &mockCmd{})
+
+	meminfo("900000") // 10% used
+	if findings := CheckSwapAndOOM(context.Background(), cfg, nil); len(findings) != 0 {
+		t.Fatalf("10%% swap use produced findings: %+v", findings)
+	}
+
+	meminfo("100000") // 90% used
+	findings := CheckSwapAndOOM(context.Background(), cfg, nil)
+	if len(findings) != 1 || findings[0].Check != "perf_memory" ||
+		findings[0].Message != "High swap usage" || findings[0].Severity != alert.High {
+		t.Fatalf("90%% swap use findings = %+v, want one High perf_memory", findings)
+	}
 }
 
 func TestCheckWPCron_UsesConfiguredAccountRoots(t *testing.T) {

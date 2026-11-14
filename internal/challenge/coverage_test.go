@@ -3,6 +3,7 @@ package challenge
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -725,7 +726,17 @@ func TestVerifyCookieIsSignedAndIPBound(t *testing.T) {
 
 func TestServerShutdownIdempotent(t *testing.T) {
 	s := New(baseCfg(), nil)
-	s.Shutdown()
-	// Second call — http.Server.Close is idempotent.
-	s.Shutdown()
+	for i := 1; i <= 2; i++ {
+		s.Shutdown()
+		s.socketMu.Lock()
+		closed := s.socketClosed
+		s.socketMu.Unlock()
+		if !closed {
+			t.Fatalf("after Shutdown #%d the socket is not marked closed", i)
+		}
+		// A closed http.Server refuses to serve again.
+		if err := s.srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("after Shutdown #%d ListenAndServe = %v, want http.ErrServerClosed", i, err)
+		}
+	}
 }

@@ -59,10 +59,6 @@ func NewEngine(_ *FirewallConfig, _ string) (*Engine, error) {
 	return nil, ErrUnsupportedPlatform
 }
 
-func ConnectExisting(_ *FirewallConfig, _ string) (*Engine, error) {
-	return nil, ErrUnsupportedPlatform
-}
-
 // Mutating methods fail loudly (ErrUnsupportedPlatform) so a caller can
 // never record a phantom block; read-only methods stay inert so status
 // paths degrade gracefully.

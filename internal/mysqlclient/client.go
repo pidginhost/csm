@@ -332,29 +332,6 @@ func RootQuery(ctx context.Context, query string, args ...any) ([]string, error)
 	return runQuery(ctx, db, query, args...)
 }
 
-// RootExec runs a non-SELECT statement (DDL/DML) as root and returns
-// the affected-row count plus any error. Mirrors `mysql -e <stmt>` for
-// callers that previously relied on exit code only.
-//
-// Tests can intercept via SetRootExecForTest.
-func RootExec(ctx context.Context, stmt string, args ...any) (int64, error) {
-	if fn := getRootExecMock(); fn != nil {
-		return fn(ctx, "", stmt, args...)
-	}
-	db, err := RootDB()
-	if err != nil {
-		return 0, err
-	}
-	cctx, cancel := context.WithTimeout(ctx, queryTimeout)
-	defer cancel()
-	res, err := db.ExecContext(cctx, stmt, args...)
-	if err != nil {
-		return 0, fmt.Errorf("mysqlclient: exec: %w", err)
-	}
-	rows, _ := res.RowsAffected()
-	return rows, nil
-}
-
 // RootExecSchema runs a non-SELECT statement against an explicit schema
 // using root creds. Mirrors `mysql <schema> -e <stmt>`.
 func RootExecSchema(ctx context.Context, schema, stmt string, args ...any) (int64, error) {
@@ -389,8 +366,8 @@ func RootExecSchema(ctx context.Context, schema, stmt string, args ...any) (int6
 // empty for RootQuery, non-empty for RootQuerySchema.
 type RootQueryFunc func(ctx context.Context, schema, query string, args ...any) ([]string, error)
 
-// RootExecFunc is the signature SetRootExecForTest accepts. schema is
-// empty for RootExec, non-empty for RootExecSchema.
+// RootExecFunc is the signature SetRootExecForTest accepts. schema is the
+// one RootExecSchema was called with.
 type RootExecFunc func(ctx context.Context, schema, stmt string, args ...any) (int64, error)
 
 var (
@@ -409,9 +386,9 @@ func SetRootQueryForTest(fn RootQueryFunc) {
 	rootQueryMock = fn
 }
 
-// SetRootExecForTest installs an interceptor for RootExec /
-// RootExecSchema. Pass nil to clear and restore the real database/sql
-// path. Production code paths must NOT call this.
+// SetRootExecForTest installs an interceptor for RootExecSchema. Pass nil
+// to clear and restore the real database/sql path. Production code paths
+// must NOT call this.
 func SetRootExecForTest(fn RootExecFunc) {
 	rootExecMockMu.Lock()
 	defer rootExecMockMu.Unlock()

@@ -616,29 +616,6 @@ func TestSetLatestFindingsPersistsToDisk(t *testing.T) {
 	}
 }
 
-func TestPurgeFindingsByChecks(t *testing.T) {
-	s := openTestStore(t)
-	s.SetLatestFindings([]alert.Finding{
-		{Check: "perf_high", Message: "load"},
-		{Check: "perf_mid", Message: "cpu"},
-		{Check: "malware", Message: "found"},
-	})
-	s.PurgeFindingsByChecks([]string{"perf_high", "perf_mid"})
-	got := s.LatestFindings()
-	if len(got) != 1 || got[0].Check != "malware" {
-		t.Errorf("PurgeFindingsByChecks result = %+v, want 1 malware", got)
-	}
-}
-
-func TestPurgeFindingsByChecksEmptyList(t *testing.T) {
-	s := openTestStore(t)
-	s.SetLatestFindings([]alert.Finding{{Check: "a"}, {Check: "b"}})
-	s.PurgeFindingsByChecks(nil)
-	if got := s.LatestFindings(); len(got) != 2 {
-		t.Errorf("empty purge list should be no-op, got %d", len(got))
-	}
-}
-
 func TestPurgeAndMergeFindingsAtomic(t *testing.T) {
 	s := openTestStore(t)
 	s.SetLatestFindings([]alert.Finding{
@@ -1156,29 +1133,6 @@ func TestAppendHistoryEmptyIsNoOp(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(s.path, "history.jsonl")); err == nil {
 		t.Error("empty AppendHistory should not create history.jsonl")
 	}
-}
-
-// --- PrintStatus -------------------------------------------------------
-//
-// PrintStatus writes to stdout. We redirect stdout to a pipe to capture
-// output and then restore it.
-
-func TestPrintStatusEmpty(t *testing.T) {
-	s := openTestStore(t)
-	s.PrintStatus() // just ensure it doesn't panic on empty state
-}
-
-func TestPrintStatusWithEntries(t *testing.T) {
-	s := openTestStore(t)
-	s.Update([]alert.Finding{{Check: "c", Message: "active"}})
-	s.SetBaseline([]alert.Finding{{Check: "b", Message: "baseline"}})
-
-	// Add an internal (_-prefixed) key to exercise the skip branch.
-	s.mu.Lock()
-	s.entries["_internal:x"] = &Entry{Hash: "x", LastSeen: time.Now()}
-	s.mu.Unlock()
-
-	s.PrintStatus() // must not panic and must render all branches
 }
 
 // --- store-backed delegation methods -----------------------------------

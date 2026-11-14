@@ -95,25 +95,8 @@ func (c jConfigCreds) asWPDBCreds() wpDBCreds {
 // table layout differ enough that a generic dispatcher is more
 // abstraction than this point in the codebase needs.
 func CheckJoomlaContent(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var findings []alert.Finding
-
-	configs := cmsDropSuspended(cmsDiscover(ctx, "db_content_joomla", "*/public_html/configuration.php", "*/*/configuration.php"))
-	if len(configs) == 0 {
-		return nil
-	}
-
-	// Rank by mtime desc so recently touched Joomla installs are processed
-	// first when the check timeout cuts iteration short.
-	for _, path := range rankCMSConfigs(ctx, "db_content_joomla", configs, accountScanMaxFiles(ctx, cfg)) {
-		if ctx.Err() != nil {
-			return findings
-		}
-		findings = append(findings, scanJoomlaInstall(ctx, path, store)...)
-	}
-	return findings
+	return scanCMSInstalls(ctx, cfg, store, "db_content_joomla", scanJoomlaInstall,
+		"*/public_html/configuration.php", "*/*/configuration.php")
 }
 
 // scanJoomlaInstall scans one discovered install and stamps its findings

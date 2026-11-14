@@ -58,7 +58,7 @@ var ErrUnverifiable = errors.New("bot verify: no PTR record for source IP")
 // or transient resolver failure. Both error paths cause the async
 // worker to skip the verdict write so unverifiable IPs do not get pinned
 // as spoof for the TTL window.
-func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, error) {
+func (v *verifier) verify(ctx context.Context, ip net.IP) (bool, error) {
 	names, err := v.res.LookupAddr(ctx, ip.String())
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -422,7 +422,7 @@ func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verify
 	}
 	ctx, cancel := context.WithTimeout(parent, botVerifyTimeout)
 	defer cancel()
-	result, err := v.verify(ctx, job.IP, job.Bot)
+	result, err := v.verify(ctx, job.IP)
 	cancel()
 	if err != nil {
 		completed = errors.Is(err, ErrUnverifiable) && a.recordUnverifiable(job)
