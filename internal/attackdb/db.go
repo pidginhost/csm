@@ -635,14 +635,22 @@ func (db *DB) AllRecords() []*IPRecord {
 func (db *DB) FormatTopLine() string {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
+	now := time.Now()
+	cutoff24h := now.Add(-24 * time.Hour)
 	total := len(db.records)
-	blocked := 0
+	blocked, mailOnlyIPs, mailOnlyNew := 0, 0, 0
 	for _, r := range db.records {
 		if r.AutoBlocked {
 			blocked++
 		}
+		if mailOnly(r, now) {
+			mailOnlyIPs++
+			if r.FirstSeen.After(cutoff24h) {
+				mailOnlyNew++
+			}
+		}
 	}
-	return fmt.Sprintf("%d IPs tracked, %d auto-blocked", total, blocked)
+	return fmt.Sprintf("%d IPs tracked, %d auto-blocked, %d spam evidence only (%d new in 24h)", total, blocked, mailOnlyIPs, mailOnlyNew)
 }
 
 // Snapshots must detach all count maps from concurrent recording.

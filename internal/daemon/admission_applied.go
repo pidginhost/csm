@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/attackdb"
@@ -30,9 +31,13 @@ func (d *Daemon) consumeAppliedBlocks(rows []admission.AuditRow) error {
 		return errors.New("the attack database is not open yet")
 	}
 	var readErr error
+	var standing []checks.AdmissionBlock
 	writeErr := tdb.AddTemporaryBatchFrom(func() []store.PermanentBlockEntry {
-		var entries []store.PermanentBlockEntry
-		entries, readErr = d.standingAppliedBlocks(rows)
+		standing, readErr = d.standingAppliedBlocks(rows)
+		entries := make([]store.PermanentBlockEntry, 0, len(standing))
+		for _, b := range standing {
+			entries = append(entries, store.PermanentBlockEntry{IP: b.IP, Reason: b.Reason, ExpiresAt: b.ExpiresAt})
+		}
 		return entries
 	})
 	if readErr != nil {
@@ -50,12 +55,15 @@ func (d *Daemon) consumeAppliedBlocks(rows []admission.AuditRow) error {
 	if writeErr != nil {
 		return fmt.Errorf("recording applied threat batch: %w", writeErr)
 	}
+	if !d.appliedBlocks.add(standing) {
+		return errors.New("the applied-block consumer is full or stopped")
+	}
 	return nil
 }
 
-// standingAppliedBlocks returns a threat entry for each row whose action's
-// verified firewall row still stands at the row's address and expiry.
-func (d *Daemon) standingAppliedBlocks(rows []admission.AuditRow) ([]store.PermanentBlockEntry, error) {
+// standingAppliedBlocks returns each row whose action's verified firewall
+// row still stands at the row's address and expiry, as that row records it.
+func (d *Daemon) standingAppliedBlocks(rows []admission.AuditRow) ([]checks.AdmissionBlock, error) {
 	state, err := loadAppliedState(d.currentCfg().StatePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading verified firewall state for applied blocks: %w", err)
@@ -68,7 +76,7 @@ func (d *Daemon) standingAppliedBlocks(rows []admission.AuditRow) ([]store.Perma
 			}
 		}
 	}
-	var entries []store.PermanentBlockEntry
+	var blocks []checks.AdmissionBlock
 	for _, r := range rows {
 		addr, ok := r.Target.Addr()
 		if !ok {
@@ -77,8 +85,72 @@ func (d *Daemon) standingAppliedBlocks(rows []admission.AuditRow) ([]store.Perma
 		ip := addr.String()
 		b, exists := standing[string(r.Attempt.ID)]
 		if exists && b.IP == ip && b.ExpiresAt.Equal(r.ExpiresAt) {
-			entries = append(entries, store.PermanentBlockEntry{IP: ip, Reason: b.Reason, ExpiresAt: b.ExpiresAt})
+			blocks = append(blocks, checks.AdmissionBlock{IP: ip, Reason: b.Reason, Check: r.Check, FindingID: r.FindingID, BlockedAt: b.BlockedAt, ExpiresAt: b.ExpiresAt})
 		}
 	}
-	return entries, nil
+	return blocks, nil
+}
+
+// appliedBlockQueue hands applied admission blocks to the legacy consumers
+// (tracker row, permanent-block strike, the auto_block finding) in order, on
+// a daemon goroutine: the tracker's lock can be held for a whole scan, and
+// the admission owner must not wait for it. Delivery is best effort: blocks
+// still queued when the daemon stops are not recorded there.
+type appliedBlockQueue struct {
+	mu      sync.Mutex
+	pending []checks.AdmissionBlock
+	wake    chan struct{}
+	stopped bool
+}
+
+// add never waits for consumers. A full or stopped queue refuses the batch,
+// which leaves the durable audit delivery unacknowledged, so the owner
+// retries it and the next start redelivers what shutdown left. Shutdown
+// discards only work already queued.
+func (q *appliedBlockQueue) add(blocks []checks.AdmissionBlock) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(blocks) == 0 {
+		return true
+	}
+	if q.stopped {
+		return false
+	}
+	if len(blocks) > int(admission.MaxAuditSlots)-len(q.pending) {
+		return false
+	}
+	q.pending = append(q.pending, blocks...)
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// serve records queued blocks until stop closes.
+func (q *appliedBlockQueue) serve(d *Daemon, stop <-chan struct{}) {
+	defer func() {
+		q.mu.Lock()
+		q.stopped, q.pending = true, nil
+		q.mu.Unlock()
+	}()
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		q.mu.Lock()
+		blocks := q.pending
+		q.pending = nil
+		q.mu.Unlock()
+		if len(blocks) > 0 {
+			d.recordAppliedBlocks(checks.RecordAdmissionBlocks(d.currentCfg(), blocks))
+		}
+		select {
+		case <-q.wake:
+		case <-stop:
+			return
+		}
+	}
 }

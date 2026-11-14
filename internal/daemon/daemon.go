@@ -132,6 +132,7 @@ type Daemon struct {
 	modsecRegistry   modsecRegistryState
 	abuseReportStop  chan struct{}
 	abuseReportDone  chan struct{}
+	appliedBlocks    appliedBlockQueue
 	wg               sync.WaitGroup
 	smtpAuthTracker  *smtpAuthTracker
 	smtpProbeTracker *smtpProbeTracker
@@ -318,6 +319,8 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		binaryPath: binaryPath,
 		alertCh:    make(chan alert.Finding, 500),
 		stopCh:     make(chan struct{}),
+
+		appliedBlocks: appliedBlockQueue{wake: make(chan struct{}, 1)},
 
 		forwardGuardWake: make(chan struct{}, 1),
 
@@ -836,6 +839,12 @@ func (d *Daemon) Run() error {
 	alert.SetSummaryHook(d.noteSummary)
 
 	// Own the admission ledger before anything can respond automatically.
+	// The legacy consumers of its applied blocks run beside it.
+	d.wg.Add(1)
+	obs.Go("admission-applied-blocks", func() {
+		defer d.wg.Done()
+		d.appliedBlocks.serve(d, d.stopCh)
+	})
 	d.startAdmission()
 
 	d.applyStartupIntegrations()
@@ -2131,6 +2140,7 @@ func (d *Daemon) deepScanner() {
 			// Prune expired attack DB records (90-day retention)
 			if adb := attackdb.Global(); adb != nil {
 				adb.PruneExpired()
+				fmt.Fprintf(os.Stderr, "[%s] Attack DB after daily prune (%s)\n", ts(), adb.FormatTopLine())
 			}
 
 			// The full deep tier runs whether or not the file monitor is

@@ -39,8 +39,11 @@ type ExecutionPolicy struct {
 	// client's own validation.
 	AskVerdict Asker
 	// Allows reports whether the configuration still allows the response
-	// a queued candidate asks for.
-	Allows func(admission.Candidate) bool
+	// a queued candidate asks for. roots loads the candidate's root
+	// evidence; it returns nil if they cannot be read. The callback runs
+	// under the ledger write transaction: consume roots synchronously,
+	// never retain the loader or call back into the ledger.
+	Allows func(c admission.Candidate, roots func() []admission.Evidence) bool
 }
 
 // ErrPolicy marks an execution policy the owner refused to install.
@@ -227,6 +230,21 @@ func (o *Owner) refuseDisabled() error {
 	if o.executable() && o.policyErr == nil {
 		if err := o.ledger.RefuseDisabled(o.policy.Allows); err != nil {
 			return fmt.Errorf("refusing disabled responses: %w", err)
+		}
+	}
+	return nil
+}
+
+// endEarlierIncidents ends, as disabled, the incident and spray blocks an
+// earlier process queued. The correlator reads its selectors when the
+// process starts, so that work may no longer be selected; the incident's
+// next block still applies. Only an owner that executes blocks ends it.
+func (o *Owner) endEarlierIncidents() error {
+	if liveExecution && o.executable() && o.policyErr == nil {
+		if err := o.ledger.RefuseDisabled(func(c admission.Candidate, _ func() []admission.Evidence) bool {
+			return c.Entry != admission.EntryIncident && c.Entry != admission.EntryIncidentSpray
+		}); err != nil {
+			return fmt.Errorf("ending incident blocks queued before start: %w", err)
 		}
 	}
 	return nil

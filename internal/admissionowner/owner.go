@@ -492,6 +492,9 @@ func (o *Owner) start() error {
 	if err = o.refuseDisabled(); err != nil {
 		return err
 	}
+	if err = o.endEarlierIncidents(); err != nil {
+		return err
+	}
 	o.refreshInventory()
 	generation, err := o.ledger.BeginIngress()
 	if err != nil {
@@ -1267,7 +1270,7 @@ func (o *Owner) Mint(f alert.Finding) (admission.Evidence, error) {
 // accepted earlier stays the owner's through later holds or displacement.
 func (o *Owner) ExecutesBlocks() bool {
 	// A turn already in flight can publish its policy after Stop begins.
-	return !o.stopping.Load() && o.executesBlocks.Load() && o.opts.Blocks() != nil
+	return !o.stopping.Load() && o.executesBlocks.Load() && o.opts.Blocks != nil && o.opts.Blocks() != nil
 }
 
 // Refuse counts a response of kind through via that could not be answered

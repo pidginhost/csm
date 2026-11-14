@@ -224,7 +224,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 
 		// Admission judges existing effects itself; the list's state is
 		// the legacy path's.
-		root, _ := respond(admission.KindChallenge, f, ip, 0)
+		root, _, _ := respond(admission.KindChallenge, f, ip, 0)
 
 		if routed[ip] || challengeIPList.Contains(ip) {
 			continue

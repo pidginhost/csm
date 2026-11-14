@@ -40,6 +40,9 @@ func withTestRegistryBasis(t testing.TB, basis admission.Basis) *admission.Produ
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = reg.Register(admission.ProducerSpec{ID: "incident_spray", Entry: admission.EntryIncidentSpray, Observation: admission.ObservationEventSeq, Checks: []string{"ssh_brute"}}); err != nil {
+		t.Fatal(err)
+	}
 	// Range fixtures wrap the same check but must use a range entry.
 	if _, err = reg.Register(admission.ProducerSpec{ID: "mail_subnet", Entry: admission.EntryMailSubnet,
 		Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}}); err != nil {
@@ -81,6 +84,13 @@ func queuedKind(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, s
 // observed addr.
 func queuedTarget(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind, candidate admission.Target) (admission.CandidateID, time.Time) {
 	t.Helper()
+	return queuedThrough(t, o, p, host, sev, addr, kind, candidate, 0)
+}
+
+// queuedThrough is queuedTarget through the derived entry via; zero is the
+// root's own entry.
+func queuedThrough(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind, candidate admission.Target, via admission.Entry) (admission.CandidateID, time.Time) {
+	t.Helper()
 	var id admission.CandidateID
 	host.mu.Lock()
 	now := host.wall
@@ -105,7 +115,7 @@ func queuedTarget(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost,
 		if err != nil {
 			return err
 		}
-		var entry admission.Entry
+		entry := via
 		if kind == admission.KindBlockSubnet {
 			entry = admission.EntryMailSubnet
 		}

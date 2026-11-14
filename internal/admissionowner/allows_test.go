@@ -15,7 +15,7 @@ func TestOwnerDisabledWorkBehindBlockedHead(t *testing.T) {
 	blocks := newFakeBlocks()
 	policy := validPolicy(1)
 	policy.CeilingLimit = 2
-	policy.Allows = func(c admission.Candidate) bool {
+	policy.Allows = func(c admission.Candidate, _ func() []admission.Evidence) bool {
 		addr, _ := c.Key.Target.Addr()
 		return addr.String() != "192.0.2.10"
 	}
@@ -62,7 +62,7 @@ func TestOwnerDisabledRetryDoesNotWaitForBackoff(t *testing.T) {
 			charged := ceiling(t, o)
 			next := first
 			next.Epoch++
-			next.Allows = func(admission.Candidate) bool { return false }
+			next.Allows = func(admission.Candidate, func() []admission.Evidence) bool { return false }
 			reader.publish(next)
 			turn(t, o)
 			if c := candidate(t, o, id); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != before.Attempts || !c.ExpiresAt.Equal(before.ExpiresAt) {
@@ -88,7 +88,7 @@ func TestOwnerDisabledWorkNeedsNoSchedulingCredit(t *testing.T) {
 				blocks := newFakeBlocks()
 				policy := validPolicy(1)
 				policy.CeilingLimit = 2
-				policy.Allows = func(c admission.Candidate) bool {
+				policy.Allows = func(c admission.Candidate, _ func() []admission.Evidence) bool {
 					addr, _ := c.Key.Target.Addr()
 					return addr.String() != "192.0.2.10"
 				}
@@ -144,7 +144,7 @@ func TestOwnerRefusesWorkTheConfigurationTurnedOff(t *testing.T) {
 			panel := newFakePanel("")
 			policy := verdictPolicy(1, panel)
 			policy.DryRun = dry
-			policy.Allows = func(c admission.Candidate) bool {
+			policy.Allows = func(c admission.Candidate, _ func() []admission.Evidence) bool {
 				addr, _ := c.Key.Target.Addr()
 				return addr.String() != "192.0.2.10"
 			}
@@ -234,7 +234,7 @@ func TestOwnerDisableRetiresPendingVerdicts(t *testing.T) {
 			snapshots := len(blocks.snapshots)
 			next := verdictPolicy(2, panel)
 			next.DryRun = dry
-			next.Allows = func(admission.Candidate) bool { return false }
+			next.Allows = func(admission.Candidate, func() []admission.Evidence) bool { return false }
 			r.publish(next)
 			if err := o.Reload(); err != nil {
 				t.Fatal(err)
@@ -275,7 +275,7 @@ func TestOwnerDisableAfterRestartUsesNewPolicy(t *testing.T) {
 			panel := newFakePanel("allow")
 			next := verdictPolicy(1, panel)
 			next.DryRun = dry
-			next.Allows = func(admission.Candidate) bool { return false }
+			next.Allows = func(admission.Candidate, func() []admission.Evidence) bool { return false }
 			o, _, _ = policyOwner(t, f, blocks, next)
 			turn(t, o)
 			if c := candidate(t, o, id); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != 0 {
@@ -305,7 +305,7 @@ func TestOwnerDisableCoversPreviewAndUnmodelledKinds(t *testing.T) {
 			blocks := newFakeBlocks()
 			policy := validPolicy(1)
 			policy.DryRun = dry
-			policy.Allows = func(admission.Candidate) bool { return false }
+			policy.Allows = func(admission.Candidate, func() []admission.Evidence) bool { return false }
 			o, _, _ := policyOwner(t, f, blocks, policy)
 			promotion, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.20", admission.KindPromote)
 			challenge, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.21", admission.KindChallenge)
