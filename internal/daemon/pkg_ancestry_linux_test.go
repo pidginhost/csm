@@ -597,6 +597,9 @@ func TestProcAncestryReportsVanishedProcess(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := fakeProc(t, tt.procs)
+			for pid, p := range tt.procs {
+				writeProcStatus(t, root, pid, p.ppid, "Uid:\t0\t0\t0\t0\n")
+			}
 			if tt.break_ != nil {
 				tt.break_(t, root)
 			}

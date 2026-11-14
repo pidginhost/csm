@@ -472,7 +472,7 @@ func TestTmpExecutableTopLevelFileIsNeverVouched(t *testing.T) {
 	}
 }
 
-// A vouch names the directory itself, not its path, lasts a short time after
+// A vouch binds the directory inode and placement, lasts a short time after
 // the last proof, and the table stays small.
 func TestTmpVouchesIdentityExpiryAndBound(t *testing.T) {
 	if os.Geteuid() != 0 {
@@ -481,19 +481,29 @@ func TestTmpVouchesIdentityExpiryAndBound(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	work := tmpWorkDirForTest(t)
 	var v tmpVouches
+	t.Cleanup(v.close)
+	eventFor := func(dir string) fileEvent {
+		path := filepath.Join(dir, "tool")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			makeTmpExec(t, path)
+		}
+		return fileEvent{path: path, fd: openRawFd(t, path)}
+	}
 
-	if _, ok := v.covers(work+"/", now); ok {
+	if _, ok := v.covers(eventFor(work), now); ok {
 		t.Fatal("covered a directory nobody vouched for")
 	}
-	v.grant(work+"/", "initramfs build ancestry", now)
-	if reason, ok := v.covers(work+"/", now.Add(tmpVouchTTL-time.Second)); !ok || reason != "initramfs build ancestry" {
+	v.grant(eventFor(work), "initramfs build ancestry", now)
+	if reason, ok := v.covers(eventFor(work), now.Add(tmpVouchTTL-time.Second)); !ok || reason != "initramfs build ancestry" {
 		t.Fatalf("covers = (%q, %v), want the granted reason", reason, ok)
 	}
-	if _, ok := v.covers(work+"/", now.Add(tmpVouchTTL+time.Second)); ok {
+	if _, ok := v.covers(eventFor(work), now.Add(tmpVouchTTL+time.Second)); ok {
 		t.Fatal("vouch outlived its time limit")
 	}
 
-	// The name now belongs to a different directory; the old one keeps the vouch.
+	v.grant(eventFor(work), "initramfs build ancestry", now)
+
+	// Neither a replacement nor a renamed directory inherits the old placement proof.
 	moved := work + ".moved"
 	if err := os.Rename(work, moved); err != nil {
 		t.Fatal(err)
@@ -502,22 +512,22 @@ func TestTmpVouchesIdentityExpiryAndBound(t *testing.T) {
 	if err := os.Mkdir(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := v.covers(work+"/", now); ok {
+	if _, ok := v.covers(eventFor(work), now); ok {
 		t.Fatal("a new directory under a vouched name was covered")
 	}
-	if _, ok := v.covers(moved+"/", now); !ok {
-		t.Fatal("the vouched directory lost its vouch when renamed")
+	if _, ok := v.covers(eventFor(moved), now); ok {
+		t.Fatal("a renamed directory inherited a vouch for another placement")
 	}
 
 	for i := 0; i < tmpVouchCap+8; i++ {
-		v.grant(tmpWorkDirForTest(t)+"/", "x", now.Add(time.Duration(i)*time.Millisecond))
+		v.grant(eventFor(tmpWorkDirForTest(t)), "x", now.Add(time.Duration(i)*time.Millisecond))
 	}
 	if len(v.entries) > tmpVouchCap {
 		t.Fatalf("vouch table holds %d entries, cap is %d", len(v.entries), tmpVouchCap)
 	}
 	newest := tmpWorkDirForTest(t) + "/"
-	v.grant(newest, "newest", now.Add(time.Second))
-	if _, ok := v.covers(newest, now.Add(time.Second)); !ok {
+	v.grant(eventFor(newest), "newest", now.Add(time.Second))
+	if _, ok := v.covers(eventFor(newest), now.Add(time.Second)); !ok {
 		t.Fatal("a full table refused the newest vouch")
 	}
 }

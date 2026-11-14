@@ -40,8 +40,8 @@ type ancestryEvidence struct {
 	panelTool        bool
 	initramfsBuilder bool
 	// vanished reports that the walk stopped at a process that had already
-	// exited. It proves nothing by itself: it only tells a live writer that
-	// proved nothing apart from one that could no longer be asked.
+	// exited, with no non-root or unknown credentials encountered first.
+	// Read errors alone do not establish exit.
 	vanished bool
 }
 
@@ -61,7 +61,7 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
 		commRaw, err := os.ReadFile(dir + "/comm")
 		if err != nil {
-			ev.vanished = true
+			ev.vanished = os.IsNotExist(err) && rootChain
 			return ev
 		}
 		comm := strings.TrimSpace(string(commRaw))
@@ -77,7 +77,7 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
 		status, err := os.ReadFile(dir + "/status")
 		if err != nil {
-			ev.vanished = true
+			ev.vanished = os.IsNotExist(err) && rootChain
 			return ev
 		}
 		ppid := int32(-1)

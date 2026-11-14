@@ -614,6 +614,9 @@ type fileEvent struct {
 	// was admitted, for a root-owned file under a temp root. Nil when no
 	// capture ran.
 	tmpAncestry *ancestryEvidence
+	// Remember rejected captures too: later ownership changes must not trigger a new walk.
+	tmpCaptured bool
+	tmpStat     *unix.Stat_t
 	// cacheable is set only by a completed clean content scan. Other
 	// detector paths may depend on state outside the placement cache key.
 	cacheable *bool
@@ -1015,6 +1018,7 @@ func (fm *FileMonitor) drainAndClose() {
 		fm.placedDirWG.Wait()
 		close(fm.analyzerCh)
 		fm.wg.Wait()
+		fm.tmpVouches.close()
 		fm.discardReconcilePending()
 		fm.discardPlacedDirs()
 		fm.stagedPackages().discardPending(time.Now())
@@ -2073,13 +2077,13 @@ func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
 			ok, reason := tmpExecDemote(tmpStat.Uid, ev, now)
 			switch {
 			case ok:
-				fm.tmpVouches.grant(work, reason, now)
+				fm.tmpVouches.grant(event, reason, now)
 			case tmpStat.Uid == 0 && ev.vanished:
 				// The writer exited before its ancestry could be read. It
 				// is judged by a writer already proven in the same
 				// root-private work directory; a writer that is still
 				// running and proved nothing never is.
-				if vouched, covered := fm.tmpVouches.covers(work, now); covered {
+				if vouched, covered := fm.tmpVouches.covers(event, now); covered {
 					ok, reason = true, vouched+" in this work directory, writer exited"
 				} else {
 					finding.Details += " [writer exited before its ancestry was read]"
