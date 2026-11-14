@@ -104,3 +104,87 @@ func TestNinetyDayRuleUnchanged(t *testing.T) {
 		t.Error("the expired record is not marked deleted")
 	}
 }
+
+func TestDecayDropStoredEvidence(t *testing.T) {
+	for _, backend := range []string{"json", "bbolt"} {
+		t.Run(backend, func(t *testing.T) {
+			for _, tt := range []struct {
+				name   string
+				ip     string
+				mail   MailEvidence
+				keep   bool
+				listed bool
+			}{
+				{"missing clock spam", "192.0.2.30", MailEvidence{Spam: 3, SpamMass: 3}, true, true},
+				{"missing clock ham", "192.0.2.31", MailEvidence{Spam: 1, Ham: 3, SpamMass: 0.001, HamMass: 3}, true, false},
+				{"missing clock faded", "192.0.2.32", MailEvidence{Spam: 1, SpamMass: 0.001}, false, false},
+				{"future clock", "192.0.2.33", MailEvidence{Spam: 3, SpamMass: 3, MassAt: mailNow.Add(day)}, true, true},
+				{"spam at floor", "192.0.2.34", MailEvidence{Spam: 1, SpamMass: 0.02, MassAt: mailNow.Add(-7 * day)}, true, false},
+				{"ham at floor", "192.0.2.35", MailEvidence{Spam: 1, Ham: 1, HamMass: 0.02, MassAt: mailNow.Add(-7 * day)}, true, false},
+				{"faded legacy IPv6", "2001:db8:1:2::6", MailEvidence{Spam: 1, SpamMass: 1, MassAt: mailNow.Add(-47 * day)}, false, false},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					if backend == "bbolt" {
+						_, cleanup := setupBboltStore(t)
+						t.Cleanup(cleanup)
+					}
+					db := newTestDB(t)
+					rec := &IPRecord{IP: tt.ip, LastSeen: mailNow, Mail: &tt.mail}
+					db.records[tt.ip] = rec
+					db.markDirtyLocked(tt.ip)
+					if err := db.Flush(); err != nil {
+						t.Fatal(err)
+					}
+					loaded := NewForTest(nil)
+					loaded.dbPath = db.dbPath
+					loaded.load()
+					if got := loaded.records[tt.ip]; got == nil || got.Mail == nil || *got.Mail != tt.mail {
+						t.Fatalf("stored evidence did not round trip: %+v", got)
+					}
+					_, before := loaded.MapSources(mailNow)
+					if got := slices.Contains(before, tt.ip); got != tt.listed {
+						t.Fatalf("listed before prune = %v, want %v", got, tt.listed)
+					}
+					loaded.pruneExpiredAt(mailNow)
+					got, kept := loaded.records[tt.ip]
+					if kept != tt.keep {
+						t.Fatalf("kept = %v, want %v", kept, tt.keep)
+					}
+					if kept && *got.Mail != tt.mail {
+						t.Error("pruning changed retained evidence")
+					}
+					_, after := loaded.MapSources(mailNow)
+					if !slices.Equal(before, after) {
+						t.Errorf("listed senders changed: before %v, after %v", before, after)
+					}
+					if err := loaded.Flush(); err != nil {
+						t.Fatal(err)
+					}
+					reloaded := NewForTest(nil)
+					reloaded.dbPath = db.dbPath
+					reloaded.load()
+					if _, ok := reloaded.records[tt.ip]; ok != tt.keep {
+						t.Errorf("persisted record kept = %v, want %v", ok, tt.keep)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNinetyDayRuleIgnoresRecentHam(t *testing.T) {
+	const expired, boundary = "192.0.2.36", "192.0.2.37"
+	db := NewForTest(nil)
+	db.RecordMailVerdict(expired, true, mailNow.Add(-90*day-time.Nanosecond))
+	db.RecordMailVerdict(boundary, true, mailNow.Add(-90*day))
+	for _, ip := range []string{expired, boundary} {
+		db.RecordMailVerdict(ip, false, mailNow)
+	}
+	db.pruneExpiredAt(mailNow)
+	if got, want := recordKeys(db), []string{boundary}; !slices.Equal(got, want) {
+		t.Errorf("records after prune = %v, want %v", got, want)
+	}
+	if _, ok := db.deletedIPs[expired]; !ok {
+		t.Error("the expired mail record is not marked deleted")
+	}
+}

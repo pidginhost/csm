@@ -14,7 +14,6 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
-	"github.com/pidginhost/csm/internal/spamscore"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -652,9 +651,11 @@ func (db *DB) pruneExpiredAt(now time.Time) {
 	for ip, rec := range db.records {
 		expired := rec.LastSeen.Before(cutoff)
 		if !expired && mailOnly(rec, now) {
-			f := spamscore.Recency(now.Sub(rec.Mail.MassAt))
+			// Match scoring's missing-clock behavior without changing stored evidence.
+			m := *rec.Mail
+			decayTo(&m, now)
 			// Ham holds the record too: it keeps later spam from listing the sender.
-			expired = rec.Mail.SpamMass*f < mailMassFloor && rec.Mail.HamMass*f < mailMassFloor
+			expired = m.SpamMass < mailMassFloor && m.HamMass < mailMassFloor
 		}
 		if expired {
 			delete(db.records, ip)
