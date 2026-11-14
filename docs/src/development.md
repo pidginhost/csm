@@ -663,7 +663,10 @@ the Critical `auto_block` finding that reaches history, alerts and the block
 digest. The in-memory backlog uses the existing audit delivery bound; a
 full consumer leaves the durable audit delivery pending for retry. A block
 already tracked at its expiry is skipped, so a repeated delivery changes
-nothing. The strike promotes nothing, since a permanent
+nothing. The tracker batch is saved before strikes and notices: a crash can
+lose those best-effort side effects but cannot repeat them on replay.
+An unreadable tracker is left untouched; a failed tracker save emits no
+strike or notice. The strike promotes nothing, since a permanent
 block is not an admission response. That goroutine waits for the tracker
 lock a scan holds; the owner never does, and blocks still queued when the
 daemon stops are not recorded there. One durable transaction per delivery batch precedes threat

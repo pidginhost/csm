@@ -163,15 +163,35 @@ type AdmissionBlock struct {
 func RecordAdmissionBlocks(cfg *config.Config, blocks []AdmissionBlock) []alert.Finding {
 	work := autoBlockQueues.acquire()
 	defer work.finish()
-	state := work.loadState(cfg.StatePath)
-	blocker := getIPBlocker()
-	var findings []alert.Finding
+	state, err := work.readState(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "autoblock: %v; skipping admission bookkeeping\n", err)
+		return nil
+	}
+	var fresh []AdmissionBlock
 	for _, b := range blocks {
 		work.progress()
 		if slices.ContainsFunc(state.IPs, func(r blockedIP) bool { return r.IP == b.IP && r.ExpiresAt.Equal(b.ExpiresAt) }) {
 			continue
 		}
 		state.IPs = append(state.IPs, blockedIP{IP: b.IP, FindingID: b.FindingID, Reason: b.Reason, BlockedAt: b.BlockedAt, ExpiresAt: b.ExpiresAt})
+		fresh = append(fresh, b)
+	}
+	if len(fresh) == 0 {
+		work.complete()
+		return nil
+	}
+	// Commit duplicate markers before any best-effort side effects. A crash
+	// may lose a strike or notice, but replay must never count it twice.
+	work.progress()
+	if err := work.writeState(cfg.StatePath, state); err != nil {
+		logBlockStateFailure(cfg.StatePath, err)
+		return nil
+	}
+	blocker := getIPBlocker()
+	var findings []alert.Finding
+	for _, b := range fresh {
+		work.progress()
 		details := fmt.Sprintf("Reason: %s", b.Reason)
 		if cc, ok := blocker.(cloudflareCoverChecker); ok && cc.CloudflareCovers(b.IP) {
 			details += " (warning: " + firewall.CloudflareCoverageWarning + ")"
@@ -187,8 +207,6 @@ func RecordAdmissionBlocks(cfg *config.Config, blocks []AdmissionBlock) []alert.
 		})
 		permBlockStrike(cfg, b.IP, work.progress)
 	}
-	work.progress()
-	work.saveState(cfg.StatePath, state)
 	work.complete()
 	return findings
 }
