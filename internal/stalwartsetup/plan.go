@@ -100,11 +100,7 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	spam, err := api.SpamSettings(ctx)
-	if err != nil {
-		return Plan{}, err
-	}
-	stageOff, err := api.SpamFilterStageOff(ctx)
+	spamStep, err := inspectSpamFilter(ctx, api)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -114,8 +110,26 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 		banExpiryStep(bans, in.BlockExpiry),
 		proxyStep(listeners, proxy),
 		tracingStep("spam verdict logging", spamVerdictEvent, levels, "; rejected and discarded spam is not logged until then"),
-		spamFilterStep(spam, stageOff),
+		spamStep,
 	}}, nil
+}
+
+func inspectSpamFilter(ctx context.Context, api API) (Step, error) {
+	spam, settingsErr := api.SpamSettings(ctx)
+	if errors.Is(settingsErr, stalwartapi.ErrUnauthorized) {
+		return Step{}, settingsErr
+	}
+	stageOff, stageErr := api.SpamFilterStageOff(ctx)
+	if errors.Is(stageErr, stalwartapi.ErrUnauthorized) {
+		return Step{}, stageErr
+	}
+	// These reads only inform the operator. Their failure must not block
+	// unrelated setup changes or put server error text in the plan.
+	s := Step{Name: "spam filter", State: Warn, Detail: "Cannot read Stalwart's spam filter status; check it in Stalwart's admin interface"}
+	if settingsErr == nil && stageErr == nil {
+		s = spamFilterStep(spam, stageOff)
+	}
+	return s, nil
 }
 
 // Apply makes each planned change in order, then reloads Stalwart's settings

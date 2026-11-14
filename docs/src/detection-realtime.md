@@ -638,7 +638,7 @@ STALWART_USER=admin csm stalwart setup --password-file /root/stalwart-admin.pw
 3. **Ban expiry.** Sets Stalwart's failed-login, abuse and scan ban periods to `auto_response.block_expiry`, so its bans end when CSM's blocks do. Loiter bans are left alone.
 4. **Spam verdict logging.** Sets the `spam.classify` event to info unless it is already logged at info, warn or error. By default Stalwart logs the mail its spam filter rejects or discards only at debug level. Setup changes nothing about how mail is handled.
 
-Setup also reports listeners that accept the PROXY protocol, which it does not change, and whether Stalwart's spam filter is on and at which scores it files spam to Junk, rejects or discards. Doctor prints the same. A filter that is off is a warning; setup never switches it on or off.
+Setup also reports listeners that accept the PROXY protocol, which it does not change, and whether Stalwart's spam filter is on and at which scores it files spam to Junk, rejects or discards. Doctor prints the same. A filter that is off is a warning; setup never switches it on or off. If its status cannot be read, setup warns and continues with the other steps. A refused admin login still stops setup.
 
 `csm doctor` checks the same steps read-only when `STALWART_USER` and `STALWART_PASSWORD` are set; a step setup would change is a warning. From the log alone it also warns when Stalwart's HTTP listener logs a login from another host on a port CSM does not lock, and when Stalwart bans a CDN or proxy address, which locks out every client behind it.
 

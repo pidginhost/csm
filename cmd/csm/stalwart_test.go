@@ -30,6 +30,8 @@ type setupFakeAPI struct {
 	http      stalwartapi.HTTPSettings
 	spam      stalwartapi.SpamSettings
 	stageOff  bool
+	spamErr   error
+	stageErr  error
 	readErr   error
 	writeErr  error
 	reloadErr error
@@ -65,10 +67,10 @@ func (f *setupFakeAPI) Listeners(context.Context) ([]stalwartapi.Listener, error
 }
 func (f *setupFakeAPI) ProxyTrustedNetworks(context.Context) ([]string, error) { return nil, f.readErr }
 func (f *setupFakeAPI) SpamSettings(context.Context) (stalwartapi.SpamSettings, error) {
-	return f.spam, f.readErr
+	return f.spam, errors.Join(f.readErr, f.spamErr)
 }
 func (f *setupFakeAPI) SpamFilterStageOff(context.Context) (bool, error) {
-	return f.stageOff, f.readErr
+	return f.stageOff, errors.Join(f.readErr, f.stageErr)
 }
 func (f *setupFakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	f.writes = append(f.writes, "reload")
@@ -484,5 +486,50 @@ func TestWaitStalwartPeerUsesAcceptedOwner(t *testing.T) {
 				t.Fatalf("accepted=%v: %v", err == nil, err)
 			}
 		})
+	}
+}
+
+func TestStalwartSetupSpamReadFailures(t *testing.T) {
+	for _, method := range []string{"settings", "stage"} {
+		for _, dryRun := range []bool{true, false} {
+			for _, unauthorized := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/dry=%t/unauthorized=%t", method, dryRun, unauthorized), func(t *testing.T) {
+					h := newSetupHarness(t)
+					err := errors.New("API error " + setupTestPassword)
+					if unauthorized {
+						err = fmt.Errorf("%s: %w", setupTestPassword, stalwartapi.ErrUnauthorized)
+					}
+					if method == "settings" {
+						h.api.spamErr = err
+					} else {
+						h.api.stageErr = err
+					}
+					var args []string
+					if dryRun {
+						args = []string{"--dry-run"}
+					}
+					code, out := h.run(args...)
+					if strings.Contains(out, setupTestPassword) {
+						t.Fatal("setup exposed the password")
+					}
+					if unauthorized {
+						if code != 2 || !strings.Contains(out, "refused the admin login") || len(h.api.writes) != 0 {
+							t.Fatalf("unauthorized: code %d, writes %q, out %q", code, h.api.writes, out)
+						}
+						return
+					}
+					if code != 0 || !strings.Contains(out, "spam filter: warn: Cannot read") {
+						t.Fatalf("code %d, out %q; want success with a spam status warning", code, out)
+					}
+					var want []string
+					if !dryRun {
+						want = []string{"tracing", "http", "bans", "tracing", "reload"}
+					}
+					if !reflect.DeepEqual(h.api.writes, want) {
+						t.Fatalf("writes = %q, want %q", h.api.writes, want)
+					}
+				})
+			}
+		}
 	}
 }

@@ -241,3 +241,33 @@ func TestStalwartDoctorSettingsRefusesForeignListener(t *testing.T) {
 		t.Fatalf("checks = %+v, api contacted %v; want one warn and no login sent", checks, called)
 	}
 }
+
+func TestStalwartDoctorSpamReadFailureKeepsOtherSteps(t *testing.T) {
+	for _, method := range []string{"settings", "stage"} {
+		t.Run(method, func(t *testing.T) {
+			h := newSetupHarness(t)
+			err := errors.New("API error " + setupTestPassword)
+			if method == "settings" {
+				h.api.spamErr = err
+			} else {
+				h.api.stageErr = err
+			}
+			cfg, _ := h.deps.loadConfig()
+			checks := stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, h.deps.newAPI, h.deps.checkListener, cfg.Stalwart, stalwartsetup.Inputs{})
+			for _, c := range checks {
+				if strings.Contains(c.Message+c.Fix+c.Name, setupTestPassword) {
+					t.Fatal("doctor exposed the password")
+				}
+			}
+			if len(checks) != 6 || len(h.api.writes) != 0 {
+				t.Fatalf("got %d checks, writes %q; want all six checks and no writes", len(checks), h.api.writes)
+			}
+			if c := stalwartCheckNamed(t, checks, "stalwart spam filter"); c.Status != "warn" || c.Fix != "" || !strings.Contains(c.Message, "Cannot read") {
+				t.Fatalf("spam filter check = %+v", c)
+			}
+			if c := stalwartCheckNamed(t, checks, "stalwart failed-login logging"); c.Status != "warn" || c.Fix != "run csm stalwart setup" {
+				t.Fatalf("failed-login logging check = %+v", c)
+			}
+		})
+	}
+}

@@ -22,7 +22,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Added
 
 - The Web UI now shows a CSM icon in browser tabs and bookmarks.
-- `csm stalwart setup` now makes Stalwart log the mail its spam filter rejects or discards, and reports whether the filter is on and at which scores it acts.
+- `csm stalwart setup` now logs rejected and discarded spam, reports filter status and scores, and continues with a warning when status is unavailable.
 
 ### Changed
 

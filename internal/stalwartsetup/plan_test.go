@@ -15,22 +15,26 @@ import (
 )
 
 type fakeAPI struct {
-	levels    []stalwartapi.TracingLevel
-	http      stalwartapi.HTTPSettings
-	bans      stalwartapi.BanPeriods
-	listeners []stalwartapi.Listener
-	proxy     []string
-	spam      stalwartapi.SpamSettings
-	stageOff  bool
-	readErr   error
-	writeErr  error
-	failOn    string
-	reloadErr error
-	calls     []string
+	levels     []stalwartapi.TracingLevel
+	http       stalwartapi.HTTPSettings
+	bans       stalwartapi.BanPeriods
+	listeners  []stalwartapi.Listener
+	proxy      []string
+	spam       stalwartapi.SpamSettings
+	stageOff   bool
+	readErr    error
+	readErrors map[string]error
+	writeErr   error
+	failOn     string
+	reloadErr  error
+	calls      []string
 }
 
 func (f *fakeAPI) read(name string) error {
 	f.calls = append(f.calls, name)
+	if err := f.readErrors[name]; err != nil {
+		return err
+	}
 	return f.readErr
 }
 
@@ -46,19 +50,37 @@ func (f *fakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, er
 	return f.levels, f.read("TracingLevels")
 }
 func (f *fakeAPI) SetTracingLevel(_ context.Context, id, event, level string) error {
-	return f.write(fmt.Sprintf("SetTracingLevel(%s,%s,%s)", id, event, level))
+	if err := f.write(fmt.Sprintf("SetTracingLevel(%s,%s,%s)", id, event, level)); err != nil {
+		return err
+	}
+	for i := range f.levels {
+		if f.levels[i].ID == id {
+			f.levels[i].Level = level
+			return nil
+		}
+	}
+	f.levels = append(f.levels, stalwartapi.TracingLevel{ID: fmt.Sprint(len(f.levels) + 1), Event: event, Level: level})
+	return nil
 }
 func (f *fakeAPI) HTTPSettings(context.Context) (stalwartapi.HTTPSettings, error) {
 	return f.http, f.read("HTTPSettings")
 }
 func (f *fakeAPI) SetHTTPSettings(_ context.Context, h stalwartapi.HTTPSettings) error {
-	return f.write(fmt.Sprintf("SetHTTPSettings(%s,%d)", h.ClientIPSource, h.ForwardedHops))
+	if err := f.write(fmt.Sprintf("SetHTTPSettings(%s,%d)", h.ClientIPSource, h.ForwardedHops)); err != nil {
+		return err
+	}
+	f.http = h
+	return nil
 }
 func (f *fakeAPI) BanPeriods(context.Context) (stalwartapi.BanPeriods, error) {
 	return f.bans, f.read("BanPeriods")
 }
 func (f *fakeAPI) SetBanPeriods(_ context.Context, d time.Duration) error {
-	return f.write(fmt.Sprintf("SetBanPeriods(%s)", d))
+	if err := f.write(fmt.Sprintf("SetBanPeriods(%s)", d)); err != nil {
+		return err
+	}
+	f.bans = stalwartapi.BanPeriods{Auth: dur(d), Abuse: dur(d), Scan: dur(d)}
+	return nil
 }
 func (f *fakeAPI) Listeners(context.Context) ([]stalwartapi.Listener, error) {
 	return f.listeners, f.read("Listeners")
@@ -514,5 +536,64 @@ func TestPlanSpamFilterNeverWrites(t *testing.T) {
 				t.Fatalf("Apply made calls %q", calls)
 			}
 		})
+	}
+}
+
+func TestPlanSpamReadFailureWarnsAndAllowsSetup(t *testing.T) {
+	for _, method := range []string{"SpamSettings", "SpamFilterStageOff"} {
+		t.Run(method, func(t *testing.T) {
+			api := freshAPI()
+			api.readErrors = map[string]error{method: errors.New("private API error detail")}
+			p := inspect(t, api, fieldInputs())
+			s := stepNamed(t, p, "spam filter")
+			if s.State != Warn || s.Detail != "Cannot read Stalwart's spam filter status; check it in Stalwart's admin interface" || s.apply != nil {
+				t.Fatal("spam read failure must produce a static, read-only warning")
+			}
+			want := []string{
+				"SetTracingLevel(,auth.failed,info)",
+				"SetHTTPSettings(xForwardedFor,1)",
+				"SetBanPeriods(24h0m0s)",
+				"SetTracingLevel(,spam.classify,info)",
+				"ReloadSettings",
+			}
+			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, want) {
+				t.Fatalf("writes = %q, want %q", calls, want)
+			}
+			p = inspect(t, api, fieldInputs())
+			if calls := applyCalls(t, api, p); len(calls) != 0 {
+				t.Fatalf("second setup made calls: %q", calls)
+			}
+		})
+	}
+}
+
+func TestPlanSpamReadUnauthorizedStopsSetup(t *testing.T) {
+	for _, method := range []string{"SpamSettings", "SpamFilterStageOff"} {
+		t.Run(method, func(t *testing.T) {
+			api := freshAPI()
+			api.readErrors = map[string]error{method: fmt.Errorf("login: %w", stalwartapi.ErrUnauthorized)}
+			if method == "SpamFilterStageOff" {
+				api.readErrors["SpamSettings"] = errors.New("unavailable")
+			}
+			p, err := Inspect(context.Background(), api, fieldInputs())
+			if !errors.Is(err, stalwartapi.ErrUnauthorized) || len(p.Steps) != 0 {
+				t.Fatal("unauthorized spam read must return the login error and no plan")
+			}
+		})
+	}
+}
+
+func TestPlanSecondSetupWritesNothing(t *testing.T) {
+	api := freshAPI()
+	p := inspect(t, api, fieldInputs())
+	if calls := applyCalls(t, api, p); len(calls) != 5 {
+		t.Fatalf("first setup calls = %q, want four writes and a reload", calls)
+	}
+	p = inspect(t, api, fieldInputs())
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("second setup states = %v, want %v", got, want)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("second setup made calls: %q", calls)
 	}
 }
