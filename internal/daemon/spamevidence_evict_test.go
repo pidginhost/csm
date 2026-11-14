@@ -31,7 +31,7 @@ func checkEvictionWarning(t *testing.T, f alert.Finding, network string, at time
 	if f.Severity != alert.Warning || f.Message != want || !f.Timestamp.Equal(at) {
 		t.Fatalf("finding = %v %q at %v, want Warning %q at %v", f.Severity, f.Message, f.Timestamp, want, at)
 	}
-	const details = "Records with attack findings, a block or a recent mail login attack are never dropped. Records with two or more verdicts are dropped only when such records fill nine tenths of the budget. The named network held the most spam-only records when the drop began: a large count points at it as the source, a small count means the senders are spread over many networks."
+	const details = "Records with attack findings, a block or a recent mail login attack are never dropped. Records with two or more verdicts are dropped only when such records fill nine tenths of the budget. The named network held the most spam-only records when the drop began. That count alone does not show who sent the flood; a small count means the senders are spread over many networks."
 	if f.Details != details || f.SourceIP != "" {
 		t.Fatalf("details %q, source address %q; want %q and no source address", f.Details, f.SourceIP, details)
 	}
