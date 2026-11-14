@@ -162,12 +162,136 @@ func TestThinFloodNeverEvictsStrongerEvidence(t *testing.T) {
 	}
 }
 
+// Two verdicts keep a record above the single-verdict level however far its
+// mass has decayed, so no number of one-message senders reaches it.
+func TestThinFloodNeverEvictsDecayedMultiVerdictEvidence(t *testing.T) {
+	const twoVerdicts, hamHistory = "198.51.100.1", "198.51.100.2"
+	db := NewForTest(nil)
+	db.SetMailBudget(100)
+	db.RecordMailVerdict(twoVerdicts, true, mailNow.Add(-8*day))
+	db.RecordMailVerdict(twoVerdicts, true, mailNow.Add(-8*day))
+	db.RecordMailVerdict(hamHistory, true, mailNow.Add(-19*day))
+	for range 5 {
+		db.RecordMailVerdict(hamHistory, false, mailNow.Add(-19*day))
+	}
+	for _, ip := range []string{twoVerdicts, hamHistory} {
+		m := *db.records[ip].Mail
+		decayTo(&m, mailNow)
+		if mass := m.SpamMass + m.HamMass; mass > 1 {
+			t.Fatalf("fixture %s has mass %.2f, want at most 1", ip, mass)
+		}
+	}
+
+	for n := range 150 {
+		db.RecordMailVerdict(thinIP(n), true, mailNow.Add(time.Duration(n)*time.Second))
+		for _, ip := range []string{twoVerdicts, hamHistory} {
+			if _, ok := db.records[ip]; !ok {
+				t.Fatalf("flood message %d evicted %s", n, ip)
+			}
+		}
+	}
+
+	// 101 records at flood message 99, then one pass per 11 messages.
+	if db.mailEvicted != 55 || len(db.records) != 97 {
+		t.Fatalf("%d evicted, %d records left, want 55 and 97", db.mailEvicted, len(db.records))
+	}
+}
+
+// The flood's records reach the listed sender's level, and there the most
+// crowded network pays first.
+func TestMultiMessageFloodFromOneNetworkLosesItsOwnFirst(t *testing.T) {
+	const listed = "198.51.100.1"
+	db := NewForTest(nil)
+	db.SetMailBudget(100)
+	for range 3 {
+		db.RecordMailVerdict(listed, true, mailNow.Add(-26*time.Hour))
+	}
+
+	var reports []Eviction
+	for n := range 200 {
+		for range 3 {
+			if ev := db.RecordMailVerdict(fmt.Sprintf("2001:db8:7:%x::1", n+1), true, mailNow); ev != nil {
+				reports = append(reports, *ev)
+			}
+			if _, ok := db.records[listed]; !ok {
+				t.Fatalf("the flood's /64 number %d evicted the listed sender", n+1)
+			}
+		}
+	}
+
+	// A pass at the 100th /64 and at every tenth after it; one report a day.
+	if want := []Eviction{{Dropped: 11, Network: "2001:db8:7::/48", NetworkRecords: 100}}; !slices.Equal(reports, want) {
+		t.Errorf("reports = %+v, want %+v", reports, want)
+	}
+	if db.mailEvicted != 121 || len(db.records) != 91 {
+		t.Errorf("%d evicted, %d records left, want 121 and 91", db.mailEvicted, len(db.records))
+	}
+	if _, spam := db.MapSources(mailNow); !slices.Contains(spam, listed) {
+		t.Errorf("the listed sender left the spam sources: %v", spam)
+	}
+}
+
+// Twenty senders with ten verdicts each share a /16. Senders of two
+// messages, each alone in its network, never reach them.
+func TestCrowdNeverOutranksLevel(t *testing.T) {
+	db := NewForTest(nil)
+	db.SetMailBudget(100)
+	var clustered []string
+	for n := range 20 {
+		ip := fmt.Sprintf("198.51.100.%d", n+1)
+		clustered = append(clustered, ip)
+		for range 10 {
+			db.RecordMailVerdict(ip, true, mailNow)
+		}
+	}
+
+	for n := range 150 {
+		for range 2 {
+			db.RecordMailVerdict(thinIP(n), true, mailNow)
+			for _, ip := range clustered {
+				if _, ok := db.records[ip]; !ok {
+					t.Fatalf("two-message sender %d evicted %s", n, ip)
+				}
+			}
+		}
+	}
+
+	// A pass at sender 81 and at every tenth after it.
+	if db.mailEvicted != 77 || len(db.records) != 100 {
+		t.Fatalf("%d evicted, %d records left, want 77 and 100", db.mailEvicted, len(db.records))
+	}
+}
+
+func TestEvictionLevel(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		mail MailEvidence
+		want float64
+	}{
+		{"one fresh verdict", MailEvidence{Spam: 1, SpamMass: 1}, 1},
+		{"one faded verdict", MailEvidence{Spam: 1, SpamMass: 0.02}, 1},
+		{"no mass", MailEvidence{}, 1},
+		{"two old verdicts", MailEvidence{Spam: 2, SpamMass: 0.91}, 2},
+		{"old spam and ham", MailEvidence{Spam: 1, Ham: 1, SpamMass: 0.3, HamMass: 0.3}, 2},
+		{"two fresh verdicts", MailEvidence{Spam: 2, SpamMass: 2}, 2},
+		{"just over two", MailEvidence{Spam: 3, SpamMass: 2.01}, 3},
+		{"three verdicts a day old", MailEvidence{Spam: 3, SpamMass: 2.7}, 3},
+		{"three fresh verdicts", MailEvidence{Spam: 3, SpamMass: 3}, 3},
+		{"ham counts", MailEvidence{Spam: 1, Ham: 5, SpamMass: 1, HamMass: 4.5}, 6},
+	} {
+		if got := mailLevel(&tt.mail); got != tt.want {
+			t.Errorf("%s: level %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestHeavierRecordsGoLastLowestMassFirst(t *testing.T) {
 	stored := map[string]*IPRecord{}
 	var want []string
 	for verdicts := 2; verdicts <= 12; verdicts++ {
 		ip := fmt.Sprintf("198.51.100.%d", verdicts)
 		stored[ip] = storedSpam(ip, float64(verdicts), 0, mailNow)
+		stored[ip].Mail.Spam = verdicts
 		if verdicts > 3 {
 			want = append(want, ip)
 		}
@@ -175,7 +299,8 @@ func TestHeavierRecordsGoLastLowestMassFirst(t *testing.T) {
 	db := NewForTest(stored)
 	db.SetMailBudget(10)
 
-	// The twelfth record is the only light one: it goes, then the two lightest.
+	// The twelfth record is the only one with a single verdict: it goes, then
+	// the two of the lowest levels.
 	report := db.RecordMailVerdict(thinIP(0), true, mailNow)
 
 	if report == nil || report.Dropped != 3 {
@@ -187,50 +312,62 @@ func TestHeavierRecordsGoLastLowestMassFirst(t *testing.T) {
 	}
 }
 
-// Each budget from 10 down to 5 drops one record more, in eviction order.
+// Each budget drops one record more than the one before, in eviction order:
+// lowest level first, inside a level the most crowded network first, then
+// the lowest mass. 198.51.0.0/16 holds six records, 203.0.0.0/16 five and
+// 192.0.0.0/16 four.
 func TestEvictionWeighsMassAtPassTime(t *testing.T) {
 	const (
-		created  = "192.0.2.1"     // one fresh verdict: mass 1
-		twoWeeks = "192.0.2.2"     // 4 two weeks ago: mass exactly 1, still light
-		withHam  = "203.0.113.1"   // 1 spam and 0.5 ham: mass 1.5
-		undated  = "203.0.113.2"   // 2.5 with no clock: keeps its weight
-		oneWeek  = "203.0.113.3"   // 6 one week ago: mass 3
-		fresh    = "203.0.113.4"   // 4 now: mass 4
-		heavy    = "198.51.100.%d" // 10 each
+		created  = "192.0.2.1"     // one fresh verdict: mass 1, level 1
+		twoWeeks = "192.0.2.2"     // one verdict, 4 two weeks ago: mass exactly 1, level 1
+		exactTwo = "203.0.113.1"   // two fresh verdicts: mass exactly 2, level 2
+		oldTwo   = "192.0.2.3"     // two verdicts 8 days ago: mass 0.91, level 2 all the same
+		undated  = "203.0.113.2"   // 2.5 with no clock: keeps its weight, level 3
+		withHam  = "203.0.113.3"   // 1.9 spam and 0.9 ham: mass 2.8, level 3
+		oneWeek  = "203.0.113.4"   // 6 one week ago: mass 3, level 3
+		lone     = "192.0.2.4"     // mass 2.1, level 3, in the least crowded network
+		fresh    = "203.0.113.5"   // 4 now: level 4
+		heavy    = "198.51.100.%d" // 10 each, level 10, in the most crowded network
 	)
+	evidence := func(spam, ham int, spamMass, hamMass float64, massAt time.Time) *IPRecord {
+		return &IPRecord{LastSeen: mailNow, Mail: &MailEvidence{Spam: spam, Ham: ham, SpamMass: spamMass, HamMass: hamMass, MassAt: massAt}}
+	}
 	fixture := func() map[string]*IPRecord {
 		stored := map[string]*IPRecord{
-			twoWeeks: storedSpam(twoWeeks, 4, 0, mailNow.Add(-14*day)),
-			withHam:  storedSpam(withHam, 1, 0.5, mailNow),
-			undated:  storedSpam(undated, 2.5, 0, time.Time{}),
-			oneWeek:  storedSpam(oneWeek, 6, 0, mailNow.Add(-7*day)),
-			fresh:    storedSpam(fresh, 4, 0, mailNow),
+			twoWeeks: evidence(1, 0, 4, 0, mailNow.Add(-14*day)),
+			exactTwo: evidence(2, 0, 2, 0, mailNow),
+			oldTwo:   evidence(2, 0, 2, 0, mailNow.Add(-8*day)),
+			undated:  evidence(3, 0, 2.5, 0, time.Time{}),
+			withHam:  evidence(2, 1, 1.9, 0.9, mailNow),
+			oneWeek:  evidence(6, 0, 6, 0, mailNow.Add(-7*day)),
+			lone:     evidence(3, 0, 2.1, 0, mailNow),
+			fresh:    evidence(4, 0, 4, 0, mailNow),
 		}
-		for n := range 5 {
-			ip := fmt.Sprintf(heavy, n+1)
-			stored[ip] = storedSpam(ip, 10, 0, mailNow)
+		for n := range 6 {
+			stored[fmt.Sprintf(heavy, n+1)] = evidence(10, 0, 10, 0, mailNow)
 		}
 		return stored
 	}
-	order := []string{created, twoWeeks, withHam, undated, oneWeek, fresh, fmt.Sprintf(heavy, 1)}
-	for drop := 2; drop <= len(order); drop++ {
+	order := []string{twoWeeks, created, exactTwo, oldTwo, undated, withHam, oneWeek, lone, fresh, fmt.Sprintf(heavy, 1)}
+	for _, budget := range []int{14, 13, 12, 11, 9, 8, 7, 6} {
 		stored := fixture()
 		db := NewForTest(stored)
-		db.SetMailBudget(12 - drop)
+		db.SetMailBudget(budget)
+		drop := len(stored) + 1 - budget*9/10
 
 		report := db.RecordMailVerdict(created, true, mailNow)
 
 		if report == nil || report.Dropped != drop {
-			t.Fatalf("budget %d: report = %+v, want %d dropped", 12-drop, report, drop)
+			t.Fatalf("budget %d: report = %+v, want %d dropped", budget, report, drop)
 		}
 		for n, key := range order {
 			if _, ok := db.records[key]; ok != (n >= drop) {
-				t.Errorf("budget %d: %s kept = %v, want %v", 12-drop, key, ok, n >= drop)
+				t.Errorf("budget %d: %s kept = %v, want %v", budget, key, ok, n >= drop)
 			}
 		}
 		for key, rec := range db.records {
 			if *rec.Mail != *stored[key].Mail {
-				t.Errorf("budget %d: the pass changed the evidence of %s: %+v", 12-drop, key, rec.Mail)
+				t.Errorf("budget %d: the pass changed the evidence of %s: %+v", budget, key, rec.Mail)
 			}
 		}
 	}

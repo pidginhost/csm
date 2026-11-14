@@ -2,6 +2,7 @@ package attackdb
 
 import (
 	"cmp"
+	"math"
 	"net/netip"
 	"slices"
 	"strings"
@@ -52,15 +53,38 @@ func (db *DB) countMailOnlyLocked(now time.Time) int {
 	return n
 }
 
+// mailLevel is the evidence level of m at the time its masses are decayed
+// to: the mass in whole verdicts, rounded up, at least 1. Two counted
+// verdicts hold level 2 however far they decayed, so senders of one message
+// each never outrank a sender seen twice.
+func mailLevel(m *MailEvidence) float64 {
+	least := 1.0
+	if m.Spam+m.Ham >= 2 {
+		least = 2
+	}
+	return max(least, math.Ceil(m.SpamMass+m.HamMass))
+}
+
 // evictMailLocked counts the mail-only records at at and, if they are over
 // the budget, drops the weakest until nine tenths of it are left, so a flood
-// pays for one pass per tenth of the budget and not per message. It returns
-// a report at most once in mailReportEvery. The caller holds db.mu.
+// pays for one pass per tenth of the budget and not per message.
+//
+// The weakest are those of the lowest evidence level. Inside a level the
+// record whose covering network holds the most mail-only records goes
+// first, then the one of the lowest mass, then the smallest key. So a
+// record goes only when none of a lower level is left, and among equals a
+// sender spread over one network pays before anyone else. A crowd never
+// outranks a level: a network with many strong senders keeps them while
+// weaker records are left.
+//
+// It returns a report at most once in mailReportEvery. The caller holds
+// db.mu.
 func (db *DB) evictMailLocked(at time.Time) *Eviction {
 	type candidate struct {
 		key     string
 		network netip.Prefix
 		crowd   int
+		level   float64
 		mass    float64
 	}
 	all := make([]candidate, 0, db.mailOnlyCount)
@@ -74,7 +98,7 @@ func (db *DB) evictMailLocked(at time.Time) *Eviction {
 		decayTo(&m, at)
 		network := coveringNetwork(key)
 		crowds[network]++
-		all = append(all, candidate{key: key, network: network, mass: m.SpamMass + m.HamMass})
+		all = append(all, candidate{key: key, network: network, level: mailLevel(&m), mass: m.SpamMass + m.HamMass})
 	}
 	db.mailOnlyCount = len(all)
 	if len(all) <= db.mailBudget {
@@ -91,15 +115,10 @@ func (db *DB) evictMailLocked(at time.Time) *Eviction {
 		all[i].crowd = crowds[all[i].network]
 	}
 	slices.SortFunc(all, func(a, b candidate) int {
-		// Mass up to 1 is what one verdict leaves. Those records go first,
-		// the most crowded network's before the rest: one sender spread over
-		// a network loses its own records before anyone else's.
-		if aLight, bLight := a.mass <= 1, b.mass <= 1; aLight != bLight {
-			if aLight {
-				return -1
-			}
-			return 1
-		} else if aLight && a.crowd != b.crowd {
+		if c := cmp.Compare(a.level, b.level); c != 0 {
+			return c
+		}
+		if a.crowd != b.crowd {
 			return b.crowd - a.crowd
 		}
 		if c := cmp.Compare(a.mass, b.mass); c != 0 {
