@@ -233,3 +233,104 @@ func TestReloadSettingsSendsAction(t *testing.T) {
 		t.Fatalf("warnings = %q", got)
 	}
 }
+
+func TestSpamSettings(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"list": []any{map[string]any{
+			"id": "singleton", "enable": true, "scoreSpam": 5.0, "scoreReject": 0.0, "scoreDiscard": 0.0, "greylistFor": nil}}}
+	}
+	got, err := f.client().SpamSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (SpamSettings{Enabled: true, ScoreSpam: 5, ScoreReject: 0, ScoreDiscard: 0}) {
+		t.Fatalf("settings = %+v", got)
+	}
+	if c := f.last(); c.Method != "x:SpamSettings/get" || asJSON(t, c.Args["ids"]) != `["singleton"]` {
+		t.Fatalf("call = %s %s", c.Method, asJSON(t, c.Args["ids"]))
+	}
+}
+
+func TestSpamFilterStageOff(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		filter any
+		want   bool
+	}{
+		{"default", map[string]any{"match": map[string]any{}, "else": "is_empty(authenticated_as)"}, false},
+		{"off", map[string]any{"match": map[string]any{}, "else": "false"}, true},
+		{"off with spaces", map[string]any{"match": map[string]any{}, "else": " false "}, true},
+		{"rules before off", map[string]any{"match": map[string]any{"0": map[string]any{"if": "is_empty(authenticated_as)", "then": "true"}}, "else": "false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				return method, map[string]any{"list": []any{map[string]any{"id": "singleton", "enableSpamFilter": tc.filter}}}
+			}
+			got, err := f.client().SpamFilterStageOff(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("off = %v, want %v", got, tc.want)
+			}
+			if c := f.last(); c.Method != "x:MtaStageData/get" || asJSON(t, c.Args["ids"]) != `["singleton"]` {
+				t.Fatalf("call = %s %s", c.Method, asJSON(t, c.Args["ids"]))
+			}
+		})
+	}
+}
+
+func TestClassifySpam(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"c": map[string]any{
+			"score": 11.2, "result": "ham", "tags": map[string]any{
+				"RDNS_NONE":     map[string]any{"score": 1.0, "disposition": "score"},
+				"DNSWL_BLOCKED": map[string]any{"score": 0.0, "disposition": "score"},
+			}}}}
+	}
+	c := f.client()
+	probe := SpamProbe{
+		Message: "Subject: t\r\n\r\nhi\r\n", RemoteIP: "192.0.2.10", EhloDomain: "mx.example.com",
+		MailFrom: "sender@example.com", RcptTo: "postmaster@example.com",
+	}
+	got, err := c.ClassifySpam(context.Background(), probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := f.last()
+	want := `{"c":{"@type":"ClassifySpam","ehloDomain":"mx.example.com","isTls":false,"mailFrom":"sender@example.com","message":"Subject: t\r\n\r\nhi\r\n","rcptTo":{"postmaster@example.com":true},"remoteIp":"192.0.2.10"}}`
+	if call.Method != "x:Action/set" || asJSON(t, call.Args["create"]) != want {
+		t.Fatalf("call = %s %s", call.Method, asJSON(t, call.Args["create"]))
+	}
+	if !reflect.DeepEqual(got, SpamProbeResult{Score: 11.2, Result: "ham", Tags: []string{"DNSWL_BLOCKED", "RDNS_NONE"}}) {
+		t.Fatalf("result = %+v", got)
+	}
+
+	// A tag's disposition is the rule's own action, not the verdict.
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"c": map[string]any{
+			"score": 3.0, "result": "ham", "tags": map[string]any{
+				"SOME_RULE": map[string]any{"score": 3.0, "disposition": "reject"},
+			}}}}
+	}
+	got, err = c.ClassifySpam(context.Background(), probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != "ham" {
+		t.Fatalf("result = %q, want ham", got.Result)
+	}
+}
+
+func TestClassifySpamNotAcknowledged(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{}}
+	}
+	if _, err := f.client().ClassifySpam(context.Background(), BlocklistProbe); err == nil {
+		t.Fatal("a probe without a created result was accepted")
+	}
+}
