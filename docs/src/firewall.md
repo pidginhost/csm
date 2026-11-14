@@ -142,9 +142,7 @@ rejected. There is no dry-run option.
 
 The command clears equivalent stored spellings together and reports their
 highest score and total event count. Forgetting an IPv6 address also forgets
-the spam evidence of its /64 network. The reply names that network only
-when a removed record identifies the expected /64; corrupt stored text is
-never copied into the network name.
+the spam evidence of its /64 network, and the reply names that network.
 Blocks, allow lists, whitelists and raw event history remain intact. New
 findings immediately start a fresh scoring record, even if they arrive while
 the command runs.
