@@ -106,7 +106,7 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	if IsTrustedProxy(req.IP, cfg) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, fmt.Errorf("%w: %s is a trusted proxy", firewall.ErrIPProtected, req.IP)
 	}
-	if respondDerived(req) {
+	if respondDerived(req, parseExpiry(cfg.AutoResponse.BlockExpiry)) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrBlockTakenByAdmission
 	}
 	blocker := getIPBlocker()

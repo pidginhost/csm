@@ -135,12 +135,24 @@ func respondSpray(f alert.Finding, cidr string) {
 // root it carries, through its entry, and reports whether legacy must leave
 // it to admission. A permanent block is never asked for implicitly: it is
 // handed over without a root, as a path that kept none is, and admission
-// refuses it.
-func respondDerived(req ApplyBlockRequest) bool {
-	if req.TTL == 0 {
-		return AnswerRoot(admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
+// refuses it. A block asked to last longer than lease, which admission would
+// cut to lease, keeps its legacy block while admission executes; a
+// previewing admission still sees it. A root refusal is answered first, so
+// an edge or a proxied client is still blocked by neither path.
+func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
+	a := getResponseAdmission()
+	if a == nil {
+		return false
 	}
-	return AnswerPreparedRoot(admission.KindBlockIP, req.IP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)
+	defer timeHandoff(time.Now())
+	executes := a.ExecutesBlocks()
+	if req.TTL == 0 {
+		return answerRoot(a, executes, admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
+	}
+	if executes && lease > 0 && req.TTL > lease && req.RootErr == nil {
+		return false
+	}
+	return answerPreparedRoot(a, executes, admission.KindBlockIP, req.IP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)
 }
 
 // AdmissionRoot keeps a root for a derived path whose retained finding
@@ -164,17 +176,12 @@ func PrepareAdmissionRoot(f alert.Finding) (admission.Evidence, error) {
 // provenance refusal with a second rootless-response refusal. It reports
 // whether legacy must leave the response to admission.
 func AnswerPreparedRoot(kind admission.Kind, target string, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) bool {
-	if err != nil {
-		a := getResponseAdmission()
-		if a == nil {
-			return false
-		}
-		defer timeHandoff(time.Now())
-		executes := a.ExecutesBlocks()
-		a.Refuse(kind, f, via, err)
-		return taken(executes, kind, err, nil)
+	a := getResponseAdmission()
+	if a == nil {
+		return false
 	}
-	return AnswerRoot(kind, target, root, via, ttl)
+	defer timeHandoff(time.Now())
+	return answerPreparedRoot(a, a.ExecutesBlocks(), kind, target, root, via, f, err, ttl)
 }
 
 // AnswerRoot hands admission a response of kind to target a derived path
@@ -186,7 +193,20 @@ func AnswerRoot(kind admission.Kind, target string, root admission.Evidence, via
 		return false
 	}
 	defer timeHandoff(time.Now())
-	executes := a.ExecutesBlocks()
+	return answerRoot(a, a.ExecutesBlocks(), kind, target, root, via, ttl...)
+}
+
+// answerPreparedRoot and answerRoot answer with the caller's reading of
+// whether a executes blocks, so one hand-off decides on one reading.
+func answerPreparedRoot(a ResponseAdmission, executes bool, kind admission.Kind, target string, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) bool {
+	if err != nil {
+		a.Refuse(kind, f, via, err)
+		return taken(executes, kind, err, nil)
+	}
+	return answerRoot(a, executes, kind, target, root, via, ttl)
+}
+
+func answerRoot(a ResponseAdmission, executes bool, kind admission.Kind, target string, root admission.Evidence, via admission.Entry, ttl ...time.Duration) bool {
 	return taken(executes, kind, nil, a.Respond(kind, target, root, via, ttl...))
 }
 

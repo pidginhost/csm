@@ -173,3 +173,29 @@ func TestDaemonReportsARefusedExecutionPolicy(t *testing.T) {
 		t.Fatalf("execution held = %q", held)
 	}
 }
+
+// The daemon keeps a nonpositive block_expiry as written; the owner's
+// policy validation refuses it, so such an owner never executes blocks.
+// An empty or unparsable value falls back to 24 hours.
+func TestExecutionPolicyLeaseParsingBoundary(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	base, err := config.LoadBytes([]byte("auto_response:\n  enabled: true\n  block_ips: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{}
+	scan := admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}, Entry: admission.EntryScan}
+	for _, tc := range []struct {
+		setting string
+		want    time.Duration
+	}{{"", 24 * time.Hour}, {"invalid", 24 * time.Hour}, {"1h", time.Hour}, {"0s", 0}, {"-1h", -time.Hour}} {
+		cfg := *base
+		cfg.AutoResponse.BlockExpiry = tc.setting
+		config.SetActive(&cfg)
+		p := d.executionPolicy()
+		if p.BlockExpiry != tc.want || p.Expiry(scan) != tc.want {
+			t.Errorf("block_expiry %q: lease %s, scan expiry %s; want %s", tc.setting, p.BlockExpiry, p.Expiry(scan), tc.want)
+		}
+	}
+}
