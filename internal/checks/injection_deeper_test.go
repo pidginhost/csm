@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -153,8 +154,26 @@ func TestScanGroupWritablePHPWithWritableFile(t *testing.T) {
 	osFS = realOS{}
 	defer func() { osFS = old }()
 
-	webGIDs := map[uint32]bool{} // empty — won't match
+	if err := os.Chmod(phpFile, 0664); err != nil { // defeat umask
+		t.Fatal(err)
+	}
+	info, err := os.Stat(phpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid := info.Sys().(*syscall.Stat_t).Gid
+
+	// The file's group is not a web-server group: nothing to report.
 	var findings []alert.Finding
-	scanGroupWritablePHP(dir, 3, webGIDs, &findings)
-	_ = findings
+	scanGroupWritablePHP(dir, 3, map[uint32]bool{}, &findings)
+	if len(findings) != 0 {
+		t.Fatalf("non-web group produced findings: %+v", findings)
+	}
+
+	// The same file under a web-server group is reported once.
+	scanGroupWritablePHP(dir, 3, map[uint32]bool{gid: true}, &findings)
+	if len(findings) != 1 || findings[0].Check != "group_writable_php" ||
+		findings[0].Message != "Web-server group-writable PHP: "+phpFile {
+		t.Fatalf("web group findings = %+v, want one group_writable_php for %s", findings, phpFile)
+	}
 }

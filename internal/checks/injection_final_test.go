@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -53,8 +54,12 @@ func TestFixKillAndQuarantineNoProcess(t *testing.T) {
 func TestAnalyzePHPINIMocked(t *testing.T) {
 	content := "display_errors = On\nallow_url_fopen = On\nallow_url_include = On\n"
 	issues := analyzePHPINI(content)
-	// Exercises the INI parsing. May or may not flag depending on detection rules.
-	_ = issues
+	// Only allow_url_include is dangerous here; with no disable_functions
+	// line the function list is not judged.
+	want := []string{"allow_url_include enabled (remote code inclusion)"}
+	if !slices.Equal(issues, want) {
+		t.Fatalf("issues = %q, want %q", issues, want)
+	}
 }
 
 // --- scanForMaliciousSymlinks ----------------------------------------
@@ -76,8 +81,29 @@ func TestScanForMaliciousSymlinks(t *testing.T) {
 // --- SetCloudflareNets -----------------------------------------------
 
 func TestSetCloudflareNets(t *testing.T) {
+	cfNetsMu.Lock()
+	prev := cfNets
+	cfNetsMu.Unlock()
+	t.Cleanup(func() {
+		cfNetsMu.Lock()
+		cfNets = prev
+		cfNetsMu.Unlock()
+	})
+	count := func() int {
+		cfNetsMu.Lock()
+		defer cfNetsMu.Unlock()
+		return len(cfNets)
+	}
+
+	// An unparsable range is dropped, a valid one kept.
+	SetCloudflareNets([]string{"192.0.2.0/24", "not-a-cidr"})
+	if got := count(); got != 1 {
+		t.Fatalf("cached ranges = %d, want 1", got)
+	}
 	SetCloudflareNets(nil)
-	// Should not panic
+	if got := count(); got != 0 {
+		t.Fatalf("cached ranges after nil = %d, want 0", got)
+	}
 }
 
 // --- truncateString --------------------------------------------------

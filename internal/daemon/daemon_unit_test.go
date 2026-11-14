@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -967,8 +969,23 @@ func TestLogWatcher_RefreshOffsetMarkerClearsStaleMarker(t *testing.T) {
 
 func TestLogWatcher_Stop_NilFile(t *testing.T) {
 	w := &LogWatcher{}
-	// Should not panic.
 	w.Stop()
+	w.Stop()
+	if w.file != nil {
+		t.Fatal("Stop attached a file to a watcher that had none")
+	}
+
+	// With a file, Stop closes it, and a second Stop does not close twice.
+	f, err := os.CreateTemp(t.TempDir(), "log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withFile := &LogWatcher{file: f}
+	withFile.Stop()
+	if _, err := f.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("file after Stop: Stat err = %v, want os.ErrClosed", err)
+	}
+	withFile.Stop()
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,32 +1060,43 @@ func TestLogWatcher_ReadNewLines_ChannelFull(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartModSecEviction_StopsOnSignal(t *testing.T) {
+	const loop = "daemon.StartModSecEviction.func"
+	base := goroutinesRunning(loop)
 	stopCh := make(chan struct{})
 	StartModSecEviction(stopCh, func() *config.Config { return nil })
+	waitGoroutines(t, loop, base+1)
 	close(stopCh)
-	// Give goroutine time to exit. No assertion beyond "doesn't hang."
-	time.Sleep(50 * time.Millisecond)
+	waitGoroutines(t, loop, base)
 }
 
 func TestStartAccessLogEviction_StopsOnSignal(t *testing.T) {
+	const loop = "daemon.StartAccessLogEviction.func"
+	base := goroutinesRunning(loop)
 	stopCh := make(chan struct{})
 	StartAccessLogEviction(stopCh)
+	waitGoroutines(t, loop, base+1)
 	close(stopCh)
-	time.Sleep(50 * time.Millisecond)
+	waitGoroutines(t, loop, base)
 }
 
 func TestStartEmailRateEviction_StopsOnSignal(t *testing.T) {
+	const loop = "daemon.StartEmailRateEviction.func"
+	base := goroutinesRunning(loop)
 	stopCh := make(chan struct{})
 	StartEmailRateEviction(stopCh)
+	waitGoroutines(t, loop, base+1)
 	close(stopCh)
-	time.Sleep(50 * time.Millisecond)
+	waitGoroutines(t, loop, base)
 }
 
 func TestStartCloudRelayEviction_StopsOnSignal(t *testing.T) {
+	const loop = "daemon.StartCloudRelayEviction.func"
+	base := goroutinesRunning(loop)
 	stopCh := make(chan struct{})
 	StartCloudRelayEviction(stopCh)
+	waitGoroutines(t, loop, base+1)
 	close(stopCh)
-	time.Sleep(50 * time.Millisecond)
+	waitGoroutines(t, loop, base)
 }
 
 // ---------------------------------------------------------------------------
@@ -1085,11 +1113,18 @@ func TestDiscoverModSecLogPath_ConfigOverrideWins(t *testing.T) {
 
 func TestDiscoverModSecLogPath_EmptyConfig(t *testing.T) {
 	cfg := &config.Config{}
-	// On macOS none of the platform candidates exist, so returns "".
-	got := discoverModSecLogPath(cfg)
-	// We can't assert the exact value since it depends on platform,
-	// but it should not panic.
-	_ = got
+	// With no override the answer is the first platform candidate on disk,
+	// or nothing when none is.
+	want := ""
+	for _, p := range platform.Detect().ErrorLogPaths {
+		if _, err := os.Stat(p); err == nil {
+			want = p
+			break
+		}
+	}
+	if got := discoverModSecLogPath(cfg); got != want {
+		t.Errorf("discoverModSecLogPath = %q, want %q", got, want)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,10 +1132,18 @@ func TestDiscoverModSecLogPath_EmptyConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDiscoverAccessLogPath_NoCandidatesExist(t *testing.T) {
-	// On macOS/test environments, none of the Linux paths exist.
-	got := discoverAccessLogPath()
-	// Not asserting empty because CI could have Apache installed.
-	_ = got
+	// The answer is the first platform candidate on disk, or nothing when
+	// none is.
+	want := ""
+	for _, p := range platform.Detect().AccessLogPaths {
+		if _, err := os.Stat(p); err == nil {
+			want = p
+			break
+		}
+	}
+	if got := discoverAccessLogPath(); got != want {
+		t.Errorf("discoverAccessLogPath = %q, want %q", got, want)
+	}
 }
 
 // ---------------------------------------------------------------------------

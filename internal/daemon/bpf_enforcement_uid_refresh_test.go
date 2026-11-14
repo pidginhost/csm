@@ -31,14 +31,18 @@ func TestUIDRefresherTicksAndCallsLoader(t *testing.T) {
 }
 
 func TestUIDRefresherStopIdempotent(t *testing.T) {
+	const loop = "daemon.(*UIDRefresher).loop"
+	base := goroutinesRunning(loop)
 	r := NewUIDRefresher(UIDRefresherConfig{
 		Interval: time.Hour,
 		Refresh:  func() error { return nil },
 	})
 	r.Start()
-	r.Start() // double start no-op
+	r.Start() // double start no-op: one loop, not two
+	waitGoroutines(t, loop, base+1)
 	r.Stop()
 	r.Stop() // double stop no-op
+	waitGoroutines(t, loop, base)
 }
 
 func TestUIDRefresherStatsBumpOnFailure(t *testing.T) {

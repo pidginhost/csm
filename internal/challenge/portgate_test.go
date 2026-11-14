@@ -2,7 +2,9 @@ package challenge
 
 import (
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -143,9 +145,22 @@ func TestIPListWiresGateAddRemove(t *testing.T) {
 func TestIPListNoGateIsNoOp(t *testing.T) {
 	dir := t.TempDir()
 	l := NewIPList(filepath.Join(dir, "challenge_ips.txt"))
-	// no SetPortGate call; Add/Remove must not panic.
+	mapPath := filepath.Join(dir, "challenge_ips.txt")
+	// no SetPortGate call; the list and its map file still track the IP.
 	l.Add("203.0.113.7", "noop", 1*time.Minute)
+	if !l.Contains("203.0.113.7") {
+		t.Fatal("Add without a port gate did not list the IP")
+	}
+	if data, err := os.ReadFile(mapPath); err != nil || !strings.Contains(string(data), "203.0.113.7 challenge\n") {
+		t.Fatalf("map file after Add = %q, %v; want the IP listed", data, err)
+	}
 	l.Remove("203.0.113.7")
+	if l.Contains("203.0.113.7") {
+		t.Fatal("Remove without a port gate left the IP listed")
+	}
+	if data, err := os.ReadFile(mapPath); err != nil || strings.Contains(string(data), "203.0.113.7") {
+		t.Fatalf("map file after Remove = %q, %v; want the IP gone", data, err)
+	}
 }
 
 // TestIPListRemoveSkipsRevokeWhenNotListed locks the fix for the port-gate

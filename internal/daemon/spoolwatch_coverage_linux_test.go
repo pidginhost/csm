@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -151,7 +152,14 @@ func TestSpoolWatcherStopIdempotent(t *testing.T) {
 func TestSpoolWatcherCloseFdIdempotent(t *testing.T) {
 	sw := &SpoolWatcher{fd: -1}
 	sw.fdClosed = 1 // pretend already closed
-	// Should not panic.
 	sw.closeFd()
 	sw.closeFd()
+	// Already closed: the queue is not rebuilt around the dead descriptor
+	// and the flag stays set.
+	if sw.kernelQueue != nil {
+		t.Fatal("closeFd on a closed watcher rebuilt its kernel queue")
+	}
+	if got := atomic.LoadInt32(&sw.fdClosed); got != 1 {
+		t.Fatalf("fdClosed = %d, want 1", got)
+	}
 }

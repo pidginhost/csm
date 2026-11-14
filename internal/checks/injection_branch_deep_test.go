@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -302,14 +303,33 @@ func TestCheckOutboundEmailContentDeep(t *testing.T) {
 // --- AutoFixPermissions with fixable finding --------------------------
 
 func TestAutoFixPermissionsDeep(t *testing.T) {
+	tmp := t.TempDir()
+	withFixPermissionsAllowedRoots(t, tmp)
+	target := filepath.Join(tmp, "config.php")
+	if err := os.WriteFile(target, []byte("<?php"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0666); err != nil { // defeat umask
+		t.Fatal(err)
+	}
+
+	// Auto-response is off: a fixable finding is reported, never acted on.
 	cfg := &config.Config{}
 	findings := []alert.Finding{
-		{Severity: alert.High, Check: "world_writable_php", Message: "World-writable PHP: /home/alice/public_html/config.php", FilePath: "/home/alice/public_html/config.php"},
+		{Severity: alert.High, Check: "world_writable_php", Message: "World-writable PHP: " + target, FilePath: target},
 	}
 
 	actions, keys := AutoFixPermissions(cfg, findings)
-	_ = actions
-	_ = keys
+	if actions != nil || keys != nil {
+		t.Fatalf("disabled auto-response returned actions=%v keys=%v, want nil", actions, keys)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0666 {
+		t.Fatalf("disabled auto-response changed the mode to %o", info.Mode().Perm())
+	}
 }
 
 // --- scanDomlogs with brute force data --------------------------------

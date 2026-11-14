@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -97,6 +98,7 @@ func TestActiveIsConcurrentSafe(t *testing.T) {
 	t.Cleanup(func() { SetActive(nil) })
 
 	var wg sync.WaitGroup
+	var torn atomic.Int32
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
 		go func() {
@@ -104,11 +106,18 @@ func TestActiveIsConcurrentSafe(t *testing.T) {
 			for j := 0; j < 1000; j++ {
 				cfg := &Config{Hostname: "w"}
 				SetActive(cfg)
-				_ = Active()
+				// Every writer installs a whole config, so a reader sees
+				// one of them: never nil, never half-built.
+				if got := Active(); got == nil || got.Hostname != "w" {
+					torn.Add(1)
+				}
 			}
 		}()
 	}
 	wg.Wait()
+	if n := torn.Load(); n != 0 {
+		t.Fatalf("%d reads saw no config or a partial one", n)
+	}
 }
 
 func TestDiffNoChange(t *testing.T) {

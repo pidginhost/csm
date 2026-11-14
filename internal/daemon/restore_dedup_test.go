@@ -244,7 +244,16 @@ func TestSignalEagerReconcile_TolerantOfNilChannel(t *testing.T) {
 	// Helper must be a no-op when the signal channel is nil so partial
 	// FileMonitor structs constructed in unit tests do not panic.
 	signalEagerReconcile(nil, 500, 500)
-	// no panic = pass
+
+	// The same count does signal a real channel, so the call above is the
+	// nil guard and not a count that never fires.
+	sig := make(chan struct{}, 1)
+	signalEagerReconcile(sig, 500, 500)
+	select {
+	case <-sig:
+	default:
+		t.Fatal("count at threshold did not signal")
+	}
 }
 
 func TestSignalEagerReconcile_NonBlockingWhenChannelFull(t *testing.T) {

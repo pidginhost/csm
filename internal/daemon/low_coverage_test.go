@@ -555,7 +555,13 @@ func TestSetGetGeoIPDB_ConcurrentAccess(t *testing.T) {
 	}()
 
 	for i := 0; i < 100; i++ {
-		_ = getGeoIPDB()
+		// A reader sees the database from before or the new one, whole.
+		if got := getGeoIPDB(); got != prev && got != db {
+			t.Fatalf("read %d returned a database nobody stored: %p", i, got)
+		}
 	}
 	<-done
+	if got := getGeoIPDB(); got != db {
+		t.Fatalf("database after the writes = %p, want the stored one %p", got, db)
+	}
 }

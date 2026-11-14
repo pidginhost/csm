@@ -137,10 +137,26 @@ func TestObserveBlocksCloudflareWarningDoesNotReplaceMissingReason(t *testing.T)
 }
 
 func TestObserveBlocksNilCollectorIsNoop(t *testing.T) {
+	block := []alert.Finding{{Check: "auto_block", Severity: alert.Critical,
+		Details: "Reason: x", Message: "AUTO-BLOCK: 203.0.113.58 blocked", Timestamp: time.Unix(0, 0)}}
+
 	d := &Daemon{} // blockDigest nil (feature disabled)
-	d.observeBlocks([]alert.Finding{{Check: "auto_block", Severity: alert.Critical,
-		Details: "Reason: x", Message: "AUTO-BLOCK: 1.2.3.4 blocked"}})
-	// must not panic
+	d.observeBlocks(block)
+	if d.blockDigest != nil {
+		t.Fatal("observing a block created a digest collector with the feature off")
+	}
+
+	// The same finding is a block the digest counts once the feature is on,
+	// so the no-op above is the disabled feature, not an ignored finding.
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		Watch: true, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now:       func() time.Time { return time.Unix(0, 0) },
+		CountryOf: func(string) string { return "RO" },
+	})
+	d.observeBlocks(block)
+	if dg := d.blockDigest.Drain(); dg.Total != 1 {
+		t.Fatalf("digest = %+v, want the one block observed", dg)
+	}
 }
 
 func TestObserveBlocksSkipsDryRunSubnetNotices(t *testing.T) {
@@ -446,9 +462,31 @@ func TestNoteSummaryMapsFindings(t *testing.T) {
 
 // A noteSummary panic must not reach dispatch.
 func TestNoteSummaryNeverPanics(t *testing.T) {
-	d := &Daemon{blockDigest: blockdigest.New(blockdigest.Options{Interval: time.Hour})}
+	var got []blockdigest.WebhookPayload
+	d := &Daemon{blockDigest: blockdigest.New(blockdigest.Options{
+		Interval: time.Hour, SendOn: "any", MinBlock: 1, Location: time.UTC,
+		WebhookSink: func(p blockdigest.WebhookPayload) error { got = append(got, p); return nil },
+	})}
+	// A nil config panics inside the hook. The batch is dropped, the caller
+	// carries on.
 	d.noteSummary(nil, []alert.Finding{{Check: "challenge_route", Severity: alert.Warning}})
 	(&Daemon{}).noteSummary(&config.Config{}, []alert.Finding{{Check: "challenge_route"}})
+
+	// The collector survived and counts the next batch, and only that one.
+	d.noteSummary(&config.Config{}, []alert.Finding{{Check: "ftp_login", Severity: alert.High, SourceIP: "192.0.2.30"}})
+	if !d.blockDigest.SendDue(time.Now().Add(25*time.Hour)) || len(got) != 1 {
+		t.Fatalf("summary webhooks = %d, want 1", len(got))
+	}
+	s := got[0].CSM.Summary
+	if s == nil {
+		t.Fatal("no csm.summary")
+	}
+	if s.Checks["ftp_login"]["HIGH"] != 1 {
+		t.Fatalf("checks = %v, want the batch after the panic counted", s.Checks)
+	}
+	if s.Checks["challenge_route"] != nil {
+		t.Fatalf("checks = %v, want the panicking batch dropped", s.Checks)
+	}
 }
 
 // A phpanel webhook takes signed findings only. The daily summary must not

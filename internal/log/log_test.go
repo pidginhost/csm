@@ -230,10 +230,32 @@ func TestLegacyTextHandler_WithGroupPrefixes(t *testing.T) {
 }
 
 func TestHelpers_DoNotPanic(t *testing.T) {
-	// Smoke test: make sure the convenience helpers work end-to-end.
-	// Output goes to stderr which the test runner captures.
+	var buf bytes.Buffer
+	prev := global.Load()
+	global.Store(slog.New(newLegacyTextHandler(&buf, slog.LevelDebug)))
+	t.Cleanup(func() { global.Store(prev) })
+
 	Debug("debug message", "key", "value")
 	Info("info message", "key", "value")
 	Warn("warn message", "key", "value")
 	Error("error message", "err", "synthetic")
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("helpers wrote %d lines, want 4: %q", len(lines), buf.String())
+	}
+	for i, want := range []string{"debug message", "info message", "warn message", "error message"} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("line %d = %q, want it to carry %q", i, lines[i], want)
+		}
+	}
+	if !strings.Contains(lines[1], "key=value") {
+		t.Errorf("info line dropped its attribute: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "WARN") || !strings.Contains(lines[3], "ERROR") {
+		t.Errorf("warn/error lines lost their level: %q / %q", lines[2], lines[3])
+	}
+	if !strings.Contains(lines[3], "err=synthetic") {
+		t.Errorf("error line dropped its attribute: %q", lines[3])
+	}
 }

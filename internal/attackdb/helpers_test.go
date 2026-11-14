@@ -115,7 +115,17 @@ func TestRotateEventsFileKeepsHalf(t *testing.T) {
 }
 
 func TestRotateEventsFileMissing(t *testing.T) {
-	rotateEventsFile(filepath.Join(t.TempDir(), "nope")) // should not panic
+	dir := t.TempDir()
+	rotateEventsFile(filepath.Join(dir, "nope"))
+
+	// A missing file is left missing: no empty events file and no temp file.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rotating a missing file created %d entries, want 0", len(entries))
+	}
 }
 
 func TestDBPruneExpired(t *testing.T) {

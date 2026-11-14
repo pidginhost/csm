@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -211,8 +212,26 @@ func TestResolveExistingFixPathInTmp(t *testing.T) {
 	osFS = realOS{}
 	defer func() { osFS = old }()
 
-	// The function validates against allowed roots — exercises the path logic.
-	_, _, _ = resolveExistingFixPath(phpFile, []string{"/home", "/tmp", "/var"})
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Under an allowed root the resolved path and its stat come back.
+	got, info, err := resolveExistingFixPath(phpFile, []string{dir, resolvedDir})
+	if err != nil {
+		t.Fatalf("resolveExistingFixPath under an allowed root: %v", err)
+	}
+	if got != filepath.Join(resolvedDir, "test.php") || info == nil || !info.Mode().IsRegular() {
+		t.Fatalf("resolved = %q, info = %v; want the regular file under %s", got, info, resolvedDir)
+	}
+
+	// Outside every allowed root the path is refused.
+	other := t.TempDir()
+	if _, _, err := resolveExistingFixPath(phpFile, []string{other}); err == nil ||
+		!strings.Contains(err.Error(), "outside the allowed remediation roots") {
+		t.Fatalf("path outside the roots: err = %v, want a refusal", err)
+	}
 }
 
 func TestResolveExistingFixPathOutsideRoots(t *testing.T) {

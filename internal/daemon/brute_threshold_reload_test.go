@@ -384,6 +384,24 @@ func TestReconcileBruteThresholdsRaceWithRecord(t *testing.T) {
 		close(stop)
 	}()
 	wg.Wait()
+
+	// The reload landed under contention: the probe tracker started at 100
+	// and now fires at the reloaded 5, and the auth trackers still fire.
+	smtpFired, mailFired, probeFired := false, false, false
+	for i := 0; i < 6; i++ {
+		if hasCheckFinding(d.smtpAuthTracker.Record("198.51.100.30", ""), "smtp_bruteforce") {
+			smtpFired = true
+		}
+		if hasCheckFinding(d.mailAuthTracker.Record("198.51.100.31", "victim@example.com"), "mail_bruteforce") {
+			mailFired = true
+		}
+		if hasCheckFinding(d.smtpProbeTracker.Record("198.51.100.32"), "smtp_probe_abuse") {
+			probeFired = true
+		}
+	}
+	if !smtpFired || !mailFired || !probeFired {
+		t.Fatalf("after concurrent reloads: smtp=%v mail=%v probe=%v, want all three at the reloaded thresholds", smtpFired, mailFired, probeFired)
+	}
 }
 
 // A browser save publishes the edited config through config.SetActive and

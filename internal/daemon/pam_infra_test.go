@@ -46,7 +46,12 @@ func TestPAMIsInfraIPNoMatch(t *testing.T) {
 // --- lookupCPanelUser exercises the function -------------------------
 
 func TestLookupCPanelUserNonexistent(t *testing.T) {
-	user := lookupCPanelUser("nonexistent_uid_999999")
-	// On dev machines, this won't match — just exercises the code.
-	_ = user
+	withUserdomainsPath(t, writeUserdomains(t, "example.com: alice\nexample.org: bob\n"))
+	if user := lookupCPanelUser("nonexistent.example.net"); user != "" {
+		t.Fatalf("unlisted domain resolved to %q, want empty", user)
+	}
+	// The same file does resolve a listed domain, whatever its case.
+	if user := lookupCPanelUser("EXAMPLE.org"); user != "bob" {
+		t.Fatalf("listed domain resolved to %q, want bob", user)
+	}
 }

@@ -12,10 +12,14 @@ func TestProbeOnLinuxBPF(t *testing.T) {
 		t.Skip("BPF probe needs CAP_BPF / root; skipping in unprivileged env")
 	}
 	caps := Probe()
-	if !caps.Any() {
-		t.Skipf("BPF capability probes are unavailable in this privileged test environment: %+v", caps)
-	}
 	t.Logf("kernel caps: %+v", caps)
+
+	// The cached answer must be what the kernel says now, on any kernel:
+	// a stale or zeroed cache would send every coordinator to the wrong
+	// backend.
+	if fresh := probeKernel(); caps != fresh {
+		t.Fatalf("Probe() = %+v, fresh kernel probe = %+v", caps, fresh)
+	}
 }
 
 func TestProbeIsIdempotent(t *testing.T) {

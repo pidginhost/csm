@@ -116,7 +116,14 @@ func TestAnalyzePHPContentWithObfuscation(t *testing.T) {
 	defer func() { osFS = old }()
 
 	result := analyzePHPContent(path)
-	_ = result
+	if !result.readOK || result.empty {
+		t.Fatalf("readOK=%v empty=%v, want the file read and non-empty", result.readOK, result.empty)
+	}
+	// A path that cannot be opened is not read and not reported.
+	missing := analyzePHPContent(dir + "/missing.php")
+	if missing.readOK || missing.severity != -1 {
+		t.Fatalf("missing file: readOK=%v severity=%v, want unread and no severity", missing.readOK, missing.severity)
+	}
 }
 
 // --- analyzePHPContent: eval/assert wrapping dynamic code execution --

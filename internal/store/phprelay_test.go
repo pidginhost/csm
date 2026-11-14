@@ -2,8 +2,10 @@ package store
 
 import (
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
-	"time"
 )
 
 func TestPHPRelayPutGetDelete(t *testing.T) {
@@ -82,14 +84,23 @@ func TestPHPRelayList(t *testing.T) {
 
 // guard against accidentally exposing private bolt
 func TestPHPRelay_HelpersAreOnlySurface(t *testing.T) {
-	var db DB
-	_ = db
-	// Compile-time check: these methods must exist.
-	_ = (*DB).PHPRelayPut
-	_ = (*DB).PHPRelayGet
-	_ = (*DB).PHPRelayDelete
-	_ = (*DB).PHPRelayPutBatch
-	_ = (*DB).PHPRelaySweep
-	_ = (*DB).PHPRelayList
-	_ = time.Now
+	typ := reflect.TypeOf(&DB{})
+	var got []string
+	for i := 0; i < typ.NumMethod(); i++ {
+		if name := typ.Method(i).Name; strings.HasPrefix(name, "PHPRelay") {
+			got = append(got, name)
+		}
+	}
+	want := []string{"PHPRelayDelete", "PHPRelayGet", "PHPRelayList", "PHPRelayPut", "PHPRelayPutBatch", "PHPRelaySweep"}
+	if !slices.Equal(got, want) {
+		t.Errorf("PHP relay methods = %v, want exactly %v", got, want)
+	}
+
+	// The bbolt handle stays private: no exported field hands it out.
+	st := typ.Elem()
+	for i := 0; i < st.NumField(); i++ {
+		if f := st.Field(i); f.IsExported() {
+			t.Errorf("DB exports field %s (%s)", f.Name, f.Type)
+		}
+	}
 }

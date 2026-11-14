@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // ---------------------------------------------------------------------------
@@ -16,10 +19,22 @@ import (
 
 func TestTopMailSenders_NoLog(t *testing.T) {
 	got := topMailSenders(500, 10)
-	// On dev machines /var/log/exim_mainlog doesn't exist → nil.
-	// On CI/prod machines it might exist with various content → non-nil.
-	// Either way the call is safe; we just exercised the function.
-	_ = got
+	if _, err := os.Stat(platform.EximMainLog); err != nil {
+		// No log to read: no senders, not an empty list.
+		if got != nil {
+			t.Fatalf("topMailSenders with no log = %+v, want nil", got)
+		}
+		return
+	}
+	// A host with a log: at most topK senders, busiest first.
+	if len(got) > 10 {
+		t.Fatalf("topMailSenders returned %d senders, want at most 10", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Count < got[i].Count {
+			t.Fatalf("senders not sorted by count: %+v", got)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

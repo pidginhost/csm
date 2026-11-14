@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,10 +24,16 @@ func TestDoGeoIPUpdate_WithCredentialsInvalidPath(t *testing.T) {
 	cfg.GeoIP.LicenseKey = "test-key"
 	cfg.GeoIP.Editions = []string{"GeoLite2-City"}
 	d := New(cfg, nil, nil, "")
-	// No network access in test env - HEAD to maxmind will fail fast and
-	// produce an "error" EditionResult which exercises the error branch
-	// of doGeoIPUpdate without panicking.
+	prev := getGeoIPDB()
+	// These credentials are refused, or the network is absent: either way
+	// the edition fails, no database lands and the loaded one stays.
 	d.doGeoIPUpdate()
+	if matches, _ := filepath.Glob(filepath.Join(cfg.StatePath, "geoip", "*.mmdb")); len(matches) != 0 {
+		t.Fatalf("failed update left databases on disk: %v", matches)
+	}
+	if getGeoIPDB() != prev {
+		t.Fatal("failed update replaced the GeoIP database")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -99,13 +106,20 @@ func TestNewPAMListener_NonRootSkipped(t *testing.T) {
 	alertCh := make(chan alert.Finding, 1)
 	listener, err := NewPAMListener(cfg, alertCh)
 	if err == nil {
-		// If for some reason MkdirAll and Listen succeeded, clean up.
-		if listener != nil {
-			listener.Stop()
+		// The socket dir was writable here: a listener exists and is ours
+		// to stop.
+		if listener == nil {
+			t.Fatal("NewPAMListener returned neither a listener nor an error")
 		}
-		t.Skip("PAM socket dir was writable in this env — branch already covered by success path")
+		listener.Stop()
+		return
 	}
-	// err != nil is the non-root expected path; function returned cleanly.
+	if listener != nil {
+		t.Fatalf("NewPAMListener returned a listener with error %v", err)
+	}
+	if !strings.Contains(err.Error(), "creating socket dir") && !strings.Contains(err.Error(), "listening on") {
+		t.Fatalf("error = %v, want it to name the socket dir or the socket", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -118,25 +132,30 @@ func TestParseDovecotLogLine_NoGeoDBSkips(t *testing.T) {
 	line := `Apr  4 10:15:23 server dovecot: imap-login: Login: user=<john@example.com>, method=PLAIN, rip=203.0.113.42, lip=10.0.0.1`
 	cfg := &config.Config{}
 
-	// Ensure geoipDB is whatever the test runtime default is (nil).
-	findings := parseDovecotLogLine(line, cfg)
-	// No GeoIP DB = no way to resolve country = no finding. That's the
-	// early-return branch we want to cover.
-	if findings != nil {
-		t.Logf("geoipDB was set in this env, got findings=%+v (informational only)", findings)
+	prev := getGeoIPDB()
+	setGeoIPDB(nil)
+	t.Cleanup(func() { setGeoIPDB(prev) })
+
+	// No GeoIP DB = no way to resolve country = no finding.
+	if findings := parseDovecotLogLine(line, cfg); findings != nil {
+		t.Fatalf("login with no GeoIP database produced findings: %+v", findings)
 	}
 }
 
 func TestParseDovecotLogLine_TrustedCountryWithGeoDBNil(t *testing.T) {
 	// Even with a trusted-countries list, if GeoIP DB is nil the function
 	// bails before consulting that list. Tests the early-return order.
-	line := `dovecot: imap-login: Login: user=<alice@example.com>, rip=8.8.8.8`
+	line := `dovecot: imap-login: Login: user=<alice@example.com>, rip=203.0.113.42`
 	cfg := &config.Config{}
 	cfg.Suppressions.TrustedCountries = []string{"US"}
 
-	findings := parseDovecotLogLine(line, cfg)
-	// Should return nil because GeoIP DB is nil by default.
-	_ = findings
+	prev := getGeoIPDB()
+	setGeoIPDB(nil)
+	t.Cleanup(func() { setGeoIPDB(prev) })
+
+	if findings := parseDovecotLogLine(line, cfg); findings != nil {
+		t.Fatalf("login with no GeoIP database produced findings: %+v", findings)
+	}
 }
 
 func TestParseDovecotLogLine_InfraIPSkipped(t *testing.T) {
@@ -155,10 +174,9 @@ func TestParseDovecotLogLine_InfraIPSkipped(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLookupCPanelUser_NoFile(t *testing.T) {
-	// On macOS /etc/userdomains almost certainly doesn't exist → empty string.
-	user := lookupCPanelUser("example.com")
-	if user != "" {
-		t.Logf("got user=%q (file may exist on this host, informational)", user)
+	withUserdomainsPath(t, filepath.Join(t.TempDir(), "userdomains"))
+	if user := lookupCPanelUser("example.com"); user != "" {
+		t.Fatalf("lookup with no userdomains file = %q, want empty", user)
 	}
 }
 
@@ -168,11 +186,26 @@ func TestLookupCPanelUser_NoFile(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDeployConfigs_ModsecParentNotExistSkipped(t *testing.T) {
-	// This test simply verifies deployConfigs tolerates missing parent
-	// directories without panic. On macOS neither /usr/local/cpanel nor
-	// /etc/apache2/conf.d/modsec nor /usr/local/apache/conf exist,
-	// so the function returns after the ModSecurity write attempt.
+	// A ModSecurity config directory that does not exist is skipped, not
+	// created: no rule file and no overrides file appear under it.
+	dirs := []string{"/etc/apache2/conf.d/modsec", "/usr/local/apache/conf"}
+	missing := make(map[string]bool)
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			missing[dir] = true
+		}
+	}
+
 	deployConfigs()
+
+	for _, dir := range dirs {
+		if !missing[dir] {
+			continue
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("deployConfigs created %s (stat err = %v)", dir, err)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -183,9 +216,23 @@ func TestReloadSignatures_NilWebServer(t *testing.T) {
 	cfg := &config.Config{}
 	d := New(cfg, nil, nil, "")
 	d.webServer = nil
-	// Both signatures.Global() and yara.Global() are nil → function no-ops
-	// without touching webServer. Exercises the safety guards.
+	if yamlRuleCount() != 0 {
+		t.Fatalf("test needs no YAML scanner loaded, have %d rules", yamlRuleCount())
+	}
+	// With no web server to update, the reload still reports that realtime
+	// scanning has no rules.
 	d.reloadSignatures()
+	if d.webServer != nil {
+		t.Fatal("reload created a web server")
+	}
+	select {
+	case f := <-d.alertCh:
+		if f.Check != "realtime_rules_missing" || !strings.Contains(f.Message, "the configured rules directory") {
+			t.Fatalf("finding = %+v, want realtime_rules_missing for the default rules directory", f)
+		}
+	default:
+		t.Fatal("reload with no rules raised no finding")
+	}
 }
 
 // ---------------------------------------------------------------------------
