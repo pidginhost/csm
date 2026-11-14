@@ -988,6 +988,9 @@ relayed, deferred or failed, is not counted. Mail from logged-in senders,
 local mail between mailboxes included, is not counted, and neither is mail
 Stalwart logs without a client address. When more messages wait than CSM
 can hold, as under a flood, the extra ones count as "not matched".
+If a held queue ID names conflicting messages, CSM counts that ambiguous
+join once as "not matched" and records no sender evidence. Repeated copies
+of the same queued line neither add a verdict nor extend the hold.
 
 Delivered counts every delivered message, also while the filter is off. It
 also counts mail a mailbox's own Sieve rule filed into a folder, Junk

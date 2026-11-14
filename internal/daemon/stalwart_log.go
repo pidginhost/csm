@@ -144,6 +144,7 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 		}
 		return d.stalwartAuth(ev, session, obs, cfg)
 	case "queue.authenticated-message-queued":
+		s.verdicts.invalidate(ev.Fields["queueId"])
 		session, ok := ev.Session()
 		if !ok {
 			return nil
@@ -158,6 +159,8 @@ func (d *Daemon) handleStalwartLine(line string, obs alert.Observation, cfg *con
 	case "queue.message-queued":
 		if session, ok := ev.Session(); ok {
 			d.stalwartQueued(ev, session)
+		} else {
+			s.verdicts.invalidate(ev.Fields["queueId"])
 		}
 	case "message-ingest.ham", "message-ingest.spam":
 		if id := ev.Fields["queueId"]; id != "" {

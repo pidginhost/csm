@@ -26,9 +26,10 @@ const (
 
 // stalwartVerdict is what Stalwart's spam filter did with one message.
 type stalwartVerdict struct {
-	ip   netip.Addr
-	at   time.Time
-	junk bool
+	ip        netip.Addr
+	at        time.Time
+	junk      bool
+	unmatched bool
 }
 
 // stalwartVerdicts joins a queued message, which names the sending address,
@@ -42,6 +43,7 @@ type stalwartVerdicts struct {
 
 type stalwartHeld struct {
 	id       string
+	session  stalwartlog.Session
 	read     time.Time
 	ingested bool
 	v        stalwartVerdict
@@ -51,22 +53,36 @@ func newStalwartVerdicts() *stalwartVerdicts {
 	return &stalwartVerdicts{m: map[string]*stalwartHeld{}}
 }
 
-// queued holds the message id from ip, logged at at and read at now. It
-// reports false only when the memory is full; a held id keeps its first
-// entry.
-func (v *stalwartVerdicts) queued(id string, ip netip.Addr, at, now time.Time) bool {
+// queued holds the message id from s, logged at at and read at now. It
+// reports false only when the memory is full. Repeated lines keep their
+// original expiry; conflicting identities make the join unusable.
+func (v *stalwartVerdicts) queued(id string, s stalwartlog.Session, at, now time.Time) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if _, ok := v.m[id]; ok {
+	if h, ok := v.m[id]; ok {
+		if h.session != s || !h.v.at.Equal(at) {
+			h.v.unmatched = true
+		}
 		return true
 	}
 	if len(v.m) >= stalwartVerdictMax {
 		return false
 	}
-	h := &stalwartHeld{id: id, read: now, v: stalwartVerdict{ip: ip, at: at}}
+	h := &stalwartHeld{id: id, session: s, read: now, v: stalwartVerdict{ip: s.RemoteIP, at: at}}
 	v.m[id] = h
 	v.order = append(v.order, h)
 	return true
+}
+
+// invalidate prevents an excluded queued message from borrowing a held
+// sender's identity. Keep the slot until expiry so later ingests cannot
+// revive an ambiguous join.
+func (v *stalwartVerdicts) invalidate(id string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if h, ok := v.m[id]; ok {
+		h.v.unmatched = true
+	}
 }
 
 // ingested notes one delivery of message id. Junk for one recipient is Junk
@@ -81,7 +97,7 @@ func (v *stalwartVerdicts) ingested(id string, junk bool) {
 }
 
 // due forgets every message read at least stalwartVerdictHold before now
-// and returns those that were delivered.
+// and returns delivered messages and ambiguous joins.
 func (v *stalwartVerdicts) due(now time.Time) []stalwartVerdict {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -92,7 +108,7 @@ func (v *stalwartVerdicts) due(now time.Time) []stalwartVerdict {
 	return v.popLocked(n)
 }
 
-// drain forgets every message and returns those that were delivered.
+// drain forgets every message and returns delivered messages and ambiguous joins.
 func (v *stalwartVerdicts) drain() []stalwartVerdict {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -103,7 +119,7 @@ func (v *stalwartVerdicts) popLocked(n int) []stalwartVerdict {
 	var out []stalwartVerdict
 	for _, h := range v.order[:n] {
 		delete(v.m, h.id)
-		if h.ingested {
+		if h.ingested || h.v.unmatched {
 			out = append(out, h.v)
 		}
 	}
@@ -117,11 +133,15 @@ func (v *stalwartVerdicts) popLocked(n int) []stalwartVerdict {
 func (d *Daemon) stalwartQueued(ev stalwartlog.Event, s stalwartlog.Session) {
 	st := d.stalwart
 	id := ev.Fields["queueId"]
-	// An HTTP listener can log an address from a forwarded header.
-	if id == "" || st.ports.Of(s.LocalPort) == stalwartlog.ProtoHTTP {
+	if id == "" {
 		return
 	}
-	if !st.verdicts.queued(id, s.RemoteIP, ev.Time, time.Now()) {
+	// An HTTP listener can log an address from a forwarded header.
+	if st.ports.Of(s.LocalPort) == stalwartlog.ProtoHTTP {
+		st.verdicts.invalidate(id)
+		return
+	}
+	if !st.verdicts.queued(id, s, ev.Time, time.Now()) {
 		d.mailStats.RecordFilterVerdict(ev.Time, mailstats.FilterUnmatched)
 	}
 }
@@ -159,6 +179,10 @@ func (d *Daemon) drainStalwartVerdicts(cfg *config.Config) {
 
 func (d *Daemon) bookStalwartVerdicts(vs []stalwartVerdict, cfg *config.Config) {
 	for _, v := range vs {
+		if v.unmatched {
+			d.mailStats.RecordFilterVerdict(v.at, mailstats.FilterUnmatched)
+			continue
+		}
 		outcome := mailstats.FilterDelivered
 		if v.junk {
 			outcome = mailstats.FilterJunk

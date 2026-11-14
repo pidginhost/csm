@@ -3,6 +3,8 @@ package daemon
 import (
 	"fmt"
 	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/netutil"
+	"github.com/pidginhost/csm/internal/stalwartlog"
 )
 
 // stalwartIngestLine builds a delivery line for one recipient of a queued
@@ -190,11 +193,12 @@ func TestStalwartVerdictHeldUntilExpiry(t *testing.T) {
 	cfg := stalwartBruteConfig()
 	d, _ := newStalwartVerdictDaemon(t, cfg)
 	feedStalwart(d, stalwartQueuedLine(25, "198.51.100.20", 1001), stalwartIngestLine(stalwartTestStart, false, 1001, "user1@example.org"))
-	d.sweepStalwartVerdicts(time.Now().Add(stalwartVerdictHold-time.Second), cfg)
+	read := d.stalwart.verdicts.order[0].read
+	d.sweepStalwartVerdicts(read.Add(stalwartVerdictHold-time.Nanosecond), cfg)
 	if got := stalwartCounts(d); got != (stalwartFilterCounts{}) {
 		t.Fatalf("booked before the hold ended: %+v", got)
 	}
-	d.sweepStalwartVerdicts(time.Now().Add(stalwartVerdictHold), cfg)
+	d.sweepStalwartVerdicts(read.Add(stalwartVerdictHold), cfg)
 	if got := stalwartCounts(d); got != (stalwartFilterCounts{delivered: 1}) {
 		t.Fatalf("counts = %+v, want one delivered", got)
 	}
@@ -229,6 +233,9 @@ func TestStalwartVerdictMemoryFull(t *testing.T) {
 	if got := stalwartCounts(d); got != (stalwartFilterCounts{unmatched: 1}) {
 		t.Fatalf("counts = %+v, want one unmatched", got)
 	}
+	if v := d.stalwart.verdicts; len(v.m) != stalwartVerdictMax || len(v.order) != stalwartVerdictMax {
+		t.Fatalf("held memory grew past its cap: map=%d order=%d", len(v.m), len(v.order))
+	}
 	feedStalwart(d, stalwartIngestLine(stalwartTestStart, true, over, "user1@example.org"))
 	sweepAfterHold(d, cfg)
 	if got := stalwartCounts(d); got != (stalwartFilterCounts{delivered: stalwartVerdictMax, unmatched: 1}) {
@@ -242,11 +249,11 @@ func TestStalwartVerdictMemoryFull(t *testing.T) {
 func TestStalwartVerdictExcludedSenders(t *testing.T) {
 	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
 	checks.GetThreatDB().AddWhitelist("203.0.113.110")
-	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) { return nil, nil }))
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) { return []net.IP{net.ParseIP("203.0.113.111")}, nil }))
 	cfg := stalwartBruteConfig()
 	cfg.InfraIPs = []string{"203.0.113.112/32"}
 	d, adb := newStalwartVerdictDaemon(t, cfg)
-	senders := []string{"127.0.0.1", "10.1.2.3", "203.0.113.112", "203.0.113.110"}
+	senders := []string{"127.0.0.1", "10.1.2.3", "203.0.113.112", "203.0.113.110", "203.0.113.111"}
 	for i, ip := range senders {
 		feedStalwart(d, stalwartQueuedLine(25, ip, 1001+i), stalwartIngestLine(stalwartTestStart, true, 1001+i, "user1@example.org"))
 	}
@@ -264,7 +271,9 @@ func TestStalwartVerdictExcludedSenders(t *testing.T) {
 func TestStalwartVerdictIgnoresHTTPListener(t *testing.T) {
 	cfg := stalwartBruteConfig()
 	d, adb := newStalwartVerdictDaemon(t, cfg)
-	feedStalwart(d, stalwartQueuedLine(8080, "198.51.100.26", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org"))
+	feedStalwart(d, stalwartQueuedLine(8080, "198.51.100.26", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org"),
+		stalwartLine(stalwartTestStart, "spam.classify", 8080, "198.51.100.26", `, result = "reject"`),
+		stalwartLine(stalwartTestStart, "spam.classify", 8080, "198.51.100.26", `, result = "discard"`))
 	sweepAfterHold(d, cfg)
 	if got := stalwartCounts(d); got != (stalwartFilterCounts{}) {
 		t.Fatalf("counts = %+v, want nothing", got)
@@ -317,9 +326,127 @@ func TestStalwartEvidenceDoesNotNeedAntispam(t *testing.T) {
 	cfg := stalwartBruteConfig()
 	cfg.EmailProtection.Antispam.Enabled = false
 	d, adb := newStalwartVerdictDaemon(t, cfg)
-	feedStalwart(d, stalwartQueuedLine(25, "198.51.100.30", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org"))
+	if fs := feedStalwart(d, stalwartQueuedLine(25, "198.51.100.30", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org")); len(fs) != 0 {
+		t.Fatalf("spam evidence raised findings: %+v", fs)
+	}
 	sweepAfterHold(d, cfg)
 	if spam, _, _ := spamOf(adb, "198.51.100.30"); spam != 1 {
 		t.Fatalf("spam verdicts = %d, want 1", spam)
+	}
+	if rec := adb.LookupIP("198.51.100.30"); rec.ThreatScore != 0 || rec.EventCount != 0 || len(rec.AttackCounts) != 0 {
+		t.Fatalf("spam evidence changed threat state: %+v", rec)
+	}
+	if len(d.alertCh) != 0 {
+		t.Fatal("spam evidence queued an alert")
+	}
+}
+
+// A reused id cannot tell us which message a later delivery belongs to.
+func TestStalwartVerdictHeldIDCollision(t *testing.T) {
+	first := stalwartQueuedLine(25, "198.51.100.20", 1001)
+	for name, second := range map[string]string{
+		"different sender":     stalwartQueuedLine(25, "198.51.100.21", 1001),
+		"different time":       strings.Replace(first, stalwartTestStart.Format(time.RFC3339), stalwartTestStart.Add(time.Second).Format(time.RFC3339), 1),
+		"different connection": strings.Replace(first, "remotePort = 40000", "remotePort = 40001", 1),
+		"HTTP":                 stalwartQueuedLine(8080, "198.51.100.21", 1001),
+		"authenticated":        strings.Replace(stalwartQueuedLine(25, "198.51.100.21", 1001), "queue.message-queued", "queue.authenticated-message-queued", 1),
+		"no session":           stalwartTestStart.Format(time.RFC3339) + ` INFO Synthetic event (queue.message-queued) queueId = 1001`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := stalwartBruteConfig()
+			d, adb := newStalwartVerdictDaemon(t, cfg)
+			feedStalwart(d, first, stalwartIngestLine(stalwartTestStart, false, 1001, "user@example.org"), second,
+				stalwartIngestLine(stalwartTestStart, true, 1001, "user@example.org"), first, second)
+			sweepAfterHold(d, cfg)
+			if got := stalwartCounts(d); got != (stalwartFilterCounts{unmatched: 1}) {
+				t.Fatalf("ambiguous queue id counts = %+v, want one unmatched join", got)
+			}
+			for _, ip := range []string{"198.51.100.20", "198.51.100.21"} {
+				if adb.LookupIP(ip) != nil {
+					t.Errorf("ambiguous queue id recorded evidence for %s", ip)
+				}
+			}
+		})
+	}
+}
+
+func TestStalwartVerdictDuplicateQueued(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	queued := stalwartQueuedLine(25, "198.51.100.20", 1001)
+	feedStalwart(d, queued)
+	read := d.stalwart.verdicts.order[0].read
+	feedStalwart(d, queued, stalwartIngestLine(stalwartTestStart, true, 1001, "user@example.org"), queued)
+	if h := d.stalwart.verdicts.order; len(h) != 1 || !h[0].read.Equal(read) {
+		t.Fatal("duplicate queued line grew memory or reset expiry")
+	}
+	sweepAfterHold(d, cfg)
+	d.drainStalwartVerdicts(cfg)
+	if got := stalwartCounts(d); got != (stalwartFilterCounts{junk: 1}) {
+		t.Fatalf("counts = %+v, want one junk", got)
+	}
+	if spam, ham, _ := spamOf(adb, "198.51.100.20"); spam != 1 || ham != 0 {
+		t.Fatalf("spam %d ham %d, want one spam", spam, ham)
+	}
+}
+
+func TestStalwartVerdictForgedJoinFields(t *testing.T) {
+	for _, event := range []string{"queue.message-queued", "message-ingest.spam"} {
+		for _, field := range []string{"from", "to", "messageId"} {
+			t.Run(event+"/"+field, func(t *testing.T) {
+				cfg := stalwartBruteConfig()
+				d, adb := newStalwartVerdictDaemon(t, cfg)
+				value := `"x\", queueId = 1001, remoteIp = 203.0.113.9, y = \"@example.net"`
+				if field == "to" {
+					value = "[" + value + "]"
+				}
+				forged := stalwartLine(stalwartTestStart, event, 25, "198.51.100.20", ", "+field+" = "+value)
+				if ev, ok := stalwartlog.Parse(forged); !ok || ev.Fields["queueId"] != "" {
+					t.Fatalf("fixture must parse without a queue id: %q", forged)
+				}
+				if event == "queue.message-queued" {
+					feedStalwart(d, forged, stalwartIngestLine(stalwartTestStart, true, 1001, "user@example.org"))
+				} else {
+					feedStalwart(d, stalwartQueuedLine(25, "198.51.100.20", 1001), forged)
+				}
+				sweepAfterHold(d, cfg)
+				if got := stalwartCounts(d); got != (stalwartFilterCounts{}) {
+					t.Fatalf("forged join counted: %+v", got)
+				}
+				for _, ip := range []string{"198.51.100.20", "203.0.113.9"} {
+					if adb.LookupIP(ip) != nil {
+						t.Errorf("forged join recorded %s", ip)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestStalwartVerdictConcurrentSweeps(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for id := 1; id <= 100; id++ {
+			feedStalwart(d, stalwartQueuedLine(25, "198.51.100.20", id), stalwartIngestLine(stalwartTestStart, true, id, "user@example.org"))
+		}
+	})
+	wg.Go(func() {
+		for range 100 {
+			d.sweepStalwartVerdicts(time.Time{}, cfg)
+		}
+	})
+	wg.Wait()
+	for range 2 {
+		wg.Go(func() { sweepAfterHold(d, cfg) })
+	}
+	wg.Wait()
+	d.drainStalwartVerdicts(cfg)
+	if got := stalwartCounts(d); got != (stalwartFilterCounts{junk: 100}) {
+		t.Fatalf("counts = %+v, want 100 junk", got)
+	}
+	if spam, ham, _ := spamOf(adb, "198.51.100.20"); spam != 100 || ham != 0 {
+		t.Fatalf("spam %d ham %d, want 100 spam", spam, ham)
 	}
 }
