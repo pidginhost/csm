@@ -640,6 +640,17 @@
       "rationale": "Coalesces forward-guard reconcile requests from config reloads; each reconcile reads the latest configuration, so a dropped duplicate loses nothing."
     },
     {
+      "id": "internal/daemon/daemon.go::New::wake::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "New",
+      "target": "wake",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "maintenance",
+      "rationale": "Wakes the applied-block consumer after new blocks are queued under its own mutex; each pass takes every queued block, so a dropped duplicate wake loses nothing."
+    },
+    {
       "id": "internal/daemon/daemon.go::New::stopCh::channel::1",
       "path": "internal/daemon/daemon.go",
       "owner": "New",

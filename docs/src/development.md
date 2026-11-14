@@ -656,7 +656,17 @@ the independent audit queue reports a stall if a pending batch cannot advance.
 The daemon marks the address blocked in the attack database, as the legacy
 path marks a block that applied, and, while the action's verified firewall
 row still stands, records a threat database row that ends at the block's
-absolute expiry. One durable transaction per delivery batch precedes threat
+absolute expiry. After that write, a daemon goroutine records those
+standing blocks where a legacy block is recorded (`checks.RecordAdmissionBlocks`):
+a tracker row that netblock escalation counts, a permanent-block strike and
+the Critical `auto_block` finding that reaches history, alerts and the block
+digest. The in-memory backlog uses the existing audit delivery bound; a
+full consumer leaves the durable audit delivery pending for retry. A block
+already tracked at its expiry is skipped, so a repeated delivery changes
+nothing. The strike promotes nothing, since a permanent
+block is not an admission response. That goroutine waits for the tracker
+lock a scan holds; the owner never does, and blocks still queued when the
+daemon stops are not recorded there. One durable transaction per delivery batch precedes threat
 memory publication; read or write errors leave delivery pending and threat
 memory unchanged. Local evidence survives feed withdrawal;
 permanent local evidence and longer temporary rows remain unchanged.
