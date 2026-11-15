@@ -525,3 +525,63 @@ func TestOwnerForecastTurnReportsItsRetirementErrorApart(t *testing.T) {
 		t.Fatalf("retirement error = %q", got)
 	}
 }
+
+// A fault carried for an unknown attempt clears at the next good read of
+// it, also when the attempt has not expired yet. Without that, status
+// reports a read fault that is gone for the rest of the block's lifetime.
+// Nothing is retired before the expiry.
+func TestOwnerRetirementClearsACarriedFaultOnAGoodRead(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
+	c, a := unknownBlock(t, o, p, f, blocks, "192.0.2.106")
+	fault := errors.New("fixture attempt read failure")
+	if err := o.do(func() error {
+		// As a failed read of the attempt leaves the owner.
+		o.reportRetirement(o.retirementResult(a.Attempt.ID, fault))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.status().Owner.RetirementError; !strings.Contains(got, fault.Error()) {
+		t.Fatalf("retirement error = %q, want the read fault", got)
+	}
+	if err := o.do(func() error {
+		wait := o.retireRetry[a.Attempt.ID]
+		if !wait.After(mono.read()) || o.retireDelay[a.Attempt.ID] == 0 {
+			t.Error("fixture has no pending read retry")
+			return nil
+		}
+		// Another intent can force a scan before this attempt is due.
+		o.noteRetirement(o.now)
+		o.reportRetirement(o.retire())
+		if !o.retireFaults[a.Attempt.ID] || o.retireDelay[a.Attempt.ID] == 0 || !o.retireRetry[a.Attempt.ID].Equal(wait) {
+			t.Error("a scan before the read retry cleared its fault or wait")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.status().Owner.RetirementError; !strings.Contains(got, fault.Error()) {
+		t.Fatalf("retirement error before the read retry = %q, want the read fault", got)
+	}
+	f.host.advance(2 * time.Minute)
+	mono.advance(2 * time.Minute)
+	turn(t, o)
+	if got := o.status().Owner.RetirementError; got != "" {
+		t.Fatalf("retirement error after a good read = %q, want none", got)
+	}
+	if err := o.do(func() error {
+		if o.retireFaults[a.Attempt.ID] || o.retireDelay[a.Attempt.ID] != 0 {
+			t.Errorf("a good read kept the fault state: %v, %v", o.retireFaults, o.retireDelay)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if attemptOf(t, o, c).Retired || len(blocks.retireCalls()) != 0 {
+		t.Fatal("an attempt that has not expired was retired")
+	}
+}
