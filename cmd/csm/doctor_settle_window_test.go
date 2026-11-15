@@ -16,9 +16,9 @@ func TestAdmissionSettleGraceWindow(t *testing.T) {
 		{"zero", time.Time{}, false},
 		{"future", now.Add(time.Nanosecond), false},
 		{"start", now, true},
-		{"before deadline", now.Add(-admissionSettleGrace + time.Nanosecond), true},
-		{"deadline", now.Add(-admissionSettleGrace), false},
-		{"past deadline", now.Add(-admissionSettleGrace - time.Nanosecond), false},
+		{"before deadline", now.Add(-2*time.Minute + time.Nanosecond), true},
+		{"deadline", now.Add(-2 * time.Minute), false},
+		{"past deadline", now.Add(-2*time.Minute - time.Nanosecond), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := admissionWithinSettleGrace(tc.started, now); got != tc.want {

@@ -8,6 +8,31 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
+// A reader can observe the status published by runTurn before schedule
+// returns. Settlement must not expose the error from an earlier turn.
+func TestOwnerSettlementPublishesRecoveredTurn(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	o := f.start(previewOptions(f))
+	schedule := scheduleLedger
+	failure := errors.New("fixture schedule failure")
+	setOwnerHook(t, o, &scheduleLedger, func(*store.AdmissionLedger, admission.ScheduleLimits, map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		return nil, failure
+	})
+	if err := o.do(func() error { o.schedule(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if s := o.Status().Owner; s.Settled || s.TurnError != "scheduling the queue: "+failure.Error() {
+		t.Fatalf("failed first turn: %+v", s)
+	}
+	setOwnerHook(t, o, &scheduleLedger, schedule)
+	// Stop at runTurn's return, before schedule can publish another status.
+	turn(t, o)
+	if s := o.Status().Owner; !s.Settled || s.TurnError != "" {
+		t.Fatalf("recovered first turn: %+v", s)
+	}
+}
+
 // Doctor rates an executing owner's outages as warnings until the owner
 // has completed a turn in this process, so the status says when that
 // happened. A turn that fails does not count.

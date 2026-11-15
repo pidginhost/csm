@@ -375,6 +375,9 @@ It never applies them; the view is not an enforcement record.
   could not be read at the first start or when execution began; a committed
   read error survives startup retries), the last inventory read and why
   responses naming a damaged record were discarded (`damage_error`).
+  The first completed turn publishes `settled: true` with any earlier
+  `turn_error` cleared. Later failed turns and policy reloads do not reset
+  `settled`; a daemon restart does.
   `preview_replacements` counts this process's previews that took the
   temporary slot of a lower-priority automatic block, which live admission
   would replace, and `preview_replacements_last_hour` those of the last

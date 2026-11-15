@@ -1012,7 +1012,9 @@ func (o *Owner) runTurn(selecting bool) error {
 		o.wakeAt = o.heldAt
 	}
 	if !o.settled {
-		// Doctor reads the last status, so the first turn publishes it.
+		// Publish recovery with settlement so doctor cannot observe the
+		// previous turn's error after the startup grace has ended.
+		o.scheduleErr = nil
 		o.settled = true
 		o.refreshStatus()
 	}
