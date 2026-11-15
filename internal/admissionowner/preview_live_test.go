@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -250,7 +251,7 @@ func TestOwnerLivePreviewRefusals(t *testing.T) {
 		return o, p, f
 	}
 	preview := func(o *Owner, pick execPick) error {
-		return o.do(func() error { return o.previewLive(pick) })
+		return o.do(func() error { return o.preview(pick) })
 	}
 	answer := func(t *testing.T, o *Owner, err error) {
 		setOwnerHook(t, o, &endDryRunLedger, func(*store.AdmissionLedger, admission.CandidateID) (admission.Candidate, bool, error) {
@@ -264,6 +265,26 @@ func TestOwnerLivePreviewRefusals(t *testing.T) {
 		if err := o.do(o.tick); err != nil {
 			t.Fatal(err)
 		}
+		endedAt := f.host.now()
+		o.compare.addAt(compareKey{entry: admission.EntryScan, kind: admission.KindBlockIP, decision: decisionObserve}, endedAt.Add(time.Hour))
+		terminate := terminateLedger
+		fault := errors.New("fixture ending failure")
+		setOwnerHook(t, o, &terminateLedger, func(*store.AdmissionLedger, admission.CandidateID, admission.Reason) (admission.Candidate, error) {
+			return admission.Candidate{}, fault
+		})
+		if err := preview(o, pick); !errors.Is(err, fault) {
+			t.Fatalf("failed refusal ending = %v, want %v", err, fault)
+		}
+		if c := candidate(t, o, pick.pick.ID); !reflect.DeepEqual(c, pick.c) {
+			t.Fatalf("a failed ending changed the pick: %+v", c)
+		}
+		rows, _ := o.compare.take(endedAt, false)
+		for _, row := range rows {
+			if row.Result == actionlog.Refused {
+				t.Fatalf("a failed ending counted a refusal: %+v", row)
+			}
+		}
+		setOwnerHook(t, o, &terminateLedger, terminate)
 		if err := preview(o, pick); err != nil {
 			t.Fatal(err)
 		}
@@ -272,6 +293,19 @@ func TestOwnerLivePreviewRefusals(t *testing.T) {
 		}
 		if n := observedCount(o, admission.KindChallenge); n != 0 {
 			t.Fatalf("a stale pick counted as %d previews", n)
+		}
+		rows, _ = o.compare.take(endedAt, true)
+		var refused uint64
+		for _, row := range rows {
+			if row.Result == actionlog.Refused && row.Action == admission.KindChallenge.String() && row.Error == admission.ReasonStale.String() {
+				if !row.Timestamp.Equal(endedAt.UTC().Truncate(time.Hour).Add(time.Hour)) {
+					t.Fatalf("refusal counted in the wrong hour: %+v", row)
+				}
+				refused += row.Count
+			}
+		}
+		if refused != 1 {
+			t.Fatalf("a stale preview counted %d refusals, want 1: %+v", refused, rows)
 		}
 	})
 	t.Run("held target", func(t *testing.T) {

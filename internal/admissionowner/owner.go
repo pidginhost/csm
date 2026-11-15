@@ -1181,7 +1181,14 @@ func (o *Owner) preview(p execPick) error {
 func (o *Owner) previewLive(p execPick) error {
 	_, changed, err := endDryRunLedger(o.ledger, p.pick.ID)
 	if reason, refused := admission.ReasonOf(err); refused {
-		return o.endPick(p, reason)
+		if endErr := o.endPick(p, reason); endErr != nil {
+			return endErr
+		}
+		switch reason.Disposition() {
+		case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
+			o.compare.addLedgerRefusalAt(refusalKey(p.c, err), o.now)
+		}
+		return nil
 	}
 	switch {
 	case errors.Is(err, admission.ErrNotReady):

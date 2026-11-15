@@ -1301,7 +1301,10 @@ owner previews what it does not run: every kind but `block_ip`, and every
 pick of an owner without an engine. Such a preview ends as a dry run does,
 with no attempt, slot, ceiling charge or history, and it leaves its episode
 open, so the next observation is previewed again; the comparison still
-counts it as observed. The schedule serves those kinds as uncharged picks,
+counts it as observed. A refused preview counts in the hourly comparison
+only after its terminal ending commits, in the hour of that ending.
+Deferrals and failed endings add no refusal count.
+The schedule serves those kinds as uncharged picks,
 so they take no lane's ceiling budget or history allowance from the blocks
 that run. A `block_ip` preview of an owner without an engine is still
 scheduled within the lane budgets it no longer spends, and a dry-run
