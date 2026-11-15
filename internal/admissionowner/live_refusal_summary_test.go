@@ -2,9 +2,11 @@ package admissionowner
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
@@ -43,7 +45,10 @@ func TestOwnerCountsLiveRefusals(t *testing.T) {
 		{"expired member", firewall.BlockRefusedExpired, nil, admission.ReasonStale, 1},
 		{"unsupported containment", firewall.BlockRefusedUnsupported, nil, admission.ReasonUnsupportedContainment, 1},
 		{"aged out at the reservation", "", &admission.Error{Reason: admission.ReasonStale, Detail: "candidate aged out of the queue"}, admission.ReasonStale, 1},
+		{"withheld at the reservation", "", &admission.Error{Reason: admission.ReasonCollateral}, admission.ReasonCollateral, 1},
+		{"deferred at the reservation", "", &admission.Error{Reason: admission.ReasonStorageShare}, admission.ReasonStorageShare, 0},
 		{"full set", firewall.BlockRefusedFull, nil, admission.ReasonSetFull, 0},
+		{"pending recovery", firewall.BlockRefusedPending, nil, admission.ReasonPendingRecovery, 0},
 		{"existing block", firewall.BlockRefusedExisting, nil, admission.ReasonExistingEffect, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,6 +82,139 @@ func TestOwnerCountsLiveRefusals(t *testing.T) {
 				t.Fatalf("a refused pick was applied: %v", applies)
 			}
 		})
+	}
+}
+
+// Each caller preserves the candidate's identity and the refusal's cause,
+// even when a funnel has already opened a newer comparison hour. A failed
+// ending contributes no row, and its retry contributes exactly one.
+func TestOwnerCountedRefusalRows(t *testing.T) {
+	for _, source := range []string{"engine check", "reservation", "live preview"} {
+		t.Run(source, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			comparisonClock(t, f.host.now)
+			blocks := newFakeBlocks()
+			reason, cause := admission.ReasonAttribution, admission.CauseTargetMismatch
+			if source == "engine check" {
+				blocks.refuse["192.0.2.10"] = firewall.BlockRefusedProtected
+				reason, cause = admission.ReasonProtected, 0
+			}
+			sink := &actionSink{}
+			opts := executeOptions(f, blocks)
+			opts.WriteAudit = sink.write
+			o := f.start(opts)
+			mono := heldMono(t, o)
+			refusal := &admission.Error{Reason: reason, Cause: cause}
+			kind := admission.KindBlockIP
+			switch source {
+			case "reservation":
+				setOwnerHook(t, o, &reserveLedger, func(*store.AdmissionLedger, admission.CandidateID, admission.Lane, time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+					return admission.Candidate{}, admission.AttemptRecord{}, false, refusal
+				})
+			case "live preview":
+				kind = admission.KindChallenge
+				setOwnerHook(t, o, &endDryRunLedger, func(*store.AdmissionLedger, admission.CandidateID) (admission.Candidate, bool, error) {
+					return admission.Candidate{}, false, refusal
+				})
+			}
+			id, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10", kind)
+			before := candidate(t, o, id)
+			endingHour := f.host.now().UTC().Truncate(time.Hour)
+			// The funnel's later hour must not absorb this ending.
+			o.compare.addAt(compareKey{entry: admission.EntryScan, check: "ssh_brute", kind: admission.KindBlockIP, decision: decisionObserve}, endingHour.Add(time.Hour))
+			terminate := terminateLedger
+			fault := errors.New("fixture ending failure")
+			setOwnerHook(t, o, &terminateLedger, func(*store.AdmissionLedger, admission.CandidateID, admission.Reason) (admission.Candidate, error) {
+				return admission.Candidate{}, fault
+			})
+			if err := o.do(o.turn); !errors.Is(err, fault) {
+				t.Fatalf("failed ending = %v, want %v", err, fault)
+			}
+			if c := candidate(t, o, id); !reflect.DeepEqual(c, before) {
+				t.Fatalf("failed ending changed candidate: %+v", c)
+			}
+			if err := o.do(func() error { o.writeComparison(false); return nil }); err != nil {
+				t.Fatal(err)
+			}
+			sink.mu.Lock()
+			rows := append([]actionlog.Record(nil), sink.recs...)
+			sink.mu.Unlock()
+			for _, row := range rows {
+				if row.Result == actionlog.Refused && row.Count > 0 {
+					t.Fatalf("failed ending counted a refusal: %+v", row)
+				}
+			}
+			setOwnerHook(t, o, &terminateLedger, terminate)
+			for range 2 {
+				mono.advance(time.Minute)
+				turn(t, o)
+			}
+			if c := candidate(t, o, id); c.State != admission.StateRefused || c.Reason != reason || c.Attempts != 0 {
+				t.Fatalf("refused candidate = %+v", c)
+			}
+			if err := o.do(func() error { o.writeComparison(true); return nil }); err != nil {
+				t.Fatal(err)
+			}
+			sink.mu.Lock()
+			rows = append([]actionlog.Record(nil), sink.recs...)
+			sink.mu.Unlock()
+			var refusals []actionlog.Record
+			for _, row := range rows {
+				if row.Result == actionlog.Refused && row.Count > 0 {
+					refusals = append(refusals, row)
+				}
+			}
+			want := actionlog.Record{
+				Timestamp: endingHour.Add(time.Hour), Op: "respond.block_ip", Action: kind.String(),
+				Actor: actionlog.Daemon, ActorDetail: before.Entry.String(), Reason: "unknown",
+				Result: actionlog.Refused, Error: reason.String(), Count: 1,
+			}
+			if cause != 0 {
+				want.Cause = cause.String()
+			}
+			if !reflect.DeepEqual(refusals, []actionlog.Record{want}) {
+				t.Fatalf("refusal rows = %+v, want %+v", refusals, want)
+			}
+		})
+	}
+}
+
+// The same engine refusal ends a forecast pick without adding a live
+// refusal row. Successful forecasts keep their dry-run prediction row.
+func TestOwnerForecastKeepsComparisonRows(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	comparisonClock(t, f.host.now)
+	blocks := newFakeBlocks()
+	blocks.refuse["192.0.2.10"] = firewall.BlockRefusedProtected
+	o, _, _ := policyOwner(t, f, blocks, dryPolicy(1))
+	refused := observe(t, o, p, f, "192.0.2.10", "offset=1")
+	forecast := observe(t, o, p, f, "192.0.2.11", "offset=2")
+	turn(t, o)
+	if c := candidate(t, o, refused); c.State != admission.StateRefused || c.Reason != admission.ReasonProtected || c.Attempts != 0 {
+		t.Fatalf("refused forecast = %+v", c)
+	}
+	if c := candidate(t, o, forecast); c.State != admission.StateDryRun || c.Attempts != 0 {
+		t.Fatalf("successful forecast = %+v", c)
+	}
+	rows, _ := o.compare.take(f.host.now(), true)
+	want := []actionlog.Record{
+		{Timestamp: f.host.now().UTC().Truncate(time.Hour).Add(time.Hour), Op: "respond.block_ip", Action: "block_ip", Actor: actionlog.Daemon, ActorDetail: "scan", Reason: "unknown", Result: "queued", Count: 2},
+		{Timestamp: f.host.now().UTC().Truncate(time.Hour).Add(time.Hour), Op: "respond.block_ip", Action: "block_ip", Actor: actionlog.Daemon, ActorDetail: "scan", Reason: "unknown", Result: actionlog.DryRun, Prediction: admission.PredictCapacityAdmit.String(), Count: 1},
+	}
+	// Rows in an hour have no ordering contract.
+	if len(rows) != len(want) {
+		t.Fatalf("forecast rows = %+v, want %+v", rows, want)
+	}
+	for _, expected := range want {
+		found := false
+		for _, row := range rows {
+			found = found || reflect.DeepEqual(row, expected)
+		}
+		if !found {
+			t.Fatalf("forecast rows = %+v, missing %+v", rows, expected)
+		}
 	}
 }
 
