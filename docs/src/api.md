@@ -934,7 +934,9 @@ counted as pending persistence. There is no fixed capacity.
 Waiting age starts at the first pending change. The active snapshot stays in
 flight through writes, error logging and retry bookkeeping. Processing age uses
 `lag_basis: operation_progress` and resets at each returned store write or delete,
-or at the complete flat-file write result. One minute without progress or with
+at the commit of their batch, or at the complete flat-file write result. The
+store commits one flush as one batch, so a failed commit retries every record
+in it. One minute without progress or with
 waiting work degrades health. Returned failures report `retry_failed` while the
 retry remains queued, preserving its original age without counting it as lost.
 Successful retries clear that condition. A failed shutdown flush retains the

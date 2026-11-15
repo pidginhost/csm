@@ -120,6 +120,16 @@ func (b *recordBatch) result(ip string, err error) {
 	q.mu.Unlock()
 }
 
+// staged notes progress on a write whose outcome waits for its transaction.
+func (b *recordBatch) staged() {
+	if b == nil {
+		return
+	}
+	b.queue.mu.Lock()
+	b.progress = time.Now()
+	b.queue.mu.Unlock()
+}
+
 func (b *recordBatch) resultAll(err error) {
 	if b == nil {
 		return

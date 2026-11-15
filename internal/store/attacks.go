@@ -198,16 +198,36 @@ func resolveIndexedAttackEvent(primary *bolt.Bucket, ip string, timeKey, indexVa
 	return AttackEvent{}, false
 }
 
+// IPRecordTx writes IP records inside one UpdateIPRecords transaction.
+type IPRecordTx struct{ b *bolt.Bucket }
+
+// UpdateIPRecords runs fn in one transaction on the attacks:records bucket,
+// so a batch of saves and deletes costs one sync however large it is. A
+// record that Save or Delete refuses leaves the rest of the batch intact;
+// an error returned by fn discards the whole batch.
+func (db *DB) UpdateIPRecords(fn func(*IPRecordTx) error) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		return fn(&IPRecordTx{b: tx.Bucket([]byte("attacks:records"))})
+	})
+}
+
+// Save stores record keyed by its IP.
+func (w *IPRecordTx) Save(record IPRecord) error {
+	val, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return w.b.Put([]byte(record.IP), val)
+}
+
+// Delete removes the record stored for ip.
+func (w *IPRecordTx) Delete(ip string) error {
+	return w.b.Delete([]byte(ip))
+}
+
 // SaveIPRecord stores an IP record in the attacks:records bucket, keyed by IP.
 func (db *DB) SaveIPRecord(record IPRecord) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("attacks:records"))
-		val, err := json.Marshal(record)
-		if err != nil {
-			return err
-		}
-		return b.Put([]byte(record.IP), val)
-	})
+	return db.UpdateIPRecords(func(w *IPRecordTx) error { return w.Save(record) })
 }
 
 // LoadIPRecord retrieves an IP record from the attacks:records bucket.
@@ -253,10 +273,7 @@ func (db *DB) LoadAllIPRecords() map[string]*IPRecord {
 
 // DeleteIPRecord removes an IP record from the attacks:records bucket.
 func (db *DB) DeleteIPRecord(ip string) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("attacks:records"))
-		return b.Delete([]byte(ip))
-	})
+	return db.UpdateIPRecords(func(w *IPRecordTx) error { return w.Delete(ip) })
 }
 
 // ReadAllAttackEvents returns all attack events from the primary bucket.

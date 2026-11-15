@@ -90,7 +90,7 @@ func TestForgetNetworksRetriesFailedDeletion(t *testing.T) {
 	if got := db.ForgetNetworks([]*net.IPNet{netutil.ParseCIDROrIP("192.0.2.0/24")}); got != 1 {
 		t.Fatalf("removed %d records, want 1", got)
 	}
-	db.deleteRecord = func(*store.DB, string) error { return errors.New("delete unavailable") }
+	db.deleteRecord = func(*store.IPRecordTx, string) error { return errors.New("delete unavailable") }
 	if err := db.Flush(); err != nil {
 		t.Fatal(err)
 	}

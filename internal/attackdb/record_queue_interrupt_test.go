@@ -29,14 +29,14 @@ func TestAttackRecordQueueFailureVisibleDuringBatch(t *testing.T) {
 		}
 	})
 	failedIP := ""
-	db.saveRecord = func(sdb *store.DB, rec store.IPRecord) error {
+	db.saveRecord = func(w *store.IPRecordTx, rec store.IPRecord) error {
 		if failedIP == "" {
 			failedIP = rec.IP
 			return errors.New("record write refused")
 		}
 		close(entered)
 		<-release
-		return sdb.SaveIPRecord(rec)
+		return w.Save(rec)
 	}
 	go func() { defer close(done); _ = db.Flush() }()
 	select {
@@ -93,9 +93,9 @@ func TestAttackRecordQueueInterruptedWriteRetiresActualDemand(t *testing.T) {
 					panic("interrupted record commit")
 				}
 				calls := 0
-				db.saveRecord = func(sdb *store.DB, rec store.IPRecord) error {
+				db.saveRecord = func(w *store.IPRecordTx, rec store.IPRecord) error {
 					calls++
-					if err := sdb.SaveIPRecord(rec); err != nil {
+					if err := w.Save(rec); err != nil {
 						return err
 					}
 					interrupt()
@@ -127,7 +127,9 @@ func TestAttackRecordQueueInterruptedWriteRetiresActualDemand(t *testing.T) {
 				}
 				wantLoss, wantSaved := uint64(0), 3
 				if backend == "bbolt" {
-					wantLoss, wantSaved = 2, 1
+					// The store discards the interrupted transaction, so the
+					// record written before the interruption is not kept.
+					wantLoss, wantSaved = 2, 0
 				}
 				restored := NewForTest(nil)
 				restored.dbPath = db.dbPath
@@ -181,8 +183,8 @@ func TestAttackRecordQueueInterruptedDeleteRetainsUncertainty(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.RemoveIP("198.51.100.23")
-	db.deleteRecord = func(sdb *store.DB, ip string) error {
-		if err := sdb.DeleteIPRecord(ip); err != nil {
+	db.updateRecords = func(sdb *store.DB, fn func(*store.IPRecordTx) error) error {
+		if err := sdb.UpdateIPRecords(fn); err != nil {
 			return err
 		}
 		panic("delete committed without returning")
@@ -198,7 +200,7 @@ func TestAttackRecordQueueInterruptedDeleteRetainsUncertainty(t *testing.T) {
 	if s := recordQueueStatus(t, db, time.Now()); s.Depth != 1 || s.InFlight != 0 || s.DroppedTotal != 0 || !s.DroppedLowerBound || s.Reason != "persistence_uncertain" {
 		t.Fatalf("retained deletion concealed interrupted commit: %+v", s)
 	}
-	db.deleteRecord = nil
+	db.updateRecords = nil
 	db.saveRecords()
 	if s := recordQueueStatus(t, db, time.Now().Add(2*time.Minute)); s.Depth != 0 || s.InFlight != 0 || s.DroppedTotal != 0 || !s.DroppedLowerBound || s.Status != "ok" {
 		t.Fatalf("completed delete retry lost uncertainty history: %+v", s)
@@ -227,11 +229,11 @@ func TestAttackRecordQueueInterruptionVisibleBeforeStateCleanup(t *testing.T) {
 					t.Error("interrupted cleanup did not join")
 				}
 			})
-			db.saveRecord = func(sdb *store.DB, rec store.IPRecord) error {
+			db.updateRecords = func(sdb *store.DB, fn func(*store.IPRecordTx) error) error {
 				close(entered)
 				<-release
 				defer close(exited)
-				if err := sdb.SaveIPRecord(rec); err != nil {
+				if err := sdb.UpdateIPRecords(fn); err != nil {
 					return err
 				}
 				if exitMode == "goexit" {

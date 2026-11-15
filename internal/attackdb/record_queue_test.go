@@ -176,7 +176,7 @@ func TestAttackRecordQueueConcurrentMutationKeepsNewWork(t *testing.T) {
 				}
 			})
 			if backend == "bbolt" {
-				db.saveRecord = func(sdb *store.DB, rec store.IPRecord) error { close(entered); <-release; return sdb.SaveIPRecord(rec) }
+				db.saveRecord = func(w *store.IPRecordTx, rec store.IPRecord) error { close(entered); <-release; return w.Save(rec) }
 			} else {
 				db.writeRecords = func(path string, data []byte) error { close(entered); <-release; return writeRecordFile(path, data) }
 			}
@@ -267,7 +267,7 @@ func TestAttackRecordQueueDeleteCoalescesDuringCommit(t *testing.T) {
 						t.Error("delete did not join")
 					}
 				})
-				db.deleteRecord = func(sdb *store.DB, ip string) error { close(entered); <-release; return sdb.DeleteIPRecord(ip) }
+				db.deleteRecord = func(w *store.IPRecordTx, ip string) error { close(entered); <-release; return w.Delete(ip) }
 				db.writeRecords = func(path string, data []byte) error { close(entered); <-release; return writeRecordFile(path, data) }
 				go func() { defer close(done); _ = db.Flush() }()
 				select {
@@ -349,7 +349,7 @@ func TestAttackRecordQueueWriteProgressResetsStall(t *testing.T) {
 		}
 	})
 	writes := 0
-	db.saveRecord = func(sdb *store.DB, rec store.IPRecord) error {
+	db.saveRecord = func(w *store.IPRecordTx, rec store.IPRecord) error {
 		writes++
 		entered <- writes
 		if writes == 1 {
@@ -357,7 +357,7 @@ func TestAttackRecordQueueWriteProgressResetsStall(t *testing.T) {
 		} else {
 			<-second
 		}
-		return sdb.SaveIPRecord(rec)
+		return w.Save(rec)
 	}
 	go func() { defer close(done); _ = db.Flush() }()
 	select {

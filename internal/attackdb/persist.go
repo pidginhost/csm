@@ -174,50 +174,77 @@ func (db *DB) saveRecords() {
 		db.mu.Unlock()
 		defer batch.finish(db)
 
+		if len(records) == 0 && len(deleted) == 0 {
+			return
+		}
 		save := db.saveRecord
 		if save == nil {
-			save = (*store.DB).SaveIPRecord
+			save = (*store.IPRecordTx).Save
 		}
 		remove := db.deleteRecord
 		if remove == nil {
-			remove = (*store.DB).DeleteIPRecord
+			remove = (*store.IPRecordTx).Delete
 		}
-		var failed []string
-		for _, sr := range records {
-			batch.begin(sr.IP)
-			err := save(sdb, sr)
-			batch.result(sr.IP, err)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", sr.IP, err)
-				failed = append(failed, sr.IP)
+		update := db.updateRecords
+		if update == nil {
+			update = (*store.DB).UpdateIPRecords
+		}
+		// One transaction for the whole flush: a sync per record made a large
+		// flush take minutes on a slow disk. A record the store refuses fails
+		// alone; the rest are written when the transaction commits.
+		var saved, removed, failed, failedDeletes []string
+		err := update(sdb, func(w *store.IPRecordTx) error {
+			for _, sr := range records {
+				batch.begin(sr.IP)
+				if err := save(w, sr); err != nil {
+					batch.result(sr.IP, err)
+					fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", sr.IP, err)
+					failed = append(failed, sr.IP)
+					continue
+				}
+				batch.staged()
+				saved = append(saved, sr.IP)
 			}
-		}
-		if len(deleted) > 0 {
-			var removed []string
-			var failedDeletes []string
 			for _, ip := range deleted {
 				batch.begin(ip)
-				err := remove(sdb, ip)
-				batch.result(ip, err)
-				if err != nil {
+				if err := remove(w, ip); err != nil {
+					batch.result(ip, err)
 					fmt.Fprintf(os.Stderr, "attackdb: store delete %s: %v\n", ip, err)
 					failedDeletes = append(failedDeletes, ip)
 					continue
 				}
+				batch.staged()
 				removed = append(removed, ip)
 			}
-			if len(removed) > 0 {
-				db.mu.Lock()
-				for _, ip := range removed {
-					delete(db.deletedIPs, ip)
-				}
-				db.mu.Unlock()
+			return nil
+		})
+		if err != nil {
+			// Nothing was written, whether or not the transaction got as
+			// far as the records: every one of them retries.
+			fmt.Fprintf(os.Stderr, "attackdb: store commit: %v\n", err)
+			saved, removed, failed = nil, nil, failed[:0]
+			for _, sr := range records {
+				failed = append(failed, sr.IP)
 			}
-			if len(failedDeletes) > 0 {
-				db.mu.Lock()
-				db.dirty = true
-				db.mu.Unlock()
+			failedDeletes = deleted
+			for _, ip := range append(failed, deleted...) {
+				batch.result(ip, err)
 			}
+		}
+		for _, ip := range append(saved, removed...) {
+			batch.result(ip, nil)
+		}
+		if len(removed) > 0 {
+			db.mu.Lock()
+			for _, ip := range removed {
+				delete(db.deletedIPs, ip)
+			}
+			db.mu.Unlock()
+		}
+		if len(failedDeletes) > 0 {
+			db.mu.Lock()
+			db.dirty = true
+			db.mu.Unlock()
 		}
 		if len(failed) > 0 {
 			db.mu.Lock()

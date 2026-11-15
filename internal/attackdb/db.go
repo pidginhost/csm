@@ -191,8 +191,9 @@ type DB struct {
 	openEvents       func(string) (io.WriteCloser, error)
 	recordHealthOnce sync.Once
 	recordQueue      *recordQueue
-	saveRecord       func(*store.DB, store.IPRecord) error
-	deleteRecord     func(*store.DB, string) error
+	saveRecord       func(*store.IPRecordTx, store.IPRecord) error
+	deleteRecord     func(*store.IPRecordTx, string) error
+	updateRecords    func(*store.DB, func(*store.IPRecordTx) error) error
 	writeRecords     func(string, []byte) error
 	dbPath           string
 	dirty            bool
