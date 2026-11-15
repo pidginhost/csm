@@ -396,7 +396,8 @@ IPv4 senders, including IPv4-mapped IPv6 addresses, stay per address.
 Clearing or whitelisting an address inside the network forgets the network's
 evidence, and the CSM IP map does not list a network that holds an excluded
 address. Evidence recorded per IPv6 address by an earlier release stays
-until it expires.
+until it expires or the [spam evidence budget](#spam-evidence-budget) drops
+it.
 
 With `spam` in `reputation.report.classes`, a sender that rspamd keeps
 rejecting, and that has sent no clean mail recently, is reported to the
@@ -413,10 +414,13 @@ verdicts.
 
 ### Spam evidence budget
 
-The spam evidence budget limits the records that hold only spam evidence
-to 50,000, which bounds their memory to about 22 MB. A record that also
-has attack findings, a block or a mail login attack in the last 30 days
-does not count toward the budget and is never dropped for it.
+Each time CSM records a verdict, it keeps the records that hold only spam
+evidence at or under 50,000, about 22 MB of memory. Between verdicts the
+count can be higher, for example after a start that loads more stored
+records or when a mail login attack passes 30 days. The budget is fixed
+and has no setting. A record that also has attack findings, a block or a
+mail login attack in the last 30 days does not count toward the budget
+and is never dropped for it.
 
 When a verdict is recorded and the count is over the budget, CSM drops
 records until nine tenths of the budget remain, rounded down. Each record
