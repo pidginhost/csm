@@ -2,11 +2,14 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"testing"
@@ -519,4 +522,59 @@ func TestLedgerRestoreOverDamagedPages(t *testing.T) {
 			t.Fatalf("comparison with a damaged archive database = %v, want a refusal naming --force", err)
 		}
 	})
+}
+
+// A truncated mmap can raise SIGBUS instead of an ordinary bbolt panic.
+// Run in a child so a process-level fault is reported as a test failure.
+func TestLedgerRestoreTruncatedPages(t *testing.T) {
+	if os.Getenv("CSM_TEST_TRUNCATED_LEDGER") != "1" {
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, executable, "-test.run=^TestLedgerRestoreTruncatedPages$", "-test.v")
+		cmd.Env = append(os.Environ(), "CSM_TEST_TRUNCATED_LEDGER=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("truncated ledger reader: %v\n%s", err, output)
+		}
+		return
+	}
+
+	damaged := filepath.Join(closeLedger(t, restoreLedger(t, ledgerT0.Add(time.Hour), true, "")), "csm.db")
+	if err := os.Truncate(damaged, int64(2*os.Getpagesize())); err != nil {
+		t.Fatal(err)
+	}
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(false))
+	live, at, err := readLedgerPosition(damaged)
+	if err == nil || live || !at.IsZero() {
+		t.Fatalf("truncated ledger = (%t, %v, %v), want unreadable", live, at, err)
+	}
+	if debug.SetPanicOnFault(false) {
+		t.Fatal("recovered read changed the caller's memory-fault handling")
+	}
+	// An exclusive lock proves the recovered read released its shared lock.
+	f, err := os.OpenFile(damaged, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("recovered read retained a database lock: %v", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(closeLedger(t, restoreLedger(t, ledgerT0, true, "")), "csm.db")
+	if err := CheckLedgerRestore(damaged, target); !errors.Is(err, ErrLedgerBehind) {
+		t.Fatalf("truncated archive = %v, want ErrLedgerBehind", err)
+	}
+	archive := exportLedger(t, restoreLedger(t, ledgerT0, false, "archive"))
+	if _, err := Import(ImportOptions{SrcPath: archive, StatePath: filepath.Dir(damaged), Only: "all", CurrentPlatform: defaultPlatform()}); err != nil {
+		t.Fatalf("import over a truncated database: %v", err)
+	}
+	if live, clock := ledgerPositionOf(t, filepath.Dir(damaged)); live || !clock.Equal(ledgerT0) {
+		t.Fatalf("repaired ledger: live %t, clock %v; want the archive's", live, clock)
+	}
 }

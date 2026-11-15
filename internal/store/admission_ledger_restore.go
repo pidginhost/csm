@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -67,6 +68,9 @@ func readLedgerPosition(path string) (live bool, at time.Time, err error) {
 		return false, time.Time{}, err
 	}
 	defer func() { _ = db.Close() }()
+	// Truncated mapped pages raise memory faults rather than bbolt panics.
+	// Limit fault recovery to this goroutine's read and restore its setting.
+	defer debug.SetPanicOnFault(debug.SetPanicOnFault(true))
 	var clock admission.Clock
 	err = db.View(func(tx *bolt.Tx) error {
 		if current, currentErr := currentLedger(tx); !current {
