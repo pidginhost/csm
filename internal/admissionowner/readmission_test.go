@@ -195,6 +195,7 @@ func readmissionPick(t *testing.T) (*Owner, *fakeBlocks, *ownerFixture, *fakeMon
 
 // Every caller passes the cap in its own clock frame. At the end a
 // member is expired, never zero (permanent), and no attempt is charged.
+// A preview on the live ledger makes no attempt, so it sets no expiry.
 func TestOwnerReadmissionExpiryPaths(t *testing.T) {
 	for _, mode := range []string{"execute", "verdict", "forecast", "preview"} {
 		for _, expired := range []bool{false, true} {
@@ -234,8 +235,8 @@ func TestOwnerReadmissionExpiryPaths(t *testing.T) {
 				c := candidate(t, o, pick.pick.ID)
 				checks, applies := blocks.calls()
 				if mode == "preview" {
-					if !expired && (c.State != admission.StateObserved || !c.ExpiresAt.Equal(end)) {
-						t.Fatalf("preview did not use the admission cap: %+v, want %v", c, end)
+					if !expired && (c.State != admission.StateDryRun || c.Attempts != 0 || !c.ExpiresAt.IsZero()) {
+						t.Fatalf("preview on the live ledger made an attempt: %+v", c)
 					}
 				} else {
 					members := checks[len(checks)-1]

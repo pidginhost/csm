@@ -1135,9 +1135,13 @@ func (o *Owner) holdForPolicy(p execPick) error {
 // preview is an observe preview of p: reserved and charged as live work
 // would be and ended in the same transaction without running. A
 // terminal refusal ends only that pick, so an invalid selected lifetime
-// cannot starve the queue; any other failure is returned.
+// cannot starve the queue; any other failure is returned. Once the ledger
+// has started live a preview spends nothing.
 func (o *Owner) preview(p execPick) error {
 	c := p.c
+	if o.ledger.LiveStarted() {
+		return o.previewLive(p)
+	}
 	expires, err := o.cappedExpiry(c, o.now)
 	if err != nil {
 		return fmt.Errorf("reading the episode of pick %s: %w", p.pick.ID, err)
@@ -1166,6 +1170,28 @@ func (o *Owner) preview(p execPick) error {
 		o.replacementsHour.add(monoNow())
 	}
 	o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	return nil
+}
+
+// previewLive previews p on a ledger that has started live. Live work owns
+// the ceiling, the set, the history and the episodes there, so the pick
+// ends as a dry run ends one: nothing is reserved or charged, and its
+// episode stays open to the next observation. A refusal the ending meets
+// defers or ends p as a reservation would.
+func (o *Owner) previewLive(p execPick) error {
+	_, changed, err := endDryRunLedger(o.ledger, p.pick.ID)
+	if reason, refused := admission.ReasonOf(err); refused {
+		return o.endPick(p, reason)
+	}
+	switch {
+	case errors.Is(err, admission.ErrNotReady):
+		return nil
+	case err != nil:
+		return fmt.Errorf("previewing pick %s: %w", p.pick.ID, err)
+	case changed:
+		c := p.c
+		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	}
 	return nil
 }
 

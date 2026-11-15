@@ -329,9 +329,9 @@ func TestOwnerChangesLegacyGatesOnPurpose(t *testing.T) {
 	// Legacy promotes a repeat offender to a permanent block whatever the
 	// dry-run setting. A dry run suppresses the promotion: it ends as
 	// not_modelled without a call or an engine read. Live, the owner only
-	// previews it until promotions run, and never asks.
+	// previews it until promotions run, without an attempt, and never asks.
 	t.Run("TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock", func(t *testing.T) {
-		for dry, want := range map[bool]string{false: "observed asked=0 applies=0 examples=0", true: "dry_run not_modelled=1 asked=0 applies=0 examples=0"} {
+		for dry, want := range map[bool]string{false: "dry_run asked=0 applies=0 examples=0", true: "dry_run not_modelled=1 asked=0 applies=0 examples=0"} {
 			pt := newParity(t, dry, answerWith("allow"))
 			id, _ := queuedKind(t, pt.o, pt.p, pt.f.host, admission.SeverityHigh, "192.0.2.20", admission.KindPromote)
 			pt.decide(t)

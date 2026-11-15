@@ -87,6 +87,8 @@ func TestOwnerLeaseCoversEveryEntryAndKind(t *testing.T) {
 
 // The real preview, forecast and execute callers must pass the capped
 // expiry to the ledger, forecast model and engine, including challenges.
+// A challenge beside live work is previewed without an attempt, so it has
+// no expiry to cap.
 func TestOwnerLeaseReachesEveryPath(t *testing.T) {
 	for _, mode := range []string{"no engine", "preview", "forecast", "execute"} {
 		for _, kind := range []admission.Kind{admission.KindBlockIP, admission.KindChallenge} {
@@ -122,6 +124,12 @@ func TestOwnerLeaseReachesEveryPath(t *testing.T) {
 					defer blocks.mu.Unlock()
 					if len(blocks.snapshots) != 1 || len(blocks.snapshots[0]) != 1 || !blocks.snapshots[0][0].ExpiresAt.Equal(want) || len(blocks.applies) != 0 {
 						t.Fatalf("forecast members=%+v applies=%+v, want %v", blocks.snapshots, blocks.applies, want)
+					}
+					return
+				}
+				if mode == "execute" && kind == admission.KindChallenge {
+					if _, applies := blocks.calls(); c.State != admission.StateDryRun || c.Attempts != 0 || !c.ExpiresAt.IsZero() || len(applies) != 0 {
+						t.Fatalf("live challenge preview: candidate=%+v applies=%+v", c, applies)
 					}
 					return
 				}
