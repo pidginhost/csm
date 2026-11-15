@@ -9,6 +9,18 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+## [4.13.0] - 2026-11-15
+
+### Highlights
+
+- Executables in temporary directories are now always reported. System maintenance such as cPanel updates and kernel installs shows as one warning per work directory.
+- Automatic responses now need a local attack before acting on an outside reputation match, and no longer challenge or block addresses in `web_server.trusted_proxies`.
+- `firewall.tcp_in_allow` opens one TCP port to listed addresses or ranges. Remove the key from `csm.yaml` before rolling back to 4.12.0, which does not start with it.
+- On Stalwart hosts CSM now shows what the spam filter did with inbound mail and which addresses deliver spam. Run `csm stalwart setup` again on hosts set up earlier.
+- On Postfix servers Email Security lists rejected mail and sending mailboxes, and servers without cPanel no longer show cPanel-only pages and settings.
+- Spam evidence is now bounded: IPv6 senders are tracked per /64, spam-only addresses are forgotten after about seven weeks, and their number is capped.
+- `csm doctor` now warns when `auto_response.max_blocks_per_hour` is below 2000, which includes the value of 50 shipped until now. Blocking is unchanged; remove the setting to clear the warning.
+
 ### Security
 
 - `csm store import --only=baseline` now rejects archives that would replace the database, and checks the database checksum when the archive carries firewall state.
@@ -23,30 +35,38 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
-- The Web UI now shows a CSM icon in browser tabs and bookmarks.
 - The firewall can open one TCP port to listed addresses or ranges with `firewall.tcp_in_allow`; those sources keep reaching that port while blocked.
 - On Postfix servers, Email Security now lists rejected mail and the mailboxes that send mail.
 - `csm stalwart setup` now makes Stalwart log the mail its spam filter rejects or discards and reports the filter's state. Run it again on hosts set up earlier.
-- `csm doctor` on Stalwart hosts now warns when the spam filter's DNS blocklists get no answers, and says when its classifier is still learning.
-- On Stalwart hosts CSM now records which addresses deliver spam, shown in the Threat page Spam column and in IP lookup.
 - On Stalwart hosts the Email page now shows inbound mail delivered, filed to Junk, rejected and discarded by Stalwart's spam filter.
+- On Stalwart hosts CSM now records which addresses deliver spam, shown in the Threat page Spam column and in IP lookup.
+- `csm doctor` on Stalwart hosts now warns when the spam filter's DNS blocklists get no answers, and says when its classifier is still learning.
 - The threat statistics API and the daemon's attack DB log line now show how many records hold only spam evidence.
 - The status API now shows whether automatic response admission has completed a turn since the daemon started.
+- The Web UI now shows a CSM icon in browser tabs and bookmarks.
 
 ### Changed
 
-- `csm restore` and `csm store import` now need `--force` to put back a backup older than this host's live admission ledger; other hosts are unaffected.
-- New installs leave `auto_response.max_blocks_per_hour` unset; hosts that set it keep their value, and `csm doctor` warns when it is below the admission default of 2000.
-- A negative `firewall.deny_temp_ip_limit` still means no limit, and config validation and `csm doctor` now warn about it.
 - On servers without cPanel, the Web UI hides cPanel-only Email Security tabs, cPHulk actions and settings, and shows Email Security only when a mail server runs.
 - Spam evidence about IPv6 senders is now recorded and listed per /64 network, so a sender rotating addresses builds one score. Older per-address IPv6 scores fade out; new verdicts count toward the /64.
 - CSM now forgets an address known only for spam once its evidence has faded, about seven weeks after a single message, instead of keeping it 90 days.
 - CSM now caps how many addresses it remembers only for spam, dropping single-message evidence from the most crowded network first and raising a warning when it does. The cap has no setting; hosts already over it drop their weakest evidence.
+- New installs leave `auto_response.max_blocks_per_hour` unset; hosts that set it keep their value, and `csm doctor` warns when it is below the admission default of 2000.
+- A negative `firewall.deny_temp_ip_limit` still means no limit, and config validation and `csm doctor` now warn about it.
+- `csm restore` and `csm store import` now need `--force` to put back a backup older than this host's live admission ledger; other hosts are unaffected.
 
 ### Fixed
 
+#### Firewall
+
 - On newer kernels CSM no longer reports its firewall rules as modified, or its port locks as missing, when nothing changed.
+
+#### Realtime protection
+
 - After a burst of renames, realtime protection rechecks only watched locations, so unrelated system directories no longer slow the recheck of sites.
+
+#### Web server
+
 - On nginx servers CSM now refreshes its challenge snippet after an upgrade instead of leaving it stale with a configtest warning.
 
 ## [4.12.0] - 2026-11-13
