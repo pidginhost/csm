@@ -17,7 +17,7 @@ import (
 // every time it observed the file. During an account transfer rsync
 // writes the entire valiases file at once, and EVERY existing forwarder
 // trips a HIGH alert -- buries the operator under noise without any
-// indication of what's actually new. The scheduled audit (auditValiasFile)
+// indication of what's actually new. The scheduled audit (CheckForwarders)
 // already implements first-run baseline using bbolt; the realtime watcher
 // must do the same.
 

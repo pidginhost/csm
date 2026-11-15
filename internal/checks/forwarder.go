@@ -361,12 +361,8 @@ func scanCoversAllFiles(paths []string, maxFiles int) bool {
 	return maxFiles <= 0 || len(paths) <= maxFiles
 }
 
-// auditValiasFile parses a valiases file and returns findings for dangerous entries.
-func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
-	findings, _ := auditValiasFileWithStatus(path, domain, localDomains, cfg)
-	return findings
-}
-
+// auditValiasFileWithStatus parses a valiases file and returns findings for
+// dangerous entries, and whether the audit completed.
 func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool, cfg *config.Config) ([]alert.Finding, bool) {
 	f, err := osFS.Open(path)
 	if err != nil {
@@ -457,12 +453,8 @@ func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool
 	return findings, complete
 }
 
-// auditVfilterFile parses a vfilters file and returns findings for external destinations.
-func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
-	findings, _ := auditVfilterFileWithStatus(path, domain, localDomains, cfg)
-	return findings
-}
-
+// auditVfilterFileWithStatus parses a vfilters file and returns findings for
+// external destinations, and whether the audit completed.
 func auditVfilterFileWithStatus(path, domain string, localDomains map[string]bool, cfg *config.Config) ([]alert.Finding, bool) {
 	data, err := osFS.ReadFile(path)
 	if err != nil {

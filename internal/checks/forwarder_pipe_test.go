@@ -10,6 +10,16 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
+	findings, _ := auditValiasFileWithStatus(path, domain, localDomains, cfg)
+	return findings
+}
+
+func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
+	findings, _ := auditVfilterFileWithStatus(path, domain, localDomains, cfg)
+	return findings
+}
+
 // cPanel writes Mailman list aliases as pipes to its own Mailman binaries
 // under 3rdparty. They run only cPanel's list software, so they are not
 // attacker-controlled command execution.
