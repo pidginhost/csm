@@ -156,6 +156,8 @@ func TestOwnerDrainsNothingBeforeTheLiveStart(t *testing.T) {
 	previewed(t, f, p, blocks, "192.0.2.10")
 	o, r, _ := policyOwner(t, f, blocks, dryPolicy(1))
 	f.host.advance(time.Second)
+	// A block the preview period leaves queued ends in the live start.
+	stale := observe(t, o, p, f, "192.0.2.20", "offset=9")
 	submitObservation(t, o, p, "192.0.2.10", "offset=2", f.host.now())
 	fail := true
 	setOwnerHook(t, o, &startLiveLedger, func(l *store.AdmissionLedger, h admission.LegacyHandover) error {
@@ -168,16 +170,84 @@ func TestOwnerDrainsNothingBeforeTheLiveStart(t *testing.T) {
 	if err := o.Reload(); err == nil {
 		t.Fatal("a failed live start did not fail the reload")
 	}
-	if err := o.do(o.drain); err == nil || len(queuedCandidates(t, o)) != 0 {
-		t.Fatalf("a drain before the live start: %v", err)
+	err := o.do(o.drain)
+	if held := queuedCandidates(t, o); err == nil || len(held) != 1 || held[0].Key.Target.Key() != "ip:192.0.2.20" {
+		t.Fatalf("a drain before the live start: %v, queued %+v", err, held)
 	}
 	fail = false
-	if err := o.do(o.drain); err != nil {
+	if err = o.do(o.drain); err != nil {
 		t.Fatal(err)
 	}
 	queued := queuedCandidates(t, o)
 	if len(queued) != 1 || queued[0].Key.Target.Key() != "ip:192.0.2.10" {
 		t.Fatalf("queued = %+v, want the held observation", queued)
+	}
+	if c := candidate(t, o, stale); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled {
+		t.Fatalf("preview-period block after the live start = %+v", c)
+	}
+}
+
+// Work an earlier process left reserved or running is settled before the
+// ledger starts live. The reserved attempt fails back into a retry, which
+// the live start then ends with the rest of the preview period's blocks;
+// the running one becomes an unknown outcome and keeps holding its
+// address. Neither reaches the engine again.
+func TestOwnerSettlesBeforeStartingLive(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	withLiveExecution(t, false)
+	o, _, _ := policyOwner(t, f, blocks, validPolicy(1))
+	reserved := observe(t, o, p, f, "192.0.2.10", "offset=1")
+	running := observe(t, o, p, f, "192.0.2.11", "offset=2")
+	if err := o.do(func() error {
+		if _, _, _, err := o.ledger.Reserve(reserved, admission.LaneGeneral, o.now.Add(time.Hour)); err != nil {
+			return err
+		}
+		_, a, _, err := o.ledger.Reserve(running, admission.LaneGeneral, o.now.Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		_, _, _, err = o.ledger.Execute(a.Attempt.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	o.Stop()
+	withLiveExecution(t, true)
+	atStart := map[admission.CandidateID]admission.Candidate{}
+	swapStartLive(t, func(l *store.AdmissionLedger, h admission.LegacyHandover) error {
+		for _, id := range []admission.CandidateID{reserved, running} {
+			c, err := l.Candidate(id)
+			if err != nil {
+				return err
+			}
+			atStart[id] = c
+		}
+		return l.StartLive(h)
+	})
+	o, _, _ = policyOwner(t, f, blocks, validPolicy(1))
+	if !liveStarted(t, o) {
+		t.Fatal("the executing owner did not start live")
+	}
+	if c := atStart[reserved]; c.State != admission.StateQueued || c.Attempts != 1 {
+		t.Fatalf("reserved work when the live start ran = %+v, want a settled retry", c)
+	}
+	if c := atStart[running]; c.State != admission.StateUnknown {
+		t.Fatalf("running work when the live start ran = %+v, want a settled unknown outcome", c)
+	}
+	if c := candidate(t, o, reserved); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != 1 {
+		t.Fatalf("settled retry after the live start = %+v", c)
+	}
+	if c := candidate(t, o, running); c.State != admission.StateUnknown {
+		t.Fatalf("unknown outcome after the live start = %+v", c)
+	}
+	if s := ledgerStatus(t, o); s.Unresolved.Unknown != 1 {
+		t.Fatalf("unresolved outcomes after the live start = %+v, want the held one", s.Unresolved)
+	}
+	turn(t, o)
+	if _, applies := blocks.calls(); len(applies) != 0 {
+		t.Fatalf("work of the earlier process reached the engine: %+v", applies)
 	}
 }
 

@@ -60,21 +60,36 @@ func TestAdmissionLedgerLiveStartRunsOnce(t *testing.T) {
 }
 
 // A failed live start leaves the ledger as it was and can run again. It
-// needs a reading this handle recorded.
+// needs a reading this handle recorded. The block work it would have ended
+// stays queued and is reported to no one; the retry ends each block once
+// and leaves a queued challenge alone.
 func TestAdmissionLedgerFailedLiveStartChangesNothing(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
 	f.observedArrival("192.0.2.10", "offset=1")
+	queued := f.arrive(f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "offset=2"}))[0].Candidate
+	req := f.request("192.0.2.12", f.published(evidenceSpec{target: "192.0.2.12", cursor: "offset=3"}))
+	req.Kind = admission.KindChallenge
+	_, challenge := f.enqueue(req)
+	retry, a := f.admitted(time.Hour)
+	if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
 	h := admission.LegacyHandover{
 		Spend: admission.LegacySpend{Units: 9, At: f.wall.Add(30 * time.Minute)},
 	}
+	published := map[admission.CandidateKey]int{}
+	f.l.ObserveRefusals(func(c admission.Candidate, _ error, _ time.Time) { published[c.Key]++ })
 	before := f.snapshot()
 	f.failNext("live start")
 	if err := f.l.StartLive(h); err == nil {
 		t.Fatal("injected failure did not abort the live start")
 	}
-	if f.l.LiveStarted() || !reflect.DeepEqual(before, f.snapshot()) {
-		t.Fatal("a failed live start changed the ledger")
+	if f.l.LiveStarted() || !reflect.DeepEqual(before, f.snapshot()) || len(published) != 0 {
+		t.Fatalf("a failed live start changed the ledger or reported %d refusals", len(published))
 	}
 	reopened, err := OpenAdmissionLedger(f.db, f.reg)
 	if err != nil {
@@ -83,6 +98,15 @@ func TestAdmissionLedgerFailedLiveStartChangesNothing(t *testing.T) {
 	wantLedgerReason(t, "without a reading", reopened.StartLive(h), admission.ReasonEngineUnavailable)
 	if err := f.l.StartLive(h); err != nil || !f.l.LiveStarted() {
 		t.Fatalf("retried live start: %v", err)
+	}
+	for _, id := range []admission.CandidateID{queued, retry} {
+		c := f.candidateOf(id)
+		if c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || published[c.Key] != 1 {
+			t.Fatalf("block after the retried live start = %s/%s, reported %d times", c.State, c.Reason, published[c.Key])
+		}
+	}
+	if c := f.candidateOf(challenge); c.State != admission.StateQueued || len(published) != 2 {
+		t.Fatalf("challenge after the retried live start = %s, %d refusals reported", c.State, len(published))
 	}
 }
 

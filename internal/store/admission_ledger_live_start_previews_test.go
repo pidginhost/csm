@@ -17,7 +17,7 @@ import (
 // still names the preview or only remembers its answer. A verified block's
 // remembered answer keeps answering until its expiry, challenge previews
 // keep answering their lines, and a preview after the live start answers
-// as before.
+// as before. A block the preview period left queued ends at the live start.
 func TestAdmissionLedgerLiveStartEndsPreviewAnswers(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
@@ -84,8 +84,13 @@ func TestAdmissionLedgerLiveStartEndsPreviewAnswers(t *testing.T) {
 	wantLedgerReason(t, "remembered challenge", f.arrive(challengeAt("192.0.2.60", "challenge=2"))[0].Err, admission.ReasonExistingEffect)
 	wantLedgerReason(t, "previewed challenge", f.arrive(challengeAt("192.0.2.50", "challenge=2"))[0].Err, admission.ReasonExistingEffect)
 	wantLedgerReason(t, "verified block", f.arrive(f.arrival(evidenceSpec{target: "192.0.2.30", cursor: "offset=3"}))[0].Err, admission.ReasonExistingEffect)
-	if again := f.arrive(f.arrival(evidenceSpec{target: "192.0.2.60", cursor: "offset=3"}))[0]; again.Err != nil || again.Created || again.Candidate != block.Candidate {
-		t.Fatalf("observation beside a queued block = %+v", again)
+	// The block the preview period left queued ended at the live start, so
+	// a later observation queues new work.
+	if c := f.candidateOf(block.Candidate); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled {
+		t.Fatalf("preview-period block after the live start = %s/%s", c.State, c.Reason)
+	}
+	if again := f.arrive(f.arrival(evidenceSpec{target: "192.0.2.60", cursor: "offset=3"}))[0]; again.Err != nil || !again.Created || again.Candidate == block.Candidate {
+		t.Fatalf("observation after the preview block ended = %+v", again)
 	}
 	next := f.arrive(f.arrival(evidenceSpec{target: "192.0.2.10", cursor: "offset=3"}))[0]
 	if c := f.candidateOf(next.Candidate); next.Err != nil || !next.Created || c.Key.Episode == f.candidateOf(first).Key.Episode || c.Key.Generation != 1 {

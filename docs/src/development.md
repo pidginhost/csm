@@ -1268,7 +1268,11 @@ in that hour, since previews and legacy blocking count the same responses;
 earlier preview charges stay as handover charges with their lane, cost and
 release times, so a later forecast cannot refund them. Pending legacy
 entries stay legacy's to retry and count nothing: a finding admission takes
-never enters that queue. It ends the episode answers of earlier
+never enters that queue. Block work the preview period left queued, deferred
+or not, ends as `disabled` with no new attempt, charge or notice: legacy
+blocking answered it. Work still in the ingress drains as live work; the
+engine's one row per address ends any whose block legacy applied as an
+existing effect. It ends the episode answers of earlier
 observe previews, so the next observation of a previewed address queues a
 new generation, or a new episode when no other candidate kept the old one;
 challenge previews and verified blocks keep their answers. It clears the
