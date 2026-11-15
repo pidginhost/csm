@@ -104,3 +104,63 @@ func TestCachedPanelAncestryAvoidsProcWalk(t *testing.T) {
 		t.Fatalf("unresolved cache must fall back to procfs: evidence=%+v calls=%d", ev, calls)
 	}
 }
+
+// A cached UID is not a current real/effective credential pair. Exec events
+// and proc enrichment must both defer to live credentials for this arm.
+func TestCachedInitramfsAncestryNeedsLiveCredentials(t *testing.T) {
+	oldCache := ancestryCache.Load()
+	t.Cleanup(func() { ancestryCache.Store(oldCache) })
+	cache := processctx.NewCache(8, time.Minute)
+	wireAncestryCache(cache)
+	const builder, writer = 987601, 987602
+	overridePanelToolRoots(t, nil)
+	oldW := tmpExecPkgWindow
+	tmpExecPkgWindow = func(time.Time) bool { return false }
+	t.Cleanup(func() { tmpExecPkgWindow = oldW })
+	for _, source := range []string{"exec", "proc"} {
+		for _, tc := range []struct {
+			name, credentials string
+			want              bool
+		}{
+			{"setuid", "Uid:\t1000\t0\t0\t0\n", false},
+			{"dropped", "Uid:\t0\t1000\t1000\t1000\n", false},
+			{"nonroot", "Uid:\t1000\t1000\t1000\t1000\n", false},
+			{"unknown", "", false},
+			{"root", "Uid:\t0\t0\t0\t0\n", true},
+		} {
+			t.Run(source+"/"+tc.name, func(t *testing.T) {
+				root := fakeProc(t, map[int32]struct {
+					comm string
+					ppid int32
+				}{writer: {"cp", builder}, builder: {"dracut", 1}})
+				writeProcStatus(t, root, writer, builder, "Uid:\t0\t0\t0\t0\n")
+				writeProcStatus(t, root, builder, 1, tc.credentials)
+				overrideProcRoot(t, root)
+				if source == "exec" {
+					cache.PutFromExec(builder, 1, 0, "dracut", "/usr/bin/dracut")
+				} else {
+					cache.PutFromProc(builder, 1, 0, "", "", "dracut", "/usr/bin/dracut", nil)
+				}
+				cache.PutFromExec(writer, builder, 0, "cp", "/usr/bin/cp")
+				if got, _ := demoteTmpExec(0, tmpExecAncestry(writer), time.Now()); got != tc.want {
+					t.Fatalf("demotion = %v, want %v", got, tc.want)
+				}
+				// Reused PIDs must not inherit the cached builder's identity.
+				reused := fakeProc(t, map[int32]struct {
+					comm string
+					ppid int32
+				}{writer: {"cp", builder}, builder: {"bash", 1}})
+				writeProcStatus(t, reused, writer, builder, "Uid:\t0\t0\t0\t0\n")
+				writeProcStatus(t, reused, builder, 1, "Uid:\t0\t0\t0\t0\n")
+				overrideProcRoot(t, reused)
+				if got, _ := demoteTmpExec(0, tmpExecAncestry(writer), time.Now()); got {
+					t.Fatal("stale cache demoted reused PIDs")
+				}
+				overrideProcRoot(t, t.TempDir())
+				if got, _ := demoteTmpExec(0, tmpExecAncestry(writer), time.Now()); got {
+					t.Fatal("stale cache demoted a vanished writer")
+				}
+			})
+		}
+	}
+}

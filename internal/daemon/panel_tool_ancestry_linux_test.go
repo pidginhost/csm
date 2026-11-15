@@ -127,7 +127,7 @@ func TestDemoteTmpExecPanelToolNeedsNoPackageWindow(t *testing.T) {
 	t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry = oldW, oldA })
 	overridePanelToolRoots(t, cpanelRoots)
 
-	ok, reason := demoteTmpExec(0, 4242, time.Now())
+	ok, reason := demoteTmpExec(0, tmpExecAncestry(4242), time.Now())
 	if !ok {
 		t.Fatal("panel-tool ancestry must demote without a package window")
 	}
@@ -151,7 +151,7 @@ func TestDemoteTmpExecPackageArmStillNeedsWindow(t *testing.T) {
 	// Keep the cheap gate open so this tests the package arm itself.
 	overridePanelToolRoots(t, cpanelRoots)
 
-	if ok, reason := demoteTmpExec(0, 4242, time.Now()); ok || reason != "" {
+	if ok, reason := demoteTmpExec(0, tmpExecAncestry(4242), time.Now()); ok || reason != "" {
 		t.Fatalf("package-manager ancestry without a window demoted: (%v, %q)", ok, reason)
 	}
 	if walked != 1 {

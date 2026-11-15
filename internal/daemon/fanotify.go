@@ -355,6 +355,9 @@ type FileMonitor struct {
 	// Per-path alert deduplication: "check:filepath" → last alert time
 	alertDedup sync.Map
 
+	// tmpVouches holds the temp work directories a proven writer wrote into.
+	tmpVouches tmpVouches
+
 	// accountRootPatterns and docRootPatterns describe where accounts and their
 	// document roots live on this platform. The realtime detectors used to
 	// hardcode /home and /public_html, which made every one of them dead on
@@ -607,6 +610,13 @@ type fileEvent struct {
 	// to have existed under its PID.
 	at          time.Time
 	writerChain []int
+	// tmpAncestry is what the writer's process chain proved when the event
+	// was admitted, for a root-owned file under a temp root. Nil when no
+	// capture ran.
+	tmpAncestry *ancestryEvidence
+	// Remember rejected captures too: later ownership changes must not trigger a new walk.
+	tmpCaptured bool
+	tmpStat     *unix.Stat_t
 	// cacheable is set only by a completed clean content scan. Other
 	// detector paths may depend on state outside the placement cache key.
 	cacheable *bool
@@ -1008,6 +1018,7 @@ func (fm *FileMonitor) drainAndClose() {
 		fm.placedDirWG.Wait()
 		close(fm.analyzerCh)
 		fm.wg.Wait()
+		fm.tmpVouches.close()
 		fm.discardReconcilePending()
 		fm.discardPlacedDirs()
 		fm.stagedPackages().discardPending(time.Now())
@@ -1103,6 +1114,7 @@ func (fm *FileMonitor) admitEvent(fd int, event fileEvent, admit bool, pid int32
 	ticket := fm.analyzerHealth.Begin(time.Now())
 	event.queueTicket, event.pid, event.mask, event.at = ticket, pid, mask, readAt
 	captureRestoreWriterChain(&event)
+	captureTmpExecAncestry(&event)
 	select {
 	case fm.analyzerCh <- event:
 		admitted = true
@@ -1305,6 +1317,21 @@ func underTempRoot(path string) bool {
 		}
 	}
 	return false
+}
+
+// tmpWorkDir names the directory directly under a temp root that holds path,
+// with a trailing slash so it can never equal a file's own path. A file placed
+// directly in a temp root has no such directory and is returned unchanged.
+func tmpWorkDir(path string) string {
+	for _, prefix := range tempRootPrefixes {
+		if rest, ok := strings.CutPrefix(path, prefix); ok {
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				return path[:len(prefix)+i+1]
+			}
+			return path
+		}
+	}
+	return path
 }
 
 // sensitivePHPDirs are directories that should never contain PHP, so a PHP
@@ -1798,6 +1825,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Checked before the /tmp early-return so a malicious .htaccess anywhere
 	// (including /tmp) is still analyzed for dangerous directives.
 	if nameLower == ".htaccess" {
+		fm.checkTmpExecutable(event, procInfo)
 		fm.checkHtaccess(event.fd, path, procInfo)
 		return
 	}
@@ -1805,6 +1833,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// .user.ini modification - check for dangerous PHP settings (C3 - read from fd).
 	// Also checked before /tmp so malicious .user.ini is detected anywhere.
 	if nameLower == ".user.ini" || nameLower == "php.ini" {
+		fm.checkTmpExecutable(event, procInfo)
 		fm.checkUserINI(event.fd, path, procInfo)
 		return
 	}
@@ -1832,36 +1861,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Executables in /tmp or /dev/shm - detect dropped malware/miners
 	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
 	if underTempRoot(path) {
-		var tmpStat unix.Stat_t
-		if err := unix.Fstat(event.fd, &tmpStat); err == nil {
-			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
-			isExec := tmpStat.Mode&0111 != 0
-			if !isDir && isExec {
-				// Skip known root-owned work directories:
-				// - cPanel: SpamAssassin compiles .so regex modules, UPCP stages scripts
-				// - dracut: rebuilds initramfs after kernel updates, copies system binaries
-				// Non-root files in these paths are still suspicious.
-				isCpanelWork := strings.Contains(path, "/cpanel.TMP.work.") || strings.Contains(path, "/cPanel-")
-				isDracutWork := strings.Contains(path, "/dracut.")
-				if (isCpanelWork || isDracutWork) && tmpStat.Uid == 0 {
-					// Root-owned executable in system work dir - legitimate, skip
-				} else {
-					// Root-owned drops from a live package transaction
-					// (e.g. weak-modules extracting initramfs via cpio
-					// after a kernel update) are rescored to Warning,
-					// never suppressed. See demoteTmpExec for the gates.
-					severity := alert.Critical
-					details := fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid)
-					if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
-						severity = alert.Warning
-						details += " [demoted: " + reason + "]"
-					}
-					fm.sendAlertWithPath(severity, "executable_in_tmp_realtime",
-						fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-						details, path, procInfo)
-				}
-			}
-		}
+		fm.checkTmpExecutable(event, procInfo)
 		// Hosted images still need payload checks when the configured root
 		// lives in a temporary directory, as do PHP source files anywhere.
 		if !isPHPSourceExtension(nameLower) && !imageInHostedTree {
@@ -2042,6 +2042,74 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if fm.underAccountOrConfiguredDocRoot(path) && isCGIExtension(nameLower) {
 		fm.checkCGIBackdoor(event.fd, path, procInfo)
 		return
+	}
+}
+
+// checkTmpExecutable is independent of configuration syntax: a shell can
+// execute a file even when its basename routes it to a configuration scanner.
+func (fm *FileMonitor) checkTmpExecutable(event fileEvent, procInfo string) {
+	path := event.path
+	if !underTempRoot(path) {
+		return
+	}
+	var tmpStat unix.Stat_t
+	if err := unix.Fstat(event.fd, &tmpStat); err == nil {
+		isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
+		isExec := tmpStat.Mode&0111 != 0
+		if !isDir && isExec {
+			// A directory name proves nothing about the writer, so no
+			// path is exempt. Root-owned drops from panel maintenance
+			// or a live package transaction (an initramfs rebuild
+			// after a kernel update) are rescored to Warning, never
+			// suppressed. See demoteTmpExec for the gates.
+			finding := alert.Finding{
+				Severity:    alert.Critical,
+				Check:       "executable_in_tmp_realtime",
+				Message:     fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
+				Details:     fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid),
+				FilePath:    path,
+				ProcessInfo: procInfo,
+			}
+			dedupPath := path
+			now := time.Now()
+			work := tmpWorkDir(path)
+			ev := tmpExecEvidence(event, tmpStat.Uid)
+			ok, reason := tmpExecDemote(tmpStat.Uid, ev, now)
+			switch {
+			case ok:
+				fm.tmpVouches.grant(event, reason, now)
+			case tmpStat.Uid == 0 && ev.vanished:
+				// The writer exited before its ancestry could be read. It
+				// is judged by a writer already proven in the same
+				// root-private work directory, or by a maintenance
+				// process working inside it; a writer that is still
+				// running and proved nothing never is.
+				vouched, covered := fm.tmpVouches.covers(event, now)
+				if !covered {
+					vouched, covered = fm.tmpVouches.occupied(event, now)
+				}
+				if covered {
+					ok, reason = true, vouched+" in this work directory, writer exited"
+				} else {
+					finding.Details += " [writer exited before its ancestry was read]"
+				}
+			}
+			if ok {
+				// Maintenance writes hundreds of executables into one work
+				// directory. One finding stands for the directory per
+				// cooldown so the burst cannot crowd other findings out of
+				// the queue. Only demoted findings share a key: anything
+				// else in the same directory keeps its own.
+				finding.Severity = alert.Warning
+				finding.Details += " [demoted: " + reason + "; one finding per work directory]"
+				// NUL cannot occur in a file path. Separate warning cooldowns
+				// even when a top-level file has no directory group.
+				dedupPath = work + "\x00maintenance"
+			}
+			if fm.prepareFileFindingWithDedup(&finding, dedupPath) {
+				fm.enqueuePreparedFileFinding(finding)
+			}
+		}
 	}
 }
 

@@ -3,10 +3,13 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -184,8 +187,8 @@ func TestProcAncestryDepthCap(t *testing.T) {
 	}
 }
 
-func TestAncestryEvidencePrefersCachedProbe(t *testing.T) {
-	// Cached probe says yes -> no /proc walk needed (procRootDir is empty).
+func TestAncestryEvidencePreservesCachedPackageProbe(t *testing.T) {
+	// Package evidence survives process exit even when live credentials are gone.
 	overrideProcRoot(t, t.TempDir())
 	oldProbe := cachedAncestryEvidence
 	cachedAncestryEvidence = func(pid uint32, _ []string) ancestryEvidence {
@@ -232,31 +235,31 @@ func TestDemoteTmpExecGates(t *testing.T) {
 
 	t.Run("non_root_file_never_demotes", func(t *testing.T) {
 		override(t, true, true)
-		if ok, _ := demoteTmpExec(1000, 42, now); ok {
+		if ok, _ := demoteTmpExec(1000, tmpExecAncestry(42), now); ok {
 			t.Fatal("uid != 0 must never demote: non-root attackers cannot qualify")
 		}
 	})
 	t.Run("unknown_pid_never_demotes", func(t *testing.T) {
 		override(t, true, true)
-		if ok, _ := demoteTmpExec(0, 0, now); ok {
+		if ok, _ := demoteTmpExec(0, tmpExecEvidence(fileEvent{pid: 0}, 0), now); ok {
 			t.Fatal("pid 0 (no process attribution) must never demote")
 		}
 	})
 	t.Run("no_pkg_window_never_demotes", func(t *testing.T) {
 		override(t, false, true)
-		if ok, _ := demoteTmpExec(0, 42, now); ok {
+		if ok, _ := demoteTmpExec(0, tmpExecAncestry(42), now); ok {
 			t.Fatal("ancestry alone without active package window must not demote")
 		}
 	})
 	t.Run("no_ancestry_never_demotes", func(t *testing.T) {
 		override(t, true, false)
-		if ok, _ := demoteTmpExec(0, 42, now); ok {
+		if ok, _ := demoteTmpExec(0, tmpExecAncestry(42), now); ok {
 			t.Fatal("package window alone without ancestry must not demote")
 		}
 	})
 	t.Run("all_gates_pass_demotes_with_reason", func(t *testing.T) {
 		override(t, true, true)
-		ok, reason := demoteTmpExec(0, 42, now)
+		ok, reason := demoteTmpExec(0, tmpExecAncestry(42), now)
 		if !ok {
 			t.Fatal("root file + window + ancestry must demote")
 		}
@@ -289,14 +292,17 @@ func TestAnalyzeFileTmpExecDemotedToWarning(t *testing.T) {
 	}
 	wantPID := int32(4242)
 
-	oldDemote := tmpExecDemote
-	tmpExecDemote = func(uid uint32, pid int32, now time.Time) (bool, string) {
-		if uid != st.Uid || pid != wantPID {
+	oldDemote, oldAncestry := tmpExecDemote, tmpExecAncestry
+	tmpExecAncestry = func(pid int32) ancestryEvidence {
+		return ancestryEvidence{packageManager: pid == wantPID}
+	}
+	tmpExecDemote = func(uid uint32, ev ancestryEvidence, _ time.Time) (bool, string) {
+		if uid != st.Uid || (uid == 0 && !ev.packageManager) {
 			return false, ""
 		}
 		return true, "package manager ancestry during active package window"
 	}
-	t.Cleanup(func() { tmpExecDemote = oldDemote })
+	t.Cleanup(func() { tmpExecDemote, tmpExecAncestry = oldDemote, oldAncestry })
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
@@ -366,5 +372,302 @@ func TestAnalyzeFileTmpExecNonRootStaysCritical(t *testing.T) {
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected executable_in_tmp_realtime alert")
+	}
+}
+
+// A root-owned executable written under a temp root is reported whatever its
+// directory is called. A directory name proves nothing about who wrote the
+// file, so only the provenance check may rescore it.
+func TestAnalyzeFileTmpExecRootOwnedWorkDirIsReported(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: the file under test must be root-owned")
+	}
+	for _, tc := range []struct {
+		name     string
+		dir      string
+		demote   bool
+		severity alert.Severity
+	}{
+		{"panel work directory", "cpanel.TMP.work.", false, alert.Critical},
+		{"panel staging directory", "cPanel-", false, alert.Critical},
+		{"initramfs build directory", "dracut.", false, alert.Critical},
+		{"initramfs build with package provenance", "dracut.", true, alert.Warning},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, err := os.MkdirTemp("/tmp", tc.dir)
+			if err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			path := filepath.Join(dir, "tool")
+			if err := os.WriteFile(path, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			fd := openRawFd(t, path)
+
+			oldDemote, oldAncestry := tmpExecDemote, tmpExecAncestry
+			tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{} }
+			tmpExecDemote = func(uint32, ancestryEvidence, time.Time) (bool, string) {
+				return tc.demote, "package manager ancestry during active package window"
+			}
+			t.Cleanup(func() { tmpExecDemote, tmpExecAncestry = oldDemote, oldAncestry })
+
+			ch := make(chan alert.Finding, 4)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			fm.analyzeFile(fileEvent{path: path, fd: fd, pid: 4242})
+
+			select {
+			case got := <-ch:
+				if got.Check != "executable_in_tmp_realtime" {
+					t.Errorf("Check = %q, want executable_in_tmp_realtime", got.Check)
+				}
+				if got.Severity != tc.severity {
+					t.Errorf("Severity = %v, want %v", got.Severity, tc.severity)
+				}
+				if got.FilePath != path {
+					t.Errorf("FilePath = %q, want %q", got.FilePath, path)
+				}
+				if demoted := strings.Contains(got.Details, "[demoted:"); demoted != tc.demote {
+					t.Errorf("Details = %q, demotion annotation = %v, want %v", got.Details, demoted, tc.demote)
+				}
+			case <-time.After(200 * time.Millisecond):
+				t.Fatal("root-owned executable in a temp work directory raised no finding")
+			}
+		})
+	}
+}
+
+// writeProcStatus replaces one fake process's status file so a test can state
+// the credentials the walker reads.
+func writeProcStatus(t *testing.T, root string, pid, ppid int32, uidLine string) {
+	t.Helper()
+	comm, err := os.ReadFile(filepath.Join(root, fmt.Sprintf("%d", pid), "comm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := fmt.Sprintf("Name:\t%s\nPid:\t%d\nPPid:\t%d\n%s", strings.TrimSpace(string(comm)), pid, ppid, uidLine)
+	if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("%d", pid), "status"), []byte(status), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An initramfs builder is named only by its comm, which any process can set.
+// The name counts only on a process whose real and effective user is root.
+func TestProcAncestryInitramfsBuilderNeedsRoot(t *testing.T) {
+	cases := []struct {
+		name    string
+		comm    string
+		uidLine string
+		want    bool
+	}{
+		{"dracut_as_root", "dracut", "Uid:\t0\t0\t0\t0\n", true},
+		{"mkinitramfs_as_root", "mkinitramfs", "Uid:\t0\t0\t0\t0\n", true},
+		{"dracut_as_user", "dracut", "Uid:\t1000\t1000\t1000\t1000\n", false},
+		{"setuid_helper_named_dracut", "dracut", "Uid:\t1000\t0\t0\t0\n", false},
+		{"dropped_privileges", "dracut", "Uid:\t0\t1000\t1000\t1000\n", false},
+		{"no_uid_line", "dracut", "", false},
+		{"malformed_uid_line", "dracut", "Uid:\troot\troot\n", false},
+		{"other_root_process", "bash", "Uid:\t0\t0\t0\t0\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := fakeProc(t, map[int32]struct {
+				comm string
+				ppid int32
+			}{
+				300: {"cp", 200},
+				200: {tc.comm, 1},
+			})
+			writeProcStatus(t, root, 300, 200, "Uid:\t0\t0\t0\t0\n")
+			writeProcStatus(t, root, 200, 1, tc.uidLine)
+			overrideProcRoot(t, root)
+			if got := procAncestryEvidence(300, nil).initramfsBuilder; got != tc.want {
+				t.Fatalf("initramfsBuilder = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The initramfs arm stands without a package window or a panel, but never for
+// a file a non-root user owns.
+func TestDemoteTmpExecInitramfsArm(t *testing.T) {
+	oldW, oldA := tmpExecPkgWindow, tmpExecAncestry
+	tmpExecPkgWindow = func(time.Time) bool { return false }
+	tmpExecAncestry = func(int32) ancestryEvidence { return ancestryEvidence{initramfsBuilder: true} }
+	t.Cleanup(func() { tmpExecPkgWindow, tmpExecAncestry = oldW, oldA })
+
+	ok, reason := demoteTmpExec(0, tmpExecAncestry(42), time.Now())
+	if !ok || !strings.Contains(reason, "initramfs") {
+		t.Fatalf("root file from an initramfs build = (%v, %q), want demotion naming it", ok, reason)
+	}
+	if ok, _ := demoteTmpExec(1000, tmpExecAncestry(42), time.Now()); ok {
+		t.Fatal("a non-root file must never demote")
+	}
+}
+
+func TestProcInitramfsRejectsUntrustedWriter(t *testing.T) {
+	for _, uidLine := range []string{"", "Uid:\t1000\t0\t0\t0\n", "Uid:\t1000\t1000\t1000\t1000\n"} {
+		root := fakeProc(t, map[int32]struct {
+			comm string
+			ppid int32
+		}{300: {"cp", 200}, 200: {"dracut", 1}})
+		writeProcStatus(t, root, 300, 200, uidLine)
+		writeProcStatus(t, root, 200, 1, "Uid:\t0\t0\t0\t0\n")
+		overrideProcRoot(t, root)
+		if procAncestryEvidence(300, nil).initramfsBuilder {
+			t.Fatalf("untrusted writer qualified: %q", uidLine)
+		}
+	}
+}
+
+func TestProcInitramfsDoesNotMixProcessNames(t *testing.T) {
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{300: {"cp", 1}})
+	writeProcStatus(t, root, 300, 1, "Uid:\t0\t0\t0\t0\n")
+	// The earlier comm read can name a different process after PID reuse.
+	if err := os.WriteFile(filepath.Join(root, "300", "comm"), []byte("dracut\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overrideProcRoot(t, root)
+	if procAncestryEvidence(300, nil).initramfsBuilder {
+		t.Fatal("mixed process snapshots qualified")
+	}
+}
+
+func TestCachedPackageEvidenceDoesNotHideLiveInitramfs(t *testing.T) {
+	oldProbe := cachedAncestryEvidence
+	cachedAncestryEvidence = func(uint32, []string) ancestryEvidence { return ancestryEvidence{packageManager: true} }
+	t.Cleanup(func() { cachedAncestryEvidence = oldProbe })
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{300: {"dracut", 1}})
+	writeProcStatus(t, root, 300, 1, "Uid:\t0\t0\t0\t0\n")
+	overrideProcRoot(t, root)
+	got := ancestryEvidenceFor(300)
+	if !got.packageManager || !got.initramfsBuilder {
+		t.Fatalf("lost independent ancestry evidence: %+v", got)
+	}
+}
+
+// A walk that stops at an exited process says so: only then may the writer be
+// judged by what its work directory already proved.
+func TestProcAncestryReportsVanishedProcess(t *testing.T) {
+	type proc = struct {
+		comm string
+		ppid int32
+	}
+	for _, tt := range []struct {
+		name   string
+		procs  map[int32]proc
+		break_ func(t *testing.T, root string)
+		want   ancestryEvidence
+	}{
+		{name: "writer already exited", procs: map[int32]proc{}, want: ancestryEvidence{vanished: true}},
+		{
+			name:  "ancestor exited",
+			procs: map[int32]proc{300: {"cp", 200}},
+			want:  ancestryEvidence{vanished: true},
+		},
+		{
+			name:  "writer exited between reads",
+			procs: map[int32]proc{300: {"cp", 1}},
+			break_: func(t *testing.T, root string) {
+				if err := os.Remove(filepath.Join(root, "300", "status")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: ancestryEvidence{vanished: true},
+		},
+		{
+			name:  "evidence found before the chain broke is kept",
+			procs: map[int32]proc{300: {"dnf", 200}},
+			want:  ancestryEvidence{packageManager: true, vanished: true},
+		},
+		{
+			// What the kernel prints for a task it is releasing mid-read.
+			name:  "status of a task being released",
+			procs: map[int32]proc{300: {"cp", 0}},
+			want:  ancestryEvidence{vanished: true},
+		},
+		{name: "live chain that proves nothing", procs: map[int32]proc{300: {"cp", 200}, 200: {"bash", 1}}},
+		{
+			name:  "unreadable parent link is not an exit",
+			procs: map[int32]proc{300: {"cp", 1}},
+			break_: func(t *testing.T, root string) {
+				status := "Name:\tcp\nPPid:\tnot-a-pid\n"
+				if err := os.WriteFile(filepath.Join(root, "300", "status"), []byte(status), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := fakeProc(t, tt.procs)
+			for pid, p := range tt.procs {
+				writeProcStatus(t, root, pid, p.ppid, "Uid:\t0\t0\t0\t0\n")
+			}
+			if tt.break_ != nil {
+				tt.break_(t, root)
+			}
+			overrideProcRoot(t, root)
+			if got := procAncestryEvidence(300, nil); got != tt.want {
+				t.Fatalf("procAncestryEvidence = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A chain cut off by the depth cap was read in full as far as it goes: it is
+// not an exited writer.
+func TestProcAncestryDepthCapIsNotVanished(t *testing.T) {
+	procs := map[int32]struct {
+		comm string
+		ppid int32
+	}{}
+	for pid := int32(100); pid < 100+int32(maxAncestryDepth)+3; pid++ {
+		procs[pid] = struct {
+			comm string
+			ppid int32
+		}{comm: "bash", ppid: pid + 1}
+	}
+	overrideProcRoot(t, fakeProc(t, procs))
+	if got := procAncestryEvidence(100, nil); got.vanished {
+		t.Fatalf("depth-capped walk = %+v, want no vanished mark", got)
+	}
+}
+
+// A process that exits between the open and the read of a procfs file fails
+// the read with ESRCH. That is an exit, like a missing directory; an error
+// that says nothing about the process is not.
+func TestProcGone(t *testing.T) {
+	for _, tt := range []struct {
+		err  error
+		want bool
+	}{
+		{&fs.PathError{Op: "open", Path: "/proc/1/comm", Err: syscall.ENOENT}, true},
+		{&fs.PathError{Op: "read", Path: "/proc/1/status", Err: syscall.ESRCH}, true},
+		{&fs.PathError{Op: "read", Path: "/proc/1/status", Err: syscall.EACCES}, false},
+		{&fs.PathError{Op: "read", Path: "/proc/1/comm", Err: syscall.EISDIR}, false},
+		{errors.New("unexpected"), false},
+	} {
+		if got := procGone(tt.err); got != tt.want {
+			t.Errorf("procGone(%v) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
+// The kernel thread parent has no parent and is not an exited process.
+func TestProcAncestryKernelThreadParentIsNotVanished(t *testing.T) {
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{2: {"kthreadd", 0}})
+	writeProcStatus(t, root, 2, 0, "Uid:\t0\t0\t0\t0\n")
+	overrideProcRoot(t, root)
+	if got := procAncestryEvidence(2, nil); got.vanished {
+		t.Fatalf("kernel thread parent = %+v, want no vanished mark", got)
 	}
 }

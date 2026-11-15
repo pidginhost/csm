@@ -3,11 +3,14 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
@@ -30,17 +33,32 @@ var (
 	tmpExecDemote    = demoteTmpExec
 )
 
-// ancestryEvidence is what one walk of a process chain proved. The two
-// signals are kept apart because they are corroborated differently: a comm
-// can be set by the process itself and needs a package transaction in the
-// same window to mean anything, while an exe under a panel root cannot be
-// faked and stands on its own.
+// ancestryEvidence is what one walk of a process chain proved. The signals
+// are kept apart because they are corroborated differently: a comm can be set
+// by the process itself, so a package manager's needs a package transaction
+// in the same window and an initramfs builder's needs a live root process chain,
+// while an exe under a panel root cannot be faked and stands on its own.
 type ancestryEvidence struct {
-	packageManager bool
-	panelTool      bool
+	packageManager   bool
+	panelTool        bool
+	initramfsBuilder bool
+	// vanished reports that the walk stopped at a process that had already
+	// exited, with no non-root or unknown credentials encountered first.
+	// Read errors alone do not establish exit: see procGone.
+	vanished bool
 }
 
-func (e ancestryEvidence) none() bool { return !e.packageManager && !e.panelTool }
+// procGone reports whether a procfs read failed because the process no longer
+// exists. Opening a file of a process that has been reaped fails with ENOENT;
+// a process that exits between the open and the read fails the read with
+// ESRCH. Any other error says nothing about the process.
+func procGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
+func (e ancestryEvidence) none() bool {
+	return !e.packageManager && !e.panelTool && !e.initramfsBuilder
+}
 
 // procAncestryEvidence walks pid's PPid chain through procfs and reports what
 // the chain proves. Any read or parse failure ends the walk with what was
@@ -48,14 +66,17 @@ func (e ancestryEvidence) none() bool { return !e.packageManager && !e.panelTool
 // that proved nothing leaves the alert at its original severity.
 func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 	var ev ancestryEvidence
+	rootChain := true
 	for depth := 0; depth < maxAncestryDepth && pid > 1; depth++ {
 		dir := fmt.Sprintf("%s/%d", procRootDir, pid)
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
-		comm, err := os.ReadFile(dir + "/comm")
+		commRaw, err := os.ReadFile(dir + "/comm")
 		if err != nil {
+			ev.vanished = procGone(err) && rootChain
 			return ev
 		}
-		if isPackageManagerComm(strings.TrimSpace(string(comm))) {
+		comm := strings.TrimSpace(string(commRaw))
+		if isPackageManagerComm(comm) {
 			ev.packageManager = true
 		}
 		if !ev.panelTool && procExeIsPanelTool(dir, panelRoots) {
@@ -67,22 +88,51 @@ func procAncestryEvidence(pid int32, panelRoots []string) ancestryEvidence {
 		// #nosec G304 -- procfs pseudo-files under a fixed root; pid is from the fanotify event.
 		status, err := os.ReadFile(dir + "/status")
 		if err != nil {
+			ev.vanished = procGone(err) && rootChain
 			return ev
 		}
 		ppid := int32(-1)
+		root := false
+		statusComm := ""
 		for _, line := range strings.Split(string(status), "\n") {
-			if strings.HasPrefix(line, "PPid:") {
+			switch {
+			case strings.HasPrefix(line, "Name:"):
+				statusComm = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
+			case strings.HasPrefix(line, "PPid:"):
 				n, convErr := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "PPid:")), 10, 32)
 				if convErr != nil {
 					return ev
 				}
 				ppid = int32(n)
-				break
+			case strings.HasPrefix(line, "Uid:"):
+				root = statusUIDIsRoot(line)
 			}
+		}
+		// A privileged ancestor does not vouch for descendants that dropped
+		// privileges. Read the name with the credentials, not from an earlier
+		// comm lookup that may have addressed a previous occupant of the PID.
+		rootChain = rootChain && root
+		if rootChain && isInitramfsBuilderComm(statusComm) {
+			ev.initramfsBuilder = true
+		}
+		// The kernel prints parent 0 for a task it is releasing while the
+		// status is read. Only init and the kernel thread parent, PIDs 1
+		// and 2, really have no parent.
+		if ppid == 0 && pid > 2 {
+			ev.vanished = rootChain
+			return ev
 		}
 		pid = ppid
 	}
 	return ev
+}
+
+// statusUIDIsRoot reports whether a /proc status Uid line names root as both
+// the real and the effective user. A set-uid helper started by another user
+// keeps that user's real id, so it never qualifies.
+func statusUIDIsRoot(line string) bool {
+	ids := strings.Fields(strings.TrimPrefix(line, "Uid:"))
+	return len(ids) >= 2 && ids[0] == "0" && ids[1] == "0"
 }
 
 // procExeIsPanelTool reports whether the process at procDir is running a
@@ -114,21 +164,26 @@ var panelToolRoots = func() []string { return platform.Detect().PanelToolRoots()
 // process exit.
 func wireAncestryProvenance() { checks.AncestryProvenance = ancestryProvenanceReason }
 
-// ancestryEvidenceFor reports what pid's process chain proves. The BPF
-// processctx cache is preferred because it survives process exit; hosts
-// without BPF fall back to a live /proc walk, which is racy for short-lived
-// writers but fails closed into the original severity.
+// ancestryEvidenceFor preserves cached panel and package evidence after
+// process exit. Initramfs evidence requires a live root process chain;
+// missing credentials leave that arm at the original severity.
 func ancestryEvidenceFor(pid int32) ancestryEvidence {
 	if pid <= 0 {
 		return ancestryEvidence{}
 	}
 	roots := panelToolRoots()
+	var cached ancestryEvidence
 	if probe := cachedAncestryEvidence; probe != nil {
-		if ev := probe(uint32(pid), roots); !ev.none() {
-			return ev
+		cached = probe(uint32(pid), roots)
+		if cached.panelTool {
+			return cached
 		}
 	}
-	return procAncestryEvidence(pid, roots)
+	// The cache has neither both current credentials nor a pinned parent
+	// chain. Only live procfs evidence can authorize initramfs demotion.
+	live := procAncestryEvidence(pid, roots)
+	live.packageManager = live.packageManager || cached.packageManager
+	return live
 }
 
 // cachedAncestryEvidence reads the same evidence out of the BPF processctx
@@ -160,38 +215,32 @@ func ancestryProvenanceReason(pid uint32) string {
 }
 
 // demoteTmpExec decides whether an executable_in_tmp_realtime finding is
-// demoted from Critical to Warning. The file must be root-owned in every
-// case -- a non-root attacker can never qualify -- and then one of two
-// provenance arms has to hold:
+// demoted from Critical to Warning on what its writer's ancestry proved. The
+// file must be root-owned in every case -- a non-root attacker can never
+// qualify -- and then one of three provenance arms has to hold:
 //
 //   - the writer descends from the control panel's own tooling, proven by an
 //     ancestor's executable path,
 //   - or it descends from a package manager AND a package-manager log was
 //     touched within the provenance window. The comm behind that arm is
-//     attacker-settable, so it is never the sole gate.
+//     attacker-settable, so it is never the sole gate,
+//   - or its live ancestry through an initramfs builder runs entirely as root.
 //
-// The finding is rescored, never suppressed, so the evidence trail survives
-// even if the heuristic is wrong.
-func demoteTmpExec(uid uint32, pid int32, now time.Time) (bool, string) {
-	if uid != 0 || pid <= 0 {
+// The finding is rescored, never dropped by this decision, so the evidence
+// trail survives even if the heuristic is wrong.
+func demoteTmpExec(uid uint32, ev ancestryEvidence, now time.Time) (bool, string) {
+	if uid != 0 {
 		return false, ""
 	}
-	// Both cheap gates first. The walk costs up to maxAncestryDepth procfs
-	// reads and runs for every root-owned executable written under a temp
-	// root, so it must not run when neither arm could change the verdict:
-	// no package transaction in the window, and no panel root for an exe to
-	// resolve inside.
 	window := tmpExecPkgWindow(now)
 	panelRooted := len(panelToolRoots()) > 0
-	if !window && !panelRooted {
-		return false, ""
-	}
-	ev := tmpExecAncestry(pid)
-	if panelRooted && ev.panelTool {
+	switch {
+	case panelRooted && ev.panelTool:
 		return true, "control panel maintenance ancestry"
-	}
-	if window && ev.packageManager {
+	case window && ev.packageManager:
 		return true, "package manager ancestry during active package window"
+	case ev.initramfsBuilder:
+		return true, "initramfs build ancestry"
 	}
 	return false, ""
 }
