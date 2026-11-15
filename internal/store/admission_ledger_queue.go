@@ -1043,10 +1043,10 @@ func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.C
 
 // PreviewWake is the earliest admission time at which a dry-run forecast
 // has work without a new report: now while selectable work waits, or a
-// retry's backoff end, a queued deadline, or when the live history budget
-// can pay for a challenge the selection passes over. Other live budgets
-// never delay it, and pending work wakes only at its deadlines. ok is
-// false when nothing waits.
+// retry's backoff end, a queued deadline, or, until the ledger starts
+// live, when the live history budget can pay for a challenge the
+// selection passes over. Other live budgets never delay it, and pending
+// work wakes only at its deadlines. ok is false when nothing waits.
 func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admission.Answer) (time.Time, bool, error) {
 	// The lock guards the recovery hold this read shares with writers.
 	l.mu.Lock()

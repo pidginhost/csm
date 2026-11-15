@@ -854,12 +854,14 @@ ending requires at least schema 9 and retains any later schema.
 `SchedulePreview` selects queued work for a dry-run forecast. It is not
 admission: spent live ceiling and history budgets do not stop it, and it
 reserves, charges and defers nothing for capacity. Every candidate, a
-challenge included, weighs one fair unit and no history. A challenge's
-comparison preview still spends live history, so the selection passes one
-over, with no wait or fair turn, while the live history budget cannot pay
-for it, as a schedule does, and serves it on a lane that can. Challenge
-picks share that live allowance within a selection; an earlier pick leaves
-less for the next. Direct and
+challenge included, weighs one fair unit and no history. Until the ledger
+starts live a challenge's comparison preview still spends live history, so
+the selection passes one over, with no wait or fair turn, while the live
+history budget cannot pay for it, as a schedule does, and serves it on a
+lane that can. Challenge picks share that live allowance within a
+selection; an earlier pick leaves less for the next. On a started ledger a
+challenge preview spends no history and is selected as other work is.
+Direct and
 corroborated work alternates within a bounded reserved share of each batch,
 and the general lane serves the rest by class and severity, where
 reserved-eligible work competes too. Revalidation, age-out, retry backoff
@@ -869,8 +871,9 @@ wait clears as a schedule clears it, pending work is passed over, and the
 live schedule and the selection share one fair position, which advances
 once per selection. `PreviewWake` is the matching
 wake: now while selectable work waits, otherwise a backoff end, a queued
-deadline or when the live history budget can pay for a passed-over
-challenge, whatever the other live budgets. `CeilingSnapshot` reads the committed
+deadline or, until the ledger starts live, when the live history budget
+can pay for a passed-over challenge, whatever the other live budgets.
+`CeilingSnapshot` reads the committed
 ceiling and its retained charges in one read transaction, proven against
 each other, for a forecast to start from.
 
