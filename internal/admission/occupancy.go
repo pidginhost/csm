@@ -8,8 +8,8 @@ const TemporaryCapacity = 10000
 
 // AutomaticCapacity is the temporary set capacity automatic admission
 // works within under the configured temporary limit: the limit, or
-// TemporaryCapacity for zero. A negative limit is invalid; until
-// configuration refuses one it reads as zero.
+// TemporaryCapacity for zero. Configuration loads a negative limit as
+// zero; one set in code reads as zero too.
 func AutomaticCapacity(limit int) int {
 	if limit <= 0 {
 		return TemporaryCapacity

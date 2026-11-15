@@ -509,8 +509,8 @@ func TestOwnerDefersBlocksWithoutAnEngine(t *testing.T) {
 	}
 }
 
-// Only block_ip picks run; a pick of another kind beside them is still an
-// observe preview.
+// Only block_ip picks run; a pick of another kind beside them is still
+// previewed, and on the live ledger its preview makes no attempt.
 func TestOwnerPreviewsOtherKindsBesideABatch(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -524,7 +524,7 @@ func TestOwnerPreviewsOtherKindsBesideABatch(t *testing.T) {
 	if c := candidate(t, o, block); c.State != admission.StateVerified {
 		t.Fatalf("block = %+v", c)
 	}
-	if c := candidate(t, o, challenge); c.State != admission.StateObserved {
+	if c := candidate(t, o, challenge); c.State != admission.StateDryRun || c.Attempts != 0 {
 		t.Fatalf("challenge = %+v", c)
 	}
 	if _, applies := blocks.calls(); len(applies) != 1 || len(applies[0]) != 1 {

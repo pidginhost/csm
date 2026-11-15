@@ -718,20 +718,34 @@ func TestOwnerForecastAsksNothingItNeedNotAsk(t *testing.T) {
 }
 
 // No answer from a dry run authorizes a live attempt. A live
-// epoch drops it, and the pick asks again before it runs.
+// epoch drops it, and the pick asks again before it runs. Work queued
+// before the ledger's first live start ends there, so the case that
+// remains is a ledger that went live, ran a dry run and returned.
 func TestOwnerForecastAnswersDoNotCarryIntoLive(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	panel := newFakePanel("allow")
-	o, r, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+	o, r, _ := policyOwner(t, f, blocks, verdictPolicy(1, panel))
+	if err := o.do(func() error {
+		if !o.ledger.LiveStarted() {
+			return errors.New("the first live policy did not start live")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.publish(dryVerdictPolicy(2, panel))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
 	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	turn(t, o)
 	readyAnswers(t, o, 1)
 	panel.set(func(p *fakePanel) {
 		p.answer = func(string) (verdict.Response, error) { return verdict.Response{Verdict: "block"}, nil }
 	})
-	r.publish(verdictPolicy(2, panel))
+	r.publish(verdictPolicy(3, panel))
 	if err := o.Reload(); err != nil {
 		t.Fatal(err)
 	}

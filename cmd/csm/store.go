@@ -425,6 +425,7 @@ func runStoreImportCLI() {
 	srcPath := args[0]
 	only := "all"
 	forcePlatform := false
+	force := false
 	for _, a := range args[1:] {
 		switch {
 		case a == "--help" || a == "-h":
@@ -432,6 +433,8 @@ func runStoreImportCLI() {
 			return
 		case a == "--force-platform-mismatch":
 			forcePlatform = true
+		case a == "--force":
+			force = true
 		case strings.HasPrefix(a, "--only="):
 			only = strings.TrimPrefix(a, "--only=")
 		default:
@@ -480,6 +483,7 @@ func runStoreImportCLI() {
 		RulesPath:             cfg.Signatures.RulesDir,
 		Only:                  only,
 		ForcePlatformMismatch: forcePlatform,
+		Force:                 force,
 		CurrentPlatform:       currentPlatform,
 	})
 	if err != nil {
@@ -500,7 +504,7 @@ func printStoreImportUsage() {
 	fmt.Fprintln(os.Stderr, `csm store import - restore from a backup archive
 
 Usage:
-  csm store import <path> [--only=all|baseline|firewall] [--force-platform-mismatch]
+  csm store import <path> [--only=all|baseline|firewall] [--force-platform-mismatch] [--force]
 
 Requires the daemon to be stopped (systemctl stop csm). The default
 "--only=all" restores bbolt, state files, and the signature cache.
@@ -514,7 +518,10 @@ Requires the daemon to be stopped (systemctl stop csm). The default
   --force-platform-mismatch  Allow restore when the archive's source OS,
                              panel, or web server differs from the host.
                              A baseline captured on Apache is rarely
-                             meaningful on Nginx -- use with caution.`)
+                             meaningful on Nginx -- use with caution.
+
+  --force    Allow restore when this host's admission ledger started live
+             and the archive's ledger never did or is behind it.`)
 }
 
 // isDaemonLive returns true if the control socket accepts a connection

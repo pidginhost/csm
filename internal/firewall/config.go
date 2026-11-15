@@ -91,6 +91,9 @@ type FirewallConfig struct {
 	// Max blocked IPs (prevents memory exhaustion, 0 = unlimited)
 	DenyIPLimit     int `yaml:"deny_ip_limit"`
 	DenyTempIPLimit int `yaml:"deny_temp_ip_limit"`
+	// DenyTempIPLimitNegative records a negative deny_temp_ip_limit the
+	// loader read as 0, so validation can warn about what was written.
+	DenyTempIPLimitNegative bool `yaml:"-" json:"-"`
 
 	// Outbound SMTP restriction - block outgoing mail except from allowed users
 	SMTPBlock      bool     `yaml:"smtp_block"`

@@ -428,7 +428,13 @@ func TestOwnerHoldsFirewallWorkOnARefusedPolicy(t *testing.T) {
 				}
 				held[id] = c
 			}
-			if c := candidate(t, o, challenge); c.State != admission.StateObserved {
+			// A dry-run policy never started the ledger live, so its
+			// challenge preview is still a charged attempt.
+			previewed := admission.StateDryRun
+			if dry {
+				previewed = admission.StateObserved
+			}
+			if c := candidate(t, o, challenge); c.State != previewed {
 				t.Fatalf("challenge = %+v", c)
 			}
 			if liveUsed(t, o) != 0 || selections != 1 {

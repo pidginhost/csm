@@ -1268,7 +1268,11 @@ in that hour, since previews and legacy blocking count the same responses;
 earlier preview charges stay as handover charges with their lane, cost and
 release times, so a later forecast cannot refund them. Pending legacy
 entries stay legacy's to retry and count nothing: a finding admission takes
-never enters that queue. It ends the episode answers of earlier
+never enters that queue. Block work the preview period left queued, deferred
+or not, ends as `disabled` with no new attempt, charge or notice: legacy
+blocking answered it. Work still in the ingress drains as live work; the
+engine's one row per address ends any whose block legacy applied as an
+existing effect. It ends the episode answers of earlier
 observe previews, so the next observation of a previewed address queues a
 new generation, or a new episode when no other candidate kept the old one;
 challenge previews and verified blocks keep their answers. It clears the
@@ -1279,14 +1283,33 @@ failures keep their own backoff. The start also makes the previews' history
 eligible at once. Until it runs, an executing owner delivers no ledger
 notice; with execution enabled the sender reads the mode and the due notices
 together, and an acknowledgement taken before the live start never covers a
-record raised after it. It writes schema 11, which earlier builds refuse,
-and leaves `blocked_ips.json` in place. A legacy state file it cannot read
+record raised after it. It raises the schema to 11, which every-host
+schemas 13 and later already exceed, and records the live feature bit in the
+ledger's meta bucket; every earlier build refuses that unknown key, so a
+binary rolled back across the live start does not open the ledger and keeps
+legacy-only blocking. A feature bit this build does not know is refused as a
+newer schema. It leaves `blocked_ips.json` in place. A legacy state file it cannot read
 keeps no saved credit, and `admission.owner.import.error` names the error.
 A failed live start fails the turn, reload or drain that ran it, and a
 failed tick or drain closes admission. A failed live-start tick reports its
 cause through `tick_error` and the stopped-admission notice until a later
 tick succeeds. The import error describes a committed handover: an aborted
 transaction does not replace it, and later startup retries do not erase it.
+
+After the live start a preview spends nothing that live work lives on. The
+owner previews what it does not run: every kind but `block_ip`, and every
+pick of an owner without an engine. Such a preview ends as a dry run does,
+with no attempt, slot, ceiling charge or history, and it leaves its episode
+open, so the next observation is previewed again; the comparison still
+counts it as observed. A refused preview counts in the hourly comparison
+only after its terminal ending commits, in the hour of that ending.
+Deferrals and failed endings add no refusal count.
+The schedule serves those kinds as uncharged picks,
+so they take no lane's ceiling budget or history allowance from the blocks
+that run. A `block_ip` preview of an owner without an engine is still
+scheduled within the lane budgets it no longer spends, and a dry-run
+selection on a started ledger still passes over a challenge the history
+budget could not pay for.
 
 An owner with an engine binds to one execution policy: the dry-run mode,
 the verdict callback and its timeout, the hourly ceiling and the response

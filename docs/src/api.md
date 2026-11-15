@@ -362,7 +362,8 @@ It never applies them; the view is not an enforcement record.
   does not fill that historical gap.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
-- `owner` says whether admission runs automatic blocks (`executing`) and
+- `owner` says whether admission runs automatic blocks (`executing`),
+  whether it has completed a turn since the daemon started (`settled`), and
   names why the ledger owner is not running (`error`), why its last turn
   failed while it runs (`turn_error`), the last fault met while retiring
   uncertain blocks (`retirement_error`, kept until none is left faulted), why
@@ -374,6 +375,9 @@ It never applies them; the view is not an enforcement record.
   could not be read at the first start or when execution began; a committed
   read error survives startup retries), the last inventory read and why
   responses naming a damaged record were discarded (`damage_error`).
+  The first completed turn publishes `settled: true` with any earlier
+  `turn_error` cleared. Later failed turns and policy reloads do not reset
+  `settled`; a daemon restart does.
   `preview_replacements` counts this process's previews that took the
   temporary slot of a lower-priority automatic block, which live admission
   would replace, and `preview_replacements_last_hour` those of the last
@@ -491,7 +495,8 @@ Absent values are null, never missing keys. The durable outcome windows in
 
 The hourly ceiling follows `auto_response.max_blocks_per_hour`, capped at 20000.
 An omitted or zero value selects 2000 for the ledger and 50 for the shared
-scan-driven block budget. After editing the configuration, run
+scan-driven block budget. An explicit value is used by both, and `csm doctor`
+warns when it puts the ceiling below 2000. After editing the configuration, run
 `systemctl reload csm`; web UI settings saves apply at the next ledger tick.
 Existing blocking paths still decide every block; see
 [automatic response](auto-response.md) for the scope of the current budget.
@@ -538,7 +543,10 @@ Once `owner.executing` is set, rows say admission decides automatic blocks,
 and held execution, a stopped owner, a refused clock reading, a failing
 turn, a damaged ledger, stopped admission, discarded responses, a Critical
 gap in the last hour and a ledger the firewall could not read at startup
-fail. The `admission execution` fix names the configuration for a refused
+fail. Until `owner.settled` is set, and for at most two minutes after the
+daemon starts, those rows warn and say so: the check that follows an
+upgrade runs before the first turn, and its failure would roll the upgrade
+back. The `admission execution` fix names the configuration for a refused
 policy and the firewall otherwise.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
@@ -64,11 +65,16 @@ var (
 	admissionSchemaSixBuckets   = append(append([]string(nil), admissionSchemaFiveBuckets...), admissionEpisodesBucket)
 	admissionBuckets            = append(append([]string(nil), admissionSchemaSixBuckets...), admissionIntentsBucket)
 	admissionSchemaKey          = []byte("schema")
-	admissionClockKey           = []byte("clock")
-	admissionClockPendingKey    = []byte("clock_pending")
-	admissionTrackerKey         = []byte("generations")
-	admissionInventoryKey       = []byte("inventory")
-	admissionAmbiguousKey       = []byte("ambiguous_domains")
+	// admissionFeaturesKey holds the ledger's feature bits, eight bytes big
+	// endian. Every build before it refuses an unknown meta key, so a bit
+	// keeps a binary that predates its layout off the ledger without a
+	// schema value.
+	admissionFeaturesKey     = []byte("features")
+	admissionClockKey        = []byte("clock")
+	admissionClockPendingKey = []byte("clock_pending")
+	admissionTrackerKey      = []byte("generations")
+	admissionInventoryKey    = []byte("inventory")
+	admissionAmbiguousKey    = []byte("ambiguous_domains")
 )
 
 // ErrAdmissionSchema reports admission buckets this build cannot read: an
@@ -334,6 +340,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			}
 		}
 		if err := validateStateKeys(tx); err != nil {
+			return err
+		}
+		if _, err := loadFeatures(tx); err != nil {
 			return err
 		}
 		_, live, liveErr := loadLiveStart(tx)
@@ -662,6 +671,39 @@ func (l *AdmissionLedger) Inventory() *admission.Inventory { return l.inv.Load()
 // AmbiguousDomains is the count from the last committed observation.
 func (l *AdmissionLedger) AmbiguousDomains() int { return l.inv.Load().ambiguous }
 
+// Ledger features. featureLive marks a ledger whose live start ran: a
+// build that predates execution must not open it.
+const (
+	featureLive   uint64 = 1 << 0
+	knownFeatures        = featureLive
+)
+
+// loadFeatures reads the feature bits, zero when none are recorded. A bit
+// this binary does not know means a newer layout.
+func loadFeatures(tx *bolt.Tx) (uint64, error) {
+	raw := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionFeaturesKey)
+	if raw == nil {
+		return 0, nil
+	}
+	if len(raw) != 8 {
+		return 0, admission.ErrCorruptRecord
+	}
+	bits := binary.BigEndian.Uint64(raw)
+	if bits&^knownFeatures != 0 {
+		return 0, ErrAdmissionSchema
+	}
+	return bits, nil
+}
+
+// addFeature records bit beside the features already set.
+func addFeature(tx *bolt.Tx, bit uint64) error {
+	bits, err := loadFeatures(tx)
+	if err != nil {
+		return err
+	}
+	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionFeaturesKey, binary.BigEndian.AppendUint64(nil, bits|bit))
+}
+
 // validateStateKeys refuses state from a layout this binary does not know.
 // Record decoders separately prove the required values and missing rows.
 func validateStateKeys(tx *bolt.Tx) error {
@@ -669,7 +711,7 @@ func validateStateKeys(tx *bolt.Tx) error {
 		name string
 		keys [][]byte
 	}{
-		{admissionMetaBucket, [][]byte{admissionSchemaKey, admissionClockKey, admissionClockPendingKey, admissionTrackerKey, admissionInventoryKey, admissionAmbiguousKey}},
+		{admissionMetaBucket, [][]byte{admissionSchemaKey, admissionClockKey, admissionClockPendingKey, admissionTrackerKey, admissionInventoryKey, admissionAmbiguousKey, admissionFeaturesKey}},
 		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey, episodeStateKey, liveStartKey, effectTallyKey}},
 	} {
 		b := tx.Bucket([]byte(state.name))

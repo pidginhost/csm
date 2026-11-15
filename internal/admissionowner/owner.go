@@ -187,8 +187,10 @@ type Owner struct {
 	snapshotErr   error
 	tickErr       error
 	scheduleErr   error
-	degraded      bool
-	lastTick      time.Time
+	// settled is set by the first turn that completes in this process.
+	settled  bool
+	degraded bool
+	lastTick time.Time
 	// now is the admission time of the last reading.
 	now time.Time
 	// scheduleDue asks the next schedule turn to run; wakeAt, on the
@@ -1009,6 +1011,13 @@ func (o *Owner) runTurn(selecting bool) error {
 	if o.mayRetire() && !o.heldAt.IsZero() && (o.wakeAt.IsZero() || o.heldAt.Before(o.wakeAt)) {
 		o.wakeAt = o.heldAt
 	}
+	if !o.settled {
+		// Publish recovery with settlement so doctor cannot observe the
+		// previous turn's error after the startup grace has ended.
+		o.scheduleErr = nil
+		o.settled = true
+		o.refreshStatus()
+	}
 	return nil
 }
 
@@ -1135,9 +1144,13 @@ func (o *Owner) holdForPolicy(p execPick) error {
 // preview is an observe preview of p: reserved and charged as live work
 // would be and ended in the same transaction without running. A
 // terminal refusal ends only that pick, so an invalid selected lifetime
-// cannot starve the queue; any other failure is returned.
+// cannot starve the queue; any other failure is returned. Once the ledger
+// has started live a preview spends nothing.
 func (o *Owner) preview(p execPick) error {
 	c := p.c
+	if o.ledger.LiveStarted() {
+		return o.previewLive(p)
+	}
 	expires, err := o.cappedExpiry(c, o.now)
 	if err != nil {
 		return fmt.Errorf("reading the episode of pick %s: %w", p.pick.ID, err)
@@ -1166,6 +1179,35 @@ func (o *Owner) preview(p execPick) error {
 		o.replacementsHour.add(monoNow())
 	}
 	o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	return nil
+}
+
+// previewLive previews p on a ledger that has started live. Live work owns
+// the ceiling, the set, the history and the episodes there, so the pick
+// ends as a dry run ends one: nothing is reserved or charged, and its
+// episode stays open to the next observation. A refusal the ending meets
+// defers or ends p as a reservation would.
+func (o *Owner) previewLive(p execPick) error {
+	_, changed, err := endDryRunLedger(o.ledger, p.pick.ID)
+	if reason, refused := admission.ReasonOf(err); refused {
+		if endErr := o.endPick(p, reason); endErr != nil {
+			return endErr
+		}
+		switch reason.Disposition() {
+		case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
+			o.compare.addLedgerRefusalAt(refusalKey(p.c, err), o.now)
+		}
+		return nil
+	}
+	switch {
+	case errors.Is(err, admission.ErrNotReady):
+		return nil
+	case err != nil:
+		return fmt.Errorf("previewing pick %s: %w", p.pick.ID, err)
+	case changed:
+		c := p.c
+		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	}
 	return nil
 }
 
@@ -1375,6 +1417,7 @@ func (o *Owner) status() *health.AdmissionStatus {
 func (o *Owner) refreshStatus() {
 	s := &health.AdmissionStatus{CheckedAt: time.Now(), Owner: &health.AdmissionOwner{
 		Executing:     o.executing(),
+		Settled:       o.settled,
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}

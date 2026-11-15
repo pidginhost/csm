@@ -37,8 +37,10 @@ func (l *AdmissionLedger) LiveStarted() bool {
 // it carries the greater of the legacy hour's count and the charges
 // retained in its hour, leaves pending legacy entries alone, ends earlier
 // observe previews' answers, clears their notices, makes their history
-// eligible, and records the start under the schema that older builds
-// refuse. A ledger that has started refuses with ErrTransitionConflict.
+// eligible, and records the start with the live feature bit, which older
+// builds refuse. It also ends the block_ip work the preview period left
+// queued.
+// A ledger that has started refuses with ErrTransitionConflict.
 // It needs a reading this handle recorded.
 func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 	l.mu.Lock()
@@ -61,6 +63,9 @@ func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 		if err != nil {
 			return err
 		}
+		if err = q.endPreviewQueue(); err != nil {
+			return err
+		}
 		if err = q.endPreviewAnswers(); err != nil {
 			return err
 		}
@@ -81,6 +86,11 @@ func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 			return err
 		}
 		if err = raiseSchema(tx, admissionSchemaLive); err != nil {
+			return err
+		}
+		// Ledgers already at a later every-host schema gain nothing from the
+		// raise; the feature bit is what earlier builds refuse.
+		if err = addFeature(tx, featureLive); err != nil {
 			return err
 		}
 		return q.flush()
@@ -121,6 +131,25 @@ func carryLegacySpend(tx *bolt.Tx, spend admission.LegacySpend) error {
 		return err
 	}
 	return putCeilingState(tx, next)
+}
+
+// endPreviewQueue ends the block_ip work the preview period left queued,
+// deferred or not: legacy blocking answered every block_ip finding while
+// admission previewed. It ends silently, as disabled, with no new attempt
+// or charge; prior attempts remain, and work of other kinds stays queued.
+func (q *queueTx) endPreviewQueue() error {
+	live, err := q.live()
+	if err != nil {
+		return err
+	}
+	for _, lc := range live {
+		if lc.c.State == admission.StateQueued && lc.c.Key.Kind == admission.KindBlockIP {
+			if err = q.refuse(lc, admission.ReasonDisabled, 0); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // endPreviewAnswers makes placement's forecast rule for preview answers

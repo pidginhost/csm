@@ -655,7 +655,8 @@ const unitCost = 1
 // Pending candidates wait on an outside answer, such as the panel's
 // verdict: they are passed over as a retry in its backoff is, never picked
 // or deferred, and their scopes keep their turns. An allowed candidate is
-// picked as uncharged work whatever the budgets.
+// picked as uncharged work whatever the budgets, and so is work of a kind
+// a live ledger only previews.
 func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -1272,7 +1273,9 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64, answers map[a
 		}
 		byID[lc.id] = lc
 		cost := lc.c.Key.Kind.CeilingCost()
-		if answers[lc.id] == admission.AnswerAllow {
+		// On a live ledger only block_ip work runs; a preview of any other
+		// kind spends nothing, so it takes no lane's room from work that does.
+		if answers[lc.id] == admission.AnswerAllow || (q.started && lc.c.Key.Kind != admission.KindBlockIP) {
 			cost, bytes, recovery, fits = 0, 0, 0, true
 		}
 		items = append(items, admission.ScheduleItem{

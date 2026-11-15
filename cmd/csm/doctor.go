@@ -180,7 +180,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 
 	report.Checks = append(report.Checks, correlationAttributionCheck(sr.Snapshot.CorrelationAttribution))
 	report.Checks = append(report.Checks, queueDoctorChecks(sr.Snapshot.Queues, sr.Snapshot.Automation)...)
-	report.Checks = append(report.Checks, admissionDoctorChecks(sr.Snapshot.Admission)...)
+	report.Checks = append(report.Checks, admissionDoctorChecks(sr.Snapshot.Admission, sr.Snapshot.StartedAt)...)
 
 	if automation := sr.Snapshot.Automation; automation.FirewallEnabled {
 		check := DoctorCheck{Name: "firewall managed", Status: "ok"}
@@ -205,12 +205,12 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 			// A warning while admission previews, a
 			// failure once it executes automatic blocks.
 			closing, outage := admission.DoctorImpact(admissionExecuting(sr.Snapshot.Admission))
-			report.Checks = append(report.Checks, DoctorCheck{
+			report.Checks = append(report.Checks, warnUntilSettled(sr.Snapshot.Admission, sr.Snapshot.StartedAt, []DoctorCheck{{
 				Name:    "firewall automatic blocks",
 				Status:  outage,
 				Message: "the admission ledger could not be read when the firewall started: " + automation.FirewallLedgerError + "; the automatic blocks it wrote were restored without proof of their outcome and none is evicted until a restart reads it; " + closing,
 				Fix:     "resolve the ledger error the admission checks report, then restart csm.service",
-			})
+			}})...)
 		}
 	}
 

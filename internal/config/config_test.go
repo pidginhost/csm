@@ -896,8 +896,12 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if _, ok := raw.Reputation["bot_ranges"]; !ok {
 		t.Error("production reference config missing reputation.bot_ranges")
 	}
-	if _, ok := raw.AutoResponse["max_blocks_per_hour"]; !ok {
-		t.Error("production reference config missing auto_response.max_blocks_per_hour")
+	// An explicit value also lowers the admission ceiling from its default.
+	if _, ok := raw.AutoResponse["max_blocks_per_hour"]; ok {
+		t.Error("production reference config sets auto_response.max_blocks_per_hour")
+	}
+	if limit, source := cfg.AdmissionCeiling(); limit != DefaultAdmissionCeiling || source != CeilingDefault {
+		t.Errorf("production reference admission ceiling = %d (%s), want the default %d", limit, source, DefaultAdmissionCeiling)
 	}
 	if _, ok := raw.AutoResponse["http_scanner_action"]; !ok {
 		t.Error("production reference config missing auto_response.http_scanner_action")

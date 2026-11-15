@@ -294,7 +294,7 @@ auto_response:
   max_file_action_failures_per_hour: 3
   block_ips: true
   block_expiry: "24h"         # positive temp block duration; omitted defaults to 24h
-  max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default
+  # max_blocks_per_hour omitted: 50 scan blocks an hour, admission ceiling 2000
   netblock: true              # enable subnet blocking
   netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet block; minimum 2
   netblock_window: "168h"     # blocked IPs count this far back, expired blocks included; omitted defaults to 168h
@@ -529,6 +529,9 @@ The same setting also sets the hourly ceiling of the admission ledger, which
 will cover every automatic source once responses are admitted through it. For
 the ledger an omitted or zero value selects 2000 and a value above 20000 is
 clamped to 20000; the per-IP limit above keeps reading omitted or zero as 50.
+An explicit value sets both. Packaged configs used to set 50, which keeps the
+ceiling at 50 until the key is removed; `csm doctor` warns about a configured
+ceiling below 2000.
 At its first start the ledger imports the current hour's block count, so a
 restart cannot grant a fresh hour; a block count that cannot be read starts
 it without saved credit. Status and `csm doctor` show the ceiling and its

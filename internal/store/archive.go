@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -64,6 +65,7 @@ var (
 	ErrPlatformMismatch    = errors.New("archive source platform does not match current host")
 	ErrManifestMissing     = errors.New("archive does not contain manifest.json")
 	ErrCorruptArchive      = errors.New("archive is corrupt or not a CSM backup")
+	ErrLedgerBehind        = errors.New("the archive's admission ledger is behind this host's live ledger")
 )
 
 // Manifest is the JSON header at the top of every archive.
@@ -101,6 +103,7 @@ type ImportOptions struct {
 	RulesPath             string
 	Only                  string // "all" | "baseline" | "firewall"
 	ForcePlatformMismatch bool
+	Force                 bool              // restore a ledger behind this host's live one
 	CurrentPlatform       map[string]string // for the mismatch check
 }
 
@@ -277,7 +280,9 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 }
 
 // Import unpacks an archive into the target state and rules paths. Live
-// daemons must be stopped first; callers enforce that before invoking.
+// daemons must be stopped first; callers enforce that before invoking, and
+// hold the state lock throughout: the ledger comparison opens the target
+// database read-only and nothing may write it meanwhile.
 func Import(opts ImportOptions) (*ImportResult, error) {
 	if opts.SrcPath == "" {
 		return nil, errors.New("SrcPath is empty")
@@ -371,6 +376,11 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		if isTransientStateArchiveEntry(clean) {
 			continue
 		}
+		// Only the snapshot may replace csm.db. Treating it as a state file
+		// would let a baseline import replace the ledger without checking it.
+		if clean == stateEntryPrefix+"csm.db" {
+			return nil, fmt.Errorf("%w: database must be stored as %s", ErrCorruptArchive, bboltSnapshotEntry)
+		}
 		if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
 			return nil, fmt.Errorf("staging dir: %w", mkErr)
 		}
@@ -402,12 +412,15 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		return nil, fmt.Errorf("%w: %s import needs bbolt snapshot in archive", ErrCorruptArchive, only)
 	}
 
+	baselineFirewall := only == "baseline" && slices.Contains(stagedState, stateEntryPrefix+"firewall/state.json")
 	// Verify the staged bbolt snapshot against the hash the manifest recorded
 	// at export time before any bbolt-consuming import applies payloads.
 	// zstd's frame CRC catches transport corruption, but a snapshot that was
 	// altered before compression would otherwise be promoted over csm.db
-	// unchecked. Empty hash means a pre-hash archive; skip rather than reject.
-	if (only == "all" || only == "firewall") && stagedBbolt != "" && man.BboltSHA256 != "" {
+	// unchecked. Baselines carrying firewall state also use this snapshot
+	// for the ledger guard. Empty hash means a pre-hash archive; skip rather
+	// than reject.
+	if (only == "all" || only == "firewall" || baselineFirewall) && stagedBbolt != "" && man.BboltSHA256 != "" {
 		gotHash, hashErr := sha256File(stagedBbolt)
 		if hashErr != nil {
 			return nil, fmt.Errorf("hashing staged bbolt snapshot: %w", hashErr)
@@ -421,6 +434,14 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 			return nil, err
 		}
 		if err := DisarmFirewallRollbackSnapshot(stagedBbolt); err != nil {
+			return nil, err
+		}
+	}
+
+	// The firewall part merges only fw:* buckets; the others replace the
+	// ledger or put the firewall state saved beside it next to this one.
+	if !opts.Force && (only == "all" || baselineFirewall) {
+		if err := CheckLedgerRestore(stagedBbolt, filepath.Join(opts.StatePath, "csm.db")); err != nil {
 			return nil, err
 		}
 	}

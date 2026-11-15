@@ -54,6 +54,11 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("inspecting restored state database: %w", statErr)
 	}
+	if staged.hasState && dst.StateDir != "" && !dst.Force {
+		if err := csmstore.CheckLedgerRestore(stagedDB, filepath.Join(dst.StateDir, "csm.db")); err != nil {
+			return err
+		}
+	}
 	if staged.hasLearning && !staged.hasState && dst.StateDir != "" {
 		if err := stageLearningOnlyDatabase(stageRoot, dst.StateDir); err != nil {
 			return err
@@ -819,9 +824,9 @@ func acquireStoppedDaemonStateLock(stateDir string) (*state.LockFile, error) {
 }
 
 func runRestore() {
-	archive, maxBytes, err := parseBackupRestoreArgs(os.Args[2:])
+	archive, maxBytes, force, err := parseBackupRestoreArgs(os.Args[2:], true)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "csm restore: %v\nUsage: csm restore <archive.tar.gz> [--max-bytes <bytes>]\n", err)
+		fmt.Fprintf(os.Stderr, "csm restore: %v\nUsage: csm restore <archive.tar.gz> [--max-bytes <bytes>] [--force]\n", err)
 		os.Exit(1)
 	}
 
@@ -836,6 +841,7 @@ func runRestore() {
 		StateDir:    cfg.StatePath,
 		LearningDir: antispam.DefaultLearningDir,
 		MaxBytes:    maxBytes,
+		Force:       force,
 	}
 	if err := restoreBackupArchiveGuarded(archive, dst); err != nil {
 		// Keep the refusal wording aligned with `csm store import`.
