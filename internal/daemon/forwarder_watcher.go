@@ -118,7 +118,7 @@ func (fw *ForwarderWatcher) handleFileChange(domain string) {
 	// file: baseline external destinations on first sight, alert on external
 	// destinations only when the hash changes, and keep pipe/dev-null checks
 	// active because they are dangerous even on a first observation. Mirrors
-	// auditValiasFile's behaviour in internal/checks/forwarder.go.
+	// CheckForwarders' behaviour in internal/checks/forwarder.go.
 	db := store.Global()
 	includeExternal := true
 	if db != nil {

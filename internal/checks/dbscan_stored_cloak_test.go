@@ -8,6 +8,11 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+func storedCloakFinding(user string, creds wpDBCreds, prefix string, row storedCodeRow) *alert.Finding {
+	cacheDefeat, crawler := storedCloakComponents(row.code)
+	return storedCloakFindingWithComponents(user, creds, prefix, row, cacheDefeat, crawler)
+}
+
 // A cloak has to decide per request, which means it must stop the page being
 // cached. Stored code that both disables caching and looks for a crawler is
 // serving one page to Google and another to visitors. Neither half alone is

@@ -515,13 +515,8 @@ func storedROT13(value string) string {
 	}, value)
 }
 
-// storedCloakFinding reports a stored snippet that both defeats caching and
-// looks for a crawler, or nil when only one half is present.
-func storedCloakFinding(user string, creds wpDBCreds, prefix string, row storedCodeRow) *alert.Finding {
-	cacheDefeat, crawler := storedCloakComponents(row.code)
-	return storedCloakFindingWithComponents(user, creds, prefix, row, cacheDefeat, crawler)
-}
-
+// storedCloakFindingWithComponents reports a stored snippet that both defeats
+// caching and looks for a crawler, or nil when only one half is present.
 func storedCloakFindingWithComponents(user string, creds wpDBCreds, prefix string, row storedCodeRow, cacheDefeat, crawler []string) *alert.Finding {
 	if len(cacheDefeat) == 0 || len(crawler) == 0 {
 		return nil

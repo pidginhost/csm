@@ -15,6 +15,18 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+func processUsesFile(pid, path string) bool {
+	pidInt, ok := parseProcessPID(pid)
+	if !ok || path == "" {
+		return false
+	}
+	target, err := osFS.Lstat(path)
+	if err != nil || target.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	return processUsesFileIdentity(pidInt, target)
+}
+
 // procMock answers the handful of procfs reads the kill guards make.
 type procMock struct {
 	mockOS
