@@ -961,7 +961,7 @@ func (o *Owner) runTurn(selecting bool) error {
 		o.sweepVerdicts()
 	}
 	nextWake := (*store.AdmissionLedger).NextWake
-	if o.forecasting() {
+	if o.forecasting() || o.previewsOnly() {
 		nextWake = (*store.AdmissionLedger).PreviewWake
 	}
 	switch {
@@ -1090,7 +1090,13 @@ func (o *Owner) serve() error {
 	if err := o.readSet(); err != nil {
 		return fmt.Errorf("reading queued work: %w", err)
 	}
-	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
+	var picks []admission.Pick
+	var err error
+	if o.previewsOnly() {
+		picks, err = previewLedger(o.ledger, o.answers())
+	} else {
+		picks, err = scheduleLedger(o.ledger, previewLimits, o.answers())
+	}
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
 	}
@@ -1124,6 +1130,13 @@ func (o *Owner) serve() error {
 		}
 	}
 	return nil
+}
+
+// previewsOnly reports whether every pick of a turn ends as an uncharged
+// preview: an owner without an engine on a ledger that has started live.
+// Its selection is then no admission, so the live budgets do not bound it.
+func (o *Owner) previewsOnly() bool {
+	return !o.executable() && o.ledger.LiveStarted()
 }
 
 // holdForPolicy defers p while a refused policy holds execution, as an

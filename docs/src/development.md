@@ -1310,9 +1310,9 @@ rows a dry run already writes.
 The schedule serves those kinds as uncharged picks,
 so they take no lane's ceiling budget or history allowance from the blocks
 that run. A dry-run selection on a started ledger no longer waits for
-history a challenge preview does not spend. A `block_ip` preview of an
-owner without an engine is still scheduled within the lane budgets it no
-longer spends.
+history a challenge preview does not spend, and an owner without an
+engine selects its previews as a dry run does, outside the lanes, and
+wakes for them at once.
 
 An owner with an engine binds to one execution policy: the dry-run mode,
 the verdict callback and its timeout, the hourly ceiling and the response
