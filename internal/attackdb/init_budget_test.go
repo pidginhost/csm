@@ -19,7 +19,7 @@ func runInitTest(t *testing.T, name string, env ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(exe, "-test.run=^"+name+"$", "-test.count=1")
+	cmd := exec.Command(exe, "-test.run=^"+name+"$", "-test.count=1", "-test.timeout=10m")
 	cmd.Env = append(os.Environ(), "CSM_TEST_INIT="+name)
 	cmd.Env = append(cmd.Env, env...)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -103,6 +103,9 @@ func TestInitMailBudgetLifecycle(t *testing.T) {
 		return
 	}
 	dir := os.Getenv("CSM_TEST_INIT_DIR")
+	if dir == "" {
+		t.Fatal("CSM_TEST_INIT_DIR is not set")
+	}
 	if os.Getenv("CSM_TEST_INIT_BACKEND") == "bbolt" {
 		sdb, err := store.Open(dir)
 		if err != nil {
