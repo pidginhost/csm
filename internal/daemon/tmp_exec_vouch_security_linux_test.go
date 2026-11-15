@@ -19,79 +19,85 @@ import (
 )
 
 func TestTmpVouchRejectsUnsafePlacement(t *testing.T) {
-	for _, attack := range []string{"writable child", "foreign child", "symlink child", "writable file", "replaced file", "bind alias", "symlink work", "bind work"} {
-		t.Run(attack, func(t *testing.T) {
-			stubTmpExecWriters(t)
-			work := tmpWorkDirForTest(t)
-			ch := make(chan alert.Finding, 8)
-			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-			writeTmpExecAs(t, fm, filepath.Join(work, "proof"), tmpProvenPID)
-			if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
-				t.Fatalf("proof: %+v", got)
-			}
-			t.Cleanup(fm.tmpVouches.close)
-			child := filepath.Join(work, "child")
-			if err := os.Mkdir(child, 0o755); err != nil {
+	for _, attack := range []string{"writable child", "foreign child", "symlink child", "writable file", "replaced file", "symlink work"} {
+		t.Run(attack, func(t *testing.T) { tmpUnsafePlacement(t, attack) })
+	}
+}
+
+// tmpUnsafePlacement proves a work directory, then writes through one unsafe
+// placement of it as an exited writer and wants a Critical. The bind-mount
+// placements need mount privileges and run from the kernel test file.
+func tmpUnsafePlacement(t *testing.T, attack string) {
+	t.Helper()
+	stubTmpExecWriters(t)
+	work := tmpWorkDirForTest(t)
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	writeTmpExecAs(t, fm, filepath.Join(work, "proof"), tmpProvenPID)
+	if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
+		t.Fatalf("proof: %+v", got)
+	}
+	t.Cleanup(fm.tmpVouches.close)
+	child := filepath.Join(work, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(child, "tool")
+	switch attack {
+	case "writable child":
+		chmodForTest(t, child, 0o777)
+	case "foreign child":
+		chownForTest(t, child)
+	case "symlink child":
+		alias := filepath.Join(work, "alias")
+		if err := os.Symlink(child, alias); err != nil {
+			t.Fatal(err)
+		}
+		path = filepath.Join(alias, "tool")
+	case "symlink work", "bind work":
+		alias := tmpWorkDirForTest(t)
+		if attack == "symlink work" {
+			alias = filepath.Join(alias, "link")
+			if err := os.Symlink(work, alias); err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(child, "tool")
-			switch attack {
-			case "writable child":
-				chmodForTest(t, child, 0o777)
-			case "foreign child":
-				chownForTest(t, child)
-			case "symlink child":
-				alias := filepath.Join(work, "alias")
-				if err := os.Symlink(child, alias); err != nil {
-					t.Fatal(err)
-				}
-				path = filepath.Join(alias, "tool")
-			case "symlink work", "bind work":
-				alias := tmpWorkDirForTest(t)
-				if attack == "symlink work" {
-					alias = filepath.Join(alias, "link")
-					if err := os.Symlink(work, alias); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					if err := unix.Mount(work, alias, "", unix.MS_BIND, ""); err != nil {
-						t.Fatal(err)
-					}
-					t.Cleanup(func() {
-						if err := unix.Unmount(alias, 0); err != nil {
-							t.Error(err)
-						}
-					})
-				}
-				path = filepath.Join(alias, "tool")
-			case "bind alias":
-				source := tmpWorkDirForTest(t)
-				if err := unix.Mount(source, child, "", unix.MS_BIND, ""); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := unix.Unmount(child, 0); err != nil {
-						t.Error(err)
-					}
-				})
+		} else {
+			if err := unix.Mount(work, alias, "", unix.MS_BIND, ""); err != nil {
+				t.Fatal(err)
 			}
-			makeTmpExec(t, path)
-			fd := openRawFd(t, path)
-			if attack == "writable file" {
-				chmodForTest(t, path, 0o777)
-			}
-			if attack == "replaced file" {
-				if err := os.Rename(path, path+".old"); err != nil {
-					t.Fatal(err)
+			t.Cleanup(func() {
+				if err := unix.Unmount(alias, 0); err != nil {
+					t.Error(err)
 				}
-				makeTmpExec(t, path)
-			}
-			fm.analyzeFile(fileEvent{path: path, fd: fd, pid: tmpGonePID})
-			got := drainFindings(ch)
-			if len(got) != 1 || got[0].Severity != alert.Critical {
-				t.Fatalf("unsafe placement: %+v, want one Critical", got)
+			})
+		}
+		path = filepath.Join(alias, "tool")
+	case "bind alias":
+		source := tmpWorkDirForTest(t)
+		if err := unix.Mount(source, child, "", unix.MS_BIND, ""); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := unix.Unmount(child, 0); err != nil {
+				t.Error(err)
 			}
 		})
+	}
+	makeTmpExec(t, path)
+	fd := openRawFd(t, path)
+	if attack == "writable file" {
+		chmodForTest(t, path, 0o777)
+	}
+	if attack == "replaced file" {
+		if err := os.Rename(path, path+".old"); err != nil {
+			t.Fatal(err)
+		}
+		makeTmpExec(t, path)
+	}
+	fm.analyzeFile(fileEvent{path: path, fd: fd, pid: tmpGonePID})
+	got := drainFindings(ch)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("unsafe placement: %+v, want one Critical", got)
 	}
 }
 
@@ -347,39 +353,6 @@ func TestTmpExecCaptureDoesNotWalkSpecialFiles(t *testing.T) {
 	}
 }
 
-// The event descriptor belongs to the writer's mount. A daemon that systemd
-// gave its own mount namespace never shares a mount with the processes it
-// watches, so a descriptor opened through another mount of the same directory
-// is still the file the path names, and the vouch covers it.
-func TestTmpVouchCoversDescriptorFromAnotherMount(t *testing.T) {
-	stubTmpExecWriters(t)
-	work := tmpWorkDirForTest(t)
-	ch := make(chan alert.Finding, 8)
-	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	t.Cleanup(fm.tmpVouches.close)
-	writeTmpExecAs(t, fm, filepath.Join(work, "proof"), tmpProvenPID)
-	if got := drainFindings(ch); len(got) != 1 || got[0].Severity != alert.Warning {
-		t.Fatalf("proof: %+v", got)
-	}
-	alias := tmpWorkDirForTest(t)
-	if err := unix.Mount(work, alias, "", unix.MS_BIND, ""); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := unix.Unmount(alias, 0); err != nil {
-			t.Error(err)
-		}
-	})
-	path := filepath.Join(work, "tool")
-	makeTmpExec(t, path)
-	endAlertCooldown(fm)
-	fm.analyzeFile(fileEvent{path: path, fd: openRawFd(t, filepath.Join(alias, "tool")), pid: tmpGonePID})
-	got := drainFindings(ch)
-	if len(got) != 1 || got[0].Severity != alert.Warning || got[0].FilePath != path {
-		t.Fatalf("descriptor from another mount: %+v, want the grouped Warning", got)
-	}
-}
-
 // occupantProc adds a process to a synthetic procfs: its working directory and
 // the user it runs as.
 func occupantProc(t *testing.T, root string, pid int32, cwd, uidLine string) {
@@ -594,46 +567,6 @@ func TestTmpOccupantScanOverflowKeepsCooldowns(t *testing.T) {
 	}
 	if _, ok := v.occupied(events[len(events)-1], now.Add(tmpOccupantScanGap)); !ok {
 		t.Fatal("expired cooldowns did not release scan capacity")
-	}
-}
-
-// Occupant descriptors may use another mount of the same work directory, but
-// a mount inside it must not import an unrelated process's proof.
-func TestTmpOccupantMountPlacement(t *testing.T) {
-	for _, nested := range []bool{false, true} {
-		t.Run(strconv.FormatBool(nested), func(t *testing.T) {
-			stubTmpExecWriters(t)
-			work := tmpWorkDirForTest(t)
-			source, target := work, tmpWorkDirForTest(t)
-			if nested {
-				source, target = target, filepath.Join(work, "mounted")
-				if err := os.Mkdir(target, 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := unix.Mount(source, target, "", unix.MS_BIND, ""); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := unix.Unmount(target, 0); err != nil {
-					t.Error(err)
-				}
-			})
-			proc := t.TempDir()
-			overrideProcRoot(t, proc)
-			occupantProc(t, proc, tmpProvenPID, target, rootUIDLine)
-			ch := make(chan alert.Finding, 8)
-			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-			t.Cleanup(fm.tmpVouches.close)
-			writeTmpExecAs(t, fm, filepath.Join(work, "tool"), tmpGonePID)
-			want := alert.Warning
-			if nested {
-				want = alert.Critical
-			}
-			if got := drainFindings(ch); len(got) != 1 || got[0].Severity != want {
-				t.Fatalf("findings = %+v, want one %v", got, want)
-			}
-		})
 	}
 }
 

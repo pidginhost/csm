@@ -66,5 +66,17 @@
   {
     "Package": "github.com/pidginhost/csm/internal/daemon",
     "Name": "TestKernelPlacementFIDReportsRenameAndLink"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelTmpVouchRejectsMountedPlacement"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelTmpVouchCoversDescriptorFromAnotherMount"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/daemon",
+    "Name": "TestKernelTmpOccupantMountPlacement"
   }
 ]
