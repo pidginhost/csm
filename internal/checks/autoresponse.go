@@ -341,7 +341,7 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 			continue
 		}
 
-		path := extractFilePath(f.Message)
+		path := selectFindingPath(f.Message, f.FilePath)
 		if path == "" {
 			continue
 		}
@@ -436,25 +436,7 @@ func extractPID(details string) string {
 }
 
 func extractFilePath(message string) string {
-	// Look for /home/... or /tmp/... paths in the message. Order matters:
-	// longer/more-specific prefixes (/var/tmp/, /dev/shm/) must come BEFORE
-	// shorter ones (/tmp/) — otherwise "/tmp/" would match inside "/var/tmp/"
-	// and we'd silently misclassify the path.
-	for _, prefix := range accountRootPrefixes("/var/tmp/", "/dev/shm/", "/tmp/") {
-		if idx := strings.Index(message, prefix); idx >= 0 {
-			rest := message[idx:]
-			// Path ends at space, comma, or end of string
-			endIdx := len(rest)
-			for i, c := range rest {
-				if c == ' ' || c == ',' || c == '\n' {
-					endIdx = i
-					break
-				}
-			}
-			return rest[:endIdx]
-		}
-	}
-	return ""
+	return findingPathInMessage(message, " ,\n")
 }
 
 func getProcessUID(pid string) string {
