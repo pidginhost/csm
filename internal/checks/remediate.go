@@ -410,22 +410,33 @@ func fixHtaccess(path string) (result RemediationResult) {
 // Handles patterns like "World-writable PHP file: /path/to/file"
 // and "Webshell found: /path/to/file"
 func extractFilePathFromMessage(message string) string {
-	// Look for /home/ or /tmp/ paths
-	for _, prefix := range accountRootPrefixes("/tmp/", "/dev/shm/", "/var/tmp/") {
-		idx := strings.Index(message, prefix)
-		if idx < 0 {
-			continue
+	return findingPathInMessage(message, " ,\n)")
+}
+
+// findingPathInMessage returns the first absolute path in a finding message
+// when it lies under an account or temp root. A root that only appears inside
+// a longer path names a different file, so that gives "". The path ends at
+// the first terminator byte; a name holding one is cut short, which is why
+// callers prefer Finding.FilePath.
+func findingPathInMessage(message, terminators string) string {
+	start := -1
+	for i := 0; i < len(message); i++ {
+		if message[i] == '/' && (i == 0 || strings.IndexByte(" \t\n(=\"'", message[i-1]) >= 0) {
+			start = i
+			break
 		}
-		rest := message[idx:]
-		// Path ends at space, comma, newline, or end
-		endIdx := len(rest)
-		for i, c := range rest {
-			if c == ' ' || c == ',' || c == '\n' || c == ')' {
-				endIdx = i
-				break
+	}
+	if start < 0 {
+		return ""
+	}
+	rest := message[start:]
+	for _, prefix := range accountRootPrefixes("/var/tmp/", "/dev/shm/", "/tmp/") {
+		if strings.HasPrefix(rest, prefix) {
+			if end := strings.IndexAny(rest, terminators); end >= 0 {
+				return rest[:end]
 			}
+			return rest
 		}
-		return rest[:endIdx]
 	}
 	return ""
 }

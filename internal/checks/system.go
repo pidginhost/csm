@@ -408,6 +408,7 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 				Check:    "group_writable_php",
 				Message:  fmt.Sprintf("Web-server group-writable PHP: %s", fullPath),
 				Details:  fmt.Sprintf("Mode: %s, GID: %d", info.Mode(), stat.Gid),
+				FilePath: fullPath,
 			})
 		}
 	}
