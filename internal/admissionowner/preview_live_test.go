@@ -455,3 +455,69 @@ func TestOwnerLivePreviewOfARetryKeepsWhatItSpent(t *testing.T) {
 		t.Fatalf("the preview counted %d dry-run outcomes and %d observed previews, want one each", n, observedCount(o, admission.KindBlockIP))
 	}
 }
+
+// A dry run on a live ledger ends a challenge its preview refuses: the
+// pick is dropped and counted once, and the queue then holds nothing to
+// select or to wake for.
+func TestOwnerForecastEndsStartedChallengeRefusal(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	o, r, mono := policyOwner(t, f, newFakeBlocks(), validPolicy(1))
+	if !liveStarted(t, o) {
+		t.Fatal("the live policy did not start live")
+	}
+	r.publish(dryPolicy(2))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	id := observeKind(t, o, p, f, "192.0.2.34", "offset=1", admission.KindChallenge)
+	selected := 0
+	selectPreview := previewLedger
+	setOwnerHook(t, o, &previewLedger, func(l *store.AdmissionLedger, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		picks, err := selectPreview(l, answers)
+		selected += len(picks)
+		return picks, err
+	})
+	endDryRun := endDryRunLedger
+	setOwnerHook(t, o, &endDryRunLedger, func(*store.AdmissionLedger, admission.CandidateID) (admission.Candidate, bool, error) {
+		return admission.Candidate{}, false, &admission.Error{Reason: admission.ReasonStale}
+	})
+	// refusals counts the refused rows of every kind and those that are a
+	// stale challenge.
+	refusals := func() (all, stale uint64) {
+		o.compare.mu.Lock()
+		defer o.compare.mu.Unlock()
+		for k, n := range o.compare.counts {
+			if k.decision != decisionRefused {
+				continue
+			}
+			all += n
+			if k.kind == admission.KindChallenge && k.reason == admission.ReasonStale {
+				stale += n
+			}
+		}
+		return all, stale
+	}
+	mono.advance(time.Second)
+	turn(t, o)
+	if c := candidate(t, o, id); !c.State.Terminal() || c.Reason != admission.ReasonStale || c.Attempts != 0 {
+		t.Fatalf("refused challenge = state %s reason %s attempts %d, want it dropped as stale", c.State, c.Reason, c.Attempts)
+	}
+	if all, stale := refusals(); selected != 1 || observedCount(o, admission.KindChallenge) != 0 || all != 1 || stale != 1 {
+		t.Fatalf("after the refusal: %d selected, %d previews, %d refusals, %d of them a stale challenge; want one stale refusal", selected, observedCount(o, admission.KindChallenge), all, stale)
+	}
+	setOwnerHook(t, o, &endDryRunLedger, endDryRun)
+	mono.advance(time.Second)
+	turn(t, o)
+	if all, stale := refusals(); selected != 1 || observedCount(o, admission.KindChallenge) != 0 || all != 1 || stale != 1 {
+		t.Fatalf("after the next turn: %d selected, %d previews, %d refusals; want nothing new", selected, observedCount(o, admission.KindChallenge), all)
+	}
+	if err := o.do(func() error {
+		if wake, ok, err := o.ledger.PreviewWake(o.answers()); err != nil || ok {
+			t.Errorf("wake after the refusal ended = %v %t %v, want none", wake, ok, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

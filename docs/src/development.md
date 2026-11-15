@@ -1309,10 +1309,10 @@ existing block answers is not a refusal, and a forecast's picks keep the
 rows a dry run already writes.
 The schedule serves those kinds as uncharged picks,
 so they take no lane's ceiling budget or history allowance from the blocks
-that run. A `block_ip` preview of an owner without an engine is still
-scheduled within the lane budgets it no longer spends, and a dry-run
-selection on a started ledger still passes over a challenge the history
-budget could not pay for.
+that run. A dry-run selection on a started ledger no longer waits for
+history a challenge preview does not spend. A `block_ip` preview of an
+owner without an engine is still scheduled within the lane budgets it no
+longer spends.
 
 An owner with an engine binds to one execution policy: the dry-run mode,
 the verdict callback and its timeout, the hourly ceiling and the response
