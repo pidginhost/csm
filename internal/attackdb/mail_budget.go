@@ -14,6 +14,11 @@ import (
 // mailReportEvery is the least time between two eviction reports.
 const mailReportEvery = 24 * time.Hour
 
+// DefaultMailBudget is the budget Init applies: more than ten times the
+// spam-only records projected for a busy cPanel host, measured on a
+// production cPanel host. It bounds them to about 22 MB of memory.
+const DefaultMailBudget = 50000
+
 // Eviction reports spam-evidence records dropped to keep the budget.
 type Eviction struct {
 	Dropped        int    // records dropped since the last report

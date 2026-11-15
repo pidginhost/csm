@@ -36,8 +36,9 @@ threat score or add attack events. Ham only updates an existing record.
 
 Spam and ham verdicts about an IPv6 sender are recorded per /64 network, not
 per address. A record that holds only spam evidence is dropped once that
-evidence has faded. See [Spam evidence](antispam.md#spam-evidence) for the
-details.
+evidence has faded, or sooner to keep the
+[spam evidence budget](antispam.md#spam-evidence-budget). See
+[Spam evidence](antispam.md#spam-evidence) for the details.
 
 Verdict weights decay from their observation times, including when older
 verdicts arrive after newer ones. A missing observation time uses the current

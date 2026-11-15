@@ -5,10 +5,12 @@ import (
 	"math/rand"
 	"net"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // thinIP is an address alone in its /48. 2001:db8:7::/48 is never one of them.
@@ -868,6 +870,34 @@ func TestBudgetZeroNeverEvicts(t *testing.T) {
 		if len(db.records) != 300 || db.mailEvicted != 0 {
 			t.Errorf("budget %d: %d records, %d evicted, want 300 and 0", budget, len(db.records), db.mailEvicted)
 		}
+	}
+}
+
+// The daemon builds its database only through Init, so a budget Init does
+// not apply is a budget no host has.
+func TestInitAppliesDefaultMailBudget(t *testing.T) {
+	if DefaultMailBudget <= 0 {
+		t.Fatalf("DefaultMailBudget = %d, want a limit", DefaultMailBudget)
+	}
+	previousStore := store.Global()
+	store.SetGlobal(nil)
+	globalMu.Lock()
+	previousDB := globalDB
+	globalMu.Unlock()
+
+	db := Init(t.TempDir())
+	t.Cleanup(func() {
+		db.Stop()
+		globalMu.Lock()
+		globalDB = previousDB
+		globalMu.Unlock()
+		// Init runs once per process; a second run of this test needs it again.
+		dbInitOnce = sync.Once{}
+		store.SetGlobal(previousStore)
+	})
+
+	if db.mailBudget != DefaultMailBudget {
+		t.Fatalf("Init left mailBudget = %d, want DefaultMailBudget (%d)", db.mailBudget, DefaultMailBudget)
 	}
 }
 

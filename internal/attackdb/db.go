@@ -253,6 +253,7 @@ func Init(statePath string) *DB {
 			dbPath:     dbPath,
 			stopCh:     make(chan struct{}),
 		}
+		db.SetMailBudget(DefaultMailBudget)
 		db.load()
 		db.pruneExpired()
 
