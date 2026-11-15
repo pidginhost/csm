@@ -97,10 +97,16 @@ func (db *DB) migrateAttackDB(statePath string) error {
 		if err := json.Unmarshal(data, &records); err != nil {
 			return err
 		}
-		for _, r := range records {
-			if err := db.SaveIPRecord(*r); err != nil {
-				return err
+		// One transaction: a sync per record takes minutes on a large file.
+		if err := db.UpdateIPRecords(func(w *IPRecordTx) error {
+			for _, r := range records {
+				if saveErr := w.Save(*r); saveErr != nil {
+					return saveErr
+				}
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		renameToBackup(recordsPath)
 		fmt.Fprintf(os.Stderr, "store: migrated %d attack records\n", len(records))

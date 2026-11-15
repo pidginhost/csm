@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Fixed
+
+- Saving attack records after a burst of new or dropped addresses no longer takes minutes on slow disks, which had delayed shutdown and `csm threat forget`.
+
 ## [4.13.0] - 2026-11-15
 
 ### Highlights

@@ -33,9 +33,10 @@ type recordQueue struct {
 }
 
 type recordBatch struct {
-	queue    *recordQueue
-	items    map[string]recordDemand
-	progress time.Time
+	queue              *recordQueue
+	items              map[string]recordDemand
+	progress           time.Time
+	transactionPending bool
 }
 
 func (db *DB) recordHealth() *recordQueue {
@@ -120,6 +121,37 @@ func (b *recordBatch) result(ip string, err error) {
 	q.mu.Unlock()
 }
 
+// staged notes progress on a write whose outcome waits for its transaction.
+func (b *recordBatch) staged() {
+	if b == nil {
+		return
+	}
+	b.queue.mu.Lock()
+	b.progress = time.Now()
+	b.queue.mu.Unlock()
+}
+
+// Track the transaction separately: it can be interrupted before any record
+// starts, or after every individual operation has returned a refusal.
+func (b *recordBatch) beginTransaction() {
+	if b == nil {
+		return
+	}
+	b.queue.mu.Lock()
+	b.transactionPending = true
+	b.queue.mu.Unlock()
+}
+
+func (b *recordBatch) endTransaction() {
+	if b == nil {
+		return
+	}
+	b.queue.mu.Lock()
+	b.transactionPending = false
+	b.progress = time.Now()
+	b.queue.mu.Unlock()
+}
+
 func (b *recordBatch) resultAll(err error) {
 	if b == nil {
 		return
@@ -147,6 +179,10 @@ func (b *recordBatch) finish(db *DB) {
 	q := b.queue
 	// Publish unreturned I/O before retry reconciliation can wait for db.mu.
 	q.mu.Lock()
+	if b.transactionPending {
+		q.uncertain = true
+		q.uncertainAt = time.Now()
+	}
 	for _, demand := range b.items {
 		if demand.phase == recordWriting {
 			q.uncertain = true

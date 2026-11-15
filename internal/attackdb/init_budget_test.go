@@ -60,7 +60,7 @@ func TestInitMailBudgetLifecycle(t *testing.T) {
 	if os.Getenv("CSM_TEST_INIT") != t.Name() {
 		for _, backend := range []string{"json", "bbolt"} {
 			if backend == "bbolt" && testing.Short() {
-				continue // one store transaction per record: about a minute
+				continue // a second pass over a full budget: half a minute under -race
 			}
 			dir := t.TempDir()
 			now := time.Now()
