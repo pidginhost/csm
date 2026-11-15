@@ -416,19 +416,19 @@ verdicts.
 
 The spam evidence budget is 50,000 records, about 22 MB of memory for
 records held only for spam evidence. It is fixed and has no setting.
-Each time CSM records a verdict, it keeps eligible records at or under
+Each time CSM records a verdict, it keeps those records at or under
 that budget, counted at the verdict's observation time. A missing time
 uses the current time. Invalid addresses and ham from an untracked sender
 are ignored and do not trigger the budget.
 
 Startup loads unexpired evidence without trimming it to the budget. The
 count can therefore exceed the budget until a verdict is recorded. It can
-also grow as login evidence ages: a record with a mail login attack becomes
-eligible only when that attack is more than 30 days old at the verdict's
+also grow as login evidence ages: a record with a mail login attack counts
+toward the budget only when that attack is more than 30 days old at the verdict's
 time and the record has no attack findings or block. Records with attack
 findings, a block or still-protected login evidence never count toward the
 budget and are never dropped for it. A delayed verdict can leave more than
-50,000 records eligible at the current time because it counts them at its
+50,000 such records at the current time because it counts them at its
 own earlier time.
 
 When a verdict is recorded and the count is over the budget, CSM drops
