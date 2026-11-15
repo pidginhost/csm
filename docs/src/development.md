@@ -854,12 +854,14 @@ ending requires at least schema 9 and retains any later schema.
 `SchedulePreview` selects queued work for a dry-run forecast. It is not
 admission: spent live ceiling and history budgets do not stop it, and it
 reserves, charges and defers nothing for capacity. Every candidate, a
-challenge included, weighs one fair unit and no history. A challenge's
-comparison preview still spends live history, so the selection passes one
-over, with no wait or fair turn, while the live history budget cannot pay
-for it, as a schedule does, and serves it on a lane that can. Challenge
-picks share that live allowance within a selection; an earlier pick leaves
-less for the next. Direct and
+challenge included, weighs one fair unit and no history. Until the ledger
+starts live a challenge's comparison preview still spends live history, so
+the selection passes one over, with no wait or fair turn, while the live
+history budget cannot pay for it, as a schedule does, and serves it on a
+lane that can. Challenge picks share that live allowance within a
+selection; an earlier pick leaves less for the next. On a started ledger a
+challenge preview spends no history and is selected as other work is.
+Direct and
 corroborated work alternates within a bounded reserved share of each batch,
 and the general lane serves the rest by class and severity, where
 reserved-eligible work competes too. Revalidation, age-out, retry backoff
@@ -869,8 +871,9 @@ wait clears as a schedule clears it, pending work is passed over, and the
 live schedule and the selection share one fair position, which advances
 once per selection. `PreviewWake` is the matching
 wake: now while selectable work waits, otherwise a backoff end, a queued
-deadline or when the live history budget can pay for a passed-over
-challenge, whatever the other live budgets. `CeilingSnapshot` reads the committed
+deadline or, until the ledger starts live, when the live history budget
+can pay for a passed-over challenge, whatever the other live budgets.
+`CeilingSnapshot` reads the committed
 ceiling and its retained charges in one read transaction, proven against
 each other, for a forecast to start from.
 
@@ -1303,13 +1306,16 @@ with no attempt, slot, ceiling charge or history, and it leaves its episode
 open, so the next observation is previewed again; the comparison still
 counts it as observed. A refused preview counts in the hourly comparison
 only after its terminal ending commits, in the hour of that ending.
-Deferrals and failed endings add no refusal count.
+Deferrals and failed endings add no refusal count. A live pick the
+engine's check or its reservation refuses is counted the same way; one an
+existing block answers is not a refusal, and a forecast's picks keep the
+rows a dry run already writes.
 The schedule serves those kinds as uncharged picks,
 so they take no lane's ceiling budget or history allowance from the blocks
-that run. A `block_ip` preview of an owner without an engine is still
-scheduled within the lane budgets it no longer spends, and a dry-run
-selection on a started ledger still passes over a challenge the history
-budget could not pay for.
+that run. A dry-run selection on a started ledger no longer waits for
+history a challenge preview does not spend, and an owner without an
+engine selects its previews as a dry run does, outside the lanes, and
+wakes for them at once.
 
 An owner with an engine binds to one execution policy: the dry-run mode,
 the verdict callback and its timeout, the hourly ceiling and the response

@@ -110,9 +110,10 @@ func (o *Owner) forecast() (err error) {
 		case c.Key.Kind == admission.KindBlockIP:
 			blocks = append(blocks, pick)
 		case c.Key.Kind == admission.KindChallenge:
-			// The selection passes over a challenge the live history
-			// budget cannot pay for; one its reservation still cannot
-			// take waits as a schedule defers it.
+			// Until the ledger starts live the selection passes over a
+			// challenge the live history budget cannot pay for; one its
+			// reservation still cannot take waits as a schedule defers
+			// it. After the live start its preview spends no history.
 			err = o.preview(pick)
 			if reason, refused := admission.ReasonOf(err); refused {
 				err = o.endPick(pick, reason)

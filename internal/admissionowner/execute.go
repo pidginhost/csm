@@ -163,7 +163,7 @@ func (o *Owner) execute(picks []execPick) error {
 		_, a, granted, reserveErr := reserveLedger(o.ledger, p.pick.ID, p.pick.Lane, members[i].ExpiresAt)
 		if reserveErr != nil {
 			if reason, refused := admission.ReasonOf(reserveErr); refused {
-				if err = o.endPick(p, reason); err != nil {
+				if err = o.endCounted(p, reason, admission.CauseOf(reserveErr)); err != nil {
 					stopped = err
 					break
 				}
@@ -390,7 +390,12 @@ func (o *Owner) endRefused(p execPick, check firewall.BlockCheck) (bool, error) 
 		return true, nil
 	case check.Refusal != "":
 		if reason, known := refusalReasons[check.Refusal]; known {
-			return true, o.endPick(p, reason)
+			// The dry-run comparison keeps its own rows; only a live
+			// refusal is counted here.
+			if o.forecasting() {
+				return true, o.endPick(p, reason)
+			}
+			return true, o.endCounted(p, reason, 0)
 		}
 		return true, nil
 	}
@@ -659,6 +664,22 @@ func (o *Owner) endPick(p execPick, reason admission.Reason) error {
 	}
 	if err != nil {
 		return fmt.Errorf("ending pick %s: %w", p.pick.ID, err)
+	}
+	return nil
+}
+
+// endCounted ends or defers p as endPick does and counts a terminal ending
+// as refused in the hourly comparison, in the hour it ended. The count
+// follows the write, so a failed ending counts nothing, and a deferral is
+// not a refusal.
+func (o *Owner) endCounted(p execPick, reason admission.Reason, cause admission.Cause) error {
+	if err := o.endPick(p, reason); err != nil {
+		return err
+	}
+	switch reason.Disposition() {
+	case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
+		c := p.c
+		o.compare.addLedgerRefusalAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason, cause: cause}, o.now)
 	}
 	return nil
 }

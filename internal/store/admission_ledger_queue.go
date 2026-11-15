@@ -796,7 +796,9 @@ const previewReservedMembers = 13
 // each pick. Every candidate weighs one fair unit and no history. A
 // challenge's comparison preview spends live history, so a challenge the
 // live history budget cannot pay for is passed over as pending work is,
-// and one only its reserved lane can pay for is served on that lane. The
+// and one only its reserved lane can pay for is served on that lane; on a
+// ledger that has started live its preview spends none and it is served
+// as any other work. The
 // reserved lane alternates direct and corroborated work for at most 13
 // members, then the general lane serves the rest by class and severity;
 // reserved-eligible work competes there too. Revalidation, age-out, retry
@@ -860,7 +862,9 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 			Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: unitCost,
 			Ready: !h && !q.now.Before(lc.c.NotBefore) && answers[lc.id] != admission.AnswerPending,
 		}
-		if lc.c.Key.Kind == admission.KindChallenge {
+		// A challenge preview spends history only until the ledger starts
+		// live; after that it ends uncharged and needs none.
+		if lc.c.Key.Kind == admission.KindChallenge && !q.started {
 			_, fits, general, reserved, judgeErr := history.challenge(q, lc)
 			if judgeErr != nil {
 				return nil, judgeErr
@@ -890,7 +894,7 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 				return nil, checkErr
 			}
 			if reason == 0 {
-				if byID[p.ID].c.Key.Kind == admission.KindChallenge {
+				if byID[p.ID].c.Key.Kind == admission.KindChallenge && !q.started {
 					lane, fits, budgetErr := remaining.take(q, byID[p.ID], p)
 					if budgetErr != nil {
 						return nil, budgetErr
@@ -1039,10 +1043,10 @@ func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.C
 
 // PreviewWake is the earliest admission time at which a dry-run forecast
 // has work without a new report: now while selectable work waits, or a
-// retry's backoff end, a queued deadline, or when the live history budget
-// can pay for a challenge the selection passes over. Other live budgets
-// never delay it, and pending work wakes only at its deadlines. ok is
-// false when nothing waits.
+// retry's backoff end, a queued deadline, or, until the ledger starts
+// live, when the live history budget can pay for a challenge the
+// selection passes over. Other live budgets never delay it, and pending
+// work wakes only at its deadlines. ok is false when nothing waits.
 func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admission.Answer) (time.Time, bool, error) {
 	// The lock guards the recovery hold this read shares with writers.
 	l.mu.Lock()
@@ -1058,7 +1062,7 @@ func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admissio
 		if err != nil {
 			return err
 		}
-		q.held = l.held
+		q.held, q.started = l.held, l.live
 		live, err := q.live()
 		if err != nil {
 			return err
@@ -1089,7 +1093,7 @@ func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admissio
 			case held:
 			case lc.c.NotBefore.After(now):
 				earliest(lc.c.NotBefore)
-			case lc.c.Key.Kind == admission.KindChallenge:
+			case lc.c.Key.Kind == admission.KindChallenge && !q.started:
 				if err = q.challengeWake(&history, lc, earliest); err != nil {
 					return err
 				}

@@ -47,6 +47,31 @@ func observeKind(t *testing.T, o *Owner, p *admission.Producer, f *ownerFixture,
 	return ""
 }
 
+// queueChallengeBeyondHistory spends real comparison history until the
+// next challenge cannot reserve it. That challenge must still preview
+// after the ledger starts live, without relying on spare history credit.
+func queueChallengeBeyondHistory(t *testing.T, o *Owner, p *admission.Producer, f *ownerFixture) admission.CandidateID {
+	t.Helper()
+	for n := 1; n < 255; n++ {
+		id := observeKind(t, o, p, f, fmt.Sprintf("198.51.100.%d", n), "offset=1", admission.KindChallenge)
+		err := o.do(func() error {
+			c, _, granted, err := o.ledger.Observe(id, admission.LaneGeneral, f.host.now().Add(time.Hour))
+			if err == nil && (!granted || c.State != admission.StateObserved) {
+				t.Errorf("history setup did not charge an observation: %+v, granted %t", c, granted)
+			}
+			return err
+		})
+		if reason, ok := admission.ReasonOf(err); ok && reason == admission.ReasonStorageShare {
+			return id
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("comparison history did not run out")
+	return ""
+}
+
 // Once the ledger has started live a preview spends nothing that live work
 // lives on. It makes no attempt, charges neither the ceiling nor the
 // history, and leaves its episode open: the next observation of the
@@ -184,8 +209,8 @@ func TestOwnerStartedPreviewPathsPreserveLiveState(t *testing.T) {
 			t.Fatal(err)
 		}
 		noReservedPreview(t, o)
+		id := queueChallengeBeyondHistory(t, o, p, f)
 		before, used := ledgerStatus(t, o), liveUsed(t, o)
-		id := observeKind(t, o, p, f, "192.0.2.31", "offset=1", admission.KindChallenge)
 		turn(t, o)
 		spentNothing(t, o, id, before, used)
 		if n := observedCount(o, admission.KindChallenge); n != 1 {
@@ -453,5 +478,235 @@ func TestOwnerLivePreviewOfARetryKeepsWhatItSpent(t *testing.T) {
 	}
 	if n := outcomes(after, admission.DispositionDryRun) - outcomes(before, admission.DispositionDryRun); n != 1 || observedCount(o, admission.KindBlockIP) != 1 {
 		t.Fatalf("the preview counted %d dry-run outcomes and %d observed previews, want one each", n, observedCount(o, admission.KindBlockIP))
+	}
+}
+
+// engineLessAfterLive runs a live owner until the hour's ceiling is spent
+// and one block waits for credit, then restarts it without an engine on
+// the same ledger.
+func engineLessAfterLive(t *testing.T) (*Owner, *admission.Producer, *ownerFixture, admission.CandidateID) {
+	t.Helper()
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	policy := validPolicy(1)
+	policy.CeilingLimit, policy.CeilingSource = 2, "configured"
+	o, _, mono := policyOwner(t, f, newFakeBlocks(), policy)
+	var waiting admission.CandidateID
+	for n := 0; n < 8 && waiting == ""; n++ {
+		id := observe(t, o, p, f, fmt.Sprintf("192.0.2.%d", 60+n), fmt.Sprintf("offset=%d", n))
+		mono.advance(time.Second)
+		turn(t, o)
+		if c := candidate(t, o, id); c.State == admission.StateQueued && c.Reason == admission.ReasonCeiling {
+			waiting = id
+		}
+	}
+	if waiting == "" {
+		t.Fatal("fixture never spent the ceiling")
+	}
+	o.Stop()
+	f.host.set(func(h *fakeHost) { h.limit, h.source = 2, "configured" })
+	return f.start(previewOptions(f)), p, f, waiting
+}
+
+// An owner without an engine on a live ledger previews every pick at no
+// cost, so its selection is no admission: block work is previewed although
+// the hour's ceiling is spent, where an executing owner's block waits for
+// credit. Nothing is charged, and the work the live owner left waiting for
+// the ceiling is previewed too.
+func TestEngineLessOwnerPreviewsOutsideTheLanesOnceLive(t *testing.T) {
+	o, p, f, waiting := engineLessAfterLive(t)
+	used := liveUsed(t, o)
+	noReservedPreview(t, o)
+	fresh := observe(t, o, p, f, "192.0.2.80", "offset=80")
+	turn(t, o)
+	for name, id := range map[string]admission.CandidateID{"waiting": waiting, "fresh": fresh} {
+		if c := candidate(t, o, id); c.State != admission.StateDryRun || c.Attempts != 0 {
+			t.Fatalf("%s block under an owner without an engine = state %s reason %s attempts %d, want an uncharged preview", name, c.State, c.Reason, c.Attempts)
+		}
+	}
+	if liveUsed(t, o) != used {
+		t.Fatalf("previews charged the ceiling: %d -> %d", used, liveUsed(t, o))
+	}
+	if n := observedCount(o, admission.KindBlockIP); n != 2 {
+		t.Fatalf("comparison counted %d block previews, want 2", n)
+	}
+}
+
+// The same owner wakes for queued previews at once: a turn that served
+// nothing leaves the queue due, not asleep until the ceiling has credit.
+func TestEngineLessOwnerWakesForPreviewsAtOnceOnceLive(t *testing.T) {
+	o, _, _, waiting := engineLessAfterLive(t)
+	setOwnerHook(t, o, &previewLedger, func(*store.AdmissionLedger, map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		return nil, nil
+	})
+	if err := o.do(func() error {
+		// As schedule does before it runs a turn.
+		o.scheduleDue, o.wakeAt = false, time.Time{}
+		if err := o.turn(); err != nil {
+			return err
+		}
+		if !o.scheduleDue {
+			t.Errorf("queue not due after a turn that served nothing; next wake %v", o.wakeAt)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if c := candidate(t, o, waiting); c.State != admission.StateQueued {
+		t.Fatalf("waiting block = %+v, want it still queued", c)
+	}
+}
+
+// The lane schedule selects wherever a pick can still be charged: for an
+// owner without an engine before the ledger starts live, whose previews
+// are charged attempts, and for an executing owner on a live ledger.
+func TestOwnerSelectsInsideTheLanesUnlessItOnlyPreviews(t *testing.T) {
+	for name, opts := range map[string]func(*ownerFixture) Options{
+		"no engine before the live start": previewOptions,
+		"executing on a live ledger":      func(f *ownerFixture) Options { return executeOptions(f, newFakeBlocks()) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			withTestRegistry(t)
+			f := newOwnerFixture(t)
+			o := f.start(opts(f))
+			scheduled, previewed := 0, 0
+			schedule, preview := scheduleLedger, previewLedger
+			setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+				scheduled++
+				return schedule(l, lim, answers)
+			})
+			setOwnerHook(t, o, &previewLedger, func(l *store.AdmissionLedger, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+				previewed++
+				return preview(l, answers)
+			})
+			turn(t, o)
+			if scheduled != 1 || previewed != 0 {
+				t.Fatalf("%d lane schedules, %d preview selections; want the lane schedule", scheduled, previewed)
+			}
+		})
+	}
+	// A provider that returns no engine holds execution. That owner still
+	// executes, so it keeps the lane schedule through the outage: its block
+	// waits uncharged and runs once the engine is back.
+	t.Run("an engine outage on a live ledger", func(t *testing.T) {
+		p := withTestRegistry(t)
+		f := newOwnerFixture(t)
+		blocks := newFakeBlocks()
+		var engine BlockEngine = blocks
+		opts := executeOptions(f, blocks)
+		opts.Blocks = func() BlockEngine { return engine }
+		o := f.start(opts)
+		if !liveStarted(t, o) {
+			t.Fatal("the live policy did not start live")
+		}
+		mono := heldMono(t, o)
+		scheduled, previewed := 0, 0
+		schedule, preview := scheduleLedger, previewLedger
+		setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+			scheduled++
+			return schedule(l, lim, answers)
+		})
+		setOwnerHook(t, o, &previewLedger, func(l *store.AdmissionLedger, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+			previewed++
+			return preview(l, answers)
+		})
+		served := func(stage string, next BlockEngine) {
+			t.Helper()
+			if err := o.do(func() error { engine = next; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			scheduled, previewed = 0, 0
+			mono.advance(time.Minute)
+			turn(t, o)
+			if scheduled != 1 || previewed != 0 {
+				t.Fatalf("%s: %d lane schedules, %d preview selections; want the lane schedule", stage, scheduled, previewed)
+			}
+		}
+		served("empty queue", blocks)
+		if err := o.do(func() error { engine = nil; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		used := liveUsed(t, o)
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.80")
+		served("outage", nil)
+		if c := candidate(t, o, id); c.State != admission.StateQueued || c.Attempts != 0 || liveUsed(t, o) != used {
+			t.Fatalf("block during the outage = state %s attempts %d, ceiling used %d was %d; want it waiting uncharged", c.State, c.Attempts, liveUsed(t, o), used)
+		}
+		if _, applies := blocks.calls(); len(applies) != 0 {
+			t.Fatalf("the outage reached the engine: %+v", applies)
+		}
+		served("engine back", blocks)
+		if c := candidate(t, o, id); c.State != admission.StateVerified || c.Attempts != 1 {
+			t.Fatalf("block once the engine is back = state %s attempts %d, want it applied once", c.State, c.Attempts)
+		}
+		if _, applies := blocks.calls(); len(applies) != 1 {
+			t.Fatalf("the engine applied %d blocks, want one", len(applies))
+		}
+	})
+}
+
+// A dry run on a live ledger ends a challenge its preview refuses: the
+// pick is dropped and counted once, and the queue then holds nothing to
+// select or to wake for.
+func TestOwnerForecastEndsStartedChallengeRefusal(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	o, r, mono := policyOwner(t, f, newFakeBlocks(), validPolicy(1))
+	if !liveStarted(t, o) {
+		t.Fatal("the live policy did not start live")
+	}
+	r.publish(dryPolicy(2))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	id := queueChallengeBeyondHistory(t, o, p, f)
+	selected := 0
+	selectPreview := previewLedger
+	setOwnerHook(t, o, &previewLedger, func(l *store.AdmissionLedger, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		picks, err := selectPreview(l, answers)
+		selected += len(picks)
+		return picks, err
+	})
+	endDryRun := endDryRunLedger
+	setOwnerHook(t, o, &endDryRunLedger, func(*store.AdmissionLedger, admission.CandidateID) (admission.Candidate, bool, error) {
+		return admission.Candidate{}, false, &admission.Error{Reason: admission.ReasonStale}
+	})
+	// refusals counts the refused rows of every kind and those that are a
+	// stale challenge.
+	refusals := func() (all, stale uint64) {
+		o.compare.mu.Lock()
+		defer o.compare.mu.Unlock()
+		for k, n := range o.compare.counts {
+			if k.decision != decisionRefused {
+				continue
+			}
+			all += n
+			if k.kind == admission.KindChallenge && k.reason == admission.ReasonStale {
+				stale += n
+			}
+		}
+		return all, stale
+	}
+	mono.advance(time.Second)
+	turn(t, o)
+	if c := candidate(t, o, id); !c.State.Terminal() || c.Reason != admission.ReasonStale || c.Attempts != 0 {
+		t.Fatalf("refused challenge = state %s reason %s attempts %d, want it dropped as stale", c.State, c.Reason, c.Attempts)
+	}
+	if all, stale := refusals(); selected != 1 || observedCount(o, admission.KindChallenge) != 0 || all != 1 || stale != 1 {
+		t.Fatalf("after the refusal: %d selected, %d previews, %d refusals, %d of them a stale challenge; want one stale refusal", selected, observedCount(o, admission.KindChallenge), all, stale)
+	}
+	setOwnerHook(t, o, &endDryRunLedger, endDryRun)
+	mono.advance(time.Second)
+	turn(t, o)
+	if all, stale := refusals(); selected != 1 || observedCount(o, admission.KindChallenge) != 0 || all != 1 || stale != 1 {
+		t.Fatalf("after the next turn: %d selected, %d previews, %d refusals; want nothing new", selected, observedCount(o, admission.KindChallenge), all)
+	}
+	if err := o.do(func() error {
+		if wake, ok, err := o.ledger.PreviewWake(o.answers()); err != nil || ok {
+			t.Errorf("wake after the refusal ended = %v %t %v, want none", wake, ok, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

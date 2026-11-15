@@ -90,6 +90,10 @@ func (o *Owner) retire() error {
 			continue
 		}
 		if o.now.Before(in.ExpiresAt) {
+			// The attempt read cleanly, and nothing else can fault before
+			// its expiry: an earlier read fault is over.
+			delete(o.retireDelay, in.Action)
+			delete(o.retireFaults, in.Action)
 			o.noteRetirement(in.ExpiresAt)
 			continue
 		}
