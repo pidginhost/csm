@@ -273,7 +273,7 @@ function loadTopAttackers() {
     if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
     resetAttackerSelection();
     CSM.get('/api/v1/threat/top-attackers?limit=50' + (spamOnly ? '&spam_only=1' : '')).then(function(resp){
-    var data = resp.items;
+    var data = (resp.items || []).filter(function(r) { return r && typeof r.ip === 'string' && r.ip.length > 0; });
     if (seq !== _attackersLoadSeq) return;
     var tbody=document.getElementById('attackers-tbody');
     var fromEl = document.getElementById('attackers-from');
@@ -297,9 +297,11 @@ function loadTopAttackers() {
         var statusBadge=r.currently_blocked?'<span class="badge bg-danger text-white">Blocked</span>':
                         r.in_threat_db?'<span class="badge bg-warning text-dark">Threat DB</span>':
                         '<span class="text-muted">\u2014</span>';
-        html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'" data-country="'+CSM.attr((r.country||'').toUpperCase())+'" data-verdict="'+CSM.attr((r.verdict||'').toLowerCase())+'" data-last-seen="'+CSM.attr(r.last_seen||'')+'">';
-        html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'" aria-label="Select '+CSM.attr(r.ip)+'"></td>';
-        html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code></td>';
+        // A /64 holds spam evidence only: no lookup, block or whitelist applies to it.
+        var isNetwork=r.ip.indexOf('/')!==-1;
+        html+='<tr class="'+(isNetwork?'':'ip-row ')+'feed-item" data-ip="'+CSM.esc(r.ip)+'" data-country="'+CSM.attr((r.country||'').toUpperCase())+'" data-verdict="'+CSM.attr((r.verdict||'').toLowerCase())+'" data-last-seen="'+CSM.attr(r.last_seen||'')+'">';
+        html+='<td>'+(isNetwork?'':'<input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'" aria-label="Select '+CSM.attr(r.ip)+'">')+'</td>';
+        html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code>'+(isNetwork?' <span class="badge bg-secondary-lt" title="Spam evidence for an IPv6 /64 network">Network</span>':'')+'</td>';
         html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
         html+='<td>'+r.event_count+'</td>';
@@ -310,11 +312,13 @@ function loadTopAttackers() {
         html+='<td class="text-nowrap small">'+fmtDate(r.last_seen)+'</td>';
         html+='<td>'+statusBadge+'</td>';
         html+='<td class="text-nowrap">';
-        if(!r.currently_blocked){
-            html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h" aria-label="Block '+CSM.attr(r.ip)+' for 24 hours"><i class="ti ti-shield-lock"></i></button>';
+        if(!isNetwork){
+            if(!r.currently_blocked){
+                html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h" aria-label="Block '+CSM.attr(r.ip)+' for 24 hours"><i class="ti ti-shield-lock"></i></button>';
+            }
+            html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently" aria-label="Block '+CSM.attr(r.ip)+' permanently"><i class="ti ti-lock"></i></button>';
+            html+='<button class="btn btn-ghost-warning btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist" aria-label="Whitelist '+CSM.attr(r.ip)+'"><i class="ti ti-shield-check"></i></button>';
         }
-        html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently" aria-label="Block '+CSM.attr(r.ip)+' permanently"><i class="ti ti-lock"></i></button>';
-        html+='<button class="btn btn-ghost-warning btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist" aria-label="Whitelist '+CSM.attr(r.ip)+'"><i class="ti ti-shield-check"></i></button>';
         html+='</td>';
         html+='</tr>';
     }
@@ -447,7 +451,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
             if(rec.mail){
                 var mail=rec.mail;
                 if(mail.auth_attacks)html+='<tr><td class="text-muted">Mail login attacks</td><td>'+mail.auth_attacks+', last '+fmtDate(mail.last_auth_attack)+'</td></tr>';
-                if(mail.spam||mail.ham)html+='<tr><td class="text-muted">Spam verdicts</td><td>'+(mail.spam||0)+' spam, '+(mail.ham||0)+' ham, score '+(intel.spam_score||0)+'</td></tr>';
+                if(mail.spam||mail.ham)html+='<tr><td class="text-muted">Spam verdicts</td><td>'+(mail.spam||0)+' spam, '+(mail.ham||0)+' ham, score '+(intel.spam_score||0)+(rec.spam_network?'<div class="text-muted small">Spam evidence is recorded for '+CSM.esc(rec.spam_network)+'</div>':'')+'</td></tr>';
             }
         }
         html+='</table>';

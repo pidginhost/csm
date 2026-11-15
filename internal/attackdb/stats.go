@@ -22,6 +22,7 @@ type AttackStats struct {
 	BlockedIPs     int                `json:"blocked_ips"`
 	MailOnlyIPs    int                `json:"mail_only_ips"`     // records held only for spam verdicts
 	MailOnlyNew24h int                `json:"mail_only_new_24h"` // of those, first seen in the last 24h
+	MailEvicted    int                `json:"mail_evicted"`      // spam-evidence records evicted since the daemon started
 	ByType         map[AttackType]int `json:"by_type"`           // lifetime, aggregated from IPRecord.AttackCounts
 	ByType24h      map[AttackType]int `json:"by_type_24h"`       // last 24h, aggregated from the events log
 	TopAttackers   []*IPRecord        `json:"top_attackers"`
@@ -63,9 +64,10 @@ func (db *DB) computeStats() AttackStats {
 
 	db.mu.RLock()
 	stats := AttackStats{
-		TotalIPs:  len(db.records),
-		ByType:    make(map[AttackType]int),
-		ByType24h: make(map[AttackType]int),
+		TotalIPs:    len(db.records),
+		MailEvicted: db.mailEvicted,
+		ByType:      make(map[AttackType]int),
+		ByType24h:   make(map[AttackType]int),
 	}
 
 	for _, rec := range db.records {

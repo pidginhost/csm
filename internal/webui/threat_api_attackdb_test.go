@@ -188,3 +188,75 @@ func TestTopAttackersSpamOnly(t *testing.T) {
 		t.Errorf("attacked row without mail evidence carries spam_score: %+v", all[0])
 	}
 }
+
+// Spam from two addresses of one IPv6 /64 lists as one row named by the network.
+func TestThreatTopAttackersListsNetworkRecord(t *testing.T) {
+	now := time.Now()
+	db := attackdb.NewForTest(nil)
+	db.RecordMailVerdict("2001:db8:1:2::1", true, now)
+	db.RecordMailVerdict("2001:db8:1:2::2", true, now)
+	prev := attackdb.Global()
+	attackdb.SetGlobal(db)
+	t.Cleanup(func() { attackdb.SetGlobal(prev) })
+
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiThreatTopAttackers(w, httptest.NewRequest("GET", "/api/v1/threat/top-attackers?spam_only=1", nil))
+	if w.Code != 200 {
+		t.Fatalf("status: %d", w.Code)
+	}
+	var rows []map[string]any
+	decodeItems(t, w.Body.Bytes(), &rows)
+	if len(rows) != 1 || rows[0]["ip"] != "2001:db8:1:2::/64" || rows[0]["spam_score"] != float64(50) {
+		t.Fatalf("spam senders = %+v, want one 2001:db8:1:2::/64 row with spam_score 50", rows)
+	}
+	if _, ok := rows[0]["spam_network"]; ok {
+		t.Fatalf("a listed record carries spam_network: %+v", rows[0])
+	}
+}
+
+func TestThreatIPAlternateIPv6KeepsAddressEvidence(t *testing.T) {
+	const ip = "2001:db8:1:2::7"
+	const network = "2001:db8:1:2::/64"
+	now := time.Now()
+	previous := attackdb.Global()
+	t.Cleanup(func() { attackdb.SetGlobal(previous) })
+	for _, mass := range []float64{1, 2, 4} {
+		db := attackdb.NewForTest(map[string]*attackdb.IPRecord{
+			ip: {IP: ip, EventCount: 3, ThreatScore: 45,
+				Mail: &attackdb.MailEvidence{AuthAttacks: 3, LastAuthAttack: now,
+					Spam: 4, SpamMass: mass, MassAt: now, LastSpam: now}},
+		})
+		db.RecordMailVerdict(ip, true, now)
+		db.RecordMailVerdict(ip, true, now)
+		attackdb.SetGlobal(db)
+		s := newTestServer(t, "tok")
+		w := httptest.NewRecorder()
+		s.apiThreatIP(w, httptest.NewRequest("GET", "/api/v1/threat/ip?ip=2001:0DB8:0001:0002:0:0:0:7", nil))
+		if w.Code != 200 {
+			t.Fatalf("status = %d", w.Code)
+		}
+		var got struct {
+			IP           string             `json:"ip"`
+			LocalScore   int                `json:"local_score"`
+			AttackRecord *attackdb.IPRecord `json:"attack_record"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.IP != ip {
+			t.Fatalf("lookup IP = %q, want %q", got.IP, ip)
+		}
+		rec := got.AttackRecord
+		if rec == nil || rec.EventCount != 3 || rec.Mail == nil || rec.Mail.AuthAttacks != 3 || got.LocalScore != 45 {
+			t.Fatalf("alternate spelling lost address evidence: %+v", got)
+		}
+		wantSpam, wantNetwork := 2, network
+		if mass > 2 {
+			wantSpam, wantNetwork = 4, ""
+		}
+		if rec.Mail.Spam != wantSpam || rec.SpamNetwork != wantNetwork {
+			t.Fatalf("mass %v: spam=%d network=%q, want %d %q", mass, rec.Mail.Spam, rec.SpamNetwork, wantSpam, wantNetwork)
+		}
+	}
+}

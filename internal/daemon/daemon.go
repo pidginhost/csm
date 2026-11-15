@@ -2137,10 +2137,13 @@ func (d *Daemon) deepScanner() {
 			if db := checks.GetThreatDB(); db != nil {
 				_ = db.UpdateFeeds()
 			}
-			// Prune expired attack DB records (90-day retention)
+			// Prune attack DB records past 90 days or kept only for faded spam evidence
 			if adb := attackdb.Global(); adb != nil {
 				adb.PruneExpired()
-				fmt.Fprintf(os.Stderr, "[%s] Attack DB after daily prune (%s)\n", ts(), adb.FormatTopLine())
+				// A flood that stopped left drops no later verdict will report.
+				now := time.Now()
+				d.warnSpamEvidenceEvicted(adb.PendingEviction(now), now)
+				fmt.Fprintf(os.Stderr, "[%s] Attack DB after deep-scan prune (%s)\n", ts(), adb.FormatTopLine())
 			}
 
 			// The full deep tier runs whether or not the file monitor is

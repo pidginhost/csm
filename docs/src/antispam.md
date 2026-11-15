@@ -378,6 +378,27 @@ spam verdicts and no ham reach 50, which lists the sender as `CSM_IP_SPAM`.
 Spam evidence never blocks an address, never changes its threat score and is
 never reported to AbuseIPDB.
 
+CSM forgets a record that holds only spam evidence once its spam and ham
+verdicts have both lost nearly all their weight: about 47 days after a single
+spam message, later for a sender with more verdicts. Ham on the record keeps
+it, so the next spam from a mostly clean sender does not list it. A record
+that also has attack findings, a block or a mail login attack in the last 30
+days is kept. Every record leaves 90 days after its last spam verdict or
+finding; ham does not extend that limit. Stored evidence without a decay
+timestamp keeps its weight, as it does when scoring the sender. CSM checks
+at start and with every deep scan, hourly by default. The
+[spam evidence budget](#spam-evidence-budget) can drop a record that holds
+only spam evidence sooner.
+
+An IPv6 sender is recorded and listed per /64 network, for example
+`2001:db8:1:2::/64`, so a sender that rotates addresses builds one score.
+IPv4 senders, including IPv4-mapped IPv6 addresses, stay per address.
+Clearing or whitelisting an address inside the network forgets the network's
+evidence, and the CSM IP map does not list a network that holds an excluded
+address. Evidence recorded per IPv6 address by an earlier release stays
+until it expires or the [spam evidence budget](#spam-evidence-budget) drops
+it.
+
 With `spam` in `reputation.report.classes`, a sender that rspamd keeps
 rejecting, and that has sent no clean mail recently, is reported to the
 central abuse database. Senders of the shared mail services are never
@@ -390,6 +411,72 @@ does not confirm a listing: the feed may be off, and the map still skips
 excluded addresses. The "Spam evidence only" filter lists
 senders by spam score. The IP lookup shows mail login attacks and spam
 verdicts.
+
+### Spam evidence budget
+
+The spam evidence budget is 50,000 records, about 22 MB of memory for
+records held only for spam evidence. It is fixed and has no setting.
+Each time CSM records a verdict, it keeps those records at or under
+that budget, counted at the verdict's observation time. A missing time
+uses the current time. Invalid addresses and ham from an untracked sender
+are ignored and do not trigger the budget.
+
+Startup loads unexpired evidence without trimming it to the budget. The
+count can therefore exceed the budget until a verdict is recorded. It can
+also grow as login evidence ages: a record with a mail login attack counts
+toward the budget only when that attack is more than 30 days old at the verdict's
+time and the record has no attack findings or block. Records with attack
+findings, a block or still-protected login evidence never count toward the
+budget and are never dropped for it. A delayed verdict can leave more than
+50,000 such records at the current time because it counts them at its
+own earlier time.
+
+When a verdict is recorded and the count is over the budget, CSM drops
+records until nine tenths of the budget remain, rounded down. Each record
+has a level: the weight its verdicts still have, rounded up to whole
+messages, and at least 2 once it has two or more verdicts. Records of the
+lowest level go first. Inside a level, records in the network that holds
+the most spam-only records go first, counted per IPv6 /48 and per IPv4
+/16 at the start of the pass. When those counts tie, the record with the
+least weight goes first.
+
+A flood of single messages from one network, one /48 or /16, loses its
+own records first once that network holds more spam-only records than any
+other. A flood spread over many networks competes with the other records
+of the same level: the most crowded networks go first, then the records
+with the least remaining weight when network counts tie, whoever sent
+them. A flood of single messages cannot remove a sender with two or more
+verdicts, a listed sender or a sender's ham history while records with
+two or more verdicts fill less than nine tenths of the budget; above
+that, one pass trims the weakest of them once. Higher levels are reached
+only after every lower-level record has been dropped; they can still be
+dropped when they alone exceed the trim target. A flood that sends as
+many messages from each address or /64 as a level competes with every
+record of that level, listed senders included. Senders that share a
+crowded /16 or /48 with a flood can lose records of the same level with
+it.
+
+CSM writes a warning to the daemon log at the first drop, then at most
+once per day of recorded verdict time while drops continue. It also
+queues the warning for alerts; a full queue can refuse it. The warning
+gives the number of records dropped, names the most crowded network and
+says how many records that network held. The count in a later warning
+includes everything dropped since the previous one. Drops made after a
+warning are reported by the next warning. It comes with a later drop or
+with a deep scan, once a day has passed since the previous warning. A
+restart forgets drops not yet reported. Evicted records are removed from
+storage on the next successful flush; they can return after a crash before
+that flush. The [API threat statistics](api.md) include the total dropped
+since the daemon started.
+
+Look at the named network and its count. The count is how many records
+holding only spam evidence the network had when the drop began, not how
+many of the dropped records were its own. The count alone does not show
+whether the network sent the flood. Inspect its senders; if the network
+is hostile, block it in the [firewall](firewall.md). Records with attack
+findings, a block or a mail login attack in the last 30 days are never
+dropped by this budget. Records with two or more verdicts are dropped
+only once such records fill nine tenths of the budget.
 
 ### Scores
 
@@ -1003,9 +1090,12 @@ Each counted message, except one not matched, also records a verdict about
 the sending address, as on cPanel (see [Spam evidence](#spam-evidence)):
 Junk, rejected and discarded count as spam, delivered as ham. Junk is spam
 at Stalwart's Junk score, not at a CSM score. The same addresses are
-skipped: whitelisted, `infra_ips`, private and the server's own. Spam
+skipped: whitelisted, `infra_ips`, private and the server's own. IPv6
+senders are recorded and listed per /64 network, and clearing or
+whitelisting an address inside forgets the network's evidence. Spam
 evidence never blocks an address, never changes its threat score and is
 never reported. It does not need `email_protection.antispam`.
+The [spam evidence budget](#spam-evidence-budget) applies here too.
 
 ### Not done on Stalwart
 
@@ -1472,6 +1562,7 @@ that failed in its last pass, until a later pass reads it.
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 | `antispam_learning` | Warning | One finding per learning readiness or removal problem. Core filtering is unaffected. See [Learning findings](#learning-findings). |
+| `spam_evidence_evicted` | Warning | The spam evidence budget was reached and CSM dropped the weakest records. The message names the most crowded network and how many records it held. See [Spam evidence budget](#spam-evidence-budget). |
 
 While rspamd is down or scans fail on a cPanel host, mail is delivered
 without spam filtering. Exim adds no rejection for a scanner failure, and

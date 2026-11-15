@@ -21,3 +21,26 @@ func TestLookupCarriesSpamScore(t *testing.T) {
 		t.Fatalf("LookupBatch spam score = %d, want 50", got)
 	}
 }
+
+func TestLookupIPv6ShowsNetworkSpamScore(t *testing.T) {
+	prev := attackdb.Global()
+	t.Cleanup(func() { attackdb.SetGlobal(prev) })
+	const network = "2001:db8:1:2::/64"
+	db := attackdb.NewForTest(nil)
+	db.RecordMailVerdict("2001:db8:1:2::1", true, time.Now())
+	db.RecordMailVerdict("2001:db8:1:2::2", true, time.Now())
+	attackdb.SetGlobal(db)
+
+	intel := Lookup("2001:db8:1:2::9", t.TempDir())
+	if intel.SpamScore != 50 || intel.AttackRecord == nil || intel.AttackRecord.SpamNetwork != network {
+		t.Fatalf("Lookup spam score = %d, record %+v, want 50 from %s", intel.SpamScore, intel.AttackRecord, network)
+	}
+	// The top attackers list looks a network record up by its own name.
+	row := LookupBatch([]string{network}, t.TempDir())[0]
+	if row.SpamScore != 50 || row.AttackRecord == nil || row.AttackRecord.IP != network {
+		t.Fatalf("LookupBatch by network: spam score = %d, record %+v", row.SpamScore, row.AttackRecord)
+	}
+	if got := Lookup("2001:db8:9::1", t.TempDir()); got.SpamScore != 0 || got.AttackRecord != nil {
+		t.Fatalf("Lookup outside the network: spam score = %d, record %+v", got.SpamScore, got.AttackRecord)
+	}
+}

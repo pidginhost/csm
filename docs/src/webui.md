@@ -70,6 +70,13 @@ senders with spam verdicts, including those with no attack events. The filter
 is kept in the URL for bookmarks and history navigation. When switching filters,
 previous rows stay unavailable for actions and export until a load succeeds.
 
+Spam evidence about IPv6 senders is listed per /64 network. Such a row is
+named by the network and carries a **Network** badge. It has no checkbox and
+no block or whitelist buttons, and clicking it does not open the IP lookup.
+Looking up an address inside the network shows whichever spam evidence is
+stronger: the address's own or the network's. Ties use the network, which
+is named whenever its evidence is shown.
+
 The **Listing threshold** badge means the spam score qualifies for the CSM IP
 map. It does not confirm an active listing: the feed must be configured and
 working, and address exclusions still apply. Spam scores remain separate from

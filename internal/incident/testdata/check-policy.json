@@ -242,6 +242,7 @@
       "signature_match_realtime",
       "signature_update_rescan_queued",
       "signature_update_rollback",
+      "spam_evidence_evicted",
       "ssh_keys",
       "ssh_login_unknown_ip",
       "ssl_cert_issued",

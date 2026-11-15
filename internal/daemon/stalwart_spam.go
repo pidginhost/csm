@@ -203,5 +203,5 @@ func (d *Daemon) recordStalwartVerdict(ip netip.Addr, spam bool, at time.Time, c
 	if adb == nil || !ipmap.Recordable(ip, nil) || d.spamSenderExcluded(ip, cfg) {
 		return
 	}
-	adb.RecordMailVerdict(ip.String(), spam, at)
+	d.recordMailVerdict(adb, ip.String(), spam, at)
 }

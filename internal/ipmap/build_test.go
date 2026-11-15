@@ -277,3 +277,24 @@ func TestBuildCanaryIsNotASource(t *testing.T) {
 		t.Fatalf("canary symbol was used for data entries:\n%s", content)
 	}
 }
+
+// A network entry under the spam symbol weighs every address inside it.
+func TestBuildNetworkSpamEntry(t *testing.T) {
+	entries := map[string][]string{Spam.Name: {"2001:db8:1:2::/64"}}
+	m := Build(Sources{Entries: entries})
+	if got := m.Weight(addr("2001:db8:1:2::9")); got != Spam.Tenths() {
+		t.Errorf("weight inside the network = %d, want SPAM %d", got, Spam.Tenths())
+	}
+	if got := m.Weight(addr("2001:db8:1:3::9")); got != 0 {
+		t.Errorf("weight outside the network = %d", got)
+	}
+	content, _ := m.Render()
+	if m.Len() != 1 || !strings.HasSuffix(string(content), "\n2001:db8:1:2::/64 CSM_IP_SPAM:0.6\n") {
+		t.Fatalf("network entry did not render as one line:\n%s", content)
+	}
+
+	m = Build(Sources{Entries: entries, Never: []netip.Addr{addr("2001:db8:1:2::9")}})
+	if m.Len() != 0 || m.Weight(addr("2001:db8:1:2::1")) != 0 {
+		t.Fatal("a network holding an excluded address remains listed")
+	}
+}

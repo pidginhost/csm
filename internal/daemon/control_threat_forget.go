@@ -30,6 +30,11 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 		return nil, fmt.Errorf("invalid ip: %q", args.IP)
 	}
 	args.IP = ip.String()
+	network := ""
+	if ip.To4() == nil {
+		mask := net.CIDRMask(64, 128)
+		network = (&net.IPNet{IP: ip.Mask(mask), Mask: mask}).String()
+	}
 
 	adb := attackdb.Global()
 	if adb == nil {
@@ -43,6 +48,10 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 		res.Found = true
 		res.Score = max(res.Score, attackdb.ComputeScore(rec))
 		res.Events += rec.EventCount
+		// Stored text can be corrupt; only name the expected network.
+		if network != "" && rec.IP == network {
+			res.Network = network
+		}
 	}
 
 	if !res.Found {
@@ -56,8 +65,10 @@ func (c *ControlListener) handleThreatForget(argsRaw json.RawMessage) (any, erro
 	// legitimately have created a fresh record by then.
 	_ = adb.Flush()
 
-	res.Message = fmt.Sprintf(
-		"Cleared local threat record for %s (was score %d/100, %d attack events); block, allow and whitelist entries are unchanged",
-		args.IP, res.Score, res.Events)
+	res.Message = fmt.Sprintf("Cleared local threat record for %s (was score %d/100, %d attack events)", args.IP, res.Score, res.Events)
+	if res.Network != "" {
+		res.Message += " and the spam evidence of " + res.Network
+	}
+	res.Message += "; block, allow and whitelist entries are unchanged"
 	return res, nil
 }
