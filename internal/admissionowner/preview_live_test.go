@@ -47,6 +47,31 @@ func observeKind(t *testing.T, o *Owner, p *admission.Producer, f *ownerFixture,
 	return ""
 }
 
+// queueChallengeBeyondHistory spends real comparison history until the
+// next challenge cannot reserve it. That challenge must still preview
+// after the ledger starts live, without relying on spare history credit.
+func queueChallengeBeyondHistory(t *testing.T, o *Owner, p *admission.Producer, f *ownerFixture) admission.CandidateID {
+	t.Helper()
+	for n := 1; n < 255; n++ {
+		id := observeKind(t, o, p, f, fmt.Sprintf("198.51.100.%d", n), "offset=1", admission.KindChallenge)
+		err := o.do(func() error {
+			c, _, granted, err := o.ledger.Observe(id, admission.LaneGeneral, f.host.now().Add(time.Hour))
+			if err == nil && (!granted || c.State != admission.StateObserved) {
+				t.Errorf("history setup did not charge an observation: %+v, granted %t", c, granted)
+			}
+			return err
+		})
+		if reason, ok := admission.ReasonOf(err); ok && reason == admission.ReasonStorageShare {
+			return id
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("comparison history did not run out")
+	return ""
+}
+
 // Once the ledger has started live a preview spends nothing that live work
 // lives on. It makes no attempt, charges neither the ceiling nor the
 // history, and leaves its episode open: the next observation of the
@@ -184,8 +209,8 @@ func TestOwnerStartedPreviewPathsPreserveLiveState(t *testing.T) {
 			t.Fatal(err)
 		}
 		noReservedPreview(t, o)
+		id := queueChallengeBeyondHistory(t, o, p, f)
 		before, used := ledgerStatus(t, o), liveUsed(t, o)
-		id := observeKind(t, o, p, f, "192.0.2.31", "offset=1", admission.KindChallenge)
 		turn(t, o)
 		spentNothing(t, o, id, before, used)
 		if n := observedCount(o, admission.KindChallenge); n != 1 {
@@ -634,7 +659,7 @@ func TestOwnerForecastEndsStartedChallengeRefusal(t *testing.T) {
 	if err := o.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	id := observeKind(t, o, p, f, "192.0.2.34", "offset=1", admission.KindChallenge)
+	id := queueChallengeBeyondHistory(t, o, p, f)
 	selected := 0
 	selectPreview := previewLedger
 	setOwnerHook(t, o, &previewLedger, func(l *store.AdmissionLedger, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {

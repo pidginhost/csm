@@ -134,43 +134,71 @@ func TestAdmissionLedgerStartedPreviewWakeAndDeferrals(t *testing.T) {
 // attempt, so a challenge the allowance cannot pay for is passed over and
 // the wake waits for the allowance.
 func TestAdmissionLedgerPreviewSelectionNeedsNoHistoryOnceLive(t *testing.T) {
-	for _, started := range []bool{false, true} {
-		t.Run(fmt.Sprintf("started=%t", started), func(t *testing.T) {
-			f := newLedgerFixture(t)
-			f.begin()
-			req := f.request("192.0.2.61", f.published(evidenceSpec{target: "192.0.2.61", cursor: "offset=61"}))
-			req.Kind = admission.KindChallenge
-			_, id := f.enqueue(req)
-			if started {
-				if err := f.l.StartLive(admission.LegacyHandover{}); err != nil {
-					t.Fatal(err)
-				}
+	for _, pressure := range []string{"credit", "allowance", "recovery"} {
+		for _, direct := range []bool{false, true} {
+			for _, started := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/direct=%t/started=%t", pressure, direct, started), func(t *testing.T) {
+					f := newLedgerFixture(t)
+					f.begin()
+					spec := evidenceSpec{target: "192.0.2.61", cursor: "offset=61"}
+					if direct {
+						spec.producer, spec.check, spec.severity = f.mail, "mail_takeover", admission.SeverityCritical
+					}
+					req := f.request("192.0.2.61", f.published(spec))
+					req.Kind = admission.KindChallenge
+					_, id := f.enqueue(req)
+					if started {
+						if err := f.l.StartLive(admission.LegacyHandover{}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					f.adjustStorage(func(s *admission.StorageState) {
+						switch pressure {
+						case "credit":
+							s.General.Credit, s.Reserved.Credit = 0, 0
+						case "allowance":
+							s.General.Used, s.Reserved.Used = admission.HistoryLanes()
+						case "recovery":
+							leaveRecoveryRoom(s, 0)
+						}
+					})
+					before := f.storageState()
+					wake, ok, err := f.l.PreviewWake(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					picks, err := f.l.SchedulePreview(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := f.storageState(); got != before {
+						t.Fatalf("selection changed history: %+v, was %+v", got, before)
+					}
+					if !started {
+						if len(picks) != 0 || !ok || !wake.After(f.wall) {
+							t.Fatalf("before the live start: picks %+v, wake %v %t; want the challenge to wait for history", picks, wake, ok)
+						}
+						return
+					}
+					if len(picks) != 1 || picks[0].ID != id || !ok || !wake.Equal(f.wall) {
+						t.Fatalf("on a live ledger: picks %+v, wake %v %t; want the challenge selected now", picks, wake, ok)
+					}
+					wantLane := admission.LaneGeneral
+					if direct {
+						wantLane = admission.LaneDirect
+					}
+					if picks[0].Lane != wantLane || picks[0].Bytes != 0 || picks[0].Cost != 1 {
+						t.Fatalf("uncharged preview pick = %+v, want lane %s and one fair unit", picks[0], wantLane)
+					}
+					if c, changed, endErr := f.l.EndDryRun(id); endErr != nil || !changed || c.State != admission.StateDryRun {
+						t.Fatalf("ending the selected challenge = %+v, %t, %v", c, changed, endErr)
+					}
+					if wake, ok, err = f.l.PreviewWake(nil); err != nil || ok {
+						t.Fatalf("wake after the challenge ended = %v %t %v, want none", wake, ok, err)
+					}
+				})
 			}
-			f.adjustStorage(func(s *admission.StorageState) { s.General.Credit, s.Reserved.Credit = 0, 0 })
-			wake, ok, err := f.l.PreviewWake(nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			picks, err := f.l.SchedulePreview(nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !started {
-				if len(picks) != 0 || !ok || !wake.After(f.wall) {
-					t.Fatalf("before the live start: picks %+v, wake %v %t; want the challenge to wait for history", picks, wake, ok)
-				}
-				return
-			}
-			if len(picks) != 1 || picks[0].ID != id || !ok || !wake.Equal(f.wall) {
-				t.Fatalf("on a live ledger: picks %+v, wake %v %t; want the challenge selected now", picks, wake, ok)
-			}
-			if c, changed, endErr := f.l.EndDryRun(id); endErr != nil || !changed || c.State != admission.StateDryRun {
-				t.Fatalf("ending the selected challenge = %+v, %t, %v", c, changed, endErr)
-			}
-			if wake, ok, err = f.l.PreviewWake(nil); err != nil || ok {
-				t.Fatalf("wake after the challenge ended = %v %t %v, want none", wake, ok, err)
-			}
-		})
+		}
 	}
 }
 
@@ -195,6 +223,7 @@ func TestAdmissionLedgerStartedChallengePreviewWaits(t *testing.T) {
 	}
 	waits := func(t *testing.T, f *ledgerFixture, answers map[admission.CandidateID]admission.Answer, want time.Time) {
 		t.Helper()
+		f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, 0) })
 		if picks, err := f.l.SchedulePreview(answers); err != nil || len(picks) != 0 {
 			t.Fatalf("selection while waiting = %+v, %v; want none", picks, err)
 		}
@@ -204,6 +233,9 @@ func TestAdmissionLedgerStartedChallengePreviewWaits(t *testing.T) {
 	}
 	served := func(t *testing.T, f *ledgerFixture, id admission.CandidateID) {
 		t.Helper()
+		// Retiring a held attempt frees recovery room. Keep that room
+		// exhausted so only the readiness change can release the preview.
+		f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, 0) })
 		charges := len(f.charges())
 		if wake, ok, err := f.l.PreviewWake(nil); err != nil || !ok || !wake.Equal(f.wall) {
 			t.Fatalf("wake once the wait is over = %v %t %v, want now", wake, ok, err)
