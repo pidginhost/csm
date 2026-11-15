@@ -66,13 +66,36 @@ func TestAdmissionLedgerFeatureReaderCompatibility(t *testing.T) {
 		{"zero", binary.BigEndian.AppendUint64(nil, 0), nil},
 		{"live", binary.BigEndian.AppendUint64(nil, 1), nil},
 		{"unknown bit", binary.BigEndian.AppendUint64(nil, 1|1<<5), ErrAdmissionSchema},
+		{"high bit", binary.BigEndian.AppendUint64(nil, 1<<63), ErrAdmissionSchema},
+		{"empty", []byte{}, admission.ErrCorruptRecord},
 		{"malformed", []byte{1}, admission.ErrCorruptRecord},
+		{"oversized", make([]byte, 9), admission.ErrCorruptRecord},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLedgerFixture(t)
 			if raw, found := f.rawFeatures(); found {
 				t.Fatalf("a ledger that never started live stores features %x", raw)
 			}
+			expires := f.wall.Add(time.Hour)
+			running := f.reservedAt("192.0.2.30", expires)
+			failed := f.reservedAt("192.0.2.31", expires)
+			applied := f.reservedAt("192.0.2.32", expires)
+			for _, a := range []admission.AttemptRecord{running, failed, applied} {
+				if _, _, granted, err := f.l.Execute(a.Attempt.ID); err != nil || !granted {
+					t.Fatalf("execute = %v, %v", granted, err)
+				}
+			}
+			if _, _, err := f.l.Finish(failed.Attempt.ID, admission.DispositionFailed); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := f.l.Finish(applied.Attempt.ID, admission.DispositionApplied); err != nil {
+				t.Fatal(err)
+			}
+			wantIntent := admission.Intent{
+				Action: running.Attempt.ID, Batch: batchOf(t, running.Attempt.ID),
+				Kind: admission.KindBlockIP, Target: f.target("192.0.2.30"), ExpiresAt: expires,
+			}
+			ids := []string{string(applied.Attempt.ID), string(failed.Attempt.ID), string(running.Attempt.ID), "act_00000000000000000000000000000000"}
 			if tc.raw != nil {
 				f.putMetaFeatures(tc.raw)
 			}
@@ -83,17 +106,25 @@ func TestAdmissionLedgerFeatureReaderCompatibility(t *testing.T) {
 			if !reflect.DeepEqual(before, f.snapshot()) {
 				t.Fatal("opening rewrote the ledger")
 			}
-			if _, err := ReadUnresolvedIntents(f.db); err != nil {
-				t.Errorf("reading intents: %v", err)
+			if got, err := ReadUnresolvedIntents(f.db); err != nil || !reflect.DeepEqual(got, []admission.Intent{wantIntent}) {
+				t.Errorf("intents = %+v, %v; want %+v", got, err, wantIntent)
 			}
-			if _, err := ReadAdmissionClock(f.db); err != nil {
-				t.Errorf("reading the clock: %v", err)
+			clock, err := ReadAdmissionClock(f.db)
+			if err != nil || !clock.Now().Equal(f.wall) {
+				t.Errorf("clock = %+v, %v; want %v", clock, err, f.wall)
 			}
-			if _, err := ReadUnprovenBlockActions(f.db, []string{"act_missing"}); err != nil {
-				t.Errorf("reading unproven actions: %v", err)
+			reading := admission.ClockReading{Wall: f.wall, BootID: ledgerBoot, SinceBoot: f.since + time.Minute}
+			if got := clock.Proven(reading); !got.Equal(f.wall.Add(time.Minute)) {
+				t.Errorf("proven clock = %v, want %v", got, f.wall.Add(time.Minute))
 			}
-			if _, err := ReadSettledBlockActions(f.db, []string{"act_missing"}); err != nil {
-				t.Errorf("reading settled actions: %v", err)
+			if got, err := ReadUnprovenBlockActions(f.db, ids); err != nil || !reflect.DeepEqual(got, ids[1:3]) {
+				t.Errorf("unproven actions = %v, %v; want %v", got, err, ids[1:3])
+			}
+			if got, err := ReadSettledBlockActions(f.db, ids); err != nil || !reflect.DeepEqual(got, ids[1:2]) {
+				t.Errorf("settled actions = %v, %v; want %v", got, err, ids[1:2])
+			}
+			if !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("startup readers rewrote the ledger")
 			}
 		})
 	}
@@ -182,23 +213,30 @@ func TestAdmissionLedgerFeaturesSurviveCopies(t *testing.T) {
 				t.Fatalf("imported unresolved intents = %d (%v), want the running attempt's", len(intents), readErr)
 			}
 
-			target := newLedgerFixture(t)
-			target.begin()
-			target.observedArrival("192.0.2.77", "offset=77")
-			untouched := target.snapshot()
-			targetState := filepath.Dir(target.db.Path())
-			if err = target.db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if _, err = Import(ImportOptions{SrcPath: archive, StatePath: targetState, RulesPath: t.TempDir(), Only: "firewall", CurrentPlatform: defaultPlatform()}); err != nil {
-				t.Fatal(err)
-			}
-			if target.db, err = Open(targetState); err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = target.db.Close() }()
-			if !reflect.DeepEqual(untouched, target.snapshot()) {
-				t.Fatal("a firewall-only import changed the target's admission records")
+			for _, live := range []bool{false, true} {
+				target := newLedgerFixture(t)
+				target.begin()
+				target.observedArrival("192.0.2.77", "offset=77")
+				if live {
+					if err = target.l.StartLive(admission.LegacyHandover{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				untouched := target.snapshot()
+				targetState := filepath.Dir(target.db.Path())
+				if err = target.db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = Import(ImportOptions{SrcPath: archive, StatePath: targetState, RulesPath: t.TempDir(), Only: "firewall", CurrentPlatform: defaultPlatform()}); err != nil {
+					t.Fatal(err)
+				}
+				if target.db, err = Open(targetState); err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = target.db.Close() }()
+				if !reflect.DeepEqual(untouched, target.snapshot()) {
+					t.Fatal("a firewall-only import changed the target's admission records")
+				}
 			}
 		})
 	}

@@ -3,6 +3,8 @@ package store
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -40,19 +42,54 @@ func (f *ledgerFixture) putMetaFeatures(raw []byte) {
 // start cannot open a ledger it would misread. A ledger that has not
 // started live records none, and the marked ledger reopens.
 func TestAdmissionLedgerLiveStartRecordsTheLiveFeature(t *testing.T) {
-	f := newLedgerFixture(t)
-	if _, found := f.metaFeatures(); found {
-		t.Fatal("a ledger that never started live records features")
+	for _, schema := range []byte{admissionSchemaVersion, admissionSchemaEpisodeElapsed} {
+		t.Run(fmt.Sprint(schema), func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.setSchema(schema)
+			if _, found := f.metaFeatures(); found {
+				t.Fatal("a ledger that never started live records features")
+			}
+			if err := f.l.StartLive(admission.LegacyHandover{}); err != nil {
+				t.Fatal(err)
+			}
+			bits, found := f.metaFeatures()
+			if !found || bits != 1 {
+				t.Fatalf("features after the live start = %#x, recorded %v; want the live bit", bits, found)
+			}
+			if want := max(schema, admissionSchemaLive); f.schema() != want {
+				t.Fatalf("schema after live start = %d, want %d", f.schema(), want)
+			}
+			if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+				t.Fatalf("reopening a ledger with the live feature: %v", err)
+			}
+		})
 	}
-	if err := f.l.StartLive(admission.LegacyHandover{}); err != nil {
-		t.Fatal(err)
-	}
-	bits, found := f.metaFeatures()
-	if !found || bits != 1 {
-		t.Fatalf("features after the live start = %#x, recorded %v; want the live bit", bits, found)
-	}
-	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
-		t.Fatalf("reopening a ledger with the live feature: %v", err)
+}
+
+// A handle opened before incompatible feature bytes appeared must not
+// overwrite them or commit any part of the live handover.
+func TestAdmissionLedgerLiveStartPreservesInvalidFeatures(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		want error
+	}{
+		{"unknown bit", binary.BigEndian.AppendUint64(nil, 1<<5), ErrAdmissionSchema},
+		{"malformed", []byte{1}, admission.ErrCorruptRecord},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			f.observedArrival("192.0.2.10", "offset=1")
+			f.putMetaFeatures(tc.raw)
+			before := f.snapshot()
+			if err := f.l.StartLive(admission.LegacyHandover{}); !errors.Is(err, tc.want) {
+				t.Fatalf("live start = %v, want %v", err, tc.want)
+			}
+			if f.l.LiveStarted() || !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("a refused live start changed the ledger")
+			}
+		})
 	}
 }
 
