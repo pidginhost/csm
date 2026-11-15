@@ -74,9 +74,10 @@ func requireBackupSpace(path string, size int64) error {
 	return nil
 }
 
-func parseBackupRestoreArgs(args []string) (string, int64, error) {
+func parseBackupRestoreArgs(args []string, restore bool) (string, int64, bool, error) {
 	var archive string
 	var maxBytes int64
+	force := false
 	positional := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -88,38 +89,47 @@ func parseBackupRestoreArgs(args []string) (string, int64, error) {
 			name, value, assigned := strings.Cut(arg, "=")
 			switch name {
 			case "--config", "--config-dir", "--max-bytes":
+			case "--force":
+				if !restore {
+					return "", 0, false, fmt.Errorf("unknown backup/restore option %s", name)
+				}
+				if assigned {
+					return "", 0, false, errors.New("--force takes no value")
+				}
+				force = true
+				continue
 			default:
-				return "", 0, fmt.Errorf("unknown backup/restore option %s", name)
+				return "", 0, false, fmt.Errorf("unknown backup/restore option %s", name)
 			}
 			if assigned && name != "--max-bytes" {
-				return "", 0, fmt.Errorf("use %s <path> with a separate value", name)
+				return "", 0, false, fmt.Errorf("use %s <path> with a separate value", name)
 			}
 			if !assigned {
 				i++
 				if i == len(args) {
-					return "", 0, fmt.Errorf("%s requires a value", name)
+					return "", 0, false, fmt.Errorf("%s requires a value", name)
 				}
 				value = args[i]
 			}
 			if name == "--max-bytes" {
 				parsed, err := strconv.ParseInt(value, 10, 64)
 				if err != nil || parsed <= 0 {
-					return "", 0, errors.New("--max-bytes must be a positive byte count")
+					return "", 0, false, errors.New("--max-bytes must be a positive byte count")
 				}
 				maxBytes = parsed
 			}
 			continue
 		}
 		if !positional && strings.HasPrefix(arg, "-") {
-			return "", 0, fmt.Errorf("unknown backup/restore option %s", arg)
+			return "", 0, false, fmt.Errorf("unknown backup/restore option %s", arg)
 		}
 		if archive != "" {
-			return "", 0, errors.New("backup/restore requires exactly one archive path")
+			return "", 0, false, errors.New("backup/restore requires exactly one archive path")
 		}
 		archive = arg
 	}
 	if archive == "" {
-		return "", 0, errors.New("backup/restore requires an archive path")
+		return "", 0, false, errors.New("backup/restore requires an archive path")
 	}
-	return archive, maxBytes, nil
+	return archive, maxBytes, force, nil
 }

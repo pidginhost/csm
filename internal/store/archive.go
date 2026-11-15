@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -64,6 +65,7 @@ var (
 	ErrPlatformMismatch    = errors.New("archive source platform does not match current host")
 	ErrManifestMissing     = errors.New("archive does not contain manifest.json")
 	ErrCorruptArchive      = errors.New("archive is corrupt or not a CSM backup")
+	ErrLedgerBehind        = errors.New("the archive's admission ledger is behind this host's live ledger")
 )
 
 // Manifest is the JSON header at the top of every archive.
@@ -101,6 +103,7 @@ type ImportOptions struct {
 	RulesPath             string
 	Only                  string // "all" | "baseline" | "firewall"
 	ForcePlatformMismatch bool
+	Force                 bool              // restore a ledger behind this host's live one
 	CurrentPlatform       map[string]string // for the mismatch check
 }
 
@@ -277,7 +280,9 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 }
 
 // Import unpacks an archive into the target state and rules paths. Live
-// daemons must be stopped first; callers enforce that before invoking.
+// daemons must be stopped first; callers enforce that before invoking, and
+// hold the state lock throughout: the ledger comparison opens the target
+// database read-only and nothing may write it meanwhile.
 func Import(opts ImportOptions) (*ImportResult, error) {
 	if opts.SrcPath == "" {
 		return nil, errors.New("SrcPath is empty")
@@ -421,6 +426,14 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 			return nil, err
 		}
 		if err := DisarmFirewallRollbackSnapshot(stagedBbolt); err != nil {
+			return nil, err
+		}
+	}
+
+	// The firewall part merges only fw:* buckets; the others replace the
+	// ledger or put the firewall state saved beside it next to this one.
+	if !opts.Force && (only == "all" || only == "baseline" && slices.Contains(stagedState, stateEntryPrefix+"firewall/state.json")) {
+		if err := CheckLedgerRestore(stagedBbolt, filepath.Join(opts.StatePath, "csm.db")); err != nil {
 			return nil, err
 		}
 	}

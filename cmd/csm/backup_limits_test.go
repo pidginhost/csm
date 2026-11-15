@@ -335,7 +335,7 @@ func TestParseBackupRestoreArgs(t *testing.T) {
 		{[]string{"--config", "/etc/csm/csm.yaml", "--config-dir", "/etc/csm/conf.d", "--max-bytes=9223372036854775807", "backup.tar.gz"}, "backup.tar.gz", 1<<63 - 1},
 		{[]string{"--", "--archive.tar.gz"}, "--archive.tar.gz", 0},
 	} {
-		path, maxBytes, err := parseBackupRestoreArgs(tc.args)
+		path, maxBytes, _, err := parseBackupRestoreArgs(tc.args, true)
 		if err != nil || path != tc.path || maxBytes != tc.max {
 			t.Errorf("parse %v=(%q, %d, %v), want (%q, %d)", tc.args, path, maxBytes, err, tc.path, tc.max)
 		}
@@ -346,7 +346,7 @@ func TestParseBackupRestoreArgs(t *testing.T) {
 		{"archive", "--max-bytes=garbage"}, {"archive", "--max-bytes="},
 		{"archive", "--config=/etc/csm/csm.yaml"}, {"archive", "--config-dir=/etc/csm/conf.d"},
 	} {
-		if _, _, err := parseBackupRestoreArgs(args); err == nil {
+		if _, _, _, err := parseBackupRestoreArgs(args, true); err == nil {
 			t.Errorf("invalid arguments accepted: %v", args)
 		}
 	}

@@ -37,6 +37,8 @@ type BackupSources struct {
 	// part of the learning bundle with the ledger in the state database.
 	LearningDir string
 	MaxBytes    int64
+	// Force lets restore put a ledger behind this host's live one.
+	Force bool
 }
 
 // WriteBackupArchive bundles every source path into a tar+gzip file at out.
@@ -308,7 +310,7 @@ func writeBackupArchiveGuarded(out string, src BackupSources) error {
 }
 
 func runBackup() {
-	out, maxBytes, err := parseBackupRestoreArgs(os.Args[2:])
+	out, maxBytes, _, err := parseBackupRestoreArgs(os.Args[2:], false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "csm backup: %v\nUsage: csm backup <output.tar.gz> [--max-bytes <bytes>]\n", err)
 		os.Exit(1)
