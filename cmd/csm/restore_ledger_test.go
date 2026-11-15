@@ -420,3 +420,32 @@ func TestRestoreCommandPassesForce(t *testing.T) {
 		}
 	}
 }
+
+// A state database with damaged pages is what a restore is run to repair:
+// the ledger comparison must neither crash on it nor refuse the archive.
+func TestRestoreOverADatabaseWithDamagedPages(t *testing.T) {
+	dst := restoreHost(t)
+	path := filepath.Join(dst.StateDir, "csm.db")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 2 * os.Getpagesize(); i < len(data); i++ {
+		data[i] = 0xa5
+	}
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "state")
+	writeRestoreLedger(t, src, restoreLedgerT0, false, "archive")
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	if err = WriteBackupArchive(archive, BackupSources{StateDir: src}); err != nil {
+		t.Fatal(err)
+	}
+	if err = RestoreBackupArchive(archive, dst); err != nil {
+		t.Fatalf("restore over a database with damaged pages: %v", err)
+	}
+	if live, clock := restoreLedgerPosition(t, dst.StateDir); live || !clock.Equal(restoreLedgerT0) {
+		t.Fatalf("ledger after the repair: live %t, clock %v; want the archive's", live, clock)
+	}
+}

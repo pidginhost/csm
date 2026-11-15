@@ -477,3 +477,46 @@ func TestLedgerRestoreDoesNotOpenNamedPipe(t *testing.T) {
 		t.Fatal("ledger comparison blocked opening a named pipe")
 	}
 }
+
+// corruptPages overwrites every page of the database at path after its two
+// meta pages, as a torn write or a failing disk leaves it.
+func corruptPages(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 2 * os.Getpagesize(); i < len(data); i++ {
+		data[i] = 0xa5
+	}
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A database with damaged pages is what an import is run to repair. The
+// ledger comparison reads the target, and a damaged page there must
+// neither crash the import nor refuse it; a damaged archive database
+// counts as behind a live target and names --force.
+func TestLedgerRestoreOverDamagedPages(t *testing.T) {
+	t.Run("target", func(t *testing.T) {
+		archive := exportLedger(t, restoreLedger(t, ledgerT0, false, "archive"))
+		target := closeLedger(t, restoreLedger(t, ledgerT0.Add(time.Hour), true, "target"))
+		corruptPages(t, filepath.Join(target, "csm.db"))
+		if _, err := Import(ImportOptions{SrcPath: archive, StatePath: target, Only: "all", CurrentPlatform: defaultPlatform()}); err != nil {
+			t.Fatalf("import over a database with damaged pages: %v", err)
+		}
+		if live, clock := ledgerPositionOf(t, target); live || !clock.Equal(ledgerT0) {
+			t.Fatalf("ledger after the repair: live %t, clock %v; want the archive's", live, clock)
+		}
+	})
+	t.Run("archive", func(t *testing.T) {
+		damaged := filepath.Join(closeLedger(t, restoreLedger(t, ledgerT0.Add(time.Hour), true, "")), "csm.db")
+		corruptPages(t, damaged)
+		target := filepath.Join(closeLedger(t, restoreLedger(t, ledgerT0, true, "")), "csm.db")
+		err := CheckLedgerRestore(damaged, target)
+		if !errors.Is(err, ErrLedgerBehind) || !strings.Contains(err.Error(), "cannot be read") || !strings.Contains(err.Error(), "--force") {
+			t.Fatalf("comparison with a damaged archive database = %v, want a refusal naming --force", err)
+		}
+	})
+}

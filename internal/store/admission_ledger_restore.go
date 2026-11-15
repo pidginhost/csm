@@ -42,7 +42,14 @@ func checkArchiveLedger(archive string, targetClock time.Time) error {
 // readLedgerPosition reads, without a ledger handle, whether the database
 // at path holds a ledger that started live and its admission clock. A
 // missing file or one without a current ledger has not started.
-func readLedgerPosition(path string) (bool, time.Time, error) {
+func readLedgerPosition(path string) (live bool, at time.Time, err error) {
+	// bbolt reports a damaged page by panicking. A database that cannot be
+	// read is an answer here, not a crash: restoring over it is the repair.
+	defer func() {
+		if r := recover(); r != nil {
+			live, at, err = false, time.Time{}, fmt.Errorf("reading the ledger database: %v", r)
+		}
+	}()
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		return false, time.Time{}, nil
@@ -60,7 +67,6 @@ func readLedgerPosition(path string) (bool, time.Time, error) {
 		return false, time.Time{}, err
 	}
 	defer func() { _ = db.Close() }()
-	var live bool
 	var clock admission.Clock
 	err = db.View(func(tx *bolt.Tx) error {
 		if current, currentErr := currentLedger(tx); !current {
