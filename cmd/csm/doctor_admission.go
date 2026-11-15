@@ -98,6 +98,10 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 			c.Status = "warn"
 			c.Message = "a ceiling of 1 runs only the reserved lane: only direct compromise and corroborated responses can be served; " + closing
 			c.Fix = "raise auto_response.max_blocks_per_hour, or remove it to use the default"
+		case o.CeilingSource == config.CeilingConfigured && limit < config.DefaultAdmissionCeiling:
+			c.Status = "warn"
+			c.Message = fmt.Sprintf("auto_response.max_blocks_per_hour sets the ceiling to %d, below the default of %d", limit, config.DefaultAdmissionCeiling) + "; " + closing
+			c.Fix = fmt.Sprintf("remove auto_response.max_blocks_per_hour to use the default ceiling; scan-driven blocks then keep their default budget of %d an hour", config.DefaultMaxBlocksPerHour)
 		}
 		rows = append(rows, c)
 	}

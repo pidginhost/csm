@@ -99,6 +99,13 @@ func TestPackagedDefaultsMatchBuiltInDefaults(t *testing.T) {
 			t.Errorf("%s: built-in %q, packaged %q; listed as %q and %q (%s)", key, got[0], got[1], want.builtIn, want.packaged, want.why)
 		}
 	}
+	// The walk skips yaml:"-" fields, so a packaged max_blocks_per_hour
+	// that spells out the legacy default looks omitted, yet an explicit
+	// value also sets the admission ceiling.
+	builtInCeiling, _ := builtIn.AdmissionCeiling()
+	if packagedCeiling, source := packaged.AdmissionCeiling(); packagedCeiling != builtInCeiling || builtInCeiling != DefaultAdmissionCeiling {
+		t.Errorf("admission ceiling: %d (%s) as packaged, %d when omitted; want %d", packagedCeiling, source, builtInCeiling, DefaultAdmissionCeiling)
+	}
 	for key, want := range packagedDefaultDifferences {
 		if _, ok := found[key]; !ok {
 			t.Errorf("%s: no longer differs; remove it from the list", key)
