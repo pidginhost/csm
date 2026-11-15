@@ -4,13 +4,12 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/store"
 )
 
 // thinIP is an address alone in its /48. 2001:db8:7::/48 is never one of them.
@@ -879,22 +878,16 @@ func TestInitAppliesDefaultMailBudget(t *testing.T) {
 	if DefaultMailBudget <= 0 {
 		t.Fatalf("DefaultMailBudget = %d, want a limit", DefaultMailBudget)
 	}
-	previousStore := store.Global()
-	store.SetGlobal(nil)
-	globalMu.Lock()
-	previousDB := globalDB
-	globalMu.Unlock()
-
+	const name = "TestInitAppliesDefaultMailBudget"
+	if os.Getenv("CSM_TEST_INIT") != name {
+		runInitTest(t, name)
+		return
+	}
 	db := Init(t.TempDir())
-	t.Cleanup(func() {
-		db.Stop()
-		globalMu.Lock()
-		globalDB = previousDB
-		globalMu.Unlock()
-		// Init runs once per process; a second run of this test needs it again.
-		dbInitOnce = sync.Once{}
-		store.SetGlobal(previousStore)
-	})
+	defer db.Stop()
+	if Global() != db || Init(t.TempDir()) != db {
+		t.Fatal("Init did not retain the singleton")
+	}
 
 	if db.mailBudget != DefaultMailBudget {
 		t.Fatalf("Init left mailBudget = %d, want DefaultMailBudget (%d)", db.mailBudget, DefaultMailBudget)

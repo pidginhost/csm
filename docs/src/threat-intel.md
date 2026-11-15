@@ -37,7 +37,9 @@ threat score or add attack events. Ham only updates an existing record.
 Spam and ham verdicts about an IPv6 sender are recorded per /64 network, not
 per address. A record that holds only spam evidence is dropped once that
 evidence has faded, or sooner to keep the
-[spam evidence budget](antispam.md#spam-evidence-budget). See
+[50,000-record spam evidence budget](antispam.md#spam-evidence-budget).
+The budget is checked when a verdict is recorded, using that verdict's
+observation time; startup can load more records until then. See
 [Spam evidence](antispam.md#spam-evidence) for the details.
 
 Verdict weights decay from their observation times, including when older
@@ -46,7 +48,8 @@ time. Spam refreshes the record's activity time. Remaining ham weight keeps
 a spam-only record until both spam and ham evidence have faded, but never
 past the 90-day limit since the last spam verdict or finding. The spam
 evidence budget can drop it sooner.
-Mail evidence survives a restart with its original counts and observation times.
+Retained mail evidence survives a restart with its original counts and
+observation times.
 
 ## IP Intelligence
 

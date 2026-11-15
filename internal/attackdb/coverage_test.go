@@ -13,8 +13,8 @@ import (
 )
 
 // newTestDB constructs a fresh DB instance anchored to a temp dir without
-// going through Init() — Init uses a package-level sync.Once that can
-// only fire once per test binary, so tests must build the DB directly.
+// going through Init. Most tests do not need the process singleton or its
+// saver goroutine; Init lifecycle tests use separate processes.
 func newTestDB(t *testing.T) *DB {
 	t.Helper()
 	dir := t.TempDir()
@@ -886,8 +886,7 @@ func TestSeedFromPermanentBlocklistSkipsExisting(t *testing.T) {
 // --- Global ------------------------------------------------------------
 
 func TestGlobalInitiallyNilBeforeInit(t *testing.T) {
-	// We cannot call Init from tests (sync.Once), but Global() should
-	// return whatever the var currently holds.
+	// Global should return the installed instance independently of Init.
 	globalMu.Lock()
 	prev := globalDB
 	globalMu.Unlock()

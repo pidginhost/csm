@@ -414,13 +414,22 @@ verdicts.
 
 ### Spam evidence budget
 
-Each time CSM records a verdict, it keeps the records that hold only spam
-evidence at or under 50,000, about 22 MB of memory. Between verdicts the
-count can be higher, for example after a start that loads more stored
-records or when a mail login attack passes 30 days. The budget is fixed
-and has no setting. A record that also has attack findings, a block or a
-mail login attack in the last 30 days does not count toward the budget
-and is never dropped for it.
+The spam evidence budget is 50,000 records, about 22 MB of memory for
+records held only for spam evidence. It is fixed and has no setting.
+Each time CSM records a verdict, it keeps eligible records at or under
+that budget, counted at the verdict's observation time. A missing time
+uses the current time. Invalid addresses and ham from an untracked sender
+are ignored and do not trigger the budget.
+
+Startup loads unexpired evidence without trimming it to the budget. The
+count can therefore exceed the budget until a verdict is recorded. It can
+also grow as login evidence ages: a record with a mail login attack becomes
+eligible only when that attack is more than 30 days old at the verdict's
+time and the record has no attack findings or block. Records with attack
+findings, a block or still-protected login evidence never count toward the
+budget and are never dropped for it. A delayed verdict can leave more than
+50,000 records eligible at the current time because it counts them at its
+own earlier time.
 
 When a verdict is recorded and the count is over the budget, CSM drops
 records until nine tenths of the budget remain, rounded down. Each record
@@ -455,8 +464,10 @@ says how many records that network held. The count in a later warning
 includes everything dropped since the previous one. Drops made after a
 warning are reported by the next warning. It comes with a later drop or
 with a deep scan, once a day has passed since the previous warning. A
-restart forgets drops not yet reported. The [API threat
-statistics](api.md) include the total dropped since the daemon started.
+restart forgets drops not yet reported. Evicted records are removed from
+storage on the next successful flush; they can return after a crash before
+that flush. The [API threat statistics](api.md) include the total dropped
+since the daemon started.
 
 Look at the named network and its count. The count is how many records
 holding only spam evidence the network had when the drop began, not how
