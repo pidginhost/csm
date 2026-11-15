@@ -187,8 +187,10 @@ type Owner struct {
 	snapshotErr   error
 	tickErr       error
 	scheduleErr   error
-	degraded      bool
-	lastTick      time.Time
+	// settled is set by the first turn that completes in this process.
+	settled  bool
+	degraded bool
+	lastTick time.Time
 	// now is the admission time of the last reading.
 	now time.Time
 	// scheduleDue asks the next schedule turn to run; wakeAt, on the
@@ -1009,6 +1011,11 @@ func (o *Owner) runTurn(selecting bool) error {
 	if o.mayRetire() && !o.heldAt.IsZero() && (o.wakeAt.IsZero() || o.heldAt.Before(o.wakeAt)) {
 		o.wakeAt = o.heldAt
 	}
+	if !o.settled {
+		// Doctor reads the last status, so the first turn publishes it.
+		o.settled = true
+		o.refreshStatus()
+	}
 	return nil
 }
 
@@ -1408,6 +1415,7 @@ func (o *Owner) status() *health.AdmissionStatus {
 func (o *Owner) refreshStatus() {
 	s := &health.AdmissionStatus{CheckedAt: time.Now(), Owner: &health.AdmissionOwner{
 		Executing:     o.executing(),
+		Settled:       o.settled,
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}

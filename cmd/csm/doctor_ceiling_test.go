@@ -126,7 +126,7 @@ func TestDoctorLegacyCeilingConfigCompatibility(t *testing.T) {
 				ledger.Ceiling.Limit = limit
 				report := doctorReportForSnapshot(t, admissionSnapshot(&health.AdmissionStatus{
 					CheckedAt: time.Now(), Ledger: ledger, Ingress: &admission.IngressHealth{Admitting: true},
-					Owner: &health.AdmissionOwner{Executing: executing, CeilingSource: source},
+					Owner: &health.AdmissionOwner{Executing: executing, Settled: executing, CeilingSource: source},
 				}))
 				row, ok := doctorCheckNamed(report, "admission ceiling")
 				if !ok || row.Status != tc.status || !strings.Contains(row.Message, tc.says) {

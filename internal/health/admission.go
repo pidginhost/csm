@@ -30,6 +30,12 @@ type AdmissionOwner struct {
 	// outage of automatic blocking, and doctor fails where a preview only
 	// warns.
 	Executing bool `json:"executing"`
+	// Settled is set once this process's owner has completed a turn. The
+	// check that follows an upgrade runs within seconds of the start, and
+	// a failure there rolls the binary back to one that may refuse the
+	// ledger; until the first turn, and for two minutes at most, doctor
+	// rates an executing owner's outages as warnings.
+	Settled bool `json:"settled"`
 	// Error is why the owner is not running; empty once it is.
 	Error string `json:"error,omitempty"`
 	// TurnError is why the owner's last turn failed while the owner runs.

@@ -151,7 +151,7 @@ func TestDoctorReportsHeldExecution(t *testing.T) {
 	at := time.Now().UTC()
 	view := func(held string, executing bool) *health.AdmissionStatus {
 		return &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{Admitting: true},
-			Owner: &health.AdmissionOwner{ExecutionHeld: held, Executing: executing}}
+			Owner: &health.AdmissionOwner{ExecutionHeld: held, Executing: executing, Settled: true}}
 	}
 	for _, tc := range []struct {
 		executing      bool

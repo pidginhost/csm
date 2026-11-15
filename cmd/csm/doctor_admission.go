@@ -12,7 +12,7 @@ import (
 
 // admissionDoctorChecks renders the admission rules for a snapshot whose
 // daemon owns a ledger, judged at the time the daemon read it.
-func admissionDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
+func admissionDoctorChecks(a *health.AdmissionStatus, started time.Time) []DoctorCheck {
 	if a == nil {
 		return nil
 	}
@@ -21,7 +21,40 @@ func admissionDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	for _, r := range rows {
 		checks = append(checks, DoctorCheck{Name: r.Name, Status: r.Status, Message: r.Message, Fix: r.Fix})
 	}
-	return append(checks, ownerDoctorChecks(a)...)
+	return warnUntilSettled(a, started, append(checks, ownerDoctorChecks(a)...))
+}
+
+// warnUntilSettled lowers an executing owner's failures to warnings until
+// its first turn of this process completes. The check that follows an
+// upgrade runs within seconds of the start, and a failure there rolls the
+// binary back to one that may refuse the ledger this one started live.
+// The grace ends admissionSettleGrace after the daemon started at
+// started, so an owner that never completes a turn still fails.
+func warnUntilSettled(a *health.AdmissionStatus, started time.Time, checks []DoctorCheck) []DoctorCheck {
+	if !admissionExecuting(a) || a.Owner.Settled || !admissionWithinSettleGrace(started, time.Now()) {
+		return checks
+	}
+	for i := range checks {
+		if checks[i].Status == "fail" {
+			checks[i].Status = "warn"
+			checks[i].Message += "; " + admissionUnsettled
+		}
+	}
+	return checks
+}
+
+// admissionUnsettled ends a row whose failure is rated a warning because
+// the owner has not completed a turn since the daemon started.
+const admissionUnsettled = "a warning until admission completes a turn, for at most two minutes after the daemon starts"
+
+// admissionSettleGrace is how long after the daemon starts an owner
+// without a completed turn only warns: longer than the upgrade check
+// waits, and two rounds of the owner's slowest retry.
+const admissionSettleGrace = 2 * time.Minute
+
+func admissionWithinSettleGrace(started, now time.Time) bool {
+	elapsed := now.Sub(started)
+	return !started.IsZero() && elapsed >= 0 && elapsed < admissionSettleGrace
 }
 
 // admissionExecuting says whether the snapshot's admission runs automatic
