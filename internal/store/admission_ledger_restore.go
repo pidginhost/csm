@@ -43,8 +43,17 @@ func checkArchiveLedger(archive string, targetClock time.Time) error {
 // at path holds a ledger that started live and its admission clock. A
 // missing file or one without a current ledger has not started.
 func readLedgerPosition(path string) (bool, time.Time, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		return false, time.Time{}, nil
+	}
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	// Opening a pipe can block before bbolt's lock timeout starts. Other
+	// special files cannot hold a database either; leave them repairable.
+	if !info.Mode().IsRegular() {
+		return false, time.Time{}, fmt.Errorf("ledger database is not a regular file")
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
 	if err != nil {

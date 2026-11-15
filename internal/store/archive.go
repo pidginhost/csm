@@ -376,6 +376,11 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		if isTransientStateArchiveEntry(clean) {
 			continue
 		}
+		// Only the snapshot may replace csm.db. Treating it as a state file
+		// would let a baseline import replace the ledger without checking it.
+		if clean == stateEntryPrefix+"csm.db" {
+			return nil, fmt.Errorf("%w: database must be stored as %s", ErrCorruptArchive, bboltSnapshotEntry)
+		}
 		if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
 			return nil, fmt.Errorf("staging dir: %w", mkErr)
 		}
@@ -407,12 +412,15 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		return nil, fmt.Errorf("%w: %s import needs bbolt snapshot in archive", ErrCorruptArchive, only)
 	}
 
+	baselineFirewall := only == "baseline" && slices.Contains(stagedState, stateEntryPrefix+"firewall/state.json")
 	// Verify the staged bbolt snapshot against the hash the manifest recorded
 	// at export time before any bbolt-consuming import applies payloads.
 	// zstd's frame CRC catches transport corruption, but a snapshot that was
 	// altered before compression would otherwise be promoted over csm.db
-	// unchecked. Empty hash means a pre-hash archive; skip rather than reject.
-	if (only == "all" || only == "firewall") && stagedBbolt != "" && man.BboltSHA256 != "" {
+	// unchecked. Baselines carrying firewall state also use this snapshot
+	// for the ledger guard. Empty hash means a pre-hash archive; skip rather
+	// than reject.
+	if (only == "all" || only == "firewall" || baselineFirewall) && stagedBbolt != "" && man.BboltSHA256 != "" {
 		gotHash, hashErr := sha256File(stagedBbolt)
 		if hashErr != nil {
 			return nil, fmt.Errorf("hashing staged bbolt snapshot: %w", hashErr)
@@ -432,7 +440,7 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 
 	// The firewall part merges only fw:* buckets; the others replace the
 	// ledger or put the firewall state saved beside it next to this one.
-	if !opts.Force && (only == "all" || only == "baseline" && slices.Contains(stagedState, stateEntryPrefix+"firewall/state.json")) {
+	if !opts.Force && (only == "all" || baselineFirewall) {
 		if err := CheckLedgerRestore(stagedBbolt, filepath.Join(opts.StatePath, "csm.db")); err != nil {
 			return nil, err
 		}

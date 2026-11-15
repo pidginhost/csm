@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -397,5 +398,82 @@ func TestImportOverADamagedLiveLedger(t *testing.T) {
 				t.Fatalf("firewall state = %q, want the archive's", fw)
 			}
 		})
+	}
+}
+
+// Baseline imports use the snapshot to authorize firewall state, so a
+// mismatched snapshot must not authorize a replacement, even with --force.
+func TestImportBaselineChecksLedgerSnapshotHash(t *testing.T) {
+	archive := exportLedger(t, restoreLedger(t, ledgerT0, true, "archive"))
+	tampered := filepath.Join(t.TempDir(), "tampered.csmbak")
+	rewriteArchiveFlippingBbolt(t, archive, tampered)
+	for _, force := range []bool{false, true} {
+		target := closeLedger(t, restoreLedger(t, ledgerT0, true, "target"))
+		before := treeOf(t, target)
+		_, err := Import(ImportOptions{SrcPath: tampered, StatePath: target, Only: "baseline", Force: force})
+		if !errors.Is(err, ErrCorruptArchive) || !strings.Contains(err.Error(), "hash mismatch") {
+			t.Errorf("force %t: import = %v, want snapshot hash mismatch", force, err)
+		}
+		if !sameTree(before, treeOf(t, target)) {
+			t.Fatalf("force %t: a corrupt baseline archive changed the target", force)
+		}
+	}
+}
+
+// A database disguised as a state file must not bypass the ledger guard
+// or replace the database during a baseline import.
+func TestImportRejectsDatabaseInStateFiles(t *testing.T) {
+	src := restoreLedger(t, ledgerT0, false, "")
+	srcDir := filepath.Dir(src.db.Path())
+	archive := exportLedger(t, src)
+	database, err := os.ReadFile(filepath.Join(srcDir, "csm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"state/csm.db", "state/./csm.db"} {
+		t.Run(name, func(t *testing.T) {
+			malformed := filepath.Join(t.TempDir(), "misplaced.csmbak")
+			rewriteArchiveAppendingFile(t, archive, malformed, name, database)
+			for _, force := range []bool{false, true} {
+				target := closeLedger(t, restoreLedger(t, ledgerT0.Add(time.Hour), true, "target"))
+				before := treeOf(t, target)
+				_, err := Import(ImportOptions{SrcPath: malformed, StatePath: target, Only: "baseline", Force: force})
+				if !errors.Is(err, ErrCorruptArchive) {
+					t.Errorf("force %t: import = %v, want corrupt archive", force, err)
+				}
+				if !sameTree(before, treeOf(t, target)) {
+					t.Fatalf("force %t: baseline import replaced the target database", force)
+				}
+			}
+		})
+	}
+}
+
+// An unreadable target is repairable, including a named pipe that would
+// block a read-only open before bbolt can apply its lock timeout.
+func TestLedgerRestoreDoesNotOpenNamedPipe(t *testing.T) {
+	pipe := filepath.Join(t.TempDir(), "csm.db")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "absent.db")
+	done := make(chan error, 1)
+	go func() {
+		done <- CheckLedgerRestore(archive, pipe)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("an unreadable target blocked repair: %v", err)
+		}
+	case <-time.After(time.Second):
+		// Release a blocked open so a failing test leaves no goroutine behind.
+		writer, err := os.OpenFile(pipe, os.O_RDWR|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = writer.Close() }()
+		<-done
+		t.Fatal("ledger comparison blocked opening a named pipe")
 	}
 }
