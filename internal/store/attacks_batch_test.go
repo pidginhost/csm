@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 // committedTx is the id of the last committed write transaction.
@@ -90,5 +91,39 @@ func TestUpdateIPRecordsRollsBackOnError(t *testing.T) {
 	}
 	if saved := db.LoadAllIPRecords(); len(saved) != 1 || saved["192.0.2.9"] == nil {
 		t.Fatalf("a failed batch changed the store: %v", saved)
+	}
+}
+
+func TestUpdateIPRecordsContinuesAfterDeleteRefusal(t *testing.T) {
+	db, openErr := Open(t.TempDir())
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	defer func() { _ = db.Close() }()
+	err := db.UpdateIPRecords(func(w *IPRecordTx) error {
+		// A bucket at the key makes both Put and Delete refuse it, without
+		// closing or poisoning the enclosing writable transaction.
+		if _, err := w.b.CreateBucket([]byte("192.0.2.9")); err != nil {
+			return err
+		}
+		if err := w.Save(IPRecord{IP: "192.0.2.1", EventCount: 1}); err != nil {
+			return err
+		}
+		if err := w.Delete("192.0.2.9"); !errors.Is(err, bolterrors.ErrIncompatibleValue) {
+			t.Fatalf("delete error = %v, want incompatible value", err)
+		}
+		if err := w.Save(IPRecord{IP: "192.0.2.9"}); !errors.Is(err, bolterrors.ErrIncompatibleValue) {
+			t.Fatalf("save error = %v, want incompatible value", err)
+		}
+		if err := w.Delete("192.0.2.1"); err != nil {
+			return err
+		}
+		return w.Save(IPRecord{IP: "198.51.100.2", EventCount: 2})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved := db.LoadAllIPRecords(); len(saved) != 1 || saved["198.51.100.2"] == nil || saved["198.51.100.2"].EventCount != 2 {
+		t.Fatalf("refusal prevented remaining operations from committing: %v", saved)
 	}
 }

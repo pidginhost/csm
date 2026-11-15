@@ -295,3 +295,55 @@ func TestAttackRecordQueueInterruptionVisibleBeforeStateCleanup(t *testing.T) {
 		})
 	}
 }
+
+func TestAttackRecordQueueTransactionInterruptionWithoutStagedWrite(t *testing.T) {
+	for _, boundary := range []string{"before_callback", "after_refusal"} {
+		for _, exitMode := range []string{"panic", "goexit"} {
+			t.Run(boundary+"/"+exitMode, func(t *testing.T) {
+				db := eventQueueFlatDB(t)
+				_, cleanup := setupBboltStore(t)
+				t.Cleanup(cleanup)
+				db.RemoveIP("192.0.2.9")
+				calls := 0
+				db.deleteRecord = func(*store.IPRecordTx, string) error {
+					calls++
+					return errors.New("delete refused")
+				}
+				db.updateRecords = func(sdb *store.DB, fn func(*store.IPRecordTx) error) error {
+					if boundary == "after_refusal" {
+						if err := sdb.UpdateIPRecords(fn); err != nil {
+							return err
+						}
+					}
+					if exitMode == "goexit" {
+						runtime.Goexit()
+					}
+					panic("interrupted transaction")
+				}
+				done := make(chan struct{})
+				returned, panicked := false, false
+				go func() {
+					defer close(done)
+					defer func() { panicked = recover() != nil }()
+					_ = db.Flush()
+					returned = true
+				}()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("interrupted flush did not finish")
+				}
+				wantCalls := 0
+				if boundary == "after_refusal" {
+					wantCalls = 1
+				}
+				if returned || panicked != (exitMode == "panic") || calls != wantCalls {
+					t.Fatalf("wrong interruption boundary: returned=%v panicked=%v calls=%d", returned, panicked, calls)
+				}
+				if s := recordQueueStatus(t, db, time.Now()); s.Depth != 1 || s.InFlight != 0 || s.DroppedTotal != 0 || !s.DroppedLowerBound || s.Reason != "persistence_uncertain" {
+					t.Fatalf("unreturned transaction concealed uncertainty: %+v", s)
+				}
+			})
+		}
+	}
+}

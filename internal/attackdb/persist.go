@@ -193,10 +193,13 @@ func (db *DB) saveRecords() {
 		// flush take minutes on a slow disk. A record the store refuses fails
 		// alone; the rest are written when the transaction commits.
 		var saved, removed, failed, failedDeletes []string
+		refused := make(map[string]error)
+		batch.beginTransaction()
 		err := update(sdb, func(w *store.IPRecordTx) error {
 			for _, sr := range records {
 				batch.begin(sr.IP)
 				if err := save(w, sr); err != nil {
+					refused[sr.IP] = err
 					batch.result(sr.IP, err)
 					fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", sr.IP, err)
 					failed = append(failed, sr.IP)
@@ -208,6 +211,7 @@ func (db *DB) saveRecords() {
 			for _, ip := range deleted {
 				batch.begin(ip)
 				if err := remove(w, ip); err != nil {
+					refused[ip] = err
 					batch.result(ip, err)
 					fmt.Fprintf(os.Stderr, "attackdb: store delete %s: %v\n", ip, err)
 					failedDeletes = append(failedDeletes, ip)
@@ -218,6 +222,7 @@ func (db *DB) saveRecords() {
 			}
 			return nil
 		})
+		batch.endTransaction()
 		if err != nil {
 			// Nothing was written, whether or not the transaction got as
 			// far as the records: every one of them retries.
@@ -232,7 +237,9 @@ func (db *DB) saveRecords() {
 			}
 		}
 		for _, ip := range append(saved, removed...) {
-			batch.result(ip, nil)
+			// A save and delete share one queue key. Either refusal must
+			// remain visible even if the other operation committed.
+			batch.result(ip, refused[ip])
 		}
 		if len(removed) > 0 {
 			db.mu.Lock()

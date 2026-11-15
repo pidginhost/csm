@@ -936,15 +936,20 @@ flight through writes, error logging and retry bookkeeping. Processing age uses
 `lag_basis: operation_progress` and resets at each returned store write or delete,
 at the commit of their batch, or at the complete flat-file write result. The
 store commits one flush as one batch, so a failed commit retries every record
-in it. One minute without progress or with
-waiting work degrades health. Returned failures report `retry_failed` while the
-retry remains queued, preserving its original age without counting it as lost.
+and deletion in it. A refusal affects only that operation; a successful save
+cannot clear a failed deletion for the same address, or vice versa. A returned
+commit refreshes processing age even if every operation was refused.
+One minute without progress or with waiting work degrades health. Returned
+failures report `retry_failed` while the retry remains queued, preserving its
+original age without counting it as lost.
 Successful retries clear that condition. A failed shutdown flush retains the
 in-memory retry; the stopped background saver does not schedule another attempt.
 
 An interrupted operation counts confirmed abandoned demand only when no pending
 update or deletion survives. Unreturned write outcomes report
 `persistence_uncertain` for one minute and retain `dropped_lower_bound` afterward.
+This includes a transaction interrupted before its callback starts or after all
+its operations were refused.
 Known losses remain counted through recovery. Health reads queue metadata only,
 without waiting for database state or storage locks. These measurements preserve
 the existing persistence, retry and shutdown behavior; they do not make retained
