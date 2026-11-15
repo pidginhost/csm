@@ -1058,6 +1058,11 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 		}
 	}
 
+	if fw.DenyTempIPLimitNegative {
+		results = append(results, ValidationResult{"warn", "firewall.deny_temp_ip_limit",
+			"a negative value is read as 0, which sets no limit on temporary blocks; set 0 or a positive limit"})
+	}
+
 	results = append(results, outAllowResults(fw)...)
 	results = append(results, protocolAllowResults(fw)...)
 	results = append(results, inAllowResults(fw)...)

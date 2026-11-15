@@ -2740,6 +2740,11 @@ func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]
 	if !present["deny_temp_ip_limit"] {
 		fc.DenyTempIPLimit = def.DenyTempIPLimit
 	}
+	// Every reader already treats a negative limit as 0, and earlier
+	// releases accepted one, so it loads as 0 with a warning.
+	if fc.DenyTempIPLimit < 0 {
+		fc.DenyTempIPLimit, fc.DenyTempIPLimitNegative = 0, true
+	}
 	if !present["smtp_allow_users"] {
 		fc.SMTPAllowUsers = def.SMTPAllowUsers
 	}

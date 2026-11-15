@@ -1,14 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
 )
 
@@ -134,5 +137,58 @@ func TestDoctorLegacyCeilingConfigCompatibility(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A negative temporary block limit was accepted by earlier releases, so it
+// must still pass plain doctor: validation adds one warning and no error,
+// and the report warns without failing.
+func TestDoctorAcceptsLegacyNegativeTemporaryLimit(t *testing.T) {
+	errorsOf := func(cfg *config.Config) (fields []string) {
+		for _, r := range config.Validate(cfg) {
+			if r.Level == "error" {
+				fields = append(fields, r.Field)
+			}
+		}
+		return fields
+	}
+	load := func(value string) *config.Config {
+		loaded, err := config.LoadBytes([]byte("firewall:\n  deny_temp_ip_limit: " + value + "\n"))
+		if err != nil {
+			t.Fatalf("limit %s does not load: %v", value, err)
+		}
+		cfg := validDoctorConfig()
+		cfg.Firewall = loaded.Firewall
+		return cfg
+	}
+	cfg, baseline := load("-1"), load("0")
+	if got, want := errorsOf(cfg), errorsOf(baseline); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("a negative limit adds validation errors: %v, baseline %v", got, want)
+	}
+	payload, err := json.Marshal(control.StatusResult{Version: "test", Snapshot: admissionSnapshot(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildDoctorReport(func() (*config.Config, error) { return cfg, nil }, func() ([]byte, error) { return payload, nil }, integrityOK)
+	row, ok := doctorCheckNamed(report, "config: firewall.deny_temp_ip_limit")
+	if !ok || row.Status != "warn" || !strings.Contains(row.Message, "negative") {
+		t.Fatalf("doctor row for the negative limit = %+v (%v), want a warning", row, ok)
+	}
+	if report.OverallStatus == "fail" {
+		t.Fatalf("doctor fails on a limit earlier releases accepted: %+v", report.Checks)
+	}
+	// The one warning is all the negative value adds to the report.
+	clean := buildDoctorReport(func() (*config.Config, error) { return baseline, nil }, func() ([]byte, error) { return payload, nil }, integrityOK)
+	statuses := func(r DoctorReport) map[string]string {
+		out := map[string]string{}
+		for _, c := range r.Checks {
+			if c.Name != "config: firewall.deny_temp_ip_limit" {
+				out[c.Name] = c.Status
+			}
+		}
+		return out
+	}
+	if got, want := statuses(report), statuses(clean); !reflect.DeepEqual(got, want) {
+		t.Fatalf("a negative limit changed other rows: %v, with a limit of 0 %v", got, want)
 	}
 }

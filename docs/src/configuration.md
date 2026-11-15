@@ -923,7 +923,7 @@ firewall:
 
   # IP limits
   deny_ip_limit: 3000                   # max permanent blocked IPs
-  deny_temp_ip_limit: 500               # max temporary blocked IPs; 0 = unlimited for existing blocking; admission forecasts then plan for 10000
+  deny_temp_ip_limit: 500               # max temporary blocked IPs; 0 = unlimited for existing blocking; admission forecasts then plan for 10000; a negative value reads as 0 with a warning
 
   # Outbound SMTP restriction
   smtp_block: false                     # block outgoing mail except allowed users
