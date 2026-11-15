@@ -37,8 +37,9 @@ func (l *AdmissionLedger) LiveStarted() bool {
 // it carries the greater of the legacy hour's count and the charges
 // retained in its hour, leaves pending legacy entries alone, ends earlier
 // observe previews' answers, clears their notices, makes their history
-// eligible, and records the start under the schema that older builds
-// refuse. It also ends the block_ip work the preview period left queued.
+// eligible, and records the start with the live feature bit, which older
+// builds refuse. It also ends the block_ip work the preview period left
+// queued.
 // A ledger that has started refuses with ErrTransitionConflict.
 // It needs a reading this handle recorded.
 func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {

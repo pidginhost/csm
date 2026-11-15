@@ -36,7 +36,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Changed
 
 - `csm restore` and `csm store import` now need `--force` to put back a backup older than this host's live admission ledger; other hosts are unaffected.
-- New installs leave `auto_response.max_blocks_per_hour` unset. Existing hosts keep their value, and `csm doctor` warns when it is below the default.
+- New installs leave `auto_response.max_blocks_per_hour` unset; hosts that set it keep their value, and `csm doctor` warns when it is below the admission default of 2000.
 - A negative `firewall.deny_temp_ip_limit` still means no limit, and config validation and `csm doctor` now warn about it.
 - On servers without cPanel, the Web UI hides cPanel-only Email Security tabs, cPHulk actions and settings, and shows Email Security only when a mail server runs.
 
