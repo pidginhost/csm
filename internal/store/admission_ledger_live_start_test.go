@@ -91,6 +91,9 @@ func TestAdmissionLedgerFailedLiveStartChangesNothing(t *testing.T) {
 	if f.l.LiveStarted() || !reflect.DeepEqual(before, f.snapshot()) || len(published) != 0 {
 		t.Fatalf("a failed live start changed the ledger or reported %d refusals", len(published))
 	}
+	if raw, found := f.rawFeatures(); found {
+		t.Fatalf("a failed live start left features %x", raw)
+	}
 	reopened, err := OpenAdmissionLedger(f.db, f.reg)
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +101,9 @@ func TestAdmissionLedgerFailedLiveStartChangesNothing(t *testing.T) {
 	wantLedgerReason(t, "without a reading", reopened.StartLive(h), admission.ReasonEngineUnavailable)
 	if err := f.l.StartLive(h); err != nil || !f.l.LiveStarted() {
 		t.Fatalf("retried live start: %v", err)
+	}
+	if raw, found := f.rawFeatures(); !found || len(raw) != 8 || raw[7] != 1 {
+		t.Fatalf("the retried live start stored features %x (present %v), want the live bit", raw, found)
 	}
 	for _, id := range []admission.CandidateID{queued, retry} {
 		c := f.candidateOf(id)

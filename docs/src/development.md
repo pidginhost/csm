@@ -1283,8 +1283,12 @@ failures keep their own backoff. The start also makes the previews' history
 eligible at once. Until it runs, an executing owner delivers no ledger
 notice; with execution enabled the sender reads the mode and the due notices
 together, and an acknowledgement taken before the live start never covers a
-record raised after it. It writes schema 11, which earlier builds refuse,
-and leaves `blocked_ips.json` in place. A legacy state file it cannot read
+record raised after it. It raises the schema to 11, which every-host
+schemas 13 and later already exceed, and records the live feature bit in the
+ledger's meta bucket; every earlier build refuses that unknown key, so a
+binary rolled back across the live start does not open the ledger and keeps
+legacy-only blocking. A feature bit this build does not know is refused as a
+newer schema. It leaves `blocked_ips.json` in place. A legacy state file it cannot read
 keeps no saved credit, and `admission.owner.import.error` names the error.
 A failed live start fails the turn, reload or drain that ran it, and a
 failed tick or drain closes admission. A failed live-start tick reports its

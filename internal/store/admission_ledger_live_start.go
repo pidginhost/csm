@@ -87,6 +87,11 @@ func (l *AdmissionLedger) StartLive(h admission.LegacyHandover) error {
 		if err = raiseSchema(tx, admissionSchemaLive); err != nil {
 			return err
 		}
+		// Ledgers already at a later every-host schema gain nothing from the
+		// raise; the feature bit is what earlier builds refuse.
+		if err = addFeature(tx, featureLive); err != nil {
+			return err
+		}
 		return q.flush()
 	})
 	if err == nil {
