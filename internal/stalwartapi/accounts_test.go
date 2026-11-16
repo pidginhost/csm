@@ -224,12 +224,52 @@ func TestAccountByAddressAliasScanPages(t *testing.T) {
 	if w := walks(f); !reflect.DeepEqual(w, want) {
 		t.Fatalf("walk requests = %v; want %v", w, want)
 	}
-	// A miss reads every page until a short one.
+	// A miss reads every page until an empty one.
 	if _, found, err := f.keyClient().AccountByAddress(context.Background(), "nobody@example.org"); err != nil || found {
 		t.Fatalf("miss: found %v, err %v", found, err)
 	}
-	if w := walks(f); len(w) != 4 {
-		t.Fatalf("walk requests = %v; want two more for the miss", w)
+	want = append(want, `{"limit":500,"position":0}`, `{"limit":500,"position":500}`, `{"limit":500,"position":602}`)
+	if w := walks(f); !reflect.DeepEqual(w, want) {
+		t.Fatalf("walk requests = %v; want %v", w, want)
+	}
+}
+
+// listAll changes the answer to a query without a filter.
+func listAll(f *fakeStalwart, change func(ids []string) []string) {
+	inner := f.reply
+	f.reply = func(method string, args map[string]any) (string, any) {
+		m, v := inner(method, args)
+		if _, filtered := args["filter"]; method == "x:Account/query" && !filtered {
+			res := v.(map[string]any)
+			res["ids"] = change(res["ids"].([]string))
+		}
+		return m, v
+	}
+}
+
+// A server may return fewer ids than asked for; a short page is not the end.
+func TestAccountByAddressAliasScanCappedPages(t *testing.T) {
+	f := directory(t, 600)
+	listAll(f, func(ids []string) []string { return ids[:min(len(ids), 200)] })
+	got, found, err := f.keyClient().AccountByAddress(context.Background(), "robert@example.org")
+	if err != nil || !found || got.ID != "bob1" {
+		t.Fatalf("AccountByAddress = %+v, %v, %v; want bob1", got, found, err)
+	}
+	want := []string{`{"limit":500,"position":0}`, `{"limit":500,"position":200}`, `{"limit":500,"position":400}`, `{"limit":500,"position":600}`}
+	if w := walks(f); !reflect.DeepEqual(w, want) {
+		t.Fatalf("walk requests = %v; want %v", w, want)
+	}
+}
+
+// A server that repeats a page must not keep the walk going forever.
+func TestAccountByAddressAliasScanStopsOnRepeatedPage(t *testing.T) {
+	f := directory(t, 10)
+	listAll(f, func([]string) []string { return []string{"pad0", "pad1"} })
+	if got, found, err := f.keyClient().AccountByAddress(context.Background(), "robert@example.org"); err == nil || found {
+		t.Fatalf("AccountByAddress = %+v, %v, %v; want an error", got, found, err)
+	}
+	if w := walks(f); len(w) != 2 {
+		t.Fatalf("walk requests = %v; want the walk to stop at the first repeated page", w)
 	}
 }
 

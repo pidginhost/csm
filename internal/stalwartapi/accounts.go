@@ -2,6 +2,7 @@ package stalwartapi
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 )
@@ -61,18 +62,29 @@ func (c *Client) AccountByAddress(ctx context.Context, address string) (Account,
 	return c.accountByAlias(ctx, local, domain.ID)
 }
 
-// accountPage is the most ids one query or get carries: Stalwart's limit
-// on objects in a get.
+// accountPage is the most ids one query asks for and one get carries:
+// Stalwart's limit on objects in a get.
 const accountPage = 500
 
 // accountByAlias walks every account for the one with the alias local in
 // domainID. Stalwart cannot query aliases. An alias that is switched off
-// still matches: it can be switched back on.
+// still matches: it can be switched back on. A server may return fewer ids
+// than asked for, so only an empty page ends the walk, and a page with no
+// new id stops it with an error rather than looping.
 func (c *Client) accountByAlias(ctx context.Context, local, domainID string) (Account, bool, error) {
-	for pos := 0; ; pos += accountPage {
+	seen := map[string]bool{}
+	for pos := 0; ; {
 		ids, err := c.queryArgs(ctx, "x:Account/query", map[string]any{"limit": accountPage, "position": pos})
 		if err != nil || len(ids) == 0 {
 			return Account{}, false, err
+		}
+		fresh := false
+		for _, id := range ids {
+			fresh = fresh || !seen[id]
+			seen[id] = true
+		}
+		if !fresh {
+			return Account{}, false, errors.New("stalwart x:Account/query: paging repeated a page")
 		}
 		raw, err := c.rawAccounts(ctx, ids)
 		if err != nil {
@@ -85,9 +97,7 @@ func (c *Client) accountByAlias(ctx context.Context, local, domainID string) (Ac
 				}
 			}
 		}
-		if len(ids) < accountPage {
-			return Account{}, false, nil
-		}
+		pos += len(ids)
 	}
 }
 
