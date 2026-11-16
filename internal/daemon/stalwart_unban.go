@@ -148,6 +148,13 @@ func (u *stalwartUnban) clear(ctx context.Context, ip string) error {
 		fmt.Fprintf(os.Stderr, "[%s] Stalwart keeps its block of %s (%s)\n", ts(), ip, reason)
 	}
 	if len(ids) == 0 {
+		// A lift whose reload was lost leaves a ban Stalwart enforces but
+		// no longer lists. Reloading here lets a second unblock finish it.
+		reloadCtx, cancelReload := context.WithTimeout(ctx, stalwartCallTimeout)
+		defer cancelReload()
+		if reloadErr := client.ReloadBlockedIPs(reloadCtx); reloadErr != nil {
+			return fmt.Errorf("reloading Stalwart's ban list: %w", reloadErr)
+		}
 		return nil
 	}
 	deleteCtx, cancel := context.WithTimeout(ctx, stalwartCallTimeout)

@@ -204,3 +204,19 @@ func TestDeleteBlockedIPsRetriesTheReloadOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestReloadBlockedIPs(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"created": map[string]any{"r": map[string]any{}}}
+	}
+	if err := f.keyClient().ReloadBlockedIPs(context.Background()); err != nil {
+		t.Fatalf("ReloadBlockedIPs: %v", err)
+	}
+	if want := []string{"x:Action/set"}; !reflect.DeepEqual(f.methods(), want) {
+		t.Fatalf("calls = %q, want %q", f.methods(), want)
+	}
+	if s := asJSON(t, f.last().Args["create"]); s != `{"r":{"@type":"ReloadBlockedIps"}}` {
+		t.Fatalf("create = %s", s)
+	}
+}
