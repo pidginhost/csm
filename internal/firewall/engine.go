@@ -4585,6 +4585,11 @@ type initialBlockState struct {
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 	now := e.expiryNow()
 	state := e.loadStateFileAtLocked(now)
+	return e.initialBlockStateFromRowsLocked(state, now)
+}
+
+// initialBlockStateFromRowsLocked also accepts a strictly read rollback image.
+func (e *Engine) initialBlockStateFromRowsLocked(state FirewallState, now time.Time) initialBlockState {
 	// Timeouts come from the lease clock, which a step back of the wall
 	// clock cannot rewind: a reapplied block keeps only the time it had.
 	lease := e.leaseAtLocked(now)

@@ -15,6 +15,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Automatic and manual fixes now act only on the file a finding names. Before, some paths led a permission fix to a different file or to none.
 - With IPv6 filtering turned off, saved IPv6 blocks no longer cause new temporary blocks to be refused at the temporary block limit.
 - The temporary block limit is no longer exceeded when the saved block chosen for replacement had already left the firewall.
+- After a firewall rollback, temporary blocks end at the time shown instead of staying blocked for as long again as the confirmation window was open.
 
 ## [4.13.0] - 2026-11-15
 

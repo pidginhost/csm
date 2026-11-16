@@ -447,10 +447,24 @@ var firewallBatchHold func(bool)
 // it before admission is released. Guarded by firewallDeadmanMu.
 var firewallRowGate func()
 
-func setFirewallRowGate(fn func()) {
+// firewallRetime retimes the engine's blocked sets from its saved rows. A
+// rollback restores the kernel ruleset from a dump, which gives each timed
+// block the time it had left when the window opened. firewallRetimeDue
+// records such a restore; the retiming runs when admission is released,
+// after configuration is restored or explicitly accepted by confirmation.
+// Both are guarded by firewallDeadmanMu.
+var (
+	firewallRetime    func()
+	firewallRetimeDue bool
+)
+
+// setFirewallRestoreHooks installs what follows a rollback's restore: gate
+// for the saved rows and retime for the blocked sets.
+func setFirewallRestoreHooks(gate, retime func()) {
 	firewallDeadmanMu.Lock()
 	defer firewallDeadmanMu.Unlock()
-	firewallRowGate = fn
+	firewallRowGate, firewallRetime = gate, retime
+	firewallRetimeDue = false
 }
 
 // An unreadable configuration proof cannot release admission after
@@ -484,6 +498,12 @@ func setFirewallBatchHold(fn func(bool)) {
 
 // holdFirewallBatchesLocked: caller holds firewallDeadmanMu.
 func holdFirewallBatchesLocked(held bool) {
+	if !held && firewallRetimeDue {
+		firewallRetimeDue = false
+		if firewallRetime != nil {
+			firewallRetime()
+		}
+	}
 	if firewallBatchHold != nil {
 		firewallBatchHold(held)
 	}
@@ -723,6 +743,7 @@ func applyFirewallRollbackFile(rollbackFile string) (resultErr error) {
 	if firewallRowGate != nil {
 		firewallRowGate()
 	}
+	firewallRetimeDue = true
 	return nil
 }
 

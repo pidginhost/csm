@@ -33,6 +33,8 @@ type firewallStartupOps struct {
 	unproven   func([]string) ([]string, error)
 	settled    func([]string) ([]string, error)
 	removeRows func(*firewall.Engine, []string) (int, error)
+	// retime, when set, replaces (*firewall.Engine).RetimeBlocks.
+	retime func(*firewall.Engine) error
 	// leaseFloor, when set, replaces readFirewallLeaseFloor, and
 	// setLeaseFloor replaces (*firewall.Engine).SetLeaseFloor.
 	leaseFloor    func() (time.Time, error)
@@ -121,8 +123,16 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 
 	d.setFirewallEngine(engine)
 	// A rollback restores the rows of its window's start; they are gated
-	// again as they were here.
-	setFirewallRowGate(func() { gateFirewallRows(engine, ops) })
+	// again as they were here, and the restored blocks are retimed.
+	retime := ops.retime
+	if retime == nil {
+		retime = (*firewall.Engine).RetimeBlocks
+	}
+	setFirewallRestoreHooks(func() { gateFirewallRows(engine, ops) }, func() {
+		if err := retime(engine); err != nil {
+			csmlog.Warn("firewall blocks keep the timers of the restored ruleset", "err", err)
+		}
+	})
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)

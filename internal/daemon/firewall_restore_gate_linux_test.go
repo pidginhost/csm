@@ -26,8 +26,8 @@ const gateOperatorIP = "198.51.100.70"
 // gatedFirewall is a daemon whose saved rows are an admission block the
 // ledger will call unproven, one it will call settled, and an operator's
 // block. start runs its firewall startup; the ledger answers only once
-// *unproven is set.
-func gatedFirewall(t *testing.T, unproven *bool) (d *Daemon, state string, start func()) {
+// *unproven is set. Each edit changes the startup's seams first.
+func gatedFirewall(t *testing.T, unproven *bool, edit ...func(*firewallStartupOps)) (d *Daemon, state string, start func()) {
 	t.Helper()
 	installFakeNft(t)
 	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
@@ -45,7 +45,7 @@ func gatedFirewall(t *testing.T, unproven *bool) (d *Daemon, state string, start
 		SetIncidentSprayBlocker(previousBlocker)
 		setFirewallMetricsEngine(previousMetricsEngine)
 		setFirewallBatchHold(nil)
-		setFirewallRowGate(nil)
+		setFirewallRestoreHooks(nil, nil)
 		setFirewallDeadmanOnRollback(nil)
 	})
 	state = filepath.Join(cfg.StatePath, "firewall", "state.json")
@@ -59,7 +59,7 @@ func gatedFirewall(t *testing.T, unproven *bool) (d *Daemon, state string, start
 		return slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return !slices.Contains(keep, id) })
 	}
 	start = func() {
-		d.startFirewallUsing(firewallStartupOps{
+		ops := firewallStartupOps{
 			newEngine: firewall.NewEngine,
 			apply:     func(*firewall.Engine) error { return nil },
 			unproven: func(ids []string) ([]string, error) {
@@ -69,7 +69,11 @@ func gatedFirewall(t *testing.T, unproven *bool) (d *Daemon, state string, start
 				return only(ids, gateHeldAction, gateSettledAction), nil
 			},
 			settled: func(ids []string) ([]string, error) { return only(ids, gateSettledAction), nil },
-		})
+		}
+		for _, change := range edit {
+			change(&ops)
+		}
+		d.startFirewallUsing(ops)
 		if d.fwEngine == nil {
 			t.Fatal("the firewall did not start")
 		}
