@@ -1365,6 +1365,10 @@ func (d *Daemon) Run() error {
 	if d.scanJobs != nil {
 		d.scanJobs.Stop()
 	}
+	// The web server and control socket have stopped taking releases.
+	if d.stalwartUnban != nil {
+		d.stalwartUnban.stop()
+	}
 	d.stopYaraBackend()
 	d.stopPHPTaintAnalyzer()
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())

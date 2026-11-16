@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,8 +19,8 @@ import (
 )
 
 // unbanDaemon returns a daemon whose host runs mta and whose Stalwart API is
-// f, with nothing else running: d.wg.Wait returns once the drain has ended.
-// It also returns how many clients were asked for.
+// f, with nothing else running. It also returns how many clients were asked
+// for.
 func unbanDaemon(t *testing.T, mta platform.MTAKind, f *fakeStalwart) (*Daemon, *int) {
 	t.Helper()
 	useHost(t, platform.PanelNone, mta)
@@ -32,15 +33,26 @@ func unbanDaemon(t *testing.T, mta platform.MTAKind, f *fakeStalwart) (*Daemon, 
 	d := &Daemon{cfg: &config.Config{}, stopCh: make(chan struct{})}
 	d.stalwartUnban = newStalwartUnban(d)
 	t.Cleanup(func() {
-		select {
-		case <-d.stopCh:
-		default:
-			close(d.stopCh)
+		if d.stalwartUnban != nil {
+			d.stalwartUnban.stop()
 		}
-		d.wg.Wait()
 		stalwartClient = prevClient
 	})
 	return d, clients
+}
+
+// waitDrain returns once the last drain started on d has ended.
+func waitDrain(d *Daemon) {
+	u := d.stalwartUnban
+	if u == nil {
+		return
+	}
+	u.mu.Lock()
+	done := u.done
+	u.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // heldLookup returns the address of the lookup f is holding. The bound only
@@ -72,7 +84,7 @@ func TestUnblockClearsAutomaticStalwartBan(t *testing.T) {
 	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
 
 	d.stalwartUnban.add(ip)
-	d.wg.Wait()
+	waitDrain(d)
 
 	if !slices.Equal(f.lookups, []string{ip}) {
 		t.Fatalf("lookups = %v, want one for %s", f.lookups, ip)
@@ -109,7 +121,7 @@ func TestUnblockLeavesManualStalwartBlock(t *testing.T) {
 
 			out := captureAppliedBlockStderr(t, func() {
 				d.stalwartUnban.add(ip)
-				d.wg.Wait()
+				waitDrain(d)
 			})
 
 			if !reflect.DeepEqual(f.deletes, tc.want) {
@@ -132,7 +144,7 @@ func TestFlushClearsNoStalwartBans(t *testing.T) {
 	d.firewallReleased("", firewall.ReleaseOperator)
 	d.firewallReleased("203.0.113.0/24", firewall.ReleaseOperator)
 	d.firewallReleased("2001:db8::/64", firewall.ReleaseOperator)
-	d.wg.Wait()
+	waitDrain(d)
 
 	if *clients != 0 || len(f.lookups) != 0 {
 		t.Fatalf("clients=%d lookups=%v, want no Stalwart call for a flush or a network", *clients, f.lookups)
@@ -145,7 +157,7 @@ func TestUnbanAlsoClears(t *testing.T) {
 	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
 
 	d.firewallReleased(ip, firewall.ReleaseUnban)
-	d.wg.Wait()
+	waitDrain(d)
 
 	if !slices.Equal(f.lookups, []string{ip}) || !reflect.DeepEqual(f.deletes, [][]string{{"b3"}}) {
 		t.Fatalf("lookups=%v deletes=%v, want the unbanned address cleared", f.lookups, f.deletes)
@@ -158,7 +170,7 @@ func TestUnblockLooksUpTheIPv4Spelling(t *testing.T) {
 	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
 
 	d.firewallReleased("::ffff:192.0.2.7", firewall.ReleaseOperator)
-	d.wg.Wait()
+	waitDrain(d)
 
 	if !slices.Equal(f.lookups, []string{"192.0.2.7"}) {
 		t.Fatalf("lookups = %v, want 192.0.2.7", f.lookups)
@@ -201,7 +213,7 @@ func TestUnblockNeverBlocksTheCaller(t *testing.T) {
 		t.Fatalf("pending = %d, want all %d waiting for the one drain", pending, len(more))
 	}
 	close(f.hold)
-	d.wg.Wait()
+	waitDrain(d)
 
 	wantLookups := append([]string{first}, more...)
 	slices.Sort(wantLookups)
@@ -232,9 +244,9 @@ func TestUnblockWithoutKeyLogsAndReturns(t *testing.T) {
 
 	out := captureAppliedBlockStderr(t, func() {
 		d.stalwartUnban.add(ip)
-		d.wg.Wait()
+		waitDrain(d)
 		d.stalwartUnban.add(ip)
-		d.wg.Wait()
+		waitDrain(d)
 	})
 
 	if len(f.lookups) != 0 || len(f.deletes) != 0 {
@@ -258,7 +270,7 @@ func TestUnblockErrorKeepsDraining(t *testing.T) {
 	out := captureAppliedBlockStderr(t, func() {
 		d.stalwartUnban.add(bad)
 		d.stalwartUnban.add(good)
-		d.wg.Wait()
+		waitDrain(d)
 	})
 
 	if got := slices.Sorted(slices.Values(f.lookups)); !slices.Equal(got, []string{bad, good}) {
@@ -286,7 +298,7 @@ func TestUnblockFailedDeleteIsRecorded(t *testing.T) {
 
 	out := captureAppliedBlockStderr(t, func() {
 		d.stalwartUnban.add(ip)
-		d.wg.Wait()
+		waitDrain(d)
 	})
 
 	if len(sink.records) != 1 {
@@ -301,24 +313,93 @@ func TestUnblockFailedDeleteIsRecorded(t *testing.T) {
 	}
 }
 
-// A stopping daemon ends the call in flight and starts no new drain.
+// Stopping ends the call in flight, quietly, and starts no new drain.
 func TestUnblockDrainEndsWithTheDaemon(t *testing.T) {
 	const ip = "203.0.113.15"
 	f := &fakeStalwart{hold: make(chan struct{}), held: make(chan string, 4)}
 	d, clients := unbanDaemon(t, platform.MTAStalwart, f)
 
-	d.stalwartUnban.add(ip)
-	heldLookup(t, f)
-	close(d.stopCh)
-	d.wg.Wait()
+	out := captureAppliedBlockStderr(t, func() {
+		d.stalwartUnban.add(ip)
+		heldLookup(t, f)
+		d.stalwartUnban.stop()
+	})
 	if !errors.Is(f.holdEnd, context.Canceled) {
 		t.Fatalf("call in flight ended with %v, want it canceled by the stop", f.holdEnd)
 	}
+	if out != "" {
+		t.Fatalf("log = %q, want nothing for a stop", out)
+	}
 
 	d.stalwartUnban.add("203.0.113.16")
-	d.wg.Wait()
+	waitDrain(d)
 	if *clients != 1 || len(f.lookups) != 1 {
 		t.Fatalf("clients=%d lookups=%v, want nothing after the stop", *clients, f.lookups)
+	}
+}
+
+// Adds racing a stop: stop returns only once the call in flight has ended,
+// and no add after it reaches Stalwart or starts a drain.
+func TestUnblockStopRacesAdds(t *testing.T) {
+	f := &fakeStalwart{hold: make(chan struct{}), held: make(chan string, 1024)}
+	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+	u := d.stalwartUnban
+
+	u.add("203.0.113.1")
+	heldLookup(t, f)
+	stopped := make(chan struct{})
+	var adders sync.WaitGroup
+	for g := range 4 {
+		adders.Add(1)
+		go func() {
+			defer adders.Done()
+			for i := 0; ; i++ {
+				u.add(fmt.Sprintf("198.51.100.%d", (g*50+i)%250+1))
+				select {
+				case <-stopped:
+					// Keep adding after stop returned.
+					for j := range 20 {
+						u.add(fmt.Sprintf("192.0.2.%d", g*20+j+1))
+					}
+					return
+				default:
+				}
+			}
+		}()
+	}
+	u.stop()
+
+	f.mu.Lock()
+	ended, inFlight, lookups := f.holdEnd, f.inFlight, len(f.lookups)
+	f.mu.Unlock()
+	u.mu.Lock()
+	done := u.done
+	u.mu.Unlock()
+	if !errors.Is(ended, context.Canceled) || inFlight != 0 {
+		t.Fatalf("stop returned with the call in flight: end=%v in flight=%d", ended, inFlight)
+	}
+	close(stopped)
+	adders.Wait()
+
+	f.mu.Lock()
+	after := len(f.lookups)
+	f.mu.Unlock()
+	u.mu.Lock()
+	running, sameDone := u.running, u.done == done
+	u.mu.Unlock()
+	if after != lookups || running || !sameDone {
+		t.Fatalf("after stop: lookups %d -> %d, running=%v, new drain=%v; want nothing", lookups, after, running, !sameDone)
+	}
+}
+
+func TestUnblockStopTwiceAndUnused(t *testing.T) {
+	d, clients := unbanDaemon(t, platform.MTAStalwart, &fakeStalwart{})
+	d.stalwartUnban.stop()
+	d.stalwartUnban.stop()
+	d.stalwartUnban.add("203.0.113.17")
+	waitDrain(d)
+	if *clients != 0 {
+		t.Fatalf("clients = %d, want none after stop", *clients)
 	}
 }
 
@@ -329,7 +410,7 @@ func TestNotStalwartHostDoesNothing(t *testing.T) {
 
 		d.firewallReleased("203.0.113.9", firewall.ReleaseOperator)
 		d.firewallReleased("203.0.113.9", firewall.ReleaseUnban)
-		d.wg.Wait()
+		waitDrain(d)
 
 		if d.stalwartUnban != nil || *clients != 0 {
 			t.Fatalf("%v host: unban=%v clients=%d, want nothing", mta, d.stalwartUnban, *clients)

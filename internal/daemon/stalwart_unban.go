@@ -14,15 +14,21 @@ import (
 
 // stalwartUnban lifts Stalwart's own bans of addresses CSM released, away
 // from the request that released them. Only CSM's own releases add an
-// address and each is pending at most once, so the set needs no cap.
+// address and each is pending at most once, so the set needs no cap. It has
+// its own lifetime: adds come from request paths that can outlive the
+// daemon's final wait, so its drain cannot join that wait.
 type stalwartUnban struct {
-	cfg  func() *config.Config
-	stop <-chan struct{}
-	wg   *sync.WaitGroup
+	cfg func() *config.Config
+	// ctx ends the call in flight when stop runs.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu      sync.Mutex
 	pending map[string]struct{}
 	running bool
+	stopped bool
+	// done is closed when the last drain started has ended.
+	done chan struct{}
 }
 
 // newStalwartUnban returns nil unless this host's mail server is Stalwart.
@@ -30,64 +36,66 @@ func newStalwartUnban(d *Daemon) *stalwartUnban {
 	if detectMTA() != platform.MTAStalwart {
 		return nil
 	}
-	return &stalwartUnban{cfg: d.currentCfg, stop: d.stopCh, wg: &d.wg, pending: map[string]struct{}{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &stalwartUnban{cfg: d.currentCfg, ctx: ctx, cancel: cancel, pending: map[string]struct{}{}}
 }
 
-// add queues ip and returns at once. No drain starts once the daemon is
-// stopping, so none can join its final wait late.
+// add queues ip and returns at once. After stop it does nothing.
 func (u *stalwartUnban) add(ip string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	select {
-	case <-u.stop:
+	if u.stopped {
 		return
-	default:
 	}
 	u.pending[ip] = struct{}{}
 	if u.running {
 		return
 	}
 	u.running = true
-	u.wg.Add(1)
+	u.done = make(chan struct{})
 	obs.Go("stalwart-unban", u.drain)
 }
 
+// stop ends the call in flight and returns once the drain has ended. No
+// drain starts after it. It is safe to call more than once.
+func (u *stalwartUnban) stop() {
+	u.mu.Lock()
+	u.stopped = true
+	u.cancel()
+	done := u.done
+	u.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
 func (u *stalwartUnban) drain() {
-	defer u.wg.Done()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		select {
-		case <-u.stop:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 	for {
 		ip, ok := u.next()
 		if !ok {
 			return
 		}
-		if err := u.clear(ctx, ip); err != nil {
+		// A call ended by stop is not a failure to report.
+		if err := u.clear(u.ctx, ip); err != nil && u.ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "[%s] Stalwart may still refuse %s: %v\n", ts(), ip, err)
 		}
 	}
 }
 
-// next takes one pending address. It ends the drain when none is left or the
-// daemon is stopping; until the daemon stops, a later add starts a new one.
+// next takes one pending address. When none is left or stop has run, it
+// ends the drain under the lock, so add and stop always see a drain that is
+// either still running or fully done.
 func (u *stalwartUnban) next() (string, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	select {
-	case <-u.stop:
-	default:
+	if !u.stopped {
 		for ip := range u.pending {
 			delete(u.pending, ip)
 			return ip, true
 		}
 	}
 	u.running = false
+	close(u.done)
 	return "", false
 }
 
