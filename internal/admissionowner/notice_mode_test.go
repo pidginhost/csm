@@ -476,6 +476,52 @@ func TestOwnerSplitNoticeDeliveryKeepsBackoff(t *testing.T) {
 	}
 }
 
+// A delivery of every due group ends the backoff: a later failure is
+// retried at once again, as after any first failure.
+func TestOwnerNoticeDeliveryResetsBackoffAfterSuccess(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	previous := deliveryNow
+	deliveryNow = clock.now
+	t.Cleanup(func() { deliveryNow = previous })
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{}
+	failing := func(err error) {
+		sink.mu.Lock()
+		sink.err = err
+		sink.mu.Unlock()
+	}
+	failing(errors.New("history unavailable"))
+	o, _ := noticeOwner(t, f, validPolicy(1), sink)
+	criticalGap(t, o, p, f.host)
+	for range 3 {
+		o.notices.cycle()
+	}
+	if sink.count() != 3 {
+		t.Fatalf("failing deliveries = %d, want 3", sink.count())
+	}
+	failing(nil)
+	clock.advance(4 * defaultNoticeEvery)
+	o.notices.cycle()
+	if sink.count() != 4 {
+		t.Fatalf("delivery after the wait = %d deliveries, want 4", sink.count())
+	}
+	f.host.advance(time.Minute)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
+	if err := o.do(func() error { _, err := o.ledger.Terminate(id, admission.ReasonPolicy); return err }); err != nil {
+		t.Fatal(err)
+	}
+	failing(errors.New("history unavailable"))
+	o.notices.cycle()
+	o.notices.cycle()
+	if sink.count() != 6 {
+		t.Fatalf("a failure after a full delivery waited: %d deliveries, want two more at once", sink.count())
+	}
+}
+
 // messages is the messages of fs, in order.
 func messages(fs []alert.Finding) []string {
 	out := make([]string, len(fs))
