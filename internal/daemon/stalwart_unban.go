@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"sync"
 
@@ -13,8 +14,9 @@ import (
 )
 
 // stalwartUnban lifts Stalwart's own bans of addresses CSM released, away
-// from the request that released them. Only CSM's own releases add an
-// address and each is pending at most once, so the set needs no cap. It has
+// from the request that released them. Any firewall release of one address
+// adds it: an operator's, a hosting panel's self-service unban, or a DynDNS
+// allow. Each address is pending at most once, so the set needs no cap. It has
 // its own lifetime: adds come from request paths that can outlive the
 // daemon's final wait, so its drain cannot join that wait.
 type stalwartUnban struct {
@@ -99,8 +101,18 @@ func (u *stalwartUnban) next() (string, bool) {
 	return "", false
 }
 
-// clear lifts Stalwart's automatic bans of ip. A block made by hand in
-// Stalwart is the Stalwart admin's decision and stays.
+// automaticBanReasons are the reasons Stalwart gives the bans it makes on
+// its own. Any other reason, including one a later Stalwart adds, is left
+// for the Stalwart admin.
+var automaticBanReasons = map[string]bool{
+	"rcptToFailure": true,
+	"authFailure":   true,
+	"loitering":     true,
+	"portScanning":  true,
+}
+
+// clear lifts Stalwart's automatic bans of ip. Any other block is the
+// Stalwart admin's decision and stays.
 func (u *stalwartUnban) clear(ctx context.Context, ip string) error {
 	client, err := stalwartClient(u.cfg())
 	if err != nil {
@@ -112,17 +124,28 @@ func (u *stalwartUnban) clear(ctx context.Context, ip string) error {
 	if err != nil {
 		return err
 	}
+	want, _ := netip.ParseAddr(ip)
 	var ids, reasons []string
-	manual := false
+	foreign := false
+	kept := map[string]bool{}
 	for _, b := range bans {
-		if b.Reason == "manual" {
-			manual = true
+		// A lookup is an exact match, but an entry for another address must
+		// never be lifted on this one's behalf.
+		if a, err := netip.ParseAddr(b.Address); err != nil || a.Unmap() != want.Unmap() {
+			foreign = true
+			continue
+		}
+		if !automaticBanReasons[b.Reason] {
+			kept[describeBanReason(b.Reason)] = true
 			continue
 		}
 		ids, reasons = append(ids, b.ID), append(reasons, b.Reason)
 	}
-	if manual {
-		fmt.Fprintf(os.Stderr, "[%s] Stalwart keeps its manual block of %s\n", ts(), ip)
+	if foreign {
+		fmt.Fprintf(os.Stderr, "[%s] Stalwart answered the lookup for %s with entries for other addresses; left them\n", ts(), ip)
+	}
+	for reason := range kept {
+		fmt.Fprintf(os.Stderr, "[%s] Stalwart keeps its block of %s (%s)\n", ts(), ip, reason)
 	}
 	if len(ids) == 0 {
 		return nil
@@ -144,4 +167,18 @@ func (u *stalwartUnban) clear(ctx context.Context, ip string) error {
 		actionlog.Write(rec)
 	}
 	return err
+}
+
+// describeBanReason names a kept entry's reason for the log. Stalwart's
+// reasons are plain words; anything else is not echoed.
+func describeBanReason(reason string) string {
+	if reason == "" {
+		return "an unknown reason"
+	}
+	for _, c := range reason {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return "an unknown reason"
+		}
+	}
+	return "reason " + reason
 }

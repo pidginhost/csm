@@ -130,10 +130,116 @@ func TestUnblockLeavesManualStalwartBlock(t *testing.T) {
 			if len(sink.records) != len(tc.want) {
 				t.Fatalf("action records = %+v, want one per lifted ban", sink.records)
 			}
-			if n := strings.Count(out, "manual block of "+ip); n != 1 {
+			if n := strings.Count(out, "block of "+ip+" (reason manual)"); n != 1 {
 				t.Fatalf("log = %q, want one line about the manual block of %s", out, ip)
 			}
 		})
+	}
+}
+
+func TestUnblockClearsEachAutomaticReason(t *testing.T) {
+	const ip = "203.0.113.18"
+	for _, reason := range []string{"rcptToFailure", "authFailure", "loitering", "portScanning"} {
+		t.Run(reason, func(t *testing.T) {
+			sink := captureActionRecords(t)
+			f := &fakeStalwart{bans: map[string][]stalwartapi.BlockedIP{ip: {{ID: "a1", Address: ip, Reason: reason}}}}
+			d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+
+			d.stalwartUnban.add(ip)
+			waitDrain(d)
+
+			if !reflect.DeepEqual(f.deletes, [][]string{{"a1"}}) {
+				t.Fatalf("deletes = %v, want a1", f.deletes)
+			}
+			if len(sink.records) != 1 || sink.records[0].Reason != reason {
+				t.Fatalf("action records = %+v, want one with reason %s", sink.records, reason)
+			}
+		})
+	}
+}
+
+// Only Stalwart's automatic reasons are lifted. Anything else, including a
+// reason a later Stalwart adds, is left for the Stalwart admin.
+func TestUnblockLeavesNonAutomaticReasons(t *testing.T) {
+	const ip = "203.0.113.19"
+	for _, tc := range []struct{ reason, log string }{
+		{"other", "(reason other)"},
+		{"", "(an unknown reason)"},
+		{"spamTrap", "(reason spamTrap)"},
+		{"bad\nreason", "(an unknown reason)"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			sink := captureActionRecords(t)
+			f := &fakeStalwart{bans: map[string][]stalwartapi.BlockedIP{ip: {{ID: "k1", Address: ip, Reason: tc.reason}}}}
+			d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+
+			out := captureAppliedBlockStderr(t, func() {
+				d.stalwartUnban.add(ip)
+				waitDrain(d)
+			})
+
+			if len(f.deletes) != 0 || len(sink.records) != 0 {
+				t.Fatalf("deletes=%v records=%+v, want the entry left", f.deletes, sink.records)
+			}
+			if n := strings.Count(out, "block of "+ip+" "+tc.log); n != 1 {
+				t.Fatalf("log = %q, want one line saying the block of %s stays %s", out, ip, tc.log)
+			}
+		})
+	}
+}
+
+// A lookup answer naming another address is never acted on, whatever its
+// reason or spelling.
+func TestUnblockSkipsForeignEntries(t *testing.T) {
+	sink := captureActionRecords(t)
+	const ip = "203.0.113.20"
+	f := &fakeStalwart{bans: map[string][]stalwartapi.BlockedIP{ip: {
+		autoBan("x1", "203.0.113.21"),
+		autoBan("x2", "203.0.113.0/24"),
+		autoBan("x3", ""),
+		autoBan("own", "::ffff:203.0.113.20"),
+		autoBan("x4", "2001:db8::14"),
+	}}}
+	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+
+	out := captureAppliedBlockStderr(t, func() {
+		d.stalwartUnban.add(ip)
+		waitDrain(d)
+	})
+
+	if !reflect.DeepEqual(f.deletes, [][]string{{"own"}}) {
+		t.Fatalf("deletes = %v, want only the entry for %s", f.deletes, ip)
+	}
+	if len(sink.records) != 1 || sink.records[0].Target != ip {
+		t.Fatalf("action records = %+v, want one for %s", sink.records, ip)
+	}
+	if n := strings.Count(out, "other addresses"); n != 1 {
+		t.Fatalf("log = %q, want one line about the foreign entries", out)
+	}
+}
+
+func TestUnblockClearsTwoAutomaticBansInOneCall(t *testing.T) {
+	sink := captureActionRecords(t)
+	const ip = "203.0.113.22"
+	f := &fakeStalwart{bans: map[string][]stalwartapi.BlockedIP{ip: {
+		autoBan("a1", ip),
+		{ID: "a2", Address: ip, Reason: "loitering"},
+	}}}
+	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+
+	d.stalwartUnban.add(ip)
+	waitDrain(d)
+
+	if !reflect.DeepEqual(f.deletes, [][]string{{"a1", "a2"}}) {
+		t.Fatalf("deletes = %v, want a1 and a2 in one call", f.deletes)
+	}
+	if len(sink.records) != 2 || sink.records[0].Reason != "authFailure" || sink.records[1].Reason != "loitering" {
+		t.Fatalf("action records = %+v, want one per ban", sink.records)
+	}
+	for _, r := range sink.records {
+		if r.Target != ip || r.Result != actionlog.Applied {
+			t.Fatalf("action record = %+v, want applied for %s", r, ip)
+		}
 	}
 }
 
