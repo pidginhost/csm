@@ -24,6 +24,7 @@ import (
 type fakeStalwart struct {
 	mu         sync.Mutex
 	accounts   []stalwartapi.Account
+	aliases    map[string]string // alias address to account id
 	disabled   []string
 	enabled    []string
 	readErr    map[string]error
@@ -44,7 +45,7 @@ func (f *fakeStalwart) AccountByAddress(ctx context.Context, address string) (st
 	defer f.mu.Unlock()
 	f.bound(ctx)
 	for _, a := range f.accounts {
-		if strings.EqualFold(a.Email, address) {
+		if strings.EqualFold(a.Email, address) || a.ID == f.aliases[strings.ToLower(address)] {
 			return a, true, nil
 		}
 	}
@@ -191,6 +192,30 @@ func TestStalwartSuspendDisablesSignIn(t *testing.T) {
 	if len(sink.records) != 1 || sink.records[0].Op != "respond.suspend_mailbox" || sink.records[0].Result != actionlog.Applied ||
 		sink.records[0].Target != "user@example.com" {
 		t.Fatalf("action records = %+v, want one applied respond.suspend_mailbox", sink.records)
+	}
+}
+
+// An attacker picks the login form; signing in through an alias suspends
+// the account behind it.
+func TestStalwartSuspendThroughAlias(t *testing.T) {
+	db := withMailboxStore(t)
+	cfg := stalwartResponseConfig(t, &config.Config{}, true)
+	f := &fakeStalwart{
+		accounts: []stalwartapi.Account{{ID: "other", Email: "robert@example.com"}, {ID: "c", Email: "bob@example.org"}},
+		aliases:  map[string]string{"robert@example.net": "c"},
+	}
+	stalwartHost(t, func() *config.Config { return cfg }, f)
+
+	r := onlyResponseFinding(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin("robert@example.net", alert.Critical)}))
+	if !strings.Contains(r.Message, "suspended") {
+		t.Fatalf("finding = %+v, want a suspension", r)
+	}
+	row := onlySuspension(t, db)
+	if row.Ref != "c" || row.Subject != "robert@example.net" {
+		t.Fatalf("record = %+v, want account c under the alias address", row)
+	}
+	if !reflect.DeepEqual(f.disabled, []string{"c"}) {
+		t.Fatalf("DisableSignIn calls = %v, want one for c", f.disabled)
 	}
 }
 

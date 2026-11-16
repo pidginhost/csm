@@ -291,7 +291,12 @@ type setFailure struct {
 
 // query sends a /query call and returns the matching ids.
 func (c *Client) query(ctx context.Context, method string, filter map[string]any) ([]string, error) {
-	out, err := c.call(ctx, method, map[string]any{"filter": filter})
+	return c.queryArgs(ctx, method, map[string]any{"filter": filter})
+}
+
+// queryArgs sends a /query call with args and returns the ids.
+func (c *Client) queryArgs(ctx context.Context, method string, args map[string]any) ([]string, error) {
+	out, err := c.call(ctx, method, args)
 	if err != nil {
 		return nil, err
 	}

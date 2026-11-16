@@ -2,6 +2,7 @@ package stalwartapi
 
 import (
 	"context"
+	"slices"
 	"strings"
 )
 
@@ -26,25 +27,68 @@ func (c *Client) AccountsNamed(ctx context.Context, name string) ([]Account, err
 	return c.accounts(ctx, ids)
 }
 
-// AccountByAddress finds the account whose address is address. An address
+// AccountByAddress finds the account that signs in as address: by its own
+// address, or through a mailbox alias, a domain alias, or both. An address
 // without a local part is not found. Case is ignored for ASCII letters only:
 // a Unicode fold could map a crafted name onto another account.
 func (c *Client) AccountByAddress(ctx context.Context, address string) (Account, bool, error) {
 	address = asciiLower(address)
-	local, _, ok := strings.Cut(address, "@")
-	if !ok || local == "" {
+	at := strings.LastIndexByte(address, '@')
+	if at <= 0 {
 		return Account{}, false, nil
 	}
+	local, domainName := address[:at], address[at+1:]
+	domains, err := c.Domains(ctx)
+	if err != nil {
+		return Account{}, false, err
+	}
+	i := slices.IndexFunc(domains, func(d Domain) bool {
+		return d.Name == domainName || slices.Contains(d.Aliases, domainName)
+	})
+	if i < 0 {
+		return Account{}, false, nil
+	}
+	domain := domains[i]
 	list, err := c.AccountsNamed(ctx, local)
 	if err != nil {
 		return Account{}, false, err
 	}
 	for _, a := range list {
-		if asciiLower(a.Email) == address {
+		if asciiLower(a.Email) == local+"@"+domain.Name {
 			return a, true, nil
 		}
 	}
-	return Account{}, false, nil
+	return c.accountByAlias(ctx, local, domain.ID)
+}
+
+// accountPage is the most ids one query or get carries: Stalwart's limit
+// on objects in a get.
+const accountPage = 500
+
+// accountByAlias walks every account for the one with the alias local in
+// domainID. Stalwart cannot query aliases. An alias that is switched off
+// still matches: it can be switched back on.
+func (c *Client) accountByAlias(ctx context.Context, local, domainID string) (Account, bool, error) {
+	for pos := 0; ; pos += accountPage {
+		ids, err := c.queryArgs(ctx, "x:Account/query", map[string]any{"limit": accountPage, "position": pos})
+		if err != nil || len(ids) == 0 {
+			return Account{}, false, err
+		}
+		raw, err := c.rawAccounts(ctx, ids)
+		if err != nil {
+			return Account{}, false, err
+		}
+		for _, r := range raw {
+			for _, alias := range r.Aliases {
+				if alias.Name == local && alias.DomainID == domainID {
+					return r.account(), true, nil
+				}
+			}
+		}
+		if len(ids) < accountPage {
+			return Account{}, false, nil
+		}
+	}
 }
 
 // Account reads one account. An unknown id is not found, not an error.
@@ -89,32 +133,51 @@ func (c *Client) EnableSignIn(ctx context.Context, id string) error {
 	return err
 }
 
-func (c *Client) accounts(ctx context.Context, ids []string) ([]Account, error) {
-	var raw []struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Email       string `json:"emailAddress"`
-		Permissions struct {
-			Type     string          `json:"@type"`
-			Disabled map[string]bool `json:"disabledPermissions"`
-		} `json:"permissions"`
-		Roles struct {
-			Type string `json:"@type"`
-		} `json:"roles"`
+// rawAccount is an account as x:Account/get returns it.
+type rawAccount struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Email       string `json:"emailAddress"`
+	Permissions struct {
+		Type     string          `json:"@type"`
+		Disabled map[string]bool `json:"disabledPermissions"`
+	} `json:"permissions"`
+	Roles struct {
+		Type string `json:"@type"`
+	} `json:"roles"`
+	Aliases map[string]struct {
+		Name     string `json:"name"`
+		DomainID string `json:"domainId"`
+	} `json:"aliases"`
+}
+
+func (r rawAccount) account() Account {
+	return Account{
+		ID:             r.ID,
+		Name:           r.Name,
+		Email:          r.Email,
+		Admin:          r.Roles.Type == "Admin",
+		SignInDisabled: r.Permissions.Disabled["authenticate"],
+		Inherit:        r.Permissions.Type == "Inherit",
 	}
+}
+
+func (c *Client) rawAccounts(ctx context.Context, ids []string) ([]rawAccount, error) {
+	var raw []rawAccount
 	if err := c.get(ctx, "x:Account/get", ids, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func (c *Client) accounts(ctx context.Context, ids []string) ([]Account, error) {
+	raw, err := c.rawAccounts(ctx, ids)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]Account, 0, len(raw))
 	for _, r := range raw {
-		out = append(out, Account{
-			ID:             r.ID,
-			Name:           r.Name,
-			Email:          r.Email,
-			Admin:          r.Roles.Type == "Admin",
-			SignInDisabled: r.Permissions.Disabled["authenticate"],
-			Inherit:        r.Permissions.Type == "Inherit",
-		})
+		out = append(out, r.account())
 	}
 	return out, nil
 }

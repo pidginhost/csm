@@ -656,7 +656,7 @@ Known limits:
 
 ### Suspending Stalwart mailboxes
 
-With the API key that `csm stalwart setup` writes, CSM suspends a hacked Stalwart mailbox under the auto-response and dry-run settings, as on cPanel: after a Critical `mail_account_compromised`, `email_compromised_account` or `email_cloud_relay_abuse` finding it stops the account's sign-ins through Stalwart's API. That also stops it sending. The mailbox is listed on the Email page, Suspended tab, where Release allows sign-ins again on the same account. Release does not change the password. Sign-ins someone else had already stopped are left alone and not listed.
+With the API key that `csm stalwart setup` writes, CSM suspends a hacked Stalwart mailbox under the auto-response and dry-run settings, as on cPanel: after a Critical `mail_account_compromised`, `email_compromised_account` or `email_cloud_relay_abuse` finding it stops the account's sign-ins through Stalwart's API. That also stops it sending. A sign-in through a mailbox alias or a domain alias suspends the account behind it. The mailbox is listed on the Email page, Suspended tab, where Release allows sign-ins again on the same account. Release does not change the password. Sign-ins someone else had already stopped are left alone and not listed.
 
 CSM does not suspend admin accounts, accounts its key may not change, or account names without a domain. The finding then asks staff to change the password in Stalwart. Without the key file nothing is suspended, and compromise findings say the mailbox stays active. Address blocks apply either way.
 

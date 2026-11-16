@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,11 @@ func accountsFake(t *testing.T, accounts map[string]map[string]any) *fakeStalwar
 				return method, map[string]any{"ids": []string{"a1", "a2"}}
 			}
 			return method, map[string]any{"ids": []string{}}
+		case "x:Domain/get":
+			return method, map[string]any{"list": []any{
+				map[string]any{"id": "d1", "name": "example.org"},
+				map[string]any{"id": "d2", "name": "example.net"},
+			}}
 		case "x:Account/get":
 			list, notFound := []any{}, []any{}
 			ids, _ := args["ids"].([]any)
@@ -61,7 +67,10 @@ func TestAccountByAddressPicksMatchingDomain(t *testing.T) {
 	if err != nil || !found || got.ID != "a2" || got.Email != "alice@example.net" {
 		t.Fatalf("AccountByAddress = %+v, %v, %v; want a2", got, found, err)
 	}
-	if s := asJSON(t, f.callAt(0).Args["filter"]); s != `{"name":"alice"}` {
+	if m := f.methods(); !reflect.DeepEqual(m, []string{"x:Domain/get", "x:Account/query", "x:Account/get"}) {
+		t.Fatalf("calls = %v; want the domain list and one name query, no walk over every account", m)
+	}
+	if s := asJSON(t, f.callAt(1).Args["filter"]); s != `{"name":"alice"}` {
 		t.Fatalf("query filter = %s", s)
 	}
 	// U+0130 lowers to an ASCII i under Unicode rules; it must not reach alice.
@@ -78,6 +87,157 @@ func TestAccountByAddressPicksMatchingDomain(t *testing.T) {
 	}
 	if none, err := c.AccountsNamed(ctx, "Alice"); err != nil || len(none) != 0 {
 		t.Fatalf("AccountsNamed(Alice) = %+v, %v; the name match is exact", none, err)
+	}
+}
+
+// directoryFake answers like a Stalwart with domains and accounts: a name
+// query lists the accounts with that local part, a query without a filter
+// pages through every id by limit and position, and get reads accounts with
+// their aliases. extra ids pad the full listing ahead of the accounts.
+func directoryFake(t *testing.T, domains []any, accounts []map[string]any, extra int) *fakeStalwart {
+	f := newFake(t)
+	var all []string
+	for i := 0; i < extra; i++ {
+		all = append(all, "pad"+strconv.Itoa(i))
+	}
+	byID := map[string]map[string]any{}
+	for _, a := range accounts {
+		all = append(all, a["id"].(string))
+		byID[a["id"].(string)] = a
+	}
+	f.reply = func(method string, args map[string]any) (string, any) {
+		switch method {
+		case "x:Domain/get":
+			return method, map[string]any{"list": domains}
+		case "x:Account/query":
+			if filter, ok := args["filter"].(map[string]any); ok {
+				ids := []string{}
+				for _, a := range accounts {
+					if len(filter) == 1 && a["name"] == filter["name"] {
+						ids = append(ids, a["id"].(string))
+					}
+				}
+				return method, map[string]any{"ids": ids}
+			}
+			pos, limit := int(args["position"].(float64)), int(args["limit"].(float64))
+			end := min(pos+limit, len(all))
+			return method, map[string]any{"ids": all[min(pos, end):end]}
+		case "x:Account/get":
+			list := []any{}
+			ids, _ := args["ids"].([]any)
+			for _, id := range ids {
+				if a, ok := byID[id.(string)]; ok {
+					list = append(list, a)
+				}
+			}
+			return method, map[string]any{"list": list, "notFound": []any{}}
+		}
+		return "error", map[string]any{"type": "unknownMethod"}
+	}
+	return f
+}
+
+// directory has domain a (example.org, alias example.net), domain b
+// (example.com) and domain c (example.info). Account bob@example.org has the
+// alias robert in domain a and the alias rob in domain b.
+func directory(t *testing.T, extra int) *fakeStalwart {
+	domains := []any{
+		map[string]any{"id": "a", "name": "example.org", "aliases": map[string]any{"example.net": true}},
+		map[string]any{"id": "b", "name": "example.com", "aliases": map[string]any{}},
+		map[string]any{"id": "c", "name": "example.info"},
+	}
+	bob := account("bob1", "bob@example.org", inherit, userRole)
+	bob["domainId"] = "a"
+	bob["aliases"] = map[string]any{
+		"0": map[string]any{"name": "robert", "domainId": "a", "enable": true, "description": nil},
+		"1": map[string]any{"name": "rob", "domainId": "b", "enable": false, "description": nil},
+	}
+	other := account("carol1", "carol@example.com", inherit, userRole)
+	other["domainId"] = "b"
+	return directoryFake(t, domains, []map[string]any{other, bob}, extra)
+}
+
+// walks counts queries that list every account.
+func walks(f *fakeStalwart) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		if _, filtered := c.Args["filter"]; c.Method == "x:Account/query" && !filtered {
+			out = append(out, asJSON(f.t, map[string]any{"limit": c.Args["limit"], "position": c.Args["position"]}))
+		}
+	}
+	return out
+}
+
+func TestAccountByAddressResolvesAlias(t *testing.T) {
+	f := directory(t, 0)
+	got, found, err := f.keyClient().AccountByAddress(context.Background(), "Robert@Example.org")
+	if err != nil || !found || got.ID != "bob1" || got.Email != "bob@example.org" {
+		t.Fatalf("AccountByAddress = %+v, %v, %v; want bob1", got, found, err)
+	}
+	// A disabled alias still signs in nowhere today, but may be switched on.
+	got, found, err = f.keyClient().AccountByAddress(context.Background(), "rob@example.com")
+	if err != nil || !found || got.ID != "bob1" {
+		t.Fatalf("disabled alias = %+v, %v, %v; want bob1", got, found, err)
+	}
+	// The primary address needs no walk over every account.
+	before := len(walks(f))
+	if got, found, err = f.keyClient().AccountByAddress(context.Background(), "bob@example.org"); err != nil || !found || got.ID != "bob1" {
+		t.Fatalf("primary address = %+v, %v, %v; want bob1", got, found, err)
+	}
+	if n := len(walks(f)); n != before {
+		t.Fatalf("a primary-address match walked every account (%d walks)", n-before)
+	}
+}
+
+func TestAccountByAddressResolvesDomainAlias(t *testing.T) {
+	f := directory(t, 0)
+	for _, address := range []string{"bob@example.net", "robert@example.net"} {
+		got, found, err := f.keyClient().AccountByAddress(context.Background(), address)
+		if err != nil || !found || got.ID != "bob1" {
+			t.Fatalf("AccountByAddress(%q) = %+v, %v, %v; want bob1", address, got, found, err)
+		}
+	}
+	if w := walks(f); len(w) != 1 {
+		t.Fatalf("walks = %v; want one, for the alias on the alias domain only", w)
+	}
+}
+
+func TestAccountByAddressAliasStaysInItsDomain(t *testing.T) {
+	f := directory(t, 0)
+	for _, address := range []string{"rob@example.info", "rob@example.org", "robert@example.com", "robert@example.info", "robert@unknown.example", "robert"} {
+		got, found, err := f.keyClient().AccountByAddress(context.Background(), address)
+		if err != nil || found {
+			t.Fatalf("AccountByAddress(%q) = %+v, %v, %v; want not found", address, got, found, err)
+		}
+	}
+}
+
+func TestAccountByAddressAliasScanPages(t *testing.T) {
+	f := directory(t, 600)
+	got, found, err := f.keyClient().AccountByAddress(context.Background(), "robert@example.org")
+	if err != nil || !found || got.ID != "bob1" {
+		t.Fatalf("AccountByAddress = %+v, %v, %v; want bob1", got, found, err)
+	}
+	want := []string{`{"limit":500,"position":0}`, `{"limit":500,"position":500}`}
+	if w := walks(f); !reflect.DeepEqual(w, want) {
+		t.Fatalf("walk requests = %v; want %v", w, want)
+	}
+	// A miss reads every page until a short one.
+	if _, found, err := f.keyClient().AccountByAddress(context.Background(), "nobody@example.org"); err != nil || found {
+		t.Fatalf("miss: found %v, err %v", found, err)
+	}
+	if w := walks(f); len(w) != 4 {
+		t.Fatalf("walk requests = %v; want two more for the miss", w)
+	}
+}
+
+func TestDomainsReadsAliases(t *testing.T) {
+	got, err := directory(t, 0).keyClient().Domains(context.Background())
+	want := []Domain{{ID: "a", Name: "example.org", Aliases: []string{"example.net"}}, {ID: "b", Name: "example.com"}, {ID: "c", Name: "example.info"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Domains = %+v, %v; want %+v", got, err, want)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 // Role is a Stalwart role: the permissions it enables and the roles it
@@ -60,15 +61,31 @@ func (c *Client) SaveRole(ctx context.Context, r Role) (string, error) {
 
 // Domain is one of Stalwart's mail domains.
 type Domain struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
-// Domains lists every mail domain.
+// Domains lists every mail domain with its aliases.
 func (c *Client) Domains(ctx context.Context) ([]Domain, error) {
-	var list []Domain
-	if err := c.get(ctx, "x:Domain/get", nil, &list); err != nil {
+	var raw []struct {
+		ID      string          `json:"id"`
+		Name    string          `json:"name"`
+		Aliases map[string]bool `json:"aliases"`
+	}
+	if err := c.get(ctx, "x:Domain/get", nil, &raw); err != nil {
 		return nil, err
+	}
+	list := make([]Domain, 0, len(raw))
+	for _, r := range raw {
+		d := Domain{ID: r.ID, Name: r.Name}
+		for alias, on := range r.Aliases {
+			if on {
+				d.Aliases = append(d.Aliases, alias)
+			}
+		}
+		slices.Sort(d.Aliases)
+		list = append(list, d)
 	}
 	return list, nil
 }
