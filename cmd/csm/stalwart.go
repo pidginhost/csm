@@ -211,8 +211,11 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 // stalwartKeyAccount reads CSM's key file and asks Stalwart which account the
 // key logs in as. A key that was read comes back even when the probe fails,
 // so the caller can redact it.
+// readStalwartKeyFile reads CSM's API key file; tests replace it.
+var readStalwartKeyFile = stalwartapi.ReadKeyFile
+
 func stalwartKeyAccount(ctx context.Context, path, url string, keyAccount func(ctx context.Context, url, key string) (string, error)) (key, account string, err error) {
-	key, err = stalwartapi.ReadKeyFile(path)
+	key, err = readStalwartKeyFile(path)
 	if err != nil {
 		return "", "", err
 	}

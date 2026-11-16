@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -489,6 +490,39 @@ func TestDoctorSendsNoKeyWhenListenerCheckFails(t *testing.T) {
 	}
 	if len(checks) != 1 || checks[0].Name != "stalwart settings" || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, "uid 1001") {
 		t.Fatalf("checks = %+v, want one warn naming the port's owner", checks)
+	}
+}
+
+func TestDoctorReportsMissingKeyWhenListenerCheckFails(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	h.useKeyFile(t, "")
+	h.deps.checkListener = func(string) error { return errors.New("connection refused") }
+	checks := h.doctorChecks()
+	if len(checks) != 2 {
+		t.Fatalf("checks = %+v, want the key warning and the settings warning", checks)
+	}
+	if c := checks[0]; c.Name != "stalwart API key" || c.Status != "warn" || !strings.Contains(c.Message, "CSM has no API key at ") || c.Fix != "run csm stalwart setup" {
+		t.Fatalf("first check = %+v, want the missing key warning", c)
+	}
+	if c := checks[1]; c.Name != "stalwart settings" || c.Status != "warn" {
+		t.Fatalf("second check = %+v, want the settings warning", c)
+	}
+}
+
+func TestDoctorKeyUnreadableAsNonRootIsWarning(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	saved := readStalwartKeyFile
+	t.Cleanup(func() { readStalwartKeyFile = saved })
+	readStalwartKeyFile = func(path string) (string, error) {
+		return "", &fs.PathError{Op: "open", Path: path, Err: fs.ErrPermission}
+	}
+	checks := h.doctorChecks()
+	c := stalwartCheckNamed(t, checks, "stalwart API key")
+	if c.Status != "warn" || !strings.Contains(c.Message, "only root can read") || c.Fix != "run csm doctor as root" {
+		t.Fatalf("key check = %+v, want a warning to run doctor as root", c)
+	}
+	if h.gotKey != "" {
+		t.Fatal("a key was sent")
 	}
 }
 
