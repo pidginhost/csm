@@ -130,6 +130,10 @@ func (o *Owner) retire() error {
 	o.retireAfter = due[len(due)-1].Action
 	for i, in := range due {
 		if !gone[i] {
+			// The attempt read cleanly and the engine answered: an earlier
+			// read fault is over while the element stays.
+			delete(o.retireDelay, in.Action)
+			delete(o.retireFaults, in.Action)
 			o.retryRetirement(in.Action, retireRecheck)
 			continue
 		}
