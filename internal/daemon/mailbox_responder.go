@@ -250,7 +250,12 @@ func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.
 		if f.Check != "mail_account_compromised" || f.Severity != alert.Critical {
 			continue
 		}
-		subject := loginMailbox(f.Mailbox)
+		subject := f.Mailbox
+		// These spellings belong to cPanel. On Stalwart a bare login
+		// containing '+' or '%' must not name another account's mailbox.
+		if activeMailBackend.name() == "cpanel" {
+			subject = loginMailbox(subject)
+		}
 		if subject == "" || !hostHasMailBackend() {
 			continue
 		}

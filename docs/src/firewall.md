@@ -172,9 +172,11 @@ Stalwart's list alone. Each lifted ban is written to the
 
 A lift that fails is written to the daemon log, which names the address
 Stalwart may still refuse, and to the action log when it got as far as the
-delete. Unblocking the address again retries the lift. If Stalwart still
-refuses the address after a logged failure to reload its ban list, reload the
-blocked list in Stalwart's admin interface.
+delete. Unblocking the address again retries bans that Stalwart still lists.
+If the delete succeeded but its reply was lost, or the subsequent reload
+failed, Stalwart can keep enforcing a ban it no longer lists. Another unblock
+cannot finish that reload. Reload the blocked list in Stalwart's admin
+interface if the address remains blocked after either failure.
 
 ## Startup failures
 

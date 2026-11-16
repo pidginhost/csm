@@ -295,6 +295,8 @@ func TestStalwartSuspendRefusesAdminAndBareNames(t *testing.T) {
 	}{
 		{name: "admin", subject: "boss@example.com", cause: "admin", account: stalwartapi.Account{ID: "a", Email: "boss@example.com", Admin: true}},
 		{name: "bare name", subject: "admin", cause: "without a domain"},
+		{name: "plus is not a domain", subject: "user+example.com", cause: "without a domain", account: stalwartapi.Account{ID: "victim", Email: "user@example.com"}},
+		{name: "percent is not a domain", subject: "user%example.com", cause: "without a domain", account: stalwartapi.Account{ID: "victim", Email: "user@example.com"}},
 		{name: "unknown address", subject: "nobody@example.com", cause: "no Stalwart account"},
 		{name: "forbidden", subject: "staff@example.com", cause: "not allowed", account: stalwartapi.Account{ID: "s", Email: "staff@example.com"}, disableErr: forbidden, tried: true},
 	} {
