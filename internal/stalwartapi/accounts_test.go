@@ -463,17 +463,16 @@ func TestAccountsNamedBatchesGets(t *testing.T) {
 	}
 }
 
-func TestDisableSignInStopsKeyOwnerToo(t *testing.T) {
+func TestDisableSignInRefusesKeyOwner(t *testing.T) {
 	f := newFake(t)
 	f.reply = func(method string, _ map[string]any) (string, any) {
 		return method, map[string]any{"updated": map[string]any{testAccount: nil}}
 	}
-	// A cracked service account must lose its sign-ins like any other,
-	// even though that also ends the key.
-	if err := f.keyClient().DisableSignIn(context.Background(), Account{ID: testAccount, Inherit: true}); err != nil {
-		t.Fatalf("DisableSignIn on the key's own account: %v", err)
+	err := f.keyClient().DisableSignIn(context.Background(), Account{ID: testAccount, Inherit: true})
+	if err == nil {
+		t.Fatal("key disabled its own account")
 	}
-	if got := f.methods(); len(got) != 1 || got[0] != "x:Account/set" {
-		t.Fatalf("methods = %v, want one x:Account/set", got)
+	if len(f.methods()) != 0 {
+		t.Fatal("self-suspension sent a mutation")
 	}
 }

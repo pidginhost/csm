@@ -135,6 +135,15 @@ func (c *Client) Account(ctx context.Context, id string) (Account, bool, error) 
 // DisableSignIn denies the account sign-in. An account that inherits its
 // permissions has no list to patch, so it gets a list holding only the denial.
 func (c *Client) DisableSignIn(ctx context.Context, a Account) error {
+	if c.bearer {
+		owner, err := c.SessionAccount(ctx)
+		if err != nil {
+			return err
+		}
+		if owner == a.ID {
+			return errors.New("CSM cannot suspend its own Stalwart API key account; change its password in Stalwart")
+		}
+	}
 	patch := map[string]any{"permissions/disabledPermissions/authenticate": true}
 	if a.Inherit {
 		patch = map[string]any{"permissions": map[string]any{
