@@ -299,14 +299,24 @@ func TestUnblockNeverBlocksTheCaller(t *testing.T) {
 		d.firewallReleased(first, firewall.ReleaseOperator)
 		close(returned)
 	}()
+	// The bound only keeps a caller stuck on Stalwart from hanging the run.
 	select {
 	case <-returned:
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(stalwartCallTimeout):
 		close(f.hold)
 		t.Fatal("firewallReleased waited on Stalwart")
 	}
 	if got := heldLookup(t, f); got != first {
 		t.Fatalf("first lookup = %s, want %s", got, first)
+	}
+	// The proof: the caller returned while the lookup it queued is still
+	// held. A caller that waited on Stalwart returns only after it ended.
+	f.mu.Lock()
+	inFlight, ended := f.inFlight, f.holdEnd
+	f.mu.Unlock()
+	if inFlight != 1 || ended != nil {
+		close(f.hold)
+		t.Fatalf("lookup in flight=%d ended=%v after the caller returned; want it still held", inFlight, ended)
 	}
 	// The drain is inside Stalwart; these wait for it.
 	for _, ip := range more {
