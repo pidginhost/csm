@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -60,6 +61,10 @@ func (b stalwartMailBackend) suspend(c mailboxCompromise) (store.MailboxSuspensi
 	case acct.Admin:
 		return store.MailboxSuspension{}, fmt.Errorf("%s is a Stalwart admin account, which CSM does not suspend; change its password in Stalwart", c.Subject)
 	case acct.SignInDisabled:
+		if c.Previous.Ref != acct.ID {
+			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s already has sign-ins stopped outside CSM; not recorded\n",
+				time.Now().Format("2006-01-02 15:04:05"), c.Subject)
+		}
 		return store.MailboxSuspension{}, errMailAlreadyRestricted
 	}
 	err = client.DisableSignIn(ctx, acct)

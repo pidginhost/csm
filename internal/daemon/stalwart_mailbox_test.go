@@ -390,6 +390,47 @@ func TestStalwartSendFindingSaysSuspended(t *testing.T) {
 	}
 }
 
+// Sign-ins someone else stopped are not CSM's suspension: nothing is listed
+// to release, so the finding must not say there is.
+func TestStalwartSendFindingAlreadyDisabledOutsideCSM(t *testing.T) {
+	resetStalwartSendState(t)
+	db := withMailboxStore(t)
+	cfg := stalwartResponseConfig(t, stalwartSendConfig(), true)
+	d, _ := newStalwartAuthDaemon(t, cfg)
+	f := &fakeStalwart{accounts: []stalwartapi.Account{{ID: "c", Email: "user@example.com", SignInDisabled: true}}}
+	stalwartHost(t, d.currentCfg, f)
+
+	sender := stalwartCompromisedSends(t, d, "user@example.com")
+	if sender[0].Context != stalwartNotSuspendedContext {
+		t.Fatalf("context = %q, want %q", sender[0].Context, stalwartNotSuspendedContext)
+	}
+	if rows, err := db.ListMailboxSuspensions(); err != nil || len(rows) != 0 {
+		t.Fatalf("rows=%+v err=%v, want no record", rows, err)
+	}
+	if len(f.disabled) != 0 {
+		t.Fatalf("DisableSignIn sent for an account already disabled: %v", f.disabled)
+	}
+}
+
+// A suspension CSM made for an earlier event is still CSM's to release.
+func TestStalwartSendFindingKeepsEarlierSuspension(t *testing.T) {
+	resetStalwartSendState(t)
+	db := withMailboxStore(t)
+	cfg := stalwartResponseConfig(t, stalwartSendConfig(), true)
+	d, _ := newStalwartAuthDaemon(t, cfg)
+	f := &fakeStalwart{accounts: []stalwartapi.Account{{ID: "c", Email: "user@example.com", SignInDisabled: true}}}
+	stalwartHost(t, d.currentCfg, f)
+	putRows(t, db, stalwartRow("user@example.com", "c"))
+
+	sender := stalwartCompromisedSends(t, d, "user@example.com")
+	if sender[0].Context != stalwartSuspendedContext {
+		t.Fatalf("context = %q, want %q", sender[0].Context, stalwartSuspendedContext)
+	}
+	if len(f.disabled) != 0 {
+		t.Fatalf("DisableSignIn sent again: %v", f.disabled)
+	}
+}
+
 // A suspension that fails leaves the mailbox active, and the finding says
 // it was not suspended.
 func TestStalwartSendFindingSaysNotSuspended(t *testing.T) {

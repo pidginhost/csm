@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/stalwartlog"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 const (
@@ -179,11 +180,23 @@ func respondToStalwartCompromise(cfg *config.Config, account, check, reason stri
 			time.Now().Format("2006-01-02 15:04:05"), account)
 	}
 	switch {
-	case stopped:
+	case stopped && holdsStalwartSuspension(account):
 		return stalwartSuspendedContext
 	case !hostHasMailBackend():
 		return stalwartNoKeyContext
 	default:
 		return stalwartNotSuspendedContext
 	}
+}
+
+// holdsStalwartSuspension reports whether CSM holds an unreleased suspension
+// of subject. Sign-ins stopped outside CSM also count as stopped, but leave
+// nothing to release.
+func holdsStalwartSuspension(subject string) bool {
+	db := store.Global()
+	if db == nil {
+		return false
+	}
+	rec, ok, err := db.GetMailboxSuspension(store.MailboxSuspensionID(activeMailBackend.name(), subject))
+	return err == nil && ok && rec.ReleasedAt == nil
 }
