@@ -883,6 +883,10 @@ func TestPlanUpdatesRoleMissingPermission(t *testing.T) {
 			if got, want := responseStates(p), []State{Change, Done, Done}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
 			}
+			// The save replaces the role, so the step must not promise to add.
+			if d := p.Steps[6].Detail; !strings.Contains(d, "; reset it to CSM's permissions and the User role") {
+				t.Fatalf("role step detail = %q, want it to say the role is reset", d)
+			}
 			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SaveRole(r1," + ResponseRole + ")"}) {
 				t.Fatalf("calls = %q", calls)
 			}

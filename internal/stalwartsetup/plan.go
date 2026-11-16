@@ -211,7 +211,7 @@ func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
 	case !haveRole:
 		role.State, role.Detail = Change, fmt.Sprintf("create role %q with CSM's permissions and the User role", ResponseRole)
 	case len(missing) > 0:
-		role.State, role.Detail = Change, fmt.Sprintf("role %q lacks %s; add them", ResponseRole, strings.Join(missing, ", "))
+		role.State, role.Detail = Change, fmt.Sprintf("role %q lacks %s; reset it to CSM's permissions and the User role", ResponseRole, strings.Join(missing, ", "))
 	default:
 		role.State, role.Detail = Done, fmt.Sprintf("role %q holds CSM's permissions and the User role", ResponseRole)
 	}
