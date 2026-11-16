@@ -3440,7 +3440,8 @@ func (e *Engine) livePermTempCountsLocked(state FirewallState) (perm, temp int, 
 	gotAny := false
 	live = make(map[string]bool)
 	for _, set := range []*nftables.Set{e.setBlocked, e.setBlocked6} {
-		if set == nil {
+		// An IPv6 set an earlier ruleset left behind is not in the kernel.
+		if set == nil || (set == e.setBlocked6 && !e.cfg.IPv6) {
 			continue
 		}
 		elements, err := e.dumpBlockedSetLocked(set)

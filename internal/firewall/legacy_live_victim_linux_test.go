@@ -137,6 +137,7 @@ func TestLegacyVictimNeedsAWholeImage(t *testing.T) {
 		t.Errorf("unread set: victim %q, %v; want the row closest to expiry", victim, err)
 	}
 	e = capEngine(t, 0, gone, live)
+	e.cfg.IPv6 = true
 	e.setBlocked6 = &nftables.Set{Name: "blocked_ips6", KeyType: nftables.TypeIP6Addr}
 	liveDump(e, e.setBlocked6, live.IP)
 	if victim, err := capVictim(e, "198.51.100.44", true); err != nil || victim != gone.IP {
@@ -176,5 +177,26 @@ func TestLegacyVictimEmptyImageIsNotAnUnreadImage(t *testing.T) {
 	count, live = e.operatorTempCountLocked(state, "")
 	if count != 1 || live != nil {
 		t.Fatalf("unread operator image: count %d, image %v", count, live)
+	}
+}
+
+// An engine applied again with IPv6 filtering turned off keeps its IPv6
+// set object, but the kernel no longer has that set. The limit count must
+// not ask for it: one failed dump would hide every element from the
+// decision, and the saved IPv6 row would keep its turn.
+func TestLegacyVictimIgnoresAnIPv6SetLeftBehind(t *testing.T) {
+	stale := BlockedEntry{IP: "2001:db8::47", ExpiresAt: time.Now().Add(time.Minute)}
+	live := BlockedEntry{IP: "192.0.2.47", ExpiresAt: time.Now().Add(time.Hour)}
+	for _, automatic := range []bool{false, true} {
+		e := capEngine(t, 0, stale, live)
+		e.setBlocked6 = &nftables.Set{Name: "blocked_ips6", KeyType: nftables.TypeIP6Addr}
+		liveDump(e, e.setBlocked6, live.IP)
+		if victim, err := capVictim(e, "198.51.100.47", automatic); err != nil || victim != live.IP {
+			t.Errorf("automatic=%v: victim %q, %v; want the IPv4 row", automatic, victim, err)
+		}
+		e.cfg.IPv6 = true
+		if victim, err := capVictim(e, "198.51.100.47", automatic); err != nil || victim != stale.IP {
+			t.Errorf("automatic=%v, IPv6 filtered and unread: victim %q, %v; want the row closest to expiry", automatic, victim, err)
+		}
 	}
 }
