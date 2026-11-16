@@ -104,21 +104,30 @@ test('a throwing poll callback does not stop the poller', async () => {
 
 test('a poller doubles its interval after a failure and resets after a success', async () => {
     const page = loadPage('', SHARED);
+    // Read the delays the poller asks for, not elapsed time: a loaded
+    // machine stretches a real timer past any bound.
+    const delays = [];
+    const pageTimeout = page.window.setTimeout;
+    page.window.setTimeout = (fn, ms, ...args) => { delays.push(ms); return pageTimeout(fn, ms, ...args); };
     const poller = page.window.CSM.poll('/api/v1/status', 10, () => {});
-    async function nextAfter(ms) {
+    async function nextDelay(answer) {
         const start = Date.now();
         while (page.pending('/api/v1/status').length === 0) {
-            if (Date.now() - start > 500) throw new Error('no poll');
+            if (Date.now() - start > 5000) throw new Error('no poll');
             await wait(2);
         }
-        return Date.now() - start;
+        const seen = delays.length;
+        answer();
+        await settle();
+        return delays.slice(seen);
     }
-    await nextAfter();
-    page.fail('/api/v1/status');
-    const slow = await nextAfter();
-    page.respond('/api/v1/status', 200, {});
-    const fast = await nextAfter();
-    assert.ok(slow >= 18, 'no backoff after a failure: ' + slow + 'ms');
-    assert.ok(fast < slow, 'the interval did not reset after a success: ' + fast + 'ms vs ' + slow + 'ms');
+    assert.deepEqual(delays, [10]);
+    const slow = await nextDelay(() => page.fail('/api/v1/status'));
+    const fast = await nextDelay(() => page.respond('/api/v1/status', 200, {}));
+    // Each delay carries up to 30% jitter on top of the interval.
+    assert.equal(slow.length, 1, 'timers after a failure: ' + slow);
+    assert.ok(slow[0] >= 20 && slow[0] <= 26, 'no doubled interval after a failure: ' + slow[0] + 'ms');
+    assert.equal(fast.length, 1, 'timers after a success: ' + fast);
+    assert.ok(fast[0] >= 10 && fast[0] <= 13, 'the interval did not reset after a success: ' + fast[0] + 'ms');
     poller.stop();
 });
