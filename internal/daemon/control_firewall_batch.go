@@ -441,6 +441,18 @@ func setFirewallDeadmanOnRollback(fn func()) {
 // owner wrote inside it. Guarded by firewallDeadmanMu.
 var firewallBatchHold func(bool)
 
+// firewallRowGate gates the engine's saved rows on the ledger again. A
+// rollback restores state.json as it was when its window opened, without
+// the marks and removals the ledger asked for since, so each restore runs
+// it before admission is released. Guarded by firewallDeadmanMu.
+var firewallRowGate func()
+
+func setFirewallRowGate(fn func()) {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+	firewallRowGate = fn
+}
+
 // An unreadable configuration proof cannot release admission after
 // only the kernel snapshot was restored. Guarded by firewallDeadmanMu.
 var firewallDeadmanConfigErr error
@@ -701,7 +713,17 @@ func applyFirewallRollbackFile(rollbackFile string) (resultErr error) {
 	rec.Result = actionlog.Applied
 	// Kernel is back on the snapshot; state.json must follow, or the UI
 	// keeps describing the window's mutations as live.
-	return restoreFirewallStateSnapshot(rollbackFile)
+	restored, err := restoreFirewallStateSnapshot(rollbackFile)
+	if err != nil {
+		return err
+	}
+	if !restored {
+		return nil
+	}
+	if firewallRowGate != nil {
+		firewallRowGate()
+	}
+	return nil
 }
 
 func removeFirewallRollbackFiles(paths ...string) error {

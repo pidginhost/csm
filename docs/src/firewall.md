@@ -212,6 +212,7 @@ as before and existing unverified marks are kept; none of those automatic
 blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the
 reason. A ledger missing its admission queue state counts as unreadable.
+The same check runs after a confirmation window restores its saved blocks.
 With a readable ledger such blocks are never evicted either: an
 operator block that finds the temporary limit reached only because of them
 is added above the limit. New timed automatic blocks record their origin

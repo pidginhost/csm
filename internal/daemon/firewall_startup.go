@@ -120,6 +120,9 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 	engine.SetShutdownContext(verdictCtx)
 
 	d.setFirewallEngine(engine)
+	// A rollback restores the rows of its window's start; they are gated
+	// again as they were here.
+	setFirewallRowGate(func() { gateFirewallRows(engine, ops) })
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)

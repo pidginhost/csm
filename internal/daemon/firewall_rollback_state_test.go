@@ -31,8 +31,8 @@ func TestFirewallRollbackSnapshotCarriesStateJSON(t *testing.T) {
 	if err := os.WriteFile(stateFile, []byte(`{"blocked":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := restoreFirewallStateSnapshot(rollbackFile); err != nil {
-		t.Fatal(err)
+	if restored, err := restoreFirewallStateSnapshot(rollbackFile); err != nil || !restored {
+		t.Fatalf("state restore = %v, %v; want restored", restored, err)
 	}
 	got, err := os.ReadFile(stateFile)
 	if err != nil || string(got) != before {
