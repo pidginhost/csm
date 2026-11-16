@@ -119,6 +119,24 @@ func (e *Engine) filteredRowsLocked(st FirewallState) FirewallState {
 	return st
 }
 
+// heldRows is st without the blocked rows whose address is not in live,
+// the addresses the limit count found in the kernel: replacing a row with
+// no element frees no slot. A nil live, from a count that read no kernel
+// image, keeps every row.
+func heldRows(st FirewallState, live map[string]bool) FirewallState {
+	if live == nil {
+		return st
+	}
+	kept := make([]BlockedEntry, 0, len(st.Blocked))
+	for _, row := range st.Blocked {
+		if live[stateIPKey(row.IP)] {
+			kept = append(kept, row)
+		}
+	}
+	st.Blocked = kept
+	return st
+}
+
 // evictionVictimLocked picks the temporary block a new one replaces at the
 // cap. It leaves out the rows admission actions wrote: no legacy block,
 // automatic or operator, removes a block admission owns.

@@ -82,7 +82,7 @@ func TestOperatorOccupancyDumpBoundaries(t *testing.T) {
 				f.e.liveBlockedDump, f.e.conn, wantDumps = nil, nil, 0
 			}
 			f.e.mu.Lock()
-			got := f.e.operatorTempCountLocked(state, exclude)
+			got, _ := f.e.operatorTempCountLocked(state, exclude)
 			f.e.mu.Unlock()
 			if got != want || dumps != wantDumps {
 				t.Fatalf("count=%d dumps=%d, want %d/%d", got, dumps, want, wantDumps)
@@ -108,7 +108,7 @@ func TestOperatorOccupancyUsesFreshSockets(t *testing.T) {
 	f.e.conn, f.e.liveBlockedDump = conn, nil
 	state := FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.90", ExpiresAt: f.at.Add(time.Hour)}}}
 	f.e.mu.Lock()
-	got := f.e.operatorTempCountLocked(state, "")
+	got, _ := f.e.operatorTempCountLocked(state, "")
 	f.e.mu.Unlock()
 	if got != 0 || shared != 0 || fresh != 2 {
 		t.Fatalf("count=%d shared=%d fresh=%d", got, shared, fresh)

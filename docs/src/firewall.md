@@ -224,6 +224,11 @@ Rows of an address family without a blocked set neither fill the temporary
 limit nor become replacement victims. Turning off IPv6 filtering therefore
 does not make saved IPv6 blocks refuse a new temporary block.
 
+At the temporary limit, replacement uses the same live set image as the
+limit count. A saved row without an element cannot free a slot. When no
+replaceable row has an element, the new block is refused; if a complete
+image cannot be read, the saved rows remain the fallback.
+
 Temporary IP blocks use a firewall clock that counts elapsed time and never
 moves backward. Setting the system clock back does not add that step to their
 lifetime; a forward step can shorten restored blocks. While the firewall clock

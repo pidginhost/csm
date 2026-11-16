@@ -211,7 +211,7 @@ func TestOperatorOccupancyUsesOnePopulation(t *testing.T) {
 					f.e.conn = nil
 				}
 				f.e.mu.Lock()
-				got := f.e.operatorTempCountLocked(state, exclude)
+				got, _ := f.e.operatorTempCountLocked(state, exclude)
 				f.e.mu.Unlock()
 				if got != want {
 					t.Fatalf("non-admission occupants = %d, want %d", got, want)
