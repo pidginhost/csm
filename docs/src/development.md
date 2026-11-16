@@ -637,9 +637,12 @@ notice still reaches alert channels as a Warning saying existing blocking
 is unaffected. While it executes (never in this build, see `liveExecution`),
 a gap is an outage of automatic blocking: notices go to the alert channels
 with their kind's severity and no preview prefix, and the stopped-admission
-notice is Critical. The mode is read at each delivery, including a retried
-stop notice, so a record raised before a mode change is delivered in the new
-mode. Stop retries retain their original timestamp, cause and stop identity. Acknowledgements
+notice is Critical. A ledger notice keeps the mode it was raised in: a
+record with an event from while the owner executed, or from a real attempt's
+outcome, is delivered live after a dry run starts, and one raised only in a
+dry run stays a preview after execution returns. Other records from
+before a restart take the mode the owner starts in. The stopped-admission notice
+uses the mode at delivery, including a retried one. Stop retries retain their original timestamp, cause and stop identity. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
 acknowledgement cannot consume a later record under a reused key. An audit
 row's acknowledgement carries the row's time as well, so one held past the

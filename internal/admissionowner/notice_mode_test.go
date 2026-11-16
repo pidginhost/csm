@@ -69,6 +69,211 @@ func TestOwnerNoticesFollowTheInstalledPolicy(t *testing.T) {
 	}
 }
 
+// A notice keeps the mode it was raised in. One raised while the owner
+// executed reports a gap of a live period and stays live after a dry run
+// starts; one raised in a dry run stays a preview after execution returns.
+func TestOwnerNoticesKeepTheModeTheyWereRaisedIn(t *testing.T) {
+	for _, toLive := range []bool{false, true} {
+		t.Run(map[bool]string{false: "live_then_dry_run", true: "dry_run_then_live"}[toLive], func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			sink := &noticeSink{}
+			o, r := noticeOwner(t, f, validPolicy(1), sink)
+			later := func() {
+				t.Helper()
+				f.host.advance(time.Second)
+				if err := o.do(o.tick); err != nil {
+					t.Fatal(err)
+				}
+			}
+			install := func(next ExecutionPolicy) {
+				t.Helper()
+				later()
+				r.publish(next)
+				if err := o.do(o.refreshPolicy); err != nil {
+					t.Fatal(err)
+				}
+				later()
+			}
+			if toLive {
+				install(dryPolicy(2))
+			}
+			criticalGap(t, o, p, f.host)
+			if toLive {
+				install(validPolicy(3))
+			} else {
+				install(dryPolicy(2))
+			}
+			if err := o.do(func() error {
+				if !o.ledger.LiveStarted() {
+					t.Error("the fixture ledger never started live")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			o.notices.cycle()
+			if sink.count() != 1 || sink.lastPreview() != toLive {
+				t.Fatalf("deliveries %d, preview %v; want one with preview %v", sink.count(), sink.lastPreview(), toLive)
+			}
+			wantSeverity := alert.Critical
+			if toLive {
+				wantSeverity = alert.Warning
+			}
+			for _, fd := range sink.last() {
+				if fd.Severity != wantSeverity || strings.HasPrefix(fd.Message, "Admission preview: ") != toLive {
+					t.Errorf("notice = %+v", fd)
+				}
+			}
+		})
+	}
+}
+
+// A record is live when it comes only from a real attempt, or when an
+// event it has not delivered may fall in a live span of this process.
+// Undelivered events are no older than the read of the last acknowledged
+// delivery, when this process made it, else than the acknowledgement.
+func TestRaisedLiveNotices(t *testing.T) {
+	at := func(s int) time.Time { return time.Unix(1000+int64(s), 0) }
+	spans := []liveSpan{{since: at(10), until: at(20)}, {since: at(30)}}
+	reason := admission.NoticeKey{Kind: admission.NoticeWithheld, Reason: admission.ReasonPolicy, Check: "ssh_brute", Effect: admission.EffectAddress}
+	outcome := admission.NoticeKey{Kind: admission.NoticeWithheld, Outcome: admission.DispositionFailed, Check: "ssh_brute", Effect: admission.EffectAddress}
+	var never time.Time
+	for _, tc := range []struct {
+		name        string
+		key         admission.NoticeKey
+		first, last time.Time
+		sent, read  time.Time
+		want        bool
+	}{
+		{"before_any_span", reason, at(1), at(9), never, never, false},
+		{"inside_a_closed_span", reason, at(12), at(15), never, never, true},
+		{"between_spans", reason, at(21), at(29), never, never, false},
+		{"straddles_a_flip", reason, at(5), at(11), never, never, true},
+		{"at_a_span_end", reason, at(20), at(20), never, never, true},
+		{"in_the_open_span", reason, at(31), at(40), never, never, true},
+		{"live_events_delivered", reason, at(12), at(25), at(21), never, false},
+		{"raised_during_a_delivery", reason, at(12), at(25), at(21), at(15), true},
+		{"read_after_the_span", reason, at(12), at(25), at(23), at(21), false},
+		{"attempt_outcome", outcome, at(1), at(2), never, never, true},
+		{"applied_summary", admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, at(1), at(2), never, never, true},
+	} {
+		r := admission.NoticeRecord{Key: tc.key, Count: 2, Acked: 1, First: tc.first, Last: tc.last, Sent: tc.sent}
+		if got := raisedLive(r, spans, tc.read); got != tc.want {
+			t.Errorf("%s: live %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if raisedLive(admission.NoticeRecord{Key: reason, Count: 1, First: at(12), Last: at(12)}, nil, never) {
+		t.Error("a record of a process that never executed was live")
+	}
+	if !raisedLive(admission.NoticeRecord{Key: outcome, Count: 1, First: at(12), Last: at(12)}, nil, never) {
+		t.Error("an attempt outcome of an earlier process was a preview")
+	}
+}
+
+// An event raised while a delivery is out keeps the mode it was raised
+// in, though the acknowledgement comes after a switch to a dry run.
+func TestOwnerNoticeKeepsLiveEventsRaisedDuringDelivery(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{}
+	o, r := noticeOwner(t, f, validPolicy(1), sink)
+	later := func(d time.Duration) {
+		t.Helper()
+		f.host.advance(d)
+		if err := o.do(o.tick); err != nil {
+			t.Fatal(err)
+		}
+	}
+	criticalGap(t, o, p, f.host)
+	later(time.Second)
+	sink.during = func() {
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
+		if err := o.do(func() error { _, err := o.ledger.Terminate(id, admission.ReasonPolicy); return err }); err != nil {
+			t.Fatal(err)
+		}
+		later(time.Second)
+		r.publish(dryPolicy(2))
+		if err := o.do(o.refreshPolicy); err != nil {
+			t.Fatal(err)
+		}
+		later(time.Second)
+	}
+	o.notices.cycle()
+	if sink.count() != 1 || sink.lastPreview() {
+		t.Fatalf("first delivery: %d, preview %v", sink.count(), sink.lastPreview())
+	}
+	later(time.Hour)
+	o.notices.cycle()
+	if sink.count() != 2 || sink.lastPreview() {
+		t.Fatalf("events raised during the delivery: %d deliveries, preview %v; want them live", sink.count(), sink.lastPreview())
+	}
+	for _, fd := range sink.last() {
+		if fd.Severity != alert.Critical || strings.HasPrefix(fd.Message, "Admission preview: ") || !strings.HasPrefix(fd.Details, "events=1 ") {
+			t.Errorf("notice = %+v", fd)
+		}
+	}
+}
+
+// Records of both modes go out live first, then as previews, and only
+// what went out is acknowledged: a failed preview group stays due and is
+// the only one sent again.
+func TestOwnerSplitNoticeDeliveryAcknowledgesOnlySuccess(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{previewErr: errors.New("history unavailable")}
+	o, r := noticeOwner(t, f, validPolicy(1), sink)
+	later := func() {
+		t.Helper()
+		f.host.advance(time.Second)
+		if err := o.do(o.tick); err != nil {
+			t.Fatal(err)
+		}
+	}
+	criticalGap(t, o, p, f.host)
+	later()
+	r.publish(dryPolicy(2))
+	if err := o.do(o.refreshPolicy); err != nil {
+		t.Fatal(err)
+	}
+	later()
+	// Another reason keys another record, raised only in the dry run.
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.12")
+	if err := o.do(func() error { _, err := o.ledger.Terminate(id, admission.ReasonInvalid); return err }); err != nil {
+		t.Fatal(err)
+	}
+	o.notices.cycle()
+	if sink.count() != 2 {
+		t.Fatalf("deliveries = %d, want the live group and the preview group", sink.count())
+	}
+	live, livePreview := sink.delivery(0)
+	previews, previewed := sink.delivery(1)
+	if livePreview || !previewed || len(live) == 0 || len(previews) == 0 {
+		t.Fatalf("groups: %d live (preview %v), %d previews (preview %v)", len(live), livePreview, len(previews), previewed)
+	}
+	sink.setPreview(nil)
+	o.notices.cycle()
+	if sink.count() != 3 {
+		t.Fatalf("the retry sent %d deliveries in all; want only the previews again", sink.count())
+	}
+	if again, preview := sink.delivery(2); !preview || !reflect.DeepEqual(messages(again), messages(previews)) {
+		t.Fatalf("the retry sent %+v (preview %v); want only the previews", again, preview)
+	}
+	o.notices.cycle()
+	if sink.count() != 3 {
+		t.Fatalf("an acknowledged group went out again: %d deliveries", sink.count())
+	}
+}
+
+// messages is the messages of fs, in order.
+func messages(fs []alert.Finding) []string {
+	out := make([]string, len(fs))
+	for i, fd := range fs {
+		out[i] = fd.Message
+	}
+	return out
+}
+
 // A kind whose severity is a Warning stays one while the owner executes.
 func TestOwnerLiveNoticeKeepsAWarningKind(t *testing.T) {
 	if got := alertSeverity(admission.NoticeWithheldWarning); got != alert.Warning {

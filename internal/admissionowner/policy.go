@@ -174,6 +174,7 @@ func (o *Owner) refreshPolicy() error {
 	}
 	prev := o.policy
 	o.policy, o.policyErr, o.policyHeld = p, nil, nil
+	o.noteMode()
 	if !p.DryRun {
 		// A live policy ends the forecast; a later dry run starts anew.
 		// Its examples are purged at this boundary, as are those a dry run

@@ -243,6 +243,11 @@ type Owner struct {
 	seenEpoch uint64
 	policyErr error
 	verdicts  verdicts
+	// liveSpans are the admission times this process executed in, for the
+	// mode of its notices (noteMode); modeNoted is set once the first is
+	// known. Spans change only with installed policies, so they stay few.
+	liveSpans []liveSpan
+	modeNoted bool
 	// shadow is the forecast session while a dry-run policy is installed,
 	// and forecastReset why the next session starts.
 	// forecastErr is why forecasting last failed, cleared once a session
