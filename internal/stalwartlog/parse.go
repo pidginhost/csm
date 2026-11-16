@@ -185,8 +185,8 @@ func parseFields(s string, ev *Event, depth int, closing string) (string, bool) 
 		case strings.HasPrefix(s, "(null)"):
 			s, null, ok = s[len("(null)"):], true, true
 		default:
-			if name, after, isEvent, valid := subEvent(s, depth); isEvent {
-				scalar, s, ok = name, after, valid
+			if event, after, isEvent, valid := subEvent(s, depth); isEvent {
+				scalar, s, ok = event, after, valid
 			} else {
 				scalar, s, ok = bare(s, stops...)
 			}
