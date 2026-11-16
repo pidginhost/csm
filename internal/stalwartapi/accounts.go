@@ -139,11 +139,11 @@ func (c *Client) DisableSignIn(ctx context.Context, a Account) error {
 }
 
 // EnableSignIn removes the sign-in denial from the account's permissions and
-// leaves the rest of the list alone. A missing account, or one that inherits
-// its permissions, has no denial to remove.
+// leaves the rest of the list alone. A missing account, or one whose
+// sign-ins are not denied, is left without a write.
 func (c *Client) EnableSignIn(ctx context.Context, id string) error {
 	a, found, err := c.Account(ctx, id)
-	if err != nil || !found || a.Inherit {
+	if err != nil || !found || a.Inherit || !a.SignInDisabled {
 		return err
 	}
 	_, err = c.set(ctx, "x:Account/set", map[string]any{"update": map[string]any{

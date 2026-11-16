@@ -388,6 +388,7 @@ func TestEnableSignInRemovesOnlyItsEntry(t *testing.T) {
 	f := accountsFake(t, map[string]map[string]any{
 		"a1": account("a1", "alice@example.org", inherit, userRole),
 		"a2": account("a2", "alice@example.net", map[string]any{"@type": "Merge", "enabledPermissions": map[string]any{}, "disabledPermissions": map[string]any{"authenticate": true, "imapAuthenticate": true}}, userRole),
+		"a3": account("a3", "carol@example.org", map[string]any{"@type": "Merge", "enabledPermissions": map[string]any{}, "disabledPermissions": map[string]any{}}, userRole),
 	})
 	c := f.keyClient()
 	ctx := context.Background()
@@ -402,7 +403,8 @@ func TestEnableSignInRemovesOnlyItsEntry(t *testing.T) {
 		t.Fatalf("update = %s", s)
 	}
 
-	for _, id := range []string{"a1", "gone"} {
+	// Inherit, an empty Merge and a missing account have no denial to remove.
+	for _, id := range []string{"a1", "a3", "gone"} {
 		before := len(f.methods())
 		if err := c.EnableSignIn(ctx, id); err != nil {
 			t.Fatalf("%s: %v", id, err)
