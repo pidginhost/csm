@@ -476,6 +476,60 @@ func TestOwnerSplitNoticeDeliveryKeepsBackoff(t *testing.T) {
 	}
 }
 
+// Live and preview groups go to different stores and fail apart. A
+// preview group that keeps failing must not hold back a new live notice.
+func TestOwnerLiveNoticeDoesNotWaitForPreviewBackoff(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	previous := deliveryNow
+	deliveryNow = clock.now
+	t.Cleanup(func() { deliveryNow = previous })
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{previewErr: errors.New("history unavailable")}
+	o, r := noticeOwner(t, f, validPolicy(1), sink)
+	tick := func() {
+		t.Helper()
+		f.host.advance(time.Minute)
+		if err := o.do(o.tick); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gap := func(addr string, reason admission.Reason) {
+		t.Helper()
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, addr)
+		if err := o.do(func() error { _, err := o.ledger.Terminate(id, reason); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	criticalGap(t, o, p, f.host)
+	tick()
+	r.publish(dryPolicy(2))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	tick()
+	gap("192.0.2.11", admission.ReasonInvalid)
+	tick()
+	r.publish(validPolicy(3))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		o.notices.cycle()
+	}
+	before := sink.count()
+	o.notices.cycle()
+	if sink.count() != before {
+		t.Fatalf("the failing preview group was not backed off: %d deliveries, want %d", sink.count(), before)
+	}
+	tick()
+	gap("192.0.2.12", admission.ReasonPolicy)
+	o.notices.cycle()
+	if sink.count() != before+1 || sink.lastPreview() {
+		t.Fatalf("a live gap waited behind failing previews: %d deliveries, want %d; preview %v", sink.count(), before+1, sink.lastPreview())
+	}
+}
+
 // A delivery of every due group ends the backoff: a later failure is
 // retried at once again, as after any first failure.
 func TestOwnerNoticeDeliveryResetsBackoffAfterSuccess(t *testing.T) {

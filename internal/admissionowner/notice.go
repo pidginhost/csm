@@ -57,8 +57,9 @@ type sender struct {
 	// summaryWaiting is set while a dry-run summary waits for delivery.
 	summaryWaiting bool
 	// The independent stop alert must not inherit a ledger delivery's wait,
-	// and its successful delivery must not reset that ledger retry.
-	ledgerRetry retryBackoff
+	// and its successful delivery must not reset that ledger retry. Live
+	// and preview records go to different stores and back off apart.
+	ledgerRetry, previewRetry retryBackoff
 	// ledgerStarted binds the retry delay to the notice stream: clearing
 	// preview records at live start also discards their delivery failures.
 	ledgerStarted bool
@@ -157,7 +158,7 @@ func (s *sender) cycle() {
 		return
 	}
 	if started != s.ledgerStarted {
-		s.ledgerRetry = retryBackoff{}
+		s.ledgerRetry, s.previewRetry = retryBackoff{}, retryBackoff{}
 		s.ledgerStarted = started
 	}
 	s.ledgerPending = len(due)
@@ -183,17 +184,14 @@ func (s *sender) cycle() {
 		if len(findings) == 0 {
 			continue
 		}
-		// Both groups share the ledger retry. A partial success must not
-		// erase failures of the other group.
-		retry := s.ledgerRetry
-		if !s.deliver(&retry, findings, preview) {
-			s.ledgerRetry = retry
+		retry := &s.ledgerRetry
+		if preview {
+			retry = &s.previewRetry
+		}
+		if !s.deliver(retry, findings, preview) {
 			break
 		}
 		acks = append(acks, group...)
-	}
-	if len(acks) == len(due) {
-		s.ledgerRetry = retryBackoff{}
 	}
 	if len(acks) == 0 {
 		return

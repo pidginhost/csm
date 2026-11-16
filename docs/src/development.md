@@ -645,8 +645,8 @@ before a restart take the mode the owner starts in. If the startup clock
 fails, later notice mode boundaries use the first valid clock reading;
 restored notices keep the initial startup mode. Deliveries before that
 reading use the saved ledger time to retain the mode of events raised
-during delivery. Live and preview groups share the ledger delivery backoff;
-only delivery of every due group resets it. The stopped-admission notice
+during delivery. Live and preview groups back off
+separately, so failing previews never delay a live notice. The stopped-admission notice
 uses the mode at delivery, including a retried one. Stop retries retain their original timestamp, cause and stop identity. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
 acknowledgement cannot consume a later record under a reused key. An audit
