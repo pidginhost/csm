@@ -427,3 +427,52 @@ func TestSetReportsForbiddenGrant(t *testing.T) {
 		t.Fatalf("err = %#v, want a forbidden MethodError", err)
 	}
 }
+
+func TestAccountsNamedBatchesGets(t *testing.T) {
+	const serverGetLimit = 500
+	f := newFake(t)
+	ids := make([]string, serverGetLimit+1)
+	for i := range ids {
+		ids[i] = strconv.Itoa(i)
+	}
+	f.reply = func(method string, args map[string]any) (string, any) {
+		if method == "x:Account/query" {
+			return method, map[string]any{"ids": ids}
+		}
+		requested := args["ids"].([]any)
+		if len(requested) > serverGetLimit {
+			return "error", map[string]any{"type": "requestTooLarge"}
+		}
+		list := []any{}
+		for _, id := range requested {
+			list = append(list, account(id.(string), "alice@domain"+id.(string)+".example.org", inherit, userRole))
+		}
+		return method, map[string]any{"list": list}
+	}
+	got, err := f.keyClient().AccountsNamed(context.Background(), "alice")
+	if err != nil || len(got) != len(ids) {
+		t.Fatalf("got %d accounts, error %v", len(got), err)
+	}
+	for i, a := range got {
+		if a.ID != ids[i] {
+			t.Fatalf("account %d out of order", i)
+		}
+	}
+	if !reflect.DeepEqual(f.methods(), []string{"x:Account/query", "x:Account/get", "x:Account/get"}) {
+		t.Fatal("unexpected request order")
+	}
+}
+
+func TestDisableSignInRefusesKeyOwner(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"updated": map[string]any{testAccount: nil}}
+	}
+	err := f.keyClient().DisableSignIn(context.Background(), Account{ID: testAccount, Inherit: true})
+	if err == nil {
+		t.Fatal("key disabled its own account")
+	}
+	if len(f.methods()) != 0 {
+		t.Fatal("self-suspension sent a mutation")
+	}
+}

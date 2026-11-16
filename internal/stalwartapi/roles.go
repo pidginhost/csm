@@ -7,11 +7,12 @@ import (
 	"slices"
 )
 
-// Role is a Stalwart role: the permissions it enables and the roles it
-// includes, both sorted.
+// Role is a Stalwart role: the permissions it enables or denies and
+// the roles it includes, all sorted.
 type Role struct {
 	ID, Description string
 	Enabled         []string
+	Disabled        []string
 	RoleIDs         []string
 }
 
@@ -25,6 +26,7 @@ func (c *Client) RoleByDescription(ctx context.Context, description string) (Rol
 		ID          string          `json:"id"`
 		Description string          `json:"description"`
 		Enabled     map[string]bool `json:"enabledPermissions"`
+		Disabled    map[string]bool `json:"disabledPermissions"`
 		RoleIDs     map[string]bool `json:"roleIds"`
 	}
 	if err := c.get(ctx, "x:Role/get", ids, &list); err != nil {
@@ -33,19 +35,20 @@ func (c *Client) RoleByDescription(ctx context.Context, description string) (Rol
 	// The query filter is not documented as exact, so the match is checked here.
 	for _, r := range list {
 		if r.Description == description {
-			return Role{ID: r.ID, Description: r.Description, Enabled: setKeys(r.Enabled), RoleIDs: setKeys(r.RoleIDs)}, true, nil
+			return Role{ID: r.ID, Description: r.Description, Enabled: setKeys(r.Enabled), Disabled: setKeys(r.Disabled), RoleIDs: setKeys(r.RoleIDs)}, true, nil
 		}
 	}
 	return Role{}, false, nil
 }
 
 // SaveRole creates r when it has no id, and otherwise replaces its enabled
-// permissions and included roles with exactly those of r. It returns the id.
+// and disabled permissions and included roles with exactly those of r. It returns the id.
 func (c *Client) SaveRole(ctx context.Context, r Role) (string, error) {
 	if r.ID != "" {
 		_, err := c.set(ctx, "x:Role/set", map[string]any{"update": map[string]any{r.ID: map[string]any{
-			"enabledPermissions": trueSet(r.Enabled...),
-			"roleIds":            trueSet(r.RoleIDs...),
+			"enabledPermissions":  trueSet(r.Enabled...),
+			"disabledPermissions": trueSet(r.Disabled...),
+			"roleIds":             trueSet(r.RoleIDs...),
 		}}})
 		if err != nil {
 			return "", err
@@ -53,9 +56,10 @@ func (c *Client) SaveRole(ctx context.Context, r Role) (string, error) {
 		return r.ID, nil
 	}
 	return c.create(ctx, "x:Role/set", map[string]any{
-		"description":        r.Description,
-		"enabledPermissions": trueSet(r.Enabled...),
-		"roleIds":            trueSet(r.RoleIDs...),
+		"description":         r.Description,
+		"enabledPermissions":  trueSet(r.Enabled...),
+		"disabledPermissions": trueSet(r.Disabled...),
+		"roleIds":             trueSet(r.RoleIDs...),
 	})
 }
 
@@ -111,8 +115,15 @@ func (c *Client) AccountRoleIDs(ctx context.Context, id string) ([]string, error
 			RoleIDs map[string]bool `json:"roleIds"`
 		} `json:"roles"`
 	}
-	if err := c.get(ctx, method, []string{id}, &list); err != nil {
+	out, err := c.call(ctx, method, map[string]any{"ids": []string{id}, "properties": []string{"id", "roles"}})
+	if err != nil {
 		return nil, err
+	}
+	var res struct {
+		List json.RawMessage `json:"list"`
+	}
+	if json.Unmarshal(out, &res) != nil || json.Unmarshal(res.List, &list) != nil {
+		return nil, fmt.Errorf("stalwart %s: unexpected response", method)
 	}
 	for _, a := range list {
 		if a.ID == id {

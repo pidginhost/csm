@@ -27,7 +27,15 @@ func (c *Client) AccountsNamed(ctx context.Context, name string) ([]Account, err
 	if err != nil || len(ids) == 0 {
 		return nil, err
 	}
-	return c.accounts(ctx, ids)
+	var all []Account
+	for page := range slices.Chunk(ids, accountPage) {
+		accounts, err := c.accounts(ctx, page)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, accounts...)
+	}
+	return all, nil
 }
 
 // AccountByAddress finds the account that signs in as address: by its own
@@ -127,6 +135,15 @@ func (c *Client) Account(ctx context.Context, id string) (Account, bool, error) 
 // DisableSignIn denies the account sign-in. An account that inherits its
 // permissions has no list to patch, so it gets a list holding only the denial.
 func (c *Client) DisableSignIn(ctx context.Context, a Account) error {
+	if c.bearer {
+		owner, err := c.SessionAccount(ctx)
+		if err != nil {
+			return err
+		}
+		if owner == a.ID {
+			return errors.New("CSM cannot suspend its own Stalwart API key account; change its password in Stalwart")
+		}
+	}
 	patch := map[string]any{"permissions/disabledPermissions/authenticate": true}
 	if a.Inherit {
 		patch = map[string]any{"permissions": map[string]any{

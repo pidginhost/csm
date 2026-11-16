@@ -3,6 +3,7 @@ package stalwartapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -37,7 +38,14 @@ func (c *Client) CreateAPIKey(ctx context.Context, accountID, description string
 		}},
 	})
 	if err != nil {
-		return "", "", err
+		// Creation diagnostics can contain a new secret we have not decoded.
+		// Preserve only known local error identities, never server text.
+		for _, known := range []error{ErrUnauthorized, ErrForbidden, context.Canceled, context.DeadlineExceeded} {
+			if errors.Is(err, known) {
+				return "", "", fmt.Errorf("stalwart %s: key creation failed: %w", method, known)
+			}
+		}
+		return "", "", fmt.Errorf("stalwart %s: key creation failed", method)
 	}
 	var res struct {
 		Created map[string]struct {

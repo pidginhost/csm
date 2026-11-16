@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -40,10 +42,34 @@ type stalwartMailBackend struct{ cfg func() *config.Config }
 
 func (stalwartMailBackend) name() string { return "stalwart" }
 
-func (b stalwartMailBackend) suspend(c mailboxCompromise) (store.MailboxSuspension, error) {
-	if !strings.Contains(c.Subject, "@") {
-		return store.MailboxSuspension{}, errors.New("CSM does not suspend Stalwart account names without a domain; change its password in Stalwart")
+// Account IDs, unlike login addresses, survive alias and domain changes and
+// must not be case-folded. Every alias shares the same response lock and row.
+func stalwartSuspensionID(ref string) string {
+	sum := sha256.Sum256([]byte("stalwart\x00" + ref))
+	return hex.EncodeToString(sum[:8])
+}
+
+func (b stalwartMailBackend) resolve(subject string) (string, error) {
+	if !strings.Contains(subject, "@") {
+		return "", errors.New("CSM does not suspend Stalwart account names without a domain; change its password in Stalwart")
 	}
+	client, err := stalwartClient(b.cfg())
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stalwartCallTimeout)
+	defer cancel()
+	acct, found, err := client.AccountByAddress(ctx, subject)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("no Stalwart account has the address %s; change its password in Stalwart", subject)
+	}
+	return acct.ID, nil
+}
+
+func (b stalwartMailBackend) suspend(c mailboxCompromise) (store.MailboxSuspension, error) {
 	client, err := stalwartClient(b.cfg())
 	if err != nil {
 		return store.MailboxSuspension{}, err
@@ -52,7 +78,7 @@ func (b stalwartMailBackend) suspend(c mailboxCompromise) (store.MailboxSuspensi
 	defer cancel()
 	// DisableSignIn needs the account as read now: a stale permission type
 	// would replace the account's whole permission list.
-	acct, found, err := client.AccountByAddress(ctx, c.Subject)
+	acct, found, err := client.Account(ctx, c.Ref)
 	switch {
 	case err != nil:
 		return store.MailboxSuspension{}, err

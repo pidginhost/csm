@@ -1096,3 +1096,58 @@ func TestPlanWarnsOnUnknownCredentialKind(t *testing.T) {
 		})
 	}
 }
+
+// Package callers must not receive the newly created secret on any error.
+func TestReplaceKeyRedactsNewSecret(t *testing.T) {
+	for _, stage := range []string{"write", "list", "delete"} {
+		t.Run(stage, func(t *testing.T) {
+			api := twoKeyAPI()
+			write := func(secret string) error {
+				switch stage {
+				case "write":
+					return errors.New("write failed: " + secret)
+				case "list":
+					api.readErrors = map[string]error{"APIKeys": errors.New("list failed: " + secret)}
+				case "delete":
+					api.writeErr = errors.New("delete failed: " + secret)
+				}
+				return nil
+			}
+			err := replaceKey(context.Background(), api, "a1", write)
+			if err == nil {
+				t.Fatal("failure reported success")
+			}
+			if strings.Contains(err.Error(), "test-key-1") {
+				t.Fatal("replacement error exposed the new secret")
+			}
+		})
+	}
+}
+
+func TestResponseRoleClearsPermissionDenials(t *testing.T) {
+	api := preparedAPI()
+	for i := range api.roles {
+		if api.roles[i].Description == ResponseRole {
+			api.roles[i].Disabled = []string{"authenticate"}
+		}
+	}
+	p := inspect(t, api, responseInputs(api, "a1", nil))
+	if p.Steps[6].State != Change {
+		t.Fatal("role denying sign-in was treated as ready")
+	}
+	if _, err := p.Apply(context.Background(), api); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range api.roles {
+		if r.Description == ResponseRole && len(r.Disabled) != 0 {
+			t.Fatal("role still denies sign-in")
+		}
+	}
+	p = inspect(t, api, responseInputs(api, "a1", nil))
+	if got := responseStates(p); !reflect.DeepEqual(got, []State{Done, Done, Done}) {
+		t.Fatalf("rerun response states = %v, want all done", got)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatal("rerun changed the repaired response role")
+	}
+}

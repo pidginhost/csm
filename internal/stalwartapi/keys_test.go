@@ -99,3 +99,26 @@ func TestCreateAPIKeyRefusesNoAllowedAddress(t *testing.T) {
 		t.Fatalf("calls = %q, want none", f.methods())
 	}
 }
+
+func TestCreateAPIKeyDoesNotEchoCreationFailure(t *testing.T) {
+	for _, failureKind := range []string{"entry", "method", "name"} {
+		f := newFake(t)
+		f.reply = func(method string, _ map[string]any) (string, any) {
+			failure := map[string]any{"type": "serverFail", "description": testNewSecret}
+			if failureKind == "method" {
+				return "error", failure
+			}
+			if failureKind == "name" {
+				return testNewSecret, map[string]any{}
+			}
+			return method, map[string]any{"notCreated": map[string]any{"k": failure}}
+		}
+		_, _, err := f.client().CreateAPIKey(context.Background(), "owner", "CSM", []string{"127.0.0.1"})
+		if err == nil {
+			t.Fatal("creation failure reported success")
+		}
+		if strings.Contains(err.Error(), testNewSecret) {
+			t.Fatal("creation error exposed the new secret")
+		}
+	}
+}

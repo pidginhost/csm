@@ -31,7 +31,7 @@ func TestRoleByDescription(t *testing.T) {
 	ctx := context.Background()
 
 	got, found, err := c.RoleByDescription(ctx, "CSM response")
-	want := Role{ID: "r1", Description: "CSM response", Enabled: []string{"authenticate", "sysAccountGet"}, RoleIDs: []string{"u1", "u2"}}
+	want := Role{ID: "r1", Description: "CSM response", Enabled: []string{"authenticate", "sysAccountGet"}, Disabled: []string{"sysBlockedIpGet"}, RoleIDs: []string{"u1", "u2"}}
 	if err != nil || !found || !reflect.DeepEqual(got, want) {
 		t.Fatalf("RoleByDescription = %+v, %v, %v; want %+v", got, found, err, want)
 	}
@@ -69,7 +69,7 @@ func TestSaveRoleCreatesAndUpdates(t *testing.T) {
 	if got.Method != "x:Role/set" || got.Args["update"] != nil {
 		t.Fatalf("create call = %s %v", got.Method, got.Args)
 	}
-	if s := asJSON(t, got.Args["create"]); s != `{"c":{"description":"CSM response","enabledPermissions":{"authenticate":true,"sysAccountGet":true},"roleIds":{"u1":true}}}` {
+	if s := asJSON(t, got.Args["create"]); s != `{"c":{"description":"CSM response","disabledPermissions":{},"enabledPermissions":{"authenticate":true,"sysAccountGet":true},"roleIds":{"u1":true}}}` {
 		t.Fatalf("create = %s", s)
 	}
 
@@ -81,7 +81,7 @@ func TestSaveRoleCreatesAndUpdates(t *testing.T) {
 	if got.Method != "x:Role/set" || got.Args["create"] != nil {
 		t.Fatalf("update call = %s %v", got.Method, got.Args)
 	}
-	if s := asJSON(t, got.Args["update"]); s != `{"r1":{"enabledPermissions":{"authenticate":true},"roleIds":{}}}` {
+	if s := asJSON(t, got.Args["update"]); s != `{"r1":{"disabledPermissions":{},"enabledPermissions":{"authenticate":true},"roleIds":{}}}` {
 		t.Fatalf("update = %s", s)
 	}
 
@@ -194,5 +194,19 @@ func TestAccountCredentialTypes(t *testing.T) {
 	}
 	if _, err := c.AccountCredentialTypes(ctx, "bad"); err == nil || strings.Contains(err.Error(), pwSecret) {
 		t.Fatalf("malformed credentials error = %v, want an error without the secret", err)
+	}
+}
+
+func TestAccountRoleReadsOnlyRoleProperties(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, args map[string]any) (string, any) {
+		if asJSON(t, args["properties"]) != `["id","roles"]` {
+			t.Error("role read requested unrelated account properties")
+		}
+		return method, map[string]any{"list": []any{map[string]any{"id": "a", "roles": customRoles("r")}}}
+	}
+	roles, err := f.keyClient().AccountRoleIDs(context.Background(), "a")
+	if err != nil || !reflect.DeepEqual(roles, []string{"r"}) {
+		t.Fatal("role read failed")
 	}
 }

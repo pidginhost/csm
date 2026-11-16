@@ -31,6 +31,7 @@ const (
 // '.'), or a domain whose owning account is held.
 type mailboxCompromise struct {
 	Subject  string
+	Ref      string
 	Check    string
 	Reason   string
 	Evidence compromiseEvidence
@@ -102,6 +103,18 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 
 	backend := activeMailBackend
 	id := store.MailboxSuspensionID(backend.name(), c.Subject)
+	if b, ok := backend.(stalwartMailBackend); ok {
+		var err error
+		c.Ref, err = b.resolve(c.Subject)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not resolve %s: %v\n", stamp, c.Subject, err)
+			if c.Evidence == evidenceLogin {
+				return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{Backend: backend.name()}, err)}
+			}
+			return false, nil
+		}
+		id = stalwartSuspensionID(c.Ref)
+	}
 	unlock := lockMailResponse(id)
 	defer unlock()
 	now = time.Now()

@@ -124,6 +124,9 @@ func NewKey(baseURL, key string, check func(context.Context, net.Conn) error) *C
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	if c.bearer && !LocalURL(c.base) {
+		return nil, errors.New("stalwart API keys may only be sent to a loopback address")
+	}
 	if err := ValidateURL(c.base); err != nil {
 		return nil, err
 	}

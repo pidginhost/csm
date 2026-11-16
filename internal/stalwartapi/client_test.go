@@ -503,3 +503,19 @@ func TestKeyClientKeepsNoIdleConnection(t *testing.T) {
 		t.Fatalf("peer checks = %d, want one per request: each request on a new, checked connection", n)
 	}
 }
+
+// A transport stub proves rejection happens before any network request.
+func TestKeyClientRefusesRemoteURL(t *testing.T) {
+	c := NewKey("https://mail.example.org", testKey, allowPeer)
+	sent := false
+	c.hc.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		sent = true
+		return nil, errors.New("unexpected request")
+	})
+	if _, err := c.SessionAccount(context.Background()); err == nil {
+		t.Fatal("remote API accepted")
+	}
+	if sent {
+		t.Fatal("key sent to a remote API")
+	}
+}

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -206,7 +207,7 @@ func stalwartResponseConfig(t *testing.T, cfg *config.Config, withKey bool) *con
 
 func stalwartRow(subject, ref string) store.MailboxSuspension {
 	return store.MailboxSuspension{
-		ID: store.MailboxSuspensionID("stalwart", subject), Backend: "stalwart", Subject: subject,
+		ID: stalwartSuspensionID(ref), Backend: "stalwart", Subject: subject,
 		Kind: store.SuspensionKindMailbox, Ref: ref, Applied: []string{store.AppliedDisableSignIn},
 		Check: "mail_account_compromised", Reason: "test",
 		SuspendedAt: time.Now().Add(-time.Hour).UTC().Truncate(time.Second),
@@ -552,4 +553,68 @@ func TestSelectMailBackend(t *testing.T) {
 			t.Fatalf("backend %q, has %v; want cpanel and no backend", activeMailBackend.name(), hostHasMailBackend())
 		}
 	})
+}
+
+func TestStalwartReassignedAddressDoesNotHideCompromise(t *testing.T) {
+	db := withMailboxStore(t)
+	cfg := stalwartResponseConfig(t, &config.Config{}, true)
+	f := &fakeStalwart{accounts: []stalwartapi.Account{
+		{ID: "old", Email: "old@example.org", SignInDisabled: true},
+		{ID: "new", Email: "user@example.org"},
+	}}
+	stalwartHost(t, func() *config.Config { return cfg }, f)
+	putRows(t, db, stalwartRow("user@example.org", "old"))
+	stopped, _ := respondToCompromise(cfg, sendingCompromise("user@example.org", time.Now()))
+	if !stopped || !reflect.DeepEqual(f.disabled, []string{"new"}) {
+		t.Fatal("old account suspension hid the new compromise")
+	}
+	rows, err := db.ListMailboxSuspensions()
+	if err != nil || len(rows) != 2 {
+		t.Fatal("both accounts must retain their own release records")
+	}
+}
+
+func TestStalwartAliasesShareReleaseAndSuspension(t *testing.T) {
+	for _, released := range []bool{false, true} {
+		t.Run(fmt.Sprint(released), func(t *testing.T) {
+			db := withMailboxStore(t)
+			cfg := stalwartResponseConfig(t, &config.Config{}, true)
+			f := &fakeStalwart{accounts: []stalwartapi.Account{{ID: "c", Email: "user@example.org", SignInDisabled: !released}}, aliases: map[string]string{"alias@example.org": "c"}}
+			stalwartHost(t, func() *config.Config { return cfg }, f)
+			row := stalwartRow("user@example.org", "c")
+			at := time.Now()
+			if released {
+				row.ReleasedAt = &at
+			}
+			putRows(t, db, row)
+			stopped, _ := respondToCompromise(cfg, sendingCompromise("alias@example.org", at.Add(-time.Second)))
+			if stopped == released || len(f.disabled) != 0 {
+				t.Fatal("alias did not share the recorded account state")
+			}
+			if !released && !holdsStalwartSuspension("alias@example.org") {
+				t.Fatal("alias lost the existing suspension")
+			}
+		})
+	}
+}
+
+// Processing buffered sends after a release must not turn old evidence new.
+func TestStalwartBufferedSendsRespectRelease(t *testing.T) {
+	resetStalwartSendState(t)
+	db := withMailboxStore(t)
+	cfg := stalwartResponseConfig(t, stalwartSendConfig(), true)
+	d, _ := newStalwartAuthDaemon(t, cfg)
+	f := &fakeStalwart{accounts: []stalwartapi.Account{{ID: "c", Email: "user@example.com"}}}
+	stalwartHost(t, d.currentCfg, f)
+	row := stalwartRow("user@example.com", "c")
+	released := time.Now().Add(-time.Minute)
+	row.ReleasedAt = &released
+	putRows(t, db, row)
+	sender := stalwartCompromisedSends(t, d, "user@example.com")
+	if len(f.disabled) != 0 || sender[0].Context == stalwartSuspendedContext {
+		t.Fatal("buffered sends suspended a released account")
+	}
+	if storedRow(t, db, row.ID).ReleasedAt == nil {
+		t.Fatal("release record was overwritten")
+	}
 }

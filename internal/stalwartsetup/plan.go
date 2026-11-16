@@ -210,6 +210,8 @@ func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
 	switch {
 	case !haveRole:
 		role.State, role.Detail = Change, fmt.Sprintf("create role %q with CSM's permissions and the User role", ResponseRole)
+	case len(current.Disabled) > 0:
+		role.State, role.Detail = Change, fmt.Sprintf("role %q denies permissions; reset it to CSM's permissions and the User role", ResponseRole)
 	case len(missing) > 0:
 		role.State, role.Detail = Change, fmt.Sprintf("role %q lacks %s; reset it to CSM's permissions and the User role", ResponseRole, strings.Join(missing, ", "))
 	default:
@@ -378,11 +380,18 @@ func asciiEqualFold(a, b string) bool {
 // replaceKey creates a key of the account, stores it, then deletes the
 // account's other keys. A key that could not be stored is deleted again, so
 // the old key keeps working. The secret goes to write and nowhere else.
-func replaceKey(ctx context.Context, api API, accountID string, write func(string) error) error {
+func replaceKey(ctx context.Context, api API, accountID string, write func(string) error) (result error) {
 	id, secret, err := api.CreateAPIKey(ctx, accountID, ResponseKey, keyAddresses)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if result != nil {
+			if message := stalwartapi.Redact(result.Error(), "", secret); message != result.Error() {
+				result = errors.New(message)
+			}
+		}
+	}()
 	if err = write(secret); err != nil {
 		if delErr := api.DeleteAPIKeys(ctx, accountID, []string{id}); delErr != nil {
 			return errors.Join(err, fmt.Errorf("deleting the key that was not stored: %w", delErr))

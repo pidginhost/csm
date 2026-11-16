@@ -151,7 +151,7 @@ func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *
 	findings := checkEmailRate(account, cfg)
 	for _, f := range senderProfileObserve(cfg, account, signalIP, ev.Lists["to"], now) {
 		if f.Severity == alert.Critical {
-			f.Context = respondToStalwartCompromise(cfg, account, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
+			f.Context = respondToStalwartCompromise(cfg, account, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", ev.Time)
 		} else if !hostHasMailBackend() {
 			f.Context = stalwartNoKeyContext
 		}
@@ -159,7 +159,7 @@ func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *
 	}
 	if signalIP != "" {
 		for _, f := range cloudRelayObserve(cfg, account, signalIP, stalwartPTR(signalIP), now) {
-			f.Context = respondToStalwartCompromise(cfg, account, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses", f.Timestamp)
+			f.Context = respondToStalwartCompromise(cfg, account, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses", ev.Time)
 			findings = append(findings, f)
 		}
 	}
@@ -197,6 +197,14 @@ func holdsStalwartSuspension(subject string) bool {
 	if db == nil {
 		return false
 	}
-	rec, ok, err := db.GetMailboxSuspension(store.MailboxSuspensionID(activeMailBackend.name(), subject))
+	backend, ok := activeMailBackend.(stalwartMailBackend)
+	if !ok {
+		return false
+	}
+	ref, err := backend.resolve(subject)
+	if err != nil {
+		return false
+	}
+	rec, ok, err := db.GetMailboxSuspension(stalwartSuspensionID(ref))
 	return err == nil && ok && rec.ReleasedAt == nil
 }
