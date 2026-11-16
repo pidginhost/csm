@@ -73,6 +73,31 @@ func TestShadowReplacesALowerTierForecastBlock(t *testing.T) {
 	}
 }
 
+// Beside an engine that cannot prove its saved actions the forecast
+// replaces nothing, as the live owner: higher work waits as set_full and the
+// model keeps its blocks. A proven engine lets the replacement go ahead.
+func TestShadowReplacesNothingBesideAnUnprovenEngine(t *testing.T) {
+	s := testShadow(t, freshCeiling(t, 2000), nil)
+	adm := firewall.BlockAdmission{Limit: 3, Unproven: true}
+	for _, r := range []shadowRank{forecastRank(t, 1, "203.0.113.1", highTier), forecastRank(t, 2, "203.0.113.2", highTier)} {
+		if p, _ := admitRanked(t, s, r, generalOnly, shadowT0, adm); p != admission.PredictCapacityAdmit {
+			t.Fatalf("filling pick = %v", p)
+		}
+	}
+	used := s.ceiling.General.Used
+	critical := forecastRank(t, 3, "203.0.113.3", criticalTier)
+	if p, change := admitRanked(t, s, critical, generalOnly, shadowT0, adm); p != admission.PredictSetFull || change != nil {
+		t.Fatalf("critical pick beside an unproven engine = %v %+v, want set_full", p, change)
+	}
+	if len(s.entries) != 2 || s.ceiling.General.Used != used {
+		t.Fatalf("the model changed beside an unproven engine: %+v, used %d", s.entries, s.ceiling.General.Used)
+	}
+	adm.Unproven = false
+	if p, _ := admitRanked(t, s, critical, generalOnly, shadowT0, adm); p != admission.PredictCapacityEvict {
+		t.Fatalf("critical pick beside a proven engine = %v, want capacity_evict", p)
+	}
+}
+
 // Reserved work takes a free reserved slot before it replaces anything.
 // With none, it may replace a strictly lower-tier block of either
 // partition, charged on its own lane, and the new block keeps the

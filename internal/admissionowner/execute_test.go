@@ -63,11 +63,14 @@ type fakeBlocks struct {
 	// an untimed element.
 	temp, limit, imported int
 	// imports is the import list every snapshot reports.
-	imports            []firewall.BlockImport
-	snapshots          [][]firewall.BlockMember
-	shadows            [][]string
-	setReads           int
-	admitted           int
+	imports   []firewall.BlockImport
+	snapshots [][]firewall.BlockMember
+	shadows   [][]string
+	setReads  int
+	admitted  int
+	// unproven makes every snapshot report an engine that cannot prove
+	// admission outcomes.
+	unproven           bool
 	liveTemp, livePerm map[string]bool
 }
 
@@ -118,7 +121,7 @@ func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, shad
 	if f.checkErr != nil {
 		return firewall.BlockAdmission{}, f.checkErr
 	}
-	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Unclaimed: f.temp - f.imported - f.admitted, Imported: f.imported, Admission: f.admitted, Limit: f.limit, Imports: f.imports}
+	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Unclaimed: f.temp - f.imported - f.admitted, Imported: f.imported, Admission: f.admitted, Limit: f.limit, Imports: f.imports, Unproven: f.unproven}
 	for _, ip := range shadow {
 		if f.liveTemp[ip] || f.livePerm[ip] {
 			if out.ShadowHeld == nil {

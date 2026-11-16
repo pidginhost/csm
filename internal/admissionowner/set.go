@@ -40,7 +40,9 @@ func (o *Owner) readSet() error {
 	}
 	if o.setErr = err; err == nil {
 		o.set = &adm
-		o.ledger.SetOccupants(&admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported})
+		// An engine that cannot prove admission outcomes removes no block
+		// for a batch, so the ledger plans none.
+		o.ledger.SetOccupants(&admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported, NoEviction: adm.Unproven})
 		o.ledger.SetImports(importVictims(adm.Imports))
 	}
 	return nil

@@ -78,3 +78,22 @@ func TestSetOccupancyLimits(t *testing.T) {
 		t.Fatalf("a large empty set = %+v, %v; want free general slots clamped to the largest ceiling", s, err)
 	}
 }
+
+// A set that evicts nothing offers no victim, also once its general
+// partition is full, and does not read the pool.
+func TestSetOccupancyLimitsWithoutEviction(t *testing.T) {
+	general := victimAt(t, 1, warning, PartitionGeneral, t0.Add(time.Hour))
+	occ := SetOccupancy{Limit: 11, Unclaimed: 1, General: 8, Reserved: 1}
+	pool := func() ([]EvictionVictim, error) { return []EvictionVictim{general}, nil }
+	if s, err := occ.Limits(pool); err != nil || len(s.victims) != 1 {
+		t.Fatalf("a full general partition = %+v, %v; want its victim", s, err)
+	}
+	occ.NoEviction = true
+	s, err := occ.Limits(func() ([]EvictionVictim, error) {
+		t.Error("a set that evicts nothing read the pool")
+		return pool()
+	})
+	if err != nil || len(s.victims) != 0 || s.freeGeneral != 0 || s.freeReserved != 1 {
+		t.Fatalf("without eviction = %+v, %v; want no victim and the free reserved slot", s, err)
+	}
+}

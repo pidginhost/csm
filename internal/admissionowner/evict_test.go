@@ -390,3 +390,30 @@ func TestOwnerEvictedCleanupWakesAnIdleTurn(t *testing.T) {
 		t.Fatalf("idle cleanup did not recover: %v, %q", calls, o.Status().Owner.RetirementError)
 	}
 }
+
+// While the engine cannot prove admission outcomes it removes no block for
+// a batch. The ledger then plans no eviction: the higher work waits for a
+// slot instead of spending its attempts on a victim the engine spares.
+func TestOwnerPlansNoEvictionWhileTheEngineIsUnproven(t *testing.T) {
+	o, blocks, _, high := evictionOwner(t, firewall.BlockResult{Effect: firewall.BlockApplied, Victim: firewall.VictimRemoved})
+	blocks.set(func(b *fakeBlocks) { b.unproven = true })
+	_, before := blocks.calls()
+	turn(t, o)
+	if c := candidate(t, o, high); c.State != admission.StateQueued || c.Reason != admission.ReasonSetFull || c.Attempts != 0 {
+		t.Fatalf("higher work beside an unproven engine = %+v; want it waiting for a slot", c)
+	}
+	if _, applies := blocks.calls(); len(applies) != len(before) {
+		t.Fatalf("the engine ran %d batches, want none", len(applies)-len(before))
+	}
+	if s := ledgerStatus(t, o); s.Effects.General != 1 || len(blocks.retireCalls()) != 0 {
+		t.Fatalf("the ledger counts %+v after %d retirements; want the victim in its slot", s.Effects, len(blocks.retireCalls()))
+	}
+	// A proven engine gets the eviction it was spared.
+	blocks.set(func(b *fakeBlocks) { b.unproven = false })
+	later := heldMono(t, o)
+	later.advance(time.Hour)
+	turn(t, o)
+	if c := candidate(t, o, high); c.State != admission.StateVerified {
+		t.Fatalf("after the engine is proven = %+v", c)
+	}
+}

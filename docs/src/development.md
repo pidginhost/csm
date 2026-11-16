@@ -1056,6 +1056,10 @@ reading through Apply so a backward wall-clock step cannot restore an
 unchecked action. Marking preserves those separate rows until cleanup can
 remove only the settled actions. Removing a hold therefore cannot restore
 an unchecked action or erase another block.
+Until a restart proves the saved actions, the engine removes no block for
+a batch and its admission snapshot says so; the owner then plans no
+eviction or rotation, a dry run forecasts none, and higher work waits for
+a free slot.
 The engine's kill-point tests stop a batch around its intent write, kernel
 batch, readback, unknown marking and rejected-state restoration, then start
 the ledger and a new engine over the same state, after a process restart or

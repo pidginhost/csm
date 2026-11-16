@@ -37,6 +37,9 @@ type SetOccupancy struct {
 	Limit             int
 	Unclaimed         int
 	General, Reserved int
+	// NoEviction says no occupant may be replaced: the set offers its
+	// free slots only.
+	NoEviction bool
 }
 
 // SetSlots is how a SetOccupancy divides the set.
