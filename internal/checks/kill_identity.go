@@ -95,22 +95,10 @@ func procStatFields(pid string) ([]string, bool) {
 	return strings.Fields(string(data)[closing+1:]), true
 }
 
-// processUsesFile reports whether pid still references path, as its executable
-// or through an open descriptor. The kill in fixKillAndQuarantine exists to
-// release the file being quarantined; a process that no longer references that
-// file is not the process the finding meant, so it is not killed.
-func processUsesFile(pid, path string) bool {
-	pidInt, ok := parseProcessPID(pid)
-	if !ok || path == "" {
-		return false
-	}
-	target, err := osFS.Lstat(path)
-	if err != nil || target.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	return processUsesFileIdentity(pidInt, target)
-}
-
+// processUsesFileIdentity reports whether pid still references target, as its
+// executable or through an open descriptor. The kill in fixKillAndQuarantine
+// exists to release the file being quarantined; a process that no longer
+// references that file is not the process the finding meant, so it is not killed.
 func processUsesFileIdentity(pid int, target os.FileInfo) bool {
 	if pid <= 1 || target == nil || target.Mode()&os.ModeSymlink != 0 {
 		return false

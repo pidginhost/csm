@@ -125,6 +125,9 @@ func TestScanGroupWritablePHPFlagsWebOwnedFile(t *testing.T) {
 	if findings[0].Check != "group_writable_php" {
 		t.Errorf("wrong check name: %s", findings[0].Check)
 	}
+	if findings[0].FilePath != php {
+		t.Errorf("FilePath = %q, want %q", findings[0].FilePath, php)
+	}
 	if findings[0].Severity != alert.High {
 		t.Errorf("expected High severity, got %v", findings[0].Severity)
 	}

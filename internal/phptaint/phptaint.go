@@ -369,43 +369,32 @@ func analyze(ctx context.Context, src []byte) Report {
 	// collectTopLevel skips declarations at the file level: a nested
 	// declaration's locals must not taint an identically-named local in the
 	// enclosing body.
-	for _, fn := range all.funcs {
+	analyzeScope := func(scope ast.Vertex, stmts []ast.Vertex) error {
 		if err := ctx.Err(); err != nil {
-			return Report{Status: StatusCanceled, Reason: err.Error()}
+			return err
 		}
-		fnExclude := tree.exclusionFor(fn)
-		body := callIndex.apply(collectOwnStmts(fn.Stmts, &fnExclude))
-		factsByScope[fn] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &fnExclude)
+		exclude := tree.exclusionFor(scope)
+		body := callIndex.apply(collectOwnStmts(stmts, &exclude))
+		factsByScope[scope] = body
+		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &exclude)
 		if err != nil {
-			return Report{Status: StatusCanceled, Reason: err.Error()}
+			return err
 		}
 		flows = append(flows, bodyFlows...)
 		if !droppedTaint {
 			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
-			if err != nil {
-				return Report{Status: StatusCanceled, Reason: err.Error()}
-			}
+		}
+		return err
+	}
+	for _, fn := range all.funcs {
+		if err := analyzeScope(fn, fn.Stmts); err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
 	}
 	for _, m := range all.methods {
-		if err := ctx.Err(); err != nil {
-			return Report{Status: StatusCanceled, Reason: err.Error()}
-		}
 		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
-		mExclude := tree.exclusionFor(m)
-		body := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &mExclude))
-		factsByScope[m] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &mExclude)
-		if err != nil {
+		if err := analyzeScope(m, methodStmts(m.Stmt)); err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
-		}
-		flows = append(flows, bodyFlows...)
-		if !droppedTaint {
-			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
-			if err != nil {
-				return Report{Status: StatusCanceled, Reason: err.Error()}
-			}
 		}
 	}
 	// Closures are the most common nested scope in real PHP (WordPress hooks,
@@ -416,44 +405,16 @@ func analyze(ctx context.Context, src []byte) Report {
 	// local borrow an unrelated outer variable's taint or stop examining the
 	// closure's own sinks entirely -- see the closures field doc in facts.go.
 	for _, cl := range all.closures {
-		if err := ctx.Err(); err != nil {
+		if err := analyzeScope(cl, cl.Stmts); err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
-		}
-		clExclude := tree.exclusionFor(cl)
-		body := callIndex.apply(collectOwnStmts(cl.Stmts, &clExclude))
-		factsByScope[cl] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &clExclude)
-		if err != nil {
-			return Report{Status: StatusCanceled, Reason: err.Error()}
-		}
-		flows = append(flows, bodyFlows...)
-		if !droppedTaint {
-			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
-			if err != nil {
-				return Report{Status: StatusCanceled, Reason: err.Error()}
-			}
 		}
 	}
 	// An arrow function's body is a single implicit-return expression rather
 	// than a statement list (see arrowFunctionBody), but it is the same kind
 	// of nested scope as a closure and needs the same two-sided treatment.
 	for _, af := range all.arrowFuncs {
-		if err := ctx.Err(); err != nil {
+		if err := analyzeScope(af, arrowFunctionBody(af)); err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
-		}
-		afExclude := tree.exclusionFor(af)
-		body := callIndex.apply(collectOwnStmts(arrowFunctionBody(af), &afExclude))
-		factsByScope[af] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &afExclude)
-		if err != nil {
-			return Report{Status: StatusCanceled, Reason: err.Error()}
-		}
-		flows = append(flows, bodyFlows...)
-		if !droppedTaint {
-			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
-			if err != nil {
-				return Report{Status: StatusCanceled, Reason: err.Error()}
-			}
 		}
 	}
 	if err := ctx.Err(); err != nil {
