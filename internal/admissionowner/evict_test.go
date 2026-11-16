@@ -132,9 +132,9 @@ func TestOwnerAsksAboutAPickThatEvicts(t *testing.T) {
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	blocks.limit, blocks.temp = 3, 1
-	// The kernel then holds three timed elements, two of them admission
-	// rows: physically full, with the ledger's general slot taken.
-	blocks.afterApply = func(b *fakeBlocks) { b.temp, b.admitted = 3, 2 }
+	// The kernel then holds an operator's block and the admission row of
+	// the ledger's one record: the general slot is taken.
+	blocks.afterApply = func(b *fakeBlocks) { b.temp, b.admitted = 2, 1 }
 	panel := newFakePanel("block")
 	o, _, mono := verdictOwner(t, f, blocks, panel)
 	queuedAt(t, o, p, f.host, admission.SeverityWarning, "192.0.2.10")

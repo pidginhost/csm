@@ -29,6 +29,15 @@ func (o *Owner) readSet() error {
 		return err
 	}
 	adm, err := engine.BlockAdmissionSnapshot(nil, nil)
+	if err == nil && adm.Admission > 0 {
+		// Admission rows beyond the ledger's own records, as after a lost
+		// ledger, hold slots no record can give up.
+		var holds int
+		if holds, err = o.ledger.EffectHolds(); err != nil {
+			return err
+		}
+		adm.Unclaimed += max(adm.Admission-holds, 0)
+	}
 	if o.setErr = err; err == nil {
 		o.set = &adm
 		o.ledger.SetOccupants(&admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported})

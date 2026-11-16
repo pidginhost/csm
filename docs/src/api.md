@@ -441,7 +441,8 @@ a renewal with a new name is a new import. `capacity` is the finite capacity
 automatic admission is modelled within: a positive limit, or 10000 for an
 unlimited set. Until validation rejects negative limits, they use the same
 fallback as zero and retain their configured value in `limit`. `unclaimed` counts the real timed entries it never evicts (operator
-blocks, blocks of unknown origin and two per timed subnet), `imported` the
+blocks, blocks of unknown origin, automatic blocks the ledger holds no
+record of and two per timed subnet), `imported` the
 real verified stamped legacy automatic blocks, and `drain_seconds` estimates how long the last of
 them has left at the snapshot, or -1 when a kernel expiry is unavailable.
 Zero means no remaining known whole seconds. Treat -1 as unknown, not as

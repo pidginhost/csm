@@ -586,3 +586,34 @@ func TestAdmissionLedgerEffectStartStaysLazy(t *testing.T) {
 		t.Fatalf("live start or a challenge allocated effects: %+v %+v %d", records, tally, schema)
 	}
 }
+
+// The holds are the slots the ledger's own records take in both
+// partitions: what a set read compares with the firewall's admission rows.
+func TestAdmissionLedgerEffectHolds(t *testing.T) {
+	f := liveLedgerFixture(t)
+	want := func(what string, n int) {
+		t.Helper()
+		if got, err := f.l.EffectHolds(); err != nil || got != n {
+			t.Fatalf("%s: %d holds, %v; want %d", what, got, err, n)
+		}
+	}
+	want("no record", 0)
+	_, general, _, err := f.l.Reserve(f.queuedAt("192.0.2.10"), admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want("a general reservation", 1)
+	if _, _, _, err = f.l.Reserve(f.directAt("192.0.2.11"), admission.LaneDirect, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	want("a reservation in each partition", 2)
+	before := f.snapshot()
+	want("a second read", 2)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("reading the holds changed the ledger")
+	}
+	if _, _, err = f.l.Finish(general.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	want("after a failure gave its slot back", 1)
+}
