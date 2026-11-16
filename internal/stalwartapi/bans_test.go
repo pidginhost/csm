@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestBlockedIPsExactAddress(t *testing.T) {
@@ -135,5 +137,70 @@ func TestDeleteBlockedIPsNoReloadWithoutAnswer(t *testing.T) {
 	}
 	if jmap.Load() != 1 {
 		t.Fatalf("JMAP requests = %d, want only the destroy", jmap.Load())
+	}
+}
+
+// The destroy was answered, so Stalwart no longer lists the bans but enforces
+// them until a reload. A caller giving up then must not stop the reload: a
+// retry would find no id and never reload.
+func TestDeleteBlockedIPsReloadOutlivesTheCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		if method == "x:Action/set" {
+			// The caller gives up while the reload is at Stalwart; a reload
+			// tied to the caller is abandoned before this answer.
+			cancel()
+			time.Sleep(200 * time.Millisecond)
+			return method, map[string]any{"created": map[string]any{"r": map[string]any{}}}
+		}
+		return method, map[string]any{"destroyed": []string{"b1"}}
+	}
+
+	if err := f.keyClient().DeleteBlockedIPs(ctx, []string{"b1"}); err != nil {
+		t.Fatalf("DeleteBlockedIPs = %v, want the reload to finish", err)
+	}
+	if want := []string{"x:BlockedIp/set", "x:Action/set"}; !reflect.DeepEqual(f.methods(), want) {
+		t.Fatalf("calls = %q, want %q", f.methods(), want)
+	}
+}
+
+func TestDeleteBlockedIPsRetriesTheReloadOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failing int
+		wantErr bool
+	}{
+		{"fails once", 1, false},
+		{"fails twice", 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var reloads atomic.Int32
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				if method != "x:Action/set" {
+					return method, map[string]any{"destroyed": []string{"b1"}}
+				}
+				if int(reloads.Add(1)) <= tc.failing {
+					return "error", map[string]any{"type": "serverFail"}
+				}
+				return method, map[string]any{"created": map[string]any{"r": map[string]any{}}}
+			}
+			err := f.keyClient().DeleteBlockedIPs(context.Background(), []string{"b1"})
+			if want := []string{"x:BlockedIp/set", "x:Action/set", "x:Action/set"}; !reflect.DeepEqual(f.methods(), want) {
+				t.Fatalf("calls = %q, want %q", f.methods(), want)
+			}
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("DeleteBlockedIPs = %v, want the retried reload to succeed", err)
+				}
+				return
+			}
+			var me *MethodError
+			if err == nil || !strings.Contains(err.Error(), "reload") || !errors.As(err, &me) || me.Type != "serverFail" {
+				t.Fatalf("err = %v, want an error naming the reload and its failure", err)
+			}
+		})
 	}
 }

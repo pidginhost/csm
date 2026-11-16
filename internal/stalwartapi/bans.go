@@ -3,6 +3,8 @@ package stalwartapi
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 )
 
 // BlockedIP is one of Stalwart's own IP bans.
@@ -27,9 +29,10 @@ func (c *Client) BlockedIPs(ctx context.Context, address string) ([]BlockedIP, e
 
 // DeleteBlockedIPs lifts the bans with these ids, then has Stalwart reload
 // its ban list so the change takes effect. A failed reload is an error.
-// When Stalwart answers that only some ids were destroyed, the reload still
-// runs: the others are gone from the store but enforced until a reload, and a
-// retry finds no ids left to delete.
+// Once the destroy is answered, Stalwart no longer lists the bans but
+// enforces them until a reload, and a retry finds no ids left to delete. So
+// the reload runs even after a partial destroy, is not cancelled with ctx,
+// and is tried a second time when it fails.
 func (c *Client) DeleteBlockedIPs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -39,8 +42,16 @@ func (c *Client) DeleteBlockedIPs(ctx context.Context, ids []string) error {
 	if err != nil && !errors.As(err, &me) && !errors.Is(err, errNotAcknowledged) {
 		return err
 	}
-	_, reloadErr := c.set(ctx, "x:Action/set", map[string]any{
-		"create": map[string]any{"r": map[string]any{"@type": "ReloadBlockedIps"}},
-	})
-	return errors.Join(err, reloadErr)
+	var reloadErr error
+	for range 2 {
+		reloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_, reloadErr = c.set(reloadCtx, "x:Action/set", map[string]any{
+			"create": map[string]any{"r": map[string]any{"@type": "ReloadBlockedIps"}},
+		})
+		cancel()
+		if reloadErr == nil {
+			return err
+		}
+	}
+	return errors.Join(err, fmt.Errorf("reloading Stalwart's ban list: %w", reloadErr))
 }
