@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -294,9 +295,14 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 		}
 	}()
 	if err := checkListener(sc.APIURL); err != nil {
-		return []DoctorCheck{{Name: "stalwart settings", Status: "warn",
+		var checks []DoctorCheck
+		// A missing key is worth reporting even while Stalwart is down.
+		if _, statErr := os.Lstat(sc.APIKeyFile); sc.APIKeyFile != "" && stalwartapi.LocalURL(sc.APIURL) && errors.Is(statErr, fs.ErrNotExist) {
+			checks = append(checks, stalwartNoKeyCheck(sc.APIKeyFile))
+		}
+		return append(checks, DoctorCheck{Name: "stalwart settings", Status: "warn",
 			Message: "Not checked; CSM sends no login to " + sc.APIURL + ": " + err.Error(),
-			Fix:     "start Stalwart, or find what else listens on its admin port"}}
+			Fix:     "start Stalwart, or find what else listens on its admin port"})
 	}
 	in.LocalAPI = stalwartapi.LocalURL(sc.APIURL)
 	if !in.LocalAPI {
@@ -321,9 +327,11 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 			api, in.KeyAccount = keyAPI, account
 			keyCheck.Message = "Stalwart accepts CSM's API key"
 		case errors.Is(err, stalwartapi.ErrNoKeyFile):
+			keyCheck = stalwartNoKeyCheck(sc.APIKeyFile)
+		case key == "" && errors.Is(err, fs.ErrPermission):
 			keyCheck = DoctorCheck{Name: keyCheck.Name, Status: "warn",
-				Message: "CSM has no API key at " + sc.APIKeyFile + ", so it cannot suspend mailboxes or lift Stalwart's bans",
-				Fix:     "run csm stalwart setup"}
+				Message: "Not checked; only root can read CSM's API key at " + sc.APIKeyFile,
+				Fix:     "run csm doctor as root"}
 		case key == "":
 			keyCheck = DoctorCheck{Name: keyCheck.Name, Status: "fail", Message: err.Error()}
 		case errors.Is(err, stalwartapi.ErrUnauthorized), errors.Is(err, stalwartapi.ErrForbidden):
@@ -359,6 +367,12 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 		}
 	}
 	return checks
+}
+
+func stalwartNoKeyCheck(path string) DoctorCheck {
+	return DoctorCheck{Name: "stalwart API key", Status: "warn",
+		Message: "CSM has no API key at " + path + ", so it cannot suspend mailboxes or lift Stalwart's bans",
+		Fix:     "run csm stalwart setup"}
 }
 
 // stalwartBlocklistCheck has Stalwart classify one test message, which it

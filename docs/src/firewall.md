@@ -160,9 +160,10 @@ read event files from the working directory.
 
 On a host whose mail server is Stalwart, Stalwart keeps its own list of banned
 addresses. When one address is unblocked, allowed or undone in CSM, unbanned
-from a hosting panel, or allowed through a DynDNS name in `dyndns_hosts`, CSM
-also lifts Stalwart's automatic bans of it through the Stalwart API key from
-`csm stalwart setup`. A DynDNS allow counts the same as an operator allow. This
+from a hosting panel, or allowed through a hostname in `dyndns_hosts` or
+`infra_ips`, CSM also lifts Stalwart's automatic bans of it through the
+Stalwart API key from `csm stalwart setup`. An allow through a hostname counts
+the same as an operator allow. This
 runs in the background, so the unblock never waits on Stalwart. Only the bans
 Stalwart makes on its own, for failed logins, failed recipients, loitering and
 port scans, are lifted. Blocks made by hand in Stalwart and bans with any other

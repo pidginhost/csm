@@ -65,8 +65,9 @@ func runStalwart() {
 }
 
 // runStalwartSetup prepares Stalwart for CSM. It exits 0 when every step is
-// done or was left for a stated reason, 1 when a setting is unsafe or a write
-// failed, and 2 on a usage, login or host error.
+// done or was left for a stated reason, 1 when a setting is unsafe, CSM's
+// response account cannot be set up or a write failed, and 2 on a usage,
+// login or host error.
 func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int {
 	user, password := deps.getenv("STALWART_USER"), deps.getenv("STALWART_PASSWORD")
 	// keys are the API key in the key file and any key setup creates.
@@ -211,8 +212,11 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 // stalwartKeyAccount reads CSM's key file and asks Stalwart which account the
 // key logs in as. A key that was read comes back even when the probe fails,
 // so the caller can redact it.
+// readStalwartKeyFile reads CSM's API key file; tests replace it.
+var readStalwartKeyFile = stalwartapi.ReadKeyFile
+
 func stalwartKeyAccount(ctx context.Context, path, url string, keyAccount func(ctx context.Context, url, key string) (string, error)) (key, account string, err error) {
-	key, err = stalwartapi.ReadKeyFile(path)
+	key, err = readStalwartKeyFile(path)
 	if err != nil {
 		return "", "", err
 	}
@@ -262,9 +266,11 @@ func printStalwartSteps(out io.Writer, plan stalwartsetup.Plan, applied bool) {
 	_, _ = out.Write(b.Bytes())
 }
 
+// stalwartSetupExit is 1 for an unsafe setting, or for a response step left
+// as a warning, since CSM then cannot suspend mailboxes or lift bans.
 func stalwartSetupExit(plan stalwartsetup.Plan) int {
 	for _, s := range plan.Steps {
-		if s.State == stalwartsetup.Unsafe {
+		if s.State == stalwartsetup.Unsafe || s.State == stalwartsetup.Warn && strings.HasPrefix(s.Name, "response ") {
 			return 1
 		}
 	}
