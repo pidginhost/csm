@@ -38,23 +38,23 @@ func snapshotFirewallState(rollbackFile string) error {
 // restoreFirewallStateSnapshot puts the snapshotted state.json back.
 // Keep the snapshot until the window owner disarms rollback: a later
 // configuration or marker failure must permit the same restore again.
-// No snapshot (an older window) is not an error.
-func restoreFirewallStateSnapshot(rollbackFile string) error {
+// No snapshot (an older window) reports no state restore and is not an error.
+func restoreFirewallStateSnapshot(rollbackFile string) (bool, error) {
 	snap := firewallStateSnapshotPath(rollbackFile)
 	data, err := os.ReadFile(snap) // #nosec G304 -- CSM-owned state dir.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("reading firewall state snapshot: %w", err)
+		return false, fmt.Errorf("reading firewall state snapshot: %w", err)
 	}
 	stateFile := firewallStateFileFor(rollbackFile)
 	if len(data) == 0 {
 		if err := os.Remove(stateFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("removing firewall state written inside the window: %w", err)
+			return false, fmt.Errorf("removing firewall state written inside the window: %w", err)
 		}
 	} else if err := os.WriteFile(stateFile, data, 0o600); err != nil { // #nosec G306 G703 -- root-only state dir.
-		return fmt.Errorf("restoring firewall state: %w", err)
+		return false, fmt.Errorf("restoring firewall state: %w", err)
 	}
-	return nil
+	return true, nil
 }

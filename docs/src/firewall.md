@@ -233,6 +233,7 @@ as before and existing unverified marks are kept; none of those automatic
 blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the
 reason. A ledger missing its admission queue state counts as unreadable.
+The same check runs after a confirmation window restores its saved blocks.
 With a readable ledger such blocks are never evicted either: an
 operator block that finds the temporary limit reached only because of them
 is added above the limit. New timed automatic blocks record their origin
@@ -240,6 +241,19 @@ explicitly; operator blocks and operator undo do not acquire that origin
 from their reason text. Older unstamped rows keep unknown origin.
 Automatic admission may replace a block that recorded its origin with a
 higher-priority one; a block of unknown origin is never replaced.
+
+Rows of an address family without a blocked set neither fill the temporary
+limit nor become replacement victims. Turning off IPv6 filtering therefore
+does not make saved IPv6 blocks refuse a new temporary block.
+Checking the limit does not remove blocks. Dry runs and allowed verdicts keep
+existing blocks, even when the limit would require a replacement.
+
+At the temporary limit, replacement uses the same live set image as the
+limit count. A saved row without an element cannot free a slot. When no
+replaceable row has an element, the new block is refused; if a complete
+image cannot be read, the saved rows remain the fallback.
+The element must belong to the address's own family: an IPv4-mapped key
+in the IPv6 set does not prove that an IPv4 block is present.
 
 Temporary IP blocks use a firewall clock that counts elapsed time and never
 moves backward. Setting the system clock back does not add that step to their
@@ -324,6 +338,14 @@ csm firewall cf-status                           # Show Cloudflare IP whitelist 
 disk with a rollback timer. `csm firewall confirm` accepts the current
 ruleset and engine configuration and cancels that timer. While confirmation
 remains pending, `csm firewall restart` and another `apply-confirmed` are refused.
+A rollback restores the ruleset and the saved blocks of the moment the window
+opened. When the window ends, CSM retimes temporary blocks from readable
+saved state, including IPv6 blocks when a restart during the window had
+disabled IPv6 filtering. Normal rollback restores the saved engine configuration
+first; confirmation after an unreadable saved configuration accepts the current
+configuration. A retiming failure logs a warning and releases the hold, so
+restored timers may still outlast the displayed expiry. Older windows with
+no saved block snapshot keep their restored timers.
 
 If startup cannot read the saved engine configuration, rollback still
 restores the kernel ruleset and state, but the window stays pending. Once

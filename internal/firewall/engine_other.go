@@ -168,6 +168,7 @@ func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error {
 func (e *Engine) CleanExpiredAllows() int        { return 0 }
 func (e *Engine) CleanExpiredSubnets() int       { return 0 }
 func (e *Engine) FlushBlocked() error            { return ErrUnsupportedPlatform }
+func (e *Engine) RetimeBlocks() error            { return ErrUnsupportedPlatform }
 func (e *Engine) BlockedSubnets() []SubnetEntry  { return nil }
 func (e *Engine) Status() map[string]interface{} { return nil }
 

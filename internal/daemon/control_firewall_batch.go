@@ -441,6 +441,32 @@ func setFirewallDeadmanOnRollback(fn func()) {
 // owner wrote inside it. Guarded by firewallDeadmanMu.
 var firewallBatchHold func(bool)
 
+// firewallRowGate gates the engine's saved rows on the ledger again. A
+// rollback restores state.json as it was when its window opened, without
+// the marks and removals the ledger asked for since, so each restore runs
+// it before admission is released. Guarded by firewallDeadmanMu.
+var firewallRowGate func()
+
+// firewallRetime retimes the engine's blocked sets from its saved rows. A
+// rollback restores the kernel ruleset from a dump, which gives each timed
+// block the time it had left when the window opened. firewallRetimeDue
+// records such a restore; the retiming runs when admission is released,
+// after configuration is restored or explicitly accepted by confirmation.
+// Both are guarded by firewallDeadmanMu.
+var (
+	firewallRetime    func()
+	firewallRetimeDue bool
+)
+
+// setFirewallRestoreHooks installs what follows a rollback's restore: gate
+// for the saved rows and retime for the blocked sets.
+func setFirewallRestoreHooks(gate, retime func()) {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+	firewallRowGate, firewallRetime = gate, retime
+	firewallRetimeDue = false
+}
+
 // An unreadable configuration proof cannot release admission after
 // only the kernel snapshot was restored. Guarded by firewallDeadmanMu.
 var firewallDeadmanConfigErr error
@@ -472,6 +498,12 @@ func setFirewallBatchHold(fn func(bool)) {
 
 // holdFirewallBatchesLocked: caller holds firewallDeadmanMu.
 func holdFirewallBatchesLocked(held bool) {
+	if !held && firewallRetimeDue {
+		firewallRetimeDue = false
+		if firewallRetime != nil {
+			firewallRetime()
+		}
+	}
 	if firewallBatchHold != nil {
 		firewallBatchHold(held)
 	}
@@ -701,7 +733,18 @@ func applyFirewallRollbackFile(rollbackFile string) (resultErr error) {
 	rec.Result = actionlog.Applied
 	// Kernel is back on the snapshot; state.json must follow, or the UI
 	// keeps describing the window's mutations as live.
-	return restoreFirewallStateSnapshot(rollbackFile)
+	restored, err := restoreFirewallStateSnapshot(rollbackFile)
+	if err != nil {
+		return err
+	}
+	if !restored {
+		return nil
+	}
+	if firewallRowGate != nil {
+		firewallRowGate()
+	}
+	firewallRetimeDue = true
+	return nil
 }
 
 func removeFirewallRollbackFiles(paths ...string) error {

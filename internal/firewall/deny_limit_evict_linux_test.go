@@ -50,6 +50,7 @@ func TestBlockIPOutcome_DryRunAtTempCapDoesNotEvict(t *testing.T) {
 	e := &Engine{
 		cfg:           &FirewallConfig{Enabled: true, DenyTempIPLimit: 1},
 		statePath:     dir,
+		setBlocked:    namedIPv4Set("blocked_ips"),
 		dryRunEnabled: func() bool { return true },
 	}
 	if err := e.saveBlockedEntry(BlockedEntry{
@@ -61,6 +62,9 @@ func TestBlockIPOutcome_DryRunAtTempCapDoesNotEvict(t *testing.T) {
 		t.Fatalf("seed block: %v", err)
 	}
 
+	if victim, err := capVictim(e, "192.0.2.11", true); err != nil || victim != "192.0.2.10" {
+		t.Fatalf("cap decision = victim %q, error %v; want 192.0.2.10", victim, err)
+	}
 	outcome, err := e.BlockIPOutcome("192.0.2.11", "new temp block", time.Hour)
 	if err != nil {
 		t.Fatalf("BlockIPOutcome: %v", err)
@@ -75,8 +79,9 @@ func TestBlockIPOutcome_DryRunAtTempCapDoesNotEvict(t *testing.T) {
 func TestBlockIPOutcome_AllowVerdictAtTempCapDoesNotEvict(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{
-		cfg:       &FirewallConfig{Enabled: true, DenyTempIPLimit: 1},
-		statePath: dir,
+		cfg:        &FirewallConfig{Enabled: true, DenyTempIPLimit: 1},
+		statePath:  dir,
+		setBlocked: namedIPv4Set("blocked_ips"),
 		verdictAsker: func(_ context.Context, _, _ string) (string, string, string, error) {
 			return "allow", "", "", nil
 		},
@@ -90,6 +95,9 @@ func TestBlockIPOutcome_AllowVerdictAtTempCapDoesNotEvict(t *testing.T) {
 		t.Fatalf("seed block: %v", err)
 	}
 
+	if victim, err := capVictim(e, "192.0.2.21", true); err != nil || victim != "192.0.2.20" {
+		t.Fatalf("cap decision = victim %q, error %v; want 192.0.2.20", victim, err)
+	}
 	outcome, err := e.BlockIPOutcome("192.0.2.21", "new temp block", time.Hour)
 	if err != nil {
 		t.Fatalf("BlockIPOutcome: %v", err)

@@ -1217,8 +1217,20 @@ runs alone if selected. An apply-confirmed firewall window holds the engine's me
 checks, batches, probes and retirements (`ErrConfirmPending`) from before its
 snapshot until it is confirmed or rolled back, so its rollback cannot erase a
 block the owner wrote inside it; a batch in flight finishes first and lands in
-the snapshot. A restart with a window pending holds them before the owner sees
-the engine, until startup recovery settles the window. A window opened between
+the snapshot. A rollback with saved block state restores it and
+then gates the rows on the ledger again, as startup does, before the hold
+ends: a mark or removal the ledger asked for inside the window is not lost
+with the restore. The restored ruleset also gives each timed block the time
+it had left when the window opened. When the hold ends, `RetimeBlocks`
+uses one strictly read row image and replaces the blocked sets in one
+transaction. Normal rollback restores configuration first; explicit
+confirmation accepts the current configuration. If startup with IPv6 disabled
+left no blocked-set reference, retiming binds the restored IPv6 set after a
+successful transaction. An unreadable image sends nothing, even with a cache
+or a successfully preserved corrupt state file.
+A retiming failure warns and releases the hold. A restart with a window
+pending holds the same checks and batches before the owner sees the engine,
+until startup recovery settles the window. A window opened between
 member checks and apply also holds execution, but is not an apply fault:
 after it ends, a successful snapshot probe clears that hold even on an idle
 turn. Any earlier apply fault still needs a successful one-member apply.

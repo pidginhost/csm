@@ -2559,7 +2559,7 @@ func (e *Engine) PromoteToPermanentBlockWithFindingID(ip, reason, findingID stri
 		return fmt.Errorf("cannot promote %s: not currently blocked", ip)
 	}
 	if e.cfg != nil && wasTemporary && e.cfg.DenyIPLimit > 0 {
-		perm, _, ok := e.livePermTempCountsLocked(priorState)
+		perm, _, _, ok := e.livePermTempCountsLocked(priorState)
 		if !ok {
 			perm = countPermanentBlockedEntries(priorState)
 		}
@@ -2996,13 +2996,18 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 	// against the cap. Fall back to the cached state.json count
 	// (existing behaviour) if the live query is unavailable.
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
+		// A row of a family the firewall does not filter holds no element:
+		// it fills no slot and no block can replace it.
+		st, victimState = e.filteredRowsLocked(st), e.filteredRowsLocked(victimState)
 		var perm, temp int
+		// The addresses the count found in the kernel, when it read them.
+		var live map[string]bool
 		if timeout > 0 && !skipExisting && e.lifecycle == nil && hasAdmissionRows(st) {
 			// Count ownership and occupancy from one image, including replacement.
-			temp = e.operatorTempCountLocked(st, ip)
+			temp, live = e.operatorTempCountLocked(st, ip)
 		} else {
 			var ok bool
-			perm, temp, ok = e.livePermTempCountsLocked(st)
+			perm, temp, live, ok = e.livePermTempCountsLocked(st)
 			stateEntry, replacingStateEntry := blockedStateEntry(st, ip)
 			if ok && !skipExisting {
 				if replacingStateEntry && !stateEntry.Unverified {
@@ -3041,12 +3046,9 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
 			// Validation must stay read-only because verdict and dry-run gates run
 			// after it. The live block path applies this eviction target.
-			victim, ok := e.evictionVictimLocked(victimState, ip, skipExisting)
+			victim, ok := e.evictionVictimLocked(heldRows(victimState, live), ip, skipExisting)
 			if !ok {
 				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
-			}
-			if _, _, err := e.resolveIPSet(victim, e.setBlocked, e.setBlocked6); err != nil {
-				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and eviction target %s is unusable: %w", e.cfg.DenyTempIPLimit, victim, err)
 			}
 			return targetSet, key, false, victim, nil
 		}
@@ -3150,9 +3152,10 @@ func hasAdmissionRows(state FirewallState) bool {
 }
 
 // operatorTempCountLocked counts non-admission occupants from one complete
-// live image. Partial dumps fall back as a whole to lease-pruned policy.
+// live image and returns the addresses in it. Partial dumps fall back as
+// a whole to lease-pruned policy and return no addresses.
 // The aggregate liveBlockCounts test seam cannot describe ownership.
-func (e *Engine) operatorTempCountLocked(state FirewallState, excludeIP string) int {
+func (e *Engine) operatorTempCountLocked(state FirewallState, excludeIP string) (int, map[string]bool) {
 	var conn *nftables.Conn
 	readable := e.liveBlockedDump != nil
 	if !readable {
@@ -3199,12 +3202,14 @@ func (e *Engine) operatorTempCountLocked(state FirewallState, excludeIP string) 
 	types := blockedStateTempByIP(state)
 	if readable && gotAny {
 		n := 0
+		held := make(map[string]bool, len(live))
 		for ip, el := range live {
+			held[ip] = true
 			if !sameIPString(ip, excludeIP) && liveBlockTemporary(el, ip, types) && owners[ip] == "" {
 				n++
 			}
 		}
-		return n
+		return n, held
 	}
 	var other []BlockedEntry
 	for _, row := range state.Blocked {
@@ -3214,7 +3219,7 @@ func (e *Engine) operatorTempCountLocked(state FirewallState, excludeIP string) 
 	}
 	state.Blocked = other
 	_, n := blockedStatePermTempCounts(state, excludeIP)
-	return n
+	return n, nil
 }
 
 func blockedStateEntry(state FirewallState, ip string) (BlockedEntry, bool) {
@@ -3416,40 +3421,47 @@ func (e *Engine) IsBlockedLive(ip string) (bool, error) {
 // with verified CSM state are classified from state because nft
 // timeout attributes can reflect inherited/default set behaviour rather
 // than the operator's block intent. Out-of-state live keys fall back to
-// the kernel expiration attributes.
+// the kernel expiration attributes. live is the addresses it read from
+// the sets, nil when a seam supplied the counts.
 //
-// Must be called with e.mu held; blockIPTarget already holds the lock
-// at the only call site.
-func (e *Engine) livePermTempCountsLocked(state FirewallState) (perm, temp int, ok bool) {
+// Must be called with e.mu held.
+func (e *Engine) livePermTempCountsLocked(state FirewallState) (perm, temp int, live map[string]bool, ok bool) {
 	if e.liveBlockCounts != nil {
 		p, t, err := e.liveBlockCounts()
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, nil, false
 		}
-		return p, t, true
+		return p, t, nil, true
 	}
-	if e.conn == nil {
-		return 0, 0, false
+	if e.conn == nil && e.liveBlockedDump == nil {
+		return 0, 0, nil, false
 	}
 	stateTempByIP := blockedStateTempByIP(state)
 	gotAny := false
+	live = make(map[string]bool)
 	for _, set := range []*nftables.Set{e.setBlocked, e.setBlocked6} {
-		if set == nil {
+		// An IPv6 set an earlier ruleset left behind is not in the kernel.
+		if set == nil || (set == e.setBlocked6 && !e.cfg.IPv6) {
 			continue
 		}
-		elements, err := e.conn.GetSetElements(set)
+		elements, err := e.dumpBlockedSetLocked(set)
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, nil, false
 		}
 		gotAny = true
 		p, t := countLiveBlockElements(elements, stateTempByIP)
 		perm += p
 		temp += t
+		for _, el := range elements {
+			if ip, valid := blockSetIP(set, el.Key); valid {
+				live[ip] = true
+			}
+		}
 	}
 	if !gotAny {
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
-	return perm, temp, true
+	return perm, temp, live, true
 }
 
 func blockedStateTempByIP(state FirewallState) map[string]bool {
@@ -4574,6 +4586,11 @@ type initialBlockState struct {
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 	now := e.expiryNow()
 	state := e.loadStateFileAtLocked(now)
+	return e.initialBlockStateFromRowsLocked(state, now)
+}
+
+// initialBlockStateFromRowsLocked also accepts a strictly read rollback image.
+func (e *Engine) initialBlockStateFromRowsLocked(state FirewallState, now time.Time) initialBlockState {
 	// Timeouts come from the lease clock, which a step back of the wall
 	// clock cannot rewind: a reapplied block keeps only the time it had.
 	lease := e.leaseAtLocked(now)
