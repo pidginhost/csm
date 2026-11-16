@@ -131,7 +131,7 @@ func (u *stalwartUnban) clear(ctx context.Context, ip string) error {
 	for _, b := range bans {
 		// A lookup is an exact match, but an entry for another address must
 		// never be lifted on this one's behalf.
-		if a, err := netip.ParseAddr(b.Address); err != nil || a.Unmap() != want.Unmap() {
+		if a, parseErr := netip.ParseAddr(b.Address); parseErr != nil || a.Unmap() != want.Unmap() {
 			foreign = true
 			continue
 		}

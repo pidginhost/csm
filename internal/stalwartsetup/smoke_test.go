@@ -153,8 +153,9 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 		// left: an empty Merge, which the path patch must still work on.
 		for round := 1; round <= 2; round++ {
 			if round == 2 {
-				if a, _, err = key.Account(ctx, smokeID); err != nil {
-					t.Fatalf("round %d: Account: %v", round, err)
+				var readErr error
+				if a, _, readErr = key.Account(ctx, smokeID); readErr != nil {
+					t.Fatalf("round %d: Account: %v", round, readErr)
 				}
 			}
 			if err := key.DisableSignIn(ctx, a); err != nil {
