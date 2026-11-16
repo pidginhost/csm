@@ -44,9 +44,9 @@ func defaultStalwartSetupDeps() stalwartSetupDeps {
 		webUsers:      func() []string { return platform.Detect().WebServerUsers() },
 		getenv:        os.Getenv,
 		readFile:      os.ReadFile,
-		checkListener: defaultCheckStalwartListener,
+		checkListener: stalwartapi.CheckListener,
 		newAPI: func(url, user, password string) stalwartsetup.API {
-			return stalwartapi.NewWithPeerCheck(url, user, password, checkStalwartPeer)
+			return stalwartapi.NewWithPeerCheck(url, user, password, stalwartapi.CheckPeer)
 		},
 	}
 }

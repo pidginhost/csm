@@ -53,9 +53,9 @@ func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	newAPI := func(url, user, password string) stalwartDoctorAPI {
-		return stalwartapi.NewWithPeerCheck(url, user, password, checkStalwartPeer)
+		return stalwartapi.NewWithPeerCheck(url, user, password, stalwartapi.CheckPeer)
 	}
-	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, defaultCheckStalwartListener, cfg.Stalwart, in)...)
+	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, stalwartapi.CheckListener, cfg.Stalwart, in)...)
 }
 
 // stalwartLogDoctorCheck reports, on a Stalwart host, whether CSM finds a

@@ -18,6 +18,7 @@ const (
 	testUser     = "admin"
 	testPassword = "pw-must-not-leak-9"
 	testAccount  = "d333333"
+	testKey      = "test-key-1"
 )
 
 // fakeStalwart answers the session document and one JMAP method per POST.
@@ -37,6 +38,7 @@ type fakeCall struct {
 	Using  []string
 	User   string
 	Pass   string
+	Auth   string
 }
 
 func newFake(t *testing.T) *fakeStalwart {
@@ -44,7 +46,8 @@ func newFake(t *testing.T) *fakeStalwart {
 	f := &fakeStalwart{t: t}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/jmap", func(w http.ResponseWriter, r *http.Request) {
-		if u, p, ok := r.BasicAuth(); !ok || u != testUser || p != testPassword {
+		u, p, ok := r.BasicAuth()
+		if (!ok || u != testUser || p != testPassword) && r.Header.Get("Authorization") != "Bearer "+testKey {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -73,7 +76,7 @@ func newFake(t *testing.T) *fakeStalwart {
 		_ = json.Unmarshal(req.MethodCalls[0][2], &id)
 		u, p, _ := r.BasicAuth()
 		f.mu.Lock()
-		f.calls = append(f.calls, fakeCall{Method: name, Args: args, Using: req.Using, User: u, Pass: p})
+		f.calls = append(f.calls, fakeCall{Method: name, Args: args, Using: req.Using, User: u, Pass: p, Auth: r.Header.Get("Authorization")})
 		f.mu.Unlock()
 		respName, respArgs := name, any(map[string]any{})
 		if f.reply != nil {
@@ -90,6 +93,26 @@ func newFake(t *testing.T) *fakeStalwart {
 }
 
 func (f *fakeStalwart) client() *Client { return New(f.srv.URL, testUser, testPassword) }
+
+func (f *fakeStalwart) keyClient() *Client { return NewKey(f.srv.URL, testKey, allowPeer) }
+
+func allowPeer(context.Context, net.Conn) error { return nil }
+
+func (f *fakeStalwart) callAt(i int) fakeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[i]
+}
+
+func (f *fakeStalwart) methods() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		out = append(out, c.Method)
+	}
+	return out
+}
 
 func (f *fakeStalwart) last() fakeCall {
 	f.mu.Lock()
@@ -357,5 +380,102 @@ func TestClientPeerErrorRedactsLogin(t *testing.T) {
 	}
 	if requests.Load() != 0 {
 		t.Fatal("unverified peer received an HTTP request")
+	}
+}
+
+func TestKeyClientSendsBearer(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"list": []any{}}
+	}
+	if _, err := f.keyClient().TracingLevels(context.Background()); err != nil {
+		t.Fatalf("TracingLevels: %v", err)
+	}
+	c := f.last()
+	if c.Auth != "Bearer "+testKey || c.User != "" || c.Pass != "" {
+		t.Fatal("key client did not send only a Bearer login")
+	}
+	if c.Args["accountId"] != testAccount {
+		t.Fatalf("accountId = %v, want %s", c.Args["accountId"], testAccount)
+	}
+}
+
+func TestKeyClientErrorsNeverContainKey(t *testing.T) {
+	ctx := context.Background()
+
+	unauthorized := newFake(t)
+	_, err401 := NewKey(unauthorized.srv.URL, testKey+"x", allowPeer).TracingLevels(ctx)
+
+	echo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(r.Header.Get("Authorization") + " " + testKey + " " + string(body)))
+	}))
+	defer echo.Close()
+	_, err500 := NewKey(echo.URL, testKey, allowPeer).TracingLevels(ctx)
+
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closedURL := closed.URL
+	closed.Close()
+	_, errClosed := NewKey(closedURL, testKey, allowPeer).TracingLevels(ctx)
+
+	_, errPeer := NewKey(echo.URL, testKey, func(context.Context, net.Conn) error {
+		return errors.New("peer error: " + testKey)
+	}).TracingLevels(ctx)
+
+	for name, err := range map[string]error{"401": err401, "500": err500, "closed": errClosed, "peer": errPeer} {
+		if err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+		if strings.Contains(err.Error(), testKey) {
+			t.Fatalf("%s: error contains the key", name)
+		}
+	}
+}
+
+func TestKeyClientSendsNothingWhenPeerCheckFails(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer srv.Close()
+	refused := errors.New("untrusted peer")
+	_, err := NewKey(srv.URL, testKey, func(context.Context, net.Conn) error { return refused }).TracingLevels(context.Background())
+	if !errors.Is(err, refused) {
+		t.Fatalf("err = %v, want the peer refusal", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("server received %d requests from a refused peer", requests.Load())
+	}
+}
+
+func TestKeyClientForbidden(t *testing.T) {
+	for status, want := range map[int]error{http.StatusForbidden: ErrForbidden, http.StatusUnauthorized: ErrUnauthorized} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }))
+		_, err := NewKey(srv.URL, testKey, allowPeer).SessionAccount(context.Background())
+		srv.Close()
+		if !errors.Is(err, want) {
+			t.Fatalf("HTTP %d: err = %v, want %v", status, err, want)
+		}
+	}
+}
+
+func TestSessionAccount(t *testing.T) {
+	f := newFake(t)
+	got, err := f.keyClient().SessionAccount(context.Background())
+	if err != nil || got != testAccount {
+		t.Fatalf("SessionAccount = %q, %v; want %s", got, err, testAccount)
+	}
+}
+
+func TestMethodAccountIDIsKept(t *testing.T) {
+	f := newFake(t)
+	f.reply = func(method string, _ map[string]any) (string, any) {
+		return method, map[string]any{"updated": map[string]any{"u": nil}}
+	}
+	c := f.keyClient()
+	if _, err := c.set(context.Background(), "x:ApiKey/set", map[string]any{"accountId": "c", "update": map[string]any{"u": map[string]any{}}}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got := f.last().Args["accountId"]; got != "c" {
+		t.Fatalf("accountId = %v, want c", got)
 	}
 }
