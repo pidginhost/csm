@@ -284,7 +284,9 @@ type mailboxSuspensionStatus struct {
 
 // listMailboxSuspensions returns every stored suspension with the mail
 // server's live state. One the server no longer applies is marked released
-// outside CSM; one whose state cannot be read stays as it was.
+// outside CSM; one whose state cannot be read stays as it was. Only the
+// backend that made a row can read it: after the host's mail server changes,
+// the other backend's rows show an unknown state.
 func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 	db := store.Global()
 	if db == nil {
@@ -294,16 +296,17 @@ func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	backend := activeMailBackend
 	var open []store.MailboxSuspension
 	for _, r := range rows {
-		if r.ReleasedAt == nil {
+		if r.ReleasedAt == nil && r.Backend == backend.name() {
 			open = append(open, r)
 		}
 	}
 	live := map[string]bool{}
 	if len(open) > 0 {
 		var statusErr error
-		if live, statusErr = activeMailBackend.active(open); statusErr != nil {
+		if live, statusErr = backend.active(open); statusErr != nil {
 			fmt.Fprintf(os.Stderr, "[%s] mailbox suspensions: %v\n", time.Now().Format("2006-01-02 15:04:05"), statusErr)
 		}
 	}
