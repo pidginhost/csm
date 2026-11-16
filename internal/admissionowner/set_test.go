@@ -503,7 +503,7 @@ func TestOwnerCountsUnknownAdmissionRowsAsUnclaimed(t *testing.T) {
 	if checks, applies := blocks.calls(); len(checks) != 0 || len(applies) != 0 {
 		t.Fatalf("engine calls: %d checks, %d applies", len(checks), len(applies))
 	}
-	want := &health.AdmissionSet{Limit: 4, Capacity: 4, Unclaimed: 3,
+	want := &health.AdmissionSet{Limit: 4, Capacity: 4, Unclaimed: 3, DrainSeconds: -1,
 		General: health.AdmissionDryRunPartition{}, Reserved: health.AdmissionDryRunPartition{Size: 1, Free: 1}}
 	if set, setErr := ownerSet(t, o); set == nil || *set != *want || setErr != "" {
 		t.Fatalf("set status %+v %q, want %+v", set, setErr, want)

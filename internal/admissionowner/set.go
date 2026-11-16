@@ -36,7 +36,12 @@ func (o *Owner) readSet() error {
 		if holds, err = o.ledger.EffectHolds(); err != nil {
 			return err
 		}
-		adm.Unclaimed += max(adm.Admission-holds, 0)
+		if unknown := adm.Admission - holds; unknown > 0 {
+			adm.Unclaimed += unknown
+			// The engine's drain excludes admission rows, so it cannot
+			// bound the remaining time of these additional occupants.
+			adm.Drain = -time.Second
+		}
 	}
 	if o.setErr = err; err == nil {
 		o.set = &adm
