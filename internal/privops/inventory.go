@@ -932,7 +932,7 @@ var operations = []Op{
 		Risk:             RiskReversible,
 		RecoveryGap:      "Stalwart bans the address again on new abuse; a cleared ban is not restored.",
 		Subsystem:        "operator commands",
-		Summary:          "lift Stalwart's own automatic ban of an address unblocked, allowed or unbanned in CSM, through the Stalwart API; manual Stalwart blocks stay",
+		Summary:          "lift Stalwart's own automatic bans of an address unblocked, allowed or unbanned in CSM or allowed through a DynDNS name, through the Stalwart API; other Stalwart bans stay",
 		Privileges:       []Privilege{Root},
 		Trigger:          Operator,
 		Unsandboxed:      true,

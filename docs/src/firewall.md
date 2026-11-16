@@ -159,15 +159,22 @@ read event files from the working directory.
 ## Stalwart bans
 
 On a host whose mail server is Stalwart, Stalwart keeps its own list of banned
-addresses. When one address is unblocked, allowed or undone in CSM, or unbanned
-from a hosting panel, CSM also lifts Stalwart's automatic bans of it through
-the Stalwart API key from `csm stalwart setup`. This runs in the background, so
-the unblock never waits on Stalwart. Blocks made by hand in Stalwart stay, and
-the daemon log says so. A flush and a subnet removal leave Stalwart's list
-alone. If the key file is missing or Stalwart cannot be reached, the daemon log
-names the address Stalwart may still refuse; unblock it again to retry. Each
-lifted ban is written to the [action log](action-log.md) as
-`operate.clear_stalwart_ban`.
+addresses. When one address is unblocked, allowed or undone in CSM, unbanned
+from a hosting panel, or allowed through a DynDNS name in `dyndns_hosts`, CSM
+also lifts Stalwart's automatic bans of it through the Stalwart API key from
+`csm stalwart setup`. A DynDNS allow counts the same as an operator allow. This
+runs in the background, so the unblock never waits on Stalwart. Only the bans
+Stalwart makes on its own, for failed logins, failed recipients, loitering and
+port scans, are lifted. Blocks made by hand in Stalwart and bans with any other
+reason stay, and the daemon log says so. A flush and a subnet removal leave
+Stalwart's list alone. Each lifted ban is written to the
+[action log](action-log.md) as `operate.clear_stalwart_ban`.
+
+A lift that fails is written to the daemon log, which names the address
+Stalwart may still refuse, and to the action log when it got as far as the
+delete. Unblocking the address again retries the lift. If Stalwart still
+refuses the address after a logged failure to reload its ban list, reload the
+blocked list in Stalwart's admin interface.
 
 ## Startup failures
 
