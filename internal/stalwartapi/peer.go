@@ -1,4 +1,4 @@
-package main
+package stalwartapi
 
 import (
 	"bufio"
@@ -18,16 +18,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pidginhost/csm/internal/stalwartapi"
 )
 
 // stalwartServiceUsers are the accounts Stalwart's packages run it as.
 var stalwartServiceUsers = []string{"stalwart", "stalwart-mail"}
 
-// defaultCheckStalwartListener refuses a local API address whose port is
-// held by anyone but root or Stalwart's service user.
-func defaultCheckStalwartListener(rawURL string) error {
+// CheckListener refuses a local API address whose port is held by anyone
+// but root or Stalwart's service user.
+func CheckListener(rawURL string) error {
 	return checkStalwartListener("/proc/net", rawURL, lookupUIDs)
 }
 
@@ -45,13 +43,13 @@ func lookupUIDs(names ...string) []uint32 {
 	return out
 }
 
-// checkStalwartListener runs before the admin login is sent to an address on
+// checkStalwartListener runs before the login is sent to an address on
 // this host. Any local user can listen on an unprivileged port while
 // Stalwart is down and collect the login, so every listening socket on the
 // API port must belong to root or Stalwart's service user. A remote address
 // is protected by TLS instead.
 func checkStalwartListener(procNet, rawURL string, uidsOf func(names ...string) []uint32) error {
-	if !stalwartapi.LocalURL(rawURL) {
+	if !LocalURL(rawURL) {
 		return nil
 	}
 	u, err := url.Parse(rawURL)
@@ -122,9 +120,10 @@ func listenOwners(r io.Reader, port int) ([]uint32, error) {
 	return out, sc.Err()
 }
 
-// A listener check alone races service restarts. Verify the accepted side
-// of this connection, not whichever socket now listens on its port.
-func checkStalwartPeer(ctx context.Context, conn net.Conn) error {
+// CheckPeer verifies that root or Stalwart's service user accepted conn. A
+// listener check alone races service restarts, so it checks the accepted
+// side of this connection, not whichever socket now listens on its port.
+func CheckPeer(ctx context.Context, conn net.Conn) error {
 	local, err := netip.ParseAddrPort(conn.LocalAddr().String())
 	if err != nil {
 		return errors.New("cannot identify local API connection")

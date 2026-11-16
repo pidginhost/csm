@@ -1278,6 +1278,17 @@
       "class": "work",
       "rationale": "Transfers a worker reply while request ownership survives cancellation and child cleanup; a reply the caller abandoned has its descriptors closed by the sender.",
       "queue": "php_taint"
+    },
+    {
+      "id": "internal/daemon/stalwart_unban.go::*stalwartUnban.add::u.done::channel::1",
+      "path": "internal/daemon/stalwart_unban.go",
+      "owner": "*stalwartUnban.add",
+      "target": "u.done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the Stalwart unban drain ends, so shutdown waits for the call in flight to finish."
     }
   ],
   "owners": [

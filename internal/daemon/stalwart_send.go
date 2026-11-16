@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"sync"
@@ -10,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/stalwartlog"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 const (
@@ -20,8 +23,13 @@ const (
 	stalwartSessionMax = 4096
 )
 
-// stalwartNoSuspendContext tells staff that a Stalwart mailbox stays active.
-const stalwartNoSuspendContext = "This version of CSM cannot suspend Stalwart mailboxes; change the mailbox password in Stalwart."
+// What CSM did about a compromised Stalwart mailbox, for staff reading the
+// finding.
+const (
+	stalwartSuspendedContext    = "CSM stopped this mailbox's sign-ins; release it on the Email page, Suspended tab."
+	stalwartNoKeyContext        = "CSM has no Stalwart API key, so this mailbox stays active; run csm stalwart setup, or change the mailbox password in Stalwart."
+	stalwartNotSuspendedContext = "CSM did not suspend this mailbox (see the CSM log); change its password in Stalwart if it is still in use."
+)
 
 // stalwartPTR is the reverse DNS name of an address. var so tests can stand
 // in for DNS.
@@ -143,27 +151,60 @@ func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *
 	findings := checkEmailRate(account, cfg)
 	for _, f := range senderProfileObserve(cfg, account, signalIP, ev.Lists["to"], now) {
 		if f.Severity == alert.Critical {
-			respondToStalwartCompromise(cfg, account, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
+			f.Context = respondToStalwartCompromise(cfg, account, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", ev.Time)
+		} else if !hostHasMailBackend() {
+			f.Context = stalwartNoKeyContext
 		}
-		f.Context = stalwartNoSuspendContext
 		findings = append(findings, f)
 	}
 	if signalIP != "" {
 		for _, f := range cloudRelayObserve(cfg, account, signalIP, stalwartPTR(signalIP), now) {
-			respondToStalwartCompromise(cfg, account, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses", f.Timestamp)
-			f.Context = stalwartNoSuspendContext
+			f.Context = respondToStalwartCompromise(cfg, account, "email_cloud_relay_abuse", "authenticated sends from several cloud-provider addresses", ev.Time)
 			findings = append(findings, f)
 		}
 	}
 	return findings
 }
 
-// respondToStalwartCompromise responds to a compromised Stalwart account. A
-// bare account name has no domain to mark, and the envelope sender is the
-// sender's own choice: marking its domain would only quiet other mailboxes'
-// rate alerts. The finding stands either way.
-func respondToStalwartCompromise(cfg *config.Config, account, check, reason string, at time.Time) {
+// respondToStalwartCompromise responds to a compromised Stalwart account and
+// returns the finding's context saying what CSM did. A bare account name has
+// no domain to mark, and the envelope sender is the sender's own choice:
+// marking its domain would only quiet other mailboxes' rate alerts. The
+// finding stands either way.
+func respondToStalwartCompromise(cfg *config.Config, account, check, reason string, at time.Time) string {
+	stopped := false
 	if extractDomainFromEmail(account) != "" {
-		respondToMailboxCompromise(cfg, account, check, reason, at)
+		stopped = respondToMailboxCompromise(cfg, account, check, reason, at)
+	} else if hostHasMailBackend() {
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: Stalwart account %s has no domain; not suspended\n",
+			time.Now().Format("2006-01-02 15:04:05"), account)
 	}
+	switch {
+	case stopped && holdsStalwartSuspension(account):
+		return stalwartSuspendedContext
+	case !hostHasMailBackend():
+		return stalwartNoKeyContext
+	default:
+		return stalwartNotSuspendedContext
+	}
+}
+
+// holdsStalwartSuspension reports whether CSM holds an unreleased suspension
+// of subject. Sign-ins stopped outside CSM also count as stopped, but leave
+// nothing to release.
+func holdsStalwartSuspension(subject string) bool {
+	db := store.Global()
+	if db == nil {
+		return false
+	}
+	backend, ok := activeMailBackend.(stalwartMailBackend)
+	if !ok {
+		return false
+	}
+	ref, err := backend.resolve(subject)
+	if err != nil {
+		return false
+	}
+	rec, ok, err := db.GetMailboxSuspension(stalwartSuspensionID(ref))
+	return err == nil && ok && rec.ReleasedAt == nil
 }

@@ -156,6 +156,28 @@ Attack statistics and event queries use the daemon's state database or its
 configured attack database directory. If neither is available, they do not
 read event files from the working directory.
 
+## Stalwart bans
+
+On a host whose mail server is Stalwart, Stalwart keeps its own list of banned
+addresses. When one address is unblocked, allowed or undone in CSM, unbanned
+from a hosting panel, or allowed through a DynDNS name in `dyndns_hosts`, CSM
+also lifts Stalwart's automatic bans of it through the Stalwart API key from
+`csm stalwart setup`. A DynDNS allow counts the same as an operator allow. This
+runs in the background, so the unblock never waits on Stalwart. Only the bans
+Stalwart makes on its own, for failed logins, failed recipients, loitering and
+port scans, are lifted. Blocks made by hand in Stalwart and bans with any other
+reason stay, and the daemon log says so. A flush and a subnet removal leave
+Stalwart's list alone. Each lifted ban is written to the
+[action log](action-log.md) as `operate.clear_stalwart_ban`.
+
+A lift that fails is written to the daemon log, which names the address
+Stalwart may still refuse, and to the action log when it got as far as the
+delete. Unblocking the address again retries bans that Stalwart still lists.
+If the delete succeeded but its reply was lost, or the subsequent reload
+failed, Stalwart can keep enforcing a ban it no longer lists. Another unblock
+cannot finish that reload. Reload the blocked list in Stalwart's admin
+interface if the address remains blocked after either failure.
+
 ## Startup failures
 
 Overlapping, nested, duplicate, and adjacent ranges are merged for the kernel,

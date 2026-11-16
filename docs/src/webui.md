@@ -134,11 +134,13 @@ load succeeds.
 
 The dashboard shows only what the host supports. Email Security appears when
 Exim, Postfix or Stalwart is detected; a mail server started after CSM shows
-up within five minutes. Its Queue, Held mail, Suspended, Forwarders and
+up within five minutes. Its Queue, Held mail, Forwarders and
 Provider delays tabs, the antivirus lines of the Protection card, cPHulk
 actions on the Firewall page, the dashboard's Email AV chip, and the Email AV,
 cPanel and webmail login, and known API token settings need cPanel and are not
 shown elsewhere. Hidden settings keep the values they have in `csm.yaml`.
+The Suspended tab shows on cPanel and Stalwart hosts. On a Stalwart host it
+lists the mailboxes whose sign-ins CSM stopped, and Release allows them again.
 On a Stalwart host the first three Email Security cards show the mail
 Stalwart's spam filter did not file to Junk, the mail it rejected or
 discarded, and the mail it filed to the Junk folder.

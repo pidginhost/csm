@@ -145,6 +145,9 @@ type Daemon struct {
 	// stalwart is the Stalwart log state; nil unless this host's mail server
 	// is Stalwart.
 	stalwart *stalwartState
+	// stalwartUnban lifts Stalwart's bans of released addresses; nil unless
+	// this host's mail server is Stalwart.
+	stalwartUnban *stalwartUnban
 
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
@@ -888,6 +891,9 @@ func (d *Daemon) Run() error {
 	// refresh goroutine is registered here as well.
 	d.initMailRanges()
 
+	// Set before the firewall installs its release hook, which reads it.
+	d.stalwartUnban = newStalwartUnban(d)
+
 	// Start firewall engine if enabled
 	d.startFirewall()
 
@@ -919,6 +925,10 @@ func (d *Daemon) Run() error {
 	// Removals from before a restart keep a returning file recognisable.
 	// Loaded before anything can respond to or report a file.
 	checks.LoadRemovedFiles(d.cfg.StatePath)
+
+	// The dispatcher, the log watchers and the web UI all act through the
+	// mail backend, so it is chosen before any of them starts.
+	selectMailBackend(d.currentCfg)
 
 	// Start the alert dispatcher before any producer, held until the baseline
 	// scan below has published. Producers send non-blocking, so a dispatcher
@@ -1354,6 +1364,10 @@ func (d *Daemon) Run() error {
 	}
 	if d.scanJobs != nil {
 		d.scanJobs.Stop()
+	}
+	// The web server and control socket have stopped taking releases.
+	if d.stalwartUnban != nil {
+		d.stalwartUnban.stop()
 	}
 	d.stopYaraBackend()
 	d.stopPHPTaintAnalyzer()

@@ -28,6 +28,15 @@ type fakeAPI struct {
 	failOn     string
 	reloadErr  error
 	calls      []string
+
+	roles     []stalwartapi.Role
+	domains   []stalwartapi.Domain
+	accounts  []stalwartapi.Account
+	acctRoles map[string][]string
+	keys      map[string][]stalwartapi.APIKey
+	keyIPs    map[string][]string
+	creds     map[string][]string
+	nextID    int
 }
 
 func (f *fakeAPI) read(name string) error {
@@ -153,7 +162,8 @@ func inspect(t *testing.T, api *fakeAPI, in Inputs) Plan {
 	for i, s := range p.Steps {
 		names[i] = s.Name
 	}
-	want := []string{"failed-login logging", "webmail client addresses", "ban expiry", "proxy protocol listeners", "spam verdict logging", "spam filter"}
+	want := []string{"failed-login logging", "webmail client addresses", "ban expiry", "proxy protocol listeners", "spam verdict logging", "spam filter",
+		"response role", "response account", "response key"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("steps = %q, want %q", names, want)
 	}
@@ -180,7 +190,7 @@ func applyCalls(t *testing.T, api *fakeAPI, p Plan) []string {
 func TestPlanFreshStalwart(t *testing.T) {
 	api := freshAPI()
 	p := inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Change, Change, Change, Done, Change, Done}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Change, Change, Change, Done, Change, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("states = %v, want %v", got, want)
 	}
 	api.calls = nil
@@ -206,7 +216,7 @@ func TestPlanFreshStalwart(t *testing.T) {
 func TestPlanAlreadyConfiguredAppliesNothing(t *testing.T) {
 	api := configuredAPI()
 	p := inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps)
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
@@ -327,8 +337,8 @@ func TestPlanApplyStopsAtFailedWrite(t *testing.T) {
 	api.calls = nil
 	api.writeErr = errors.New("refused")
 	_, err := p.Apply(context.Background(), api)
-	if !errors.Is(err, api.writeErr) || !strings.Contains(err.Error(), "failed-login logging") {
-		t.Fatalf("err = %v, want the write error naming the step", err)
+	if !errors.Is(err, api.writeErr) || !errors.Is(err, ErrSettingsWrite) || !strings.Contains(err.Error(), "failed-login logging") {
+		t.Fatalf("err = %v, want the settings write error naming the step", err)
 	}
 	if len(api.calls) != 1 {
 		t.Fatalf("calls after the failure = %q, want the one failed write", api.calls)
@@ -590,10 +600,554 @@ func TestPlanSecondSetupWritesNothing(t *testing.T) {
 		t.Fatalf("first setup calls = %q, want four writes and a reload", calls)
 	}
 	p = inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("second setup states = %v, want %v", got, want)
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
 		t.Fatalf("second setup made calls: %q", calls)
+	}
+}
+
+func (f *fakeAPI) id() string {
+	f.nextID++
+	return fmt.Sprintf("id%d", f.nextID)
+}
+func (f *fakeAPI) RoleByDescription(_ context.Context, description string) (stalwartapi.Role, bool, error) {
+	if err := f.read("RoleByDescription"); err != nil {
+		return stalwartapi.Role{}, false, err
+	}
+	for _, r := range f.roles {
+		if r.Description == description {
+			return r, true, nil
+		}
+	}
+	return stalwartapi.Role{}, false, nil
+}
+func (f *fakeAPI) SaveRole(_ context.Context, r stalwartapi.Role) (string, error) {
+	if err := f.write(fmt.Sprintf("SaveRole(%s,%s)", r.ID, r.Description)); err != nil {
+		return "", err
+	}
+	for i := range f.roles {
+		if f.roles[i].ID == r.ID {
+			f.roles[i] = r
+			return r.ID, nil
+		}
+	}
+	r.ID = f.id()
+	f.roles = append(f.roles, r)
+	return r.ID, nil
+}
+func (f *fakeAPI) Domains(context.Context) ([]stalwartapi.Domain, error) {
+	return f.domains, f.read("Domains")
+}
+func (f *fakeAPI) AccountsNamed(_ context.Context, name string) ([]stalwartapi.Account, error) {
+	var out []stalwartapi.Account
+	for _, a := range f.accounts {
+		if a.Name == name {
+			out = append(out, a)
+		}
+	}
+	return out, f.read("AccountsNamed")
+}
+func (f *fakeAPI) AccountRoleIDs(_ context.Context, id string) ([]string, error) {
+	return f.acctRoles[id], f.read("AccountRoleIDs")
+}
+func (f *fakeAPI) AccountCredentialTypes(_ context.Context, id string) ([]string, error) {
+	return f.creds[id], f.read("AccountCredentialTypes")
+}
+func (f *fakeAPI) CreateAccount(_ context.Context, name, domainID, roleID string) (string, error) {
+	if err := f.write(fmt.Sprintf("CreateAccount(%s,%s,%s)", name, domainID, roleID)); err != nil {
+		return "", err
+	}
+	id := f.id()
+	email := name
+	for _, d := range f.domains {
+		if d.ID == domainID {
+			email += "@" + d.Name
+		}
+	}
+	f.accounts = append(f.accounts, stalwartapi.Account{ID: id, Name: name, Email: email})
+	f.acctRoles[id] = []string{roleID}
+	return id, nil
+}
+func (f *fakeAPI) SetAccountRole(_ context.Context, id, roleID string) error {
+	if err := f.write(fmt.Sprintf("SetAccountRole(%s,%s)", id, roleID)); err != nil {
+		return err
+	}
+	f.acctRoles[id] = []string{roleID}
+	return nil
+}
+func (f *fakeAPI) APIKeys(_ context.Context, accountID string) ([]stalwartapi.APIKey, error) {
+	return f.keys[accountID], f.read("APIKeys")
+}
+func (f *fakeAPI) CreateAPIKey(_ context.Context, accountID, description string, allowedIPs []string) (string, string, error) {
+	if err := f.write(fmt.Sprintf("CreateAPIKey(%s,%s,%s)", accountID, description, strings.Join(allowedIPs, " "))); err != nil {
+		return "", "", err
+	}
+	id := f.id()
+	f.keys[accountID] = append(f.keys[accountID], stalwartapi.APIKey{ID: id, Description: description})
+	f.keyIPs[id] = allowedIPs
+	return id, "test-key-1", nil
+}
+func (f *fakeAPI) DeleteAPIKeys(_ context.Context, accountID string, ids []string) error {
+	if err := f.write(fmt.Sprintf("DeleteAPIKeys(%s,%s)", accountID, strings.Join(ids, ","))); err != nil {
+		return err
+	}
+	f.keys[accountID] = slices.DeleteFunc(f.keys[accountID], func(k stalwartapi.APIKey) bool { return slices.Contains(ids, k.ID) })
+	return nil
+}
+
+// responseAPI is a configured Stalwart with its stock User role, one domain
+// and nothing of CSM's.
+func responseAPI() *fakeAPI {
+	api := configuredAPI()
+	api.roles = []stalwartapi.Role{{ID: "u", Description: "User"}}
+	api.domains = []stalwartapi.Domain{{ID: "d1", Name: "example.org"}}
+	api.acctRoles = map[string][]string{}
+	api.keys = map[string][]stalwartapi.APIKey{}
+	api.keyIPs = map[string][]string{}
+	return api
+}
+
+// preparedAPI also holds CSM's role and account a1 with its one key.
+func preparedAPI() *fakeAPI {
+	api := responseAPI()
+	api.roles = append(api.roles, stalwartapi.Role{ID: "r1", Description: ResponseRole, Enabled: slices.Clone(ResponsePermissions), RoleIDs: []string{"u"}})
+	api.accounts = []stalwartapi.Account{{ID: "a1", Name: ResponseAccount, Email: "csm-response@example.org"}}
+	api.acctRoles["a1"] = []string{"r1"}
+	api.keys["a1"] = []stalwartapi.APIKey{{ID: "old1", Description: "CSM"}}
+	return api
+}
+
+// twoKeyAPI is preparedAPI with a second key on a1.
+func twoKeyAPI() *fakeAPI {
+	api := preparedAPI()
+	api.keys["a1"] = append(api.keys["a1"], stalwartapi.APIKey{ID: "old2", Description: "CSM"})
+	return api
+}
+
+// responseInputs records each key written in api's calls.
+func responseInputs(api *fakeAPI, keyAccount string, writeErr error) Inputs {
+	in := fieldInputs()
+	in.LocalAPI = true
+	in.KeyAccount = keyAccount
+	in.WriteKey = func(secret string) error {
+		api.calls = append(api.calls, "WriteKey("+secret+")")
+		return writeErr
+	}
+	return in
+}
+
+func responseStates(p Plan) []State { return states(p)[6:] }
+
+func TestPlanCreatesRoleAccountAndKey(t *testing.T) {
+	api := responseAPI()
+	p := inspect(t, api, responseInputs(api, "", nil))
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Change, Change, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	calls := applyCalls(t, api, p)
+	want := []string{
+		"SaveRole(," + ResponseRole + ")",
+		"CreateAccount(csm-response,d1,id1)",
+		"CreateAPIKey(id2,CSM,127.0.0.1 ::1)",
+		"WriteKey(test-key-1)",
+		"APIKeys",
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+	role := api.roles[1]
+	if role.ID != "id1" || !reflect.DeepEqual(role.Enabled, ResponsePermissions) || !reflect.DeepEqual(role.RoleIDs, []string{"u"}) {
+		t.Fatalf("role = %+v, want every response permission and the User role", role)
+	}
+	if len(api.accounts) != 1 || api.accounts[0].Name != ResponseAccount || !reflect.DeepEqual(api.acctRoles["id2"], []string{"id1"}) {
+		t.Fatalf("accounts = %+v, roles %v; want one csm-response holding the response role", api.accounts, api.acctRoles)
+	}
+	if len(api.keys["id2"]) != 1 || !reflect.DeepEqual(api.keyIPs["id3"], []string{"127.0.0.1", "::1"}) {
+		t.Fatalf("keys = %+v, addresses %v; want one loopback-only key", api.keys, api.keyIPs)
+	}
+}
+
+func TestPlanKeepsWorkingKey(t *testing.T) {
+	api := preparedAPI()
+	p := inspect(t, api, responseInputs(api, "a1", nil))
+	if got, want := responseStates(p), []State{Done, Done, Done}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+}
+
+func TestPlanReplacesForeignOrMissingKey(t *testing.T) {
+	for _, keyAccount := range []string{"", "a9"} {
+		t.Run("key account "+keyAccount, func(t *testing.T) {
+			api := twoKeyAPI()
+			p := inspect(t, api, responseInputs(api, keyAccount, nil))
+			if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+			}
+			want := []string{"CreateAPIKey(a1,CSM,127.0.0.1 ::1)", "WriteKey(test-key-1)", "APIKeys", "DeleteAPIKeys(a1,old1,old2)"}
+			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls = %q, want %q", calls, want)
+			}
+			if want := []stalwartapi.APIKey{{ID: "id1", Description: "CSM"}}; !reflect.DeepEqual(api.keys["a1"], want) {
+				t.Fatalf("keys = %+v, want only the new one", api.keys["a1"])
+			}
+		})
+	}
+}
+
+func TestKeyStepRemovesKeyWhenFileWriteFails(t *testing.T) {
+	api := twoKeyAPI()
+	writeErr := errors.New("disk full")
+	p := inspect(t, api, responseInputs(api, "", writeErr))
+	api.calls = nil
+	_, err := p.Apply(context.Background(), api)
+	if !errors.Is(err, writeErr) || errors.Is(err, ErrSettingsWrite) || !strings.Contains(err.Error(), "response key") {
+		t.Fatalf("err = %v, want the write error naming the step, not a settings write", err)
+	}
+	want := []string{"CreateAPIKey(a1,CSM,127.0.0.1 ::1)", "WriteKey(test-key-1)", "DeleteAPIKeys(a1,id1)"}
+	if !reflect.DeepEqual(api.calls, want) {
+		t.Fatalf("calls = %q, want %q", api.calls, want)
+	}
+	if want := []stalwartapi.APIKey{{ID: "old1", Description: "CSM"}, {ID: "old2", Description: "CSM"}}; !reflect.DeepEqual(api.keys["a1"], want) {
+		t.Fatalf("keys = %+v, want the old keys kept", api.keys["a1"])
+	}
+}
+
+// The new key is in the file and works, so a failed clean-up keeps it, and
+// the next run, whose key file names a1, finishes the clean-up.
+func TestKeyStepKeepsNewKeyWhenOldKeysStay(t *testing.T) {
+	api := twoKeyAPI()
+	p := inspect(t, api, responseInputs(api, "", nil))
+	api.failOn = "DeleteAPIKeys"
+	api.calls = nil
+	_, err := p.Apply(context.Background(), api)
+	if err == nil || !strings.Contains(err.Error(), "older keys") {
+		t.Fatalf("err = %v, want the older keys named", err)
+	}
+	if len(api.keys["a1"]) != 3 || slices.Contains(api.calls, "DeleteAPIKeys(a1,id1)") {
+		t.Fatalf("keys = %+v, calls %q; want the new key kept", api.keys["a1"], api.calls)
+	}
+
+	api.failOn = ""
+	p = inspect(t, api, responseInputs(api, "a1", nil))
+	if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rerun states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	applyCalls(t, api, p)
+	if want := []stalwartapi.APIKey{{ID: "id2", Description: "CSM"}}; !reflect.DeepEqual(api.keys["a1"], want) {
+		t.Fatalf("rerun keys = %+v, want only the newest", api.keys["a1"])
+	}
+}
+
+// Secrets are not listed, so CSM cannot tell which of several keys is in
+// its file; it replaces them all.
+func TestPlanReplacesKeyWhenAccountHasExtraKeys(t *testing.T) {
+	api := twoKeyAPI()
+	p := inspect(t, api, responseInputs(api, "a1", nil))
+	if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	if s := p.Steps[8]; !strings.Contains(s.Detail, "extra") {
+		t.Fatalf("key step = %+v, want the extra keys named", s)
+	}
+	want := []string{"CreateAPIKey(a1,CSM,127.0.0.1 ::1)", "WriteKey(test-key-1)", "APIKeys", "DeleteAPIKeys(a1,old1,old2)"}
+	if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+	if want := []stalwartapi.APIKey{{ID: "id1", Description: "CSM"}}; !reflect.DeepEqual(api.keys["a1"], want) {
+		t.Fatalf("keys = %+v, want only the new one", api.keys["a1"])
+	}
+
+	api = preparedAPI()
+	api.keys["a1"] = nil
+	if s := inspect(t, api, responseInputs(api, "a1", nil)).Steps[8]; s.State != Change {
+		t.Fatalf("no keys listed: key step = %+v, want Change", s)
+	}
+}
+
+func TestPlanUpdatesRoleMissingPermission(t *testing.T) {
+	for name, mutate := range map[string]func(*stalwartapi.Role){
+		"missing permission": func(r *stalwartapi.Role) {
+			r.Enabled = slices.DeleteFunc(r.Enabled, func(p string) bool { return p == "sysBlockedIpDestroy" })
+		},
+		"missing User role": func(r *stalwartapi.Role) { r.RoleIDs = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := preparedAPI()
+			mutate(&api.roles[1])
+			p := inspect(t, api, responseInputs(api, "a1", nil))
+			if got, want := responseStates(p), []State{Change, Done, Done}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+			}
+			// The save replaces the role, so the step must not promise to add.
+			if d := p.Steps[6].Detail; !strings.Contains(d, "; reset it to CSM's permissions and the User role") {
+				t.Fatalf("role step detail = %q, want it to say the role is reset", d)
+			}
+			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SaveRole(r1," + ResponseRole + ")"}) {
+				t.Fatalf("calls = %q", calls)
+			}
+			if r := api.roles[1]; !reflect.DeepEqual(r.Enabled, ResponsePermissions) || !reflect.DeepEqual(r.RoleIDs, []string{"u"}) {
+				t.Fatalf("role = %+v, want the full list and the User role", r)
+			}
+		})
+	}
+}
+
+func TestPlanResetsAccountRole(t *testing.T) {
+	api := preparedAPI()
+	api.acctRoles["a1"] = []string{"r1", "u"}
+	p := inspect(t, api, responseInputs(api, "a1", nil))
+	if got, want := responseStates(p), []State{Done, Change, Done}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SetAccountRole(a1,r1)"}) {
+		t.Fatalf("calls = %q", calls)
+	}
+}
+
+func TestPlanNeedsDomainChoice(t *testing.T) {
+	twoDomains := func() *fakeAPI {
+		api := responseAPI()
+		api.domains = append(api.domains, stalwartapi.Domain{ID: "d2", Name: "example.net", Aliases: []string{"example.com"}})
+		return api
+	}
+	api := twoDomains()
+	p := inspect(t, api, responseInputs(api, "", nil))
+	if s := p.Steps[7]; s.State != Skipped || !strings.Contains(s.Detail, "--account-domain") {
+		t.Fatalf("account step = %+v, want Skipped naming --account-domain", s)
+	}
+	if s := p.Steps[8]; s.State != Skipped {
+		t.Fatalf("key step = %+v, want Skipped", s)
+	}
+
+	for _, domain := range []string{"example.net", "EXAMPLE.Net"} {
+		api = twoDomains()
+		in := responseInputs(api, "", nil)
+		in.AccountDomain = domain
+		p = inspect(t, api, in)
+		if got, want := responseStates(p), []State{Change, Change, Change}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: states = %v, want %v (%+v)", domain, got, want, p.Steps[6:])
+		}
+		if calls := applyCalls(t, api, p); !slices.Contains(calls, "CreateAccount(csm-response,d2,id1)") {
+			t.Fatalf("%s: calls = %q, want the account created in example.net", domain, calls)
+		}
+	}
+
+	// A domain alias is not a domain, and a Unicode fold is not ASCII case:
+	// the Kelvin sign folds to k.
+	for _, domain := range []string{"example.com", "\u212aiosk.example.net", "kios\u212a.example.net"} {
+		api = twoDomains()
+		api.domains = append(api.domains, stalwartapi.Domain{ID: "d3", Name: "kiosk.example.net"})
+		in := responseInputs(api, "", nil)
+		in.AccountDomain = domain
+		p = inspect(t, api, in)
+		if s := p.Steps[7]; s.State != Skipped || !strings.Contains(s.Detail, "no domain named") {
+			t.Fatalf("%q: account step = %+v, want Skipped saying there is no such domain", domain, s)
+		}
+		if calls := applyCalls(t, api, p); slices.ContainsFunc(calls, func(c string) bool { return strings.HasPrefix(c, "CreateAccount") }) {
+			t.Fatalf("%q: calls = %q, want no account created", domain, calls)
+		}
+	}
+}
+
+func TestPlanWarnsOnDuplicateResponseAccount(t *testing.T) {
+	api := preparedAPI()
+	api.accounts = append(api.accounts, stalwartapi.Account{ID: "a2", Name: ResponseAccount, Email: "csm-response@example.net"})
+	p := inspect(t, api, responseInputs(api, "a1", nil))
+	s := p.Steps[7]
+	if s.State != Warn || !strings.Contains(s.Detail, "csm-response@example.org") || !strings.Contains(s.Detail, "csm-response@example.net") {
+		t.Fatalf("account step = %+v, want Warn naming both accounts", s)
+	}
+	if p.Steps[8].State != Skipped {
+		t.Fatalf("key step = %+v, want Skipped", p.Steps[8])
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+}
+
+func TestPlanSkipsKeyStepsForRemoteAPI(t *testing.T) {
+	api := responseAPI()
+	in := responseInputs(api, "", nil)
+	in.LocalAPI = false
+	p := inspect(t, api, in)
+	for _, s := range p.Steps[6:] {
+		if s.State != Skipped || !strings.Contains(s.Detail, "not on this host") {
+			t.Fatalf("step = %+v, want Skipped saying the API is not on this host", s)
+		}
+	}
+	if slices.Contains(api.calls, "RoleByDescription") {
+		t.Fatalf("calls = %q, want no response reads", api.calls)
+	}
+}
+
+func TestPlanWarnsWithoutUserRole(t *testing.T) {
+	api := responseAPI()
+	api.roles = nil
+	p := inspect(t, api, responseInputs(api, "", nil))
+	if got, want := responseStates(p), []State{Warn, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	if !strings.Contains(p.Steps[6].Detail, `"User"`) {
+		t.Fatalf("role step = %+v, want the User role named", p.Steps[6])
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+}
+
+// The response steps write no Stalwart setting, so they need no reload; a
+// settings change in the same run still gets one, after every write.
+func TestPlanResponseStepsReloadOnlyForSettings(t *testing.T) {
+	api := responseAPI()
+	api.levels = nil
+	p := inspect(t, api, responseInputs(api, "", nil))
+	calls := applyCalls(t, api, p)
+	if slices.Index(calls, "ReloadSettings") != len(calls)-1 || !slices.Contains(calls, "WriteKey(test-key-1)") {
+		t.Fatalf("calls = %q, want one reload after every write", calls)
+	}
+}
+
+// responseState is the fake's role, account and key state, to show a run
+// changed nothing.
+func responseState(api *fakeAPI) string {
+	return fmt.Sprintf("%+v %+v %+v %+v", api.roles, api.accounts, api.acctRoles, api.keys)
+}
+
+// foreignAccountPlan inspects and applies a plan for an existing csm-response
+// account and checks the account step warns with want, the key step is
+// skipped and nothing was written.
+func foreignAccountPlan(t *testing.T, api *fakeAPI, want string) {
+	t.Helper()
+	before := responseState(api)
+	p := inspect(t, api, responseInputs(api, "", nil))
+	if s := p.Steps[7]; s.State != Warn || !strings.Contains(s.Detail, want) {
+		t.Fatalf("account step = %+v, want Warn saying %q", s, want)
+	}
+	if s := p.Steps[8]; s.State != Skipped {
+		t.Fatalf("key step = %+v, want Skipped", s)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+	if after := responseState(api); after != before {
+		t.Fatalf("state changed:\n%s\n%s", before, after)
+	}
+}
+
+func TestPlanWarnsOnAccountWithSignInStopped(t *testing.T) {
+	api := preparedAPI()
+	api.accounts[0].SignInDisabled = true
+	api.creds = map[string][]string{"a1": {"ApiKey"}}
+	foreignAccountPlan(t, api, "sign-ins are stopped")
+}
+
+func TestPlanWarnsOnAccountWithPassword(t *testing.T) {
+	for name, roles := range map[string][]string{"response role": {"r1"}, "other role": {"u"}} {
+		for _, kind := range []string{"Password", "AppPassword"} {
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				api := preparedAPI()
+				api.acctRoles["a1"] = roles
+				api.creds = map[string][]string{"a1": {"ApiKey", kind}}
+				foreignAccountPlan(t, api, "has a password")
+			})
+		}
+	}
+}
+
+func TestPlanWarnsOnForeignAccountWithKey(t *testing.T) {
+	api := preparedAPI()
+	api.acctRoles["a1"] = []string{"u"}
+	api.creds = map[string][]string{"a1": {"ApiKey"}}
+	foreignAccountPlan(t, api, "CSM did not make")
+}
+
+func TestPlanAdoptsEmptyAccount(t *testing.T) {
+	api := preparedAPI()
+	api.acctRoles["a1"] = []string{"u"}
+	api.keys["a1"] = nil
+	p := inspect(t, api, responseInputs(api, "", nil))
+	if got, want := responseStates(p), []State{Done, Change, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	if calls := applyCalls(t, api, p); len(calls) == 0 || calls[0] != "SetAccountRole(a1,r1)" {
+		t.Fatalf("calls = %q, want the role set first", calls)
+	}
+	if !reflect.DeepEqual(api.acctRoles["a1"], []string{"r1"}) {
+		t.Fatalf("roles = %v, want the response role only", api.acctRoles["a1"])
+	}
+}
+
+// Only keys are safe on CSM's account: any other kind, including one Stalwart
+// adds later or an entry with no kind, may sign in from anywhere.
+func TestPlanWarnsOnUnknownCredentialKind(t *testing.T) {
+	for _, creds := range [][]string{{"ApiKey", "Totp"}, {""}, {"ApiKey", "x\x1b[2J"}} {
+		t.Run(fmt.Sprintf("%q", creds), func(t *testing.T) {
+			api := preparedAPI()
+			api.creds = map[string][]string{"a1": creds}
+			foreignAccountPlan(t, api, "sign-in credential CSM does not know")
+			if d := inspect(t, api, responseInputs(api, "", nil)).Steps[7].Detail; strings.Contains(d, "\x1b") {
+				t.Fatalf("detail %q prints a raw credential kind", d)
+			}
+		})
+	}
+}
+
+// Package callers must not receive the newly created secret on any error.
+func TestReplaceKeyRedactsNewSecret(t *testing.T) {
+	for _, stage := range []string{"write", "list", "delete"} {
+		t.Run(stage, func(t *testing.T) {
+			api := twoKeyAPI()
+			write := func(secret string) error {
+				switch stage {
+				case "write":
+					return errors.New("write failed: " + secret)
+				case "list":
+					api.readErrors = map[string]error{"APIKeys": errors.New("list failed: " + secret)}
+				case "delete":
+					api.writeErr = errors.New("delete failed: " + secret)
+				}
+				return nil
+			}
+			err := replaceKey(context.Background(), api, "a1", write)
+			if err == nil {
+				t.Fatal("failure reported success")
+			}
+			if strings.Contains(err.Error(), "test-key-1") {
+				t.Fatal("replacement error exposed the new secret")
+			}
+		})
+	}
+}
+
+func TestResponseRoleClearsPermissionDenials(t *testing.T) {
+	api := preparedAPI()
+	for i := range api.roles {
+		if api.roles[i].Description == ResponseRole {
+			api.roles[i].Disabled = []string{"authenticate"}
+		}
+	}
+	p := inspect(t, api, responseInputs(api, "a1", nil))
+	if p.Steps[6].State != Change {
+		t.Fatal("role denying sign-in was treated as ready")
+	}
+	if _, err := p.Apply(context.Background(), api); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range api.roles {
+		if r.Description == ResponseRole && len(r.Disabled) != 0 {
+			t.Fatal("role still denies sign-in")
+		}
+	}
+	p = inspect(t, api, responseInputs(api, "a1", nil))
+	if got := responseStates(p); !reflect.DeepEqual(got, []State{Done, Done, Done}) {
+		t.Fatalf("rerun response states = %v, want all done", got)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatal("rerun changed the repaired response role")
 	}
 }

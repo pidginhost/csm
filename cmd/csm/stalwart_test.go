@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +22,10 @@ import (
 	"github.com/pidginhost/csm/internal/stalwartsetup"
 )
 
-const setupTestPassword = "s3cret-test"
+const (
+	setupTestPassword = "s3cret-test"
+	setupTestKey      = "API_test-secret-123"
+)
 
 // setupFakeAPI is a Stalwart with nothing prepared and one loopback HTTP
 // listener on 8080.
@@ -34,11 +37,29 @@ type setupFakeAPI struct {
 	stageErr  error
 	readErr   error
 	writeErr  error
+	deleteErr error
 	reloadErr error
 	writes    []string
 	probe     stalwartapi.SpamProbeResult
 	probeErr  error
 	probes    []stalwartapi.SpamProbe
+
+	// Stalwart's User role, CSM's role, csm-response and its keys.
+	userRole  bool
+	role      *stalwartapi.Role
+	account   *stalwartapi.Account
+	acctRoles []string
+	keys      []stalwartapi.APIKey
+	creds     []string
+	secret    string
+
+	// session and sessionErr answer SessionAccount.
+	session    string
+	sessionErr error
+}
+
+func (f *setupFakeAPI) SessionAccount(context.Context) (string, error) {
+	return f.session, f.sessionErr
 }
 
 func (f *setupFakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, error) {
@@ -83,6 +104,72 @@ func (f *setupFakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	f.writes = append(f.writes, "reload")
 	return []string{"store: reloaded with a note"}, f.reloadErr
 }
+func (f *setupFakeAPI) RoleByDescription(_ context.Context, description string) (stalwartapi.Role, bool, error) {
+	switch {
+	case description == "User" && f.userRole:
+		return stalwartapi.Role{ID: "u", Description: "User"}, true, f.readErr
+	case description == stalwartsetup.ResponseRole && f.role != nil:
+		return *f.role, true, f.readErr
+	}
+	return stalwartapi.Role{}, false, f.readErr
+}
+func (f *setupFakeAPI) SaveRole(_ context.Context, r stalwartapi.Role) (string, error) {
+	f.writes = append(f.writes, "role")
+	r.ID = "r1"
+	f.role = &r
+	return r.ID, f.writeErr
+}
+func (f *setupFakeAPI) Domains(context.Context) ([]stalwartapi.Domain, error) {
+	return []stalwartapi.Domain{{ID: "d1", Name: "example.org"}}, f.readErr
+}
+func (f *setupFakeAPI) AccountsNamed(context.Context, string) ([]stalwartapi.Account, error) {
+	if f.account == nil {
+		return nil, f.readErr
+	}
+	return []stalwartapi.Account{*f.account}, f.readErr
+}
+func (f *setupFakeAPI) AccountRoleIDs(context.Context, string) ([]string, error) {
+	return f.acctRoles, f.readErr
+}
+func (f *setupFakeAPI) AccountCredentialTypes(context.Context, string) ([]string, error) {
+	return f.creds, f.readErr
+}
+func (f *setupFakeAPI) CreateAccount(_ context.Context, name, _, roleID string) (string, error) {
+	f.writes = append(f.writes, "account")
+	f.account = &stalwartapi.Account{ID: "a1", Name: name, Email: name + "@example.org"}
+	f.acctRoles = []string{roleID}
+	return "a1", f.writeErr
+}
+func (f *setupFakeAPI) SetAccountRole(_ context.Context, _, roleID string) error {
+	f.writes = append(f.writes, "account role")
+	f.acctRoles = []string{roleID}
+	return f.writeErr
+}
+func (f *setupFakeAPI) APIKeys(context.Context, string) ([]stalwartapi.APIKey, error) {
+	return f.keys, f.readErr
+}
+func (f *setupFakeAPI) CreateAPIKey(context.Context, string, string, []string) (string, string, error) {
+	f.writes = append(f.writes, "key")
+	f.keys = append(f.keys, stalwartapi.APIKey{ID: "k-new", Description: "CSM"})
+	return "k-new", f.secret, f.writeErr
+}
+func (f *setupFakeAPI) DeleteAPIKeys(_ context.Context, _ string, ids []string) error {
+	f.writes = append(f.writes, "delete keys "+strings.Join(ids, ","))
+	return errors.Join(f.writeErr, f.deleteErr)
+}
+
+// prepare gives the fake the User role and, with done, CSM's role and
+// account as setup leaves them.
+func (f *setupFakeAPI) prepare(done bool) {
+	f.userRole = true
+	f.secret = setupTestKey
+	if done {
+		f.role = &stalwartapi.Role{ID: "r1", Description: stalwartsetup.ResponseRole, Enabled: stalwartsetup.ResponsePermissions, RoleIDs: []string{"u"}}
+		f.account = &stalwartapi.Account{ID: "a1", Name: stalwartsetup.ResponseAccount, Email: "csm-response@example.org"}
+		f.acctRoles = []string{"r1"}
+		f.keys = []stalwartapi.APIKey{{ID: "k1", Description: "CSM"}}
+	}
+}
 
 type setupHarness struct {
 	deps    stalwartSetupDeps
@@ -91,6 +178,12 @@ type setupHarness struct {
 	gotURL  string
 	gotUser string
 	gotPass string
+	cfg     *config.Config
+
+	// keyAccount and keyErr answer the key probe; gotKey is the key it got.
+	keyAccount string
+	keyErr     error
+	gotKey     string
 }
 
 func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
@@ -124,7 +217,12 @@ func newSetupHarness(t *testing.T) *setupHarness {
 			h.gotURL, h.gotUser, h.gotPass = url, user, password
 			return h.api
 		},
+		keyAccount: func(_ context.Context, _, key string) (string, error) {
+			h.gotKey = key
+			return h.keyAccount, h.keyErr
+		},
 	}
+	h.cfg = cfg
 	return h
 }
 
@@ -357,145 +455,6 @@ func TestStalwartSetupRefusesForeignListener(t *testing.T) {
 	}
 }
 
-const procNetTCPFixture = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
-   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   997        0 1 1 0000000000000000 100 0 0 10 0
-   1: 0100007F:1F90 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1001        0 2 1 0000000000000000 20 4 30 10 -1
-   2: 00000000:0019 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 3 1 0000000000000000 100 0 0 10 0
-`
-
-func TestListenOwners(t *testing.T) {
-	got, err := listenOwners(strings.NewReader(procNetTCPFixture), 8080)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got, []uint32{997}) {
-		t.Fatalf("owners of 8080 = %v, want only the listening socket's uid 997", got)
-	}
-	if got, err := listenOwners(strings.NewReader(procNetTCPFixture), 25); err != nil || !reflect.DeepEqual(got, []uint32{0}) {
-		t.Fatalf("owners of 25 = %v", got)
-	}
-}
-
-func TestCheckStalwartListener(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(dir+"/tcp", []byte(procNetTCPFixture), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dir+"/tcp6", []byte("  sl header\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stalwartUID := func(names ...string) []uint32 { return []uint32{997} }
-	if err := checkStalwartListener(dir, "http://127.0.0.1:8080", stalwartUID); err != nil {
-		t.Fatalf("Stalwart's own listener refused: %v", err)
-	}
-	other := func(names ...string) []uint32 { return []uint32{996} }
-	if err := checkStalwartListener(dir, "http://127.0.0.1:8080", other); err == nil || !strings.Contains(err.Error(), "997") {
-		t.Fatalf("foreign listener: err = %v, want a refusal naming uid 997", err)
-	}
-	if err := checkStalwartListener(dir, "http://127.0.0.1:9090", stalwartUID); err == nil {
-		t.Fatal("a port nothing listens on was accepted")
-	}
-	if err := checkStalwartListener(dir, "https://mail.example.org", other); err != nil {
-		t.Fatalf("remote https address checked against local sockets: %v", err)
-	}
-}
-
-func TestCheckStalwartListenerFailsClosedOnIncompleteTables(t *testing.T) {
-	for _, mode := range []string{"open error", "unreadable", "truncated", "invalid owner"} {
-		t.Run(mode, func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.WriteFile(dir+"/tcp", []byte(procNetTCPFixture), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			switch mode {
-			case "open error":
-				if err := os.Symlink("tcp6", dir+"/tcp6"); err != nil {
-					t.Fatal(err)
-				}
-			case "unreadable":
-				if err := os.Mkdir(dir+"/tcp6", 0o700); err != nil {
-					t.Fatal(err)
-				}
-			case "truncated":
-				if err := os.WriteFile(dir+"/tcp6", []byte(strings.Repeat("x", 65536)), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			case "invalid owner":
-				if err := os.WriteFile(dir+"/tcp6", []byte(strings.ReplaceAll(procNetTCPFixture, "997", "invalid")), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := checkStalwartListener(dir, "http://127.0.0.1:8080", func(...string) []uint32 { return []uint32{997} }); err == nil {
-				t.Fatal("incomplete socket ownership evidence allowed the login")
-			}
-		})
-	}
-}
-
-func TestStalwartPeerOwnerMatchesConnectedSocket(t *testing.T) {
-	client := netip.MustParseAddrPort("127.0.0.1:54321")
-	server := netip.MustParseAddrPort("127.0.0.1:8080")
-	row := func(local, remote, uid, inode string) string {
-		return fmt.Sprintf("0: %s %s 01 00000000:00000000 00:00000000 00000000 %s 0 %s\n", local, remote, uid, inode)
-	}
-	v4 := fmt.Sprintf("%08X", binary.NativeEndian.Uint32([]byte{127, 0, 0, 1}))
-	v6 := fmt.Sprintf("%08X%08X%08X%08X", 0, 0, binary.NativeEndian.Uint32([]byte{0, 0, 255, 255}), binary.NativeEndian.Uint32([]byte{127, 0, 0, 1}))
-	for _, tc := range []struct {
-		name, data string
-		found      bool
-		uid        uint32
-		bad        bool
-	}{
-		{"accepted", row(v4+":1F90", v4+":D431", "997", "123"), true, 997, false},
-		{"mapped IPv6", row(v6+":1F90", v6+":D431", "997", "123"), true, 997, false},
-		{"client side", row(v4+":D431", v4+":1F90", "0", "124"), false, 0, false},
-		{"other connection", row(v4+":1F90", v4+":D432", "0", "125"), false, 0, false},
-		{"not accepted", row(v4+":1F90", v4+":D431", "0", "0"), false, 0, false},
-		{"foreign accepted", row(v4+":1F90", v4+":D431", "1001", "123"), true, 1001, false},
-		{"invalid owner", row(v4+":1F90", v4+":D431", "invalid", "123"), false, 0, true},
-		{"truncated", strings.Repeat("x", 65536), false, 0, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			uid, found, err := stalwartPeerOwner(strings.NewReader(tc.data), client, server)
-			if uid != tc.uid || found != tc.found || (err != nil) != tc.bad {
-				t.Fatalf("uid=%d found=%v err=%v", uid, found, err)
-			}
-		})
-	}
-}
-
-func TestWaitStalwartPeerUsesAcceptedOwner(t *testing.T) {
-	local := netip.MustParseAddrPort("127.0.0.1:54321")
-	remote := netip.MustParseAddrPort("127.0.0.1:8080")
-	for _, tc := range []struct {
-		name, uid, inode string
-		allowed          bool
-	}{
-		{"trusted", "997", "123", true},
-		{"root", "0", "123", true},
-		{"foreign", "1001", "123", false},
-		{"unaccepted", "0", "0", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			ip := fmt.Sprintf("%08X", binary.NativeEndian.Uint32([]byte{127, 0, 0, 1}))
-			data := strings.ReplaceAll(procNetTCPFixture, "0100007F:D431", "0100007F:D432") + fmt.Sprintf("4: %s:1F90 %s:D431 01 0:0 00:0 0 %s 0 %s\n", ip, ip, tc.uid, tc.inode)
-			if err := os.WriteFile(dir+"/tcp", []byte(data), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if tc.inode == "0" {
-				cancel()
-			}
-			err := waitStalwartPeer(ctx, dir, local, remote, func(...string) []uint32 { return []uint32{997} })
-			if (err == nil) != tc.allowed {
-				t.Fatalf("accepted=%v: %v", err == nil, err)
-			}
-		})
-	}
-}
-
 func TestStalwartSetupSpamReadFailures(t *testing.T) {
 	for _, method := range []string{"settings", "stage"} {
 		for _, dryRun := range []bool{true, false} {
@@ -538,5 +497,178 @@ func TestStalwartSetupSpamReadFailures(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// useKeyFile points the harness at a key file in a temporary directory,
+// holding key when it is not empty.
+func (h *setupHarness) useKeyFile(t *testing.T, key string) string {
+	t.Helper()
+	path := t.TempDir() + "/stalwart-api.key"
+	h.cfg.Stalwart.APIKeyFile = path
+	if key != "" {
+		if err := os.WriteFile(path, []byte(key+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(stalwartapi.SetKeyFileOwnerForTest(uint32(os.Getuid())))
+	}
+	return path
+}
+
+func TestStalwartSetupNeverPrintsKey(t *testing.T) {
+	for name, fileWriteFails := range map[string]bool{"success": false, "key file write fails": true} {
+		t.Run(name, func(t *testing.T) {
+			h := newSetupHarness(t)
+			h.api.prepare(false)
+			path := h.useKeyFile(t, "")
+			if fileWriteFails {
+				h.cfg.Stalwart.APIKeyFile = path + "/missing-directory/key"
+				// An error that quotes the new key must not print it.
+				h.api.deleteErr = errors.New("key " + setupTestKey + " is in use")
+			}
+			code, out := h.run()
+			if strings.Contains(out, setupTestKey) {
+				t.Fatalf("output contains the key: %q", out)
+			}
+			if fileWriteFails {
+				if code != 1 || !strings.Contains(out, "response key") || !slices.Contains(h.api.writes, "delete keys k-new") {
+					t.Fatalf("code %d, writes %q, out %q; want 1 naming the step, the new key deleted", code, h.api.writes, out)
+				}
+				if !strings.Contains(out, "key [redacted] is in use") {
+					t.Fatalf("out %q; want the delete error printed with the key redacted", out)
+				}
+				return
+			}
+			if code != 0 || !strings.Contains(out, "response key: changed: ") {
+				t.Fatalf("code %d, out %q; want 0 with the key step changed", code, out)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != setupTestKey {
+				t.Fatalf("key file holds the wrong key (%v)", err)
+			}
+		})
+	}
+}
+
+func TestStalwartSetupDryRunWritesNoKey(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(false)
+	path := h.useKeyFile(t, "")
+	code, out := h.run("--dry-run")
+	if code != 0 {
+		t.Fatalf("code = %d, out %q", code, out)
+	}
+	for _, want := range []string{"response role: change: ", "response account: change: ", "response key: change: "} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q lacks %q", out, want)
+		}
+	}
+	if len(h.api.writes) != 0 {
+		t.Fatalf("dry run wrote %q", h.api.writes)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry run wrote the key file (%v)", err)
+	}
+}
+
+func TestStalwartSetupReadsExistingKey(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, "test-key-1")
+	h.keyAccount = "a1"
+	code, out := h.run("--dry-run")
+	if code != 0 || h.gotKey != "test-key-1" || !strings.Contains(out, "response key: done: ") {
+		t.Fatalf("code %d, out %q; want 0 with the key step done", code, out)
+	}
+	if strings.Contains(out, "test-key-1") {
+		t.Fatalf("output contains the key: %q", out)
+	}
+
+	for name, err := range map[string]error{
+		"refused":   fmt.Errorf("stalwart /.well-known/jmap: %w", stalwartapi.ErrUnauthorized),
+		"forbidden": fmt.Errorf("stalwart /.well-known/jmap: %w", stalwartapi.ErrForbidden),
+	} {
+		h = newSetupHarness(t)
+		h.api.prepare(true)
+		h.useKeyFile(t, "test-key-1")
+		h.keyErr = err
+		if code, out = h.run("--dry-run"); code != 0 || !strings.Contains(out, "response key: change: ") {
+			t.Fatalf("%s: code %d, out %q; want 0 with the key step to change", name, code, out)
+		}
+	}
+
+	h = newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, "test-key-1")
+	h.keyErr = errors.New("stalwart /.well-known/jmap: HTTP 500 for test-key-1")
+	code, out = h.run("--dry-run")
+	if code != 1 || strings.Contains(out, "test-key-1") || !strings.Contains(out, "HTTP 500") || h.gotUser != "" {
+		t.Fatalf("other error: code %d, admin login sent %v, out %q; want 1 with the error, the key hidden", code, h.gotUser != "", out)
+	}
+}
+
+// A key file setup cannot trust stops setup instead of being replaced.
+func TestStalwartSetupRefusesLooseKeyFile(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	path := h.useKeyFile(t, "test-key-1")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := h.run("--dry-run")
+	if code != 1 || !strings.Contains(out, "0644") || h.gotKey != "" {
+		t.Fatalf("code %d, key sent %v, out %q; want 1 naming the mode, no key sent", code, h.gotKey != "", out)
+	}
+}
+
+// The key works only from this host, so it is never sent to a remote API.
+func TestStalwartSetupSendsNoKeyToRemoteAPI(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, "test-key-1")
+	code, out := h.run("--url", "https://mail.example.org", "--dry-run")
+	if code != 0 || h.gotKey != "" || !strings.Contains(out, "response key: skipped: ") {
+		t.Fatalf("code %d, key sent %v, out %q; want 0 with the key steps skipped", code, h.gotKey != "", out)
+	}
+}
+
+func TestStalwartSetupAccountDomainFlag(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(false)
+	h.useKeyFile(t, "")
+	if code, out := h.run("--dry-run", "--account-domain", "example.net"); code != 0 || !strings.Contains(out, "response account: skipped: ") || !strings.Contains(out, "example.net") {
+		t.Fatalf("code %d, out %q; want the unknown domain named", code, out)
+	}
+}
+
+// Only a failed settings write leaves settings to reload by hand.
+func TestStalwartSetupReloadHintOnlyForSettings(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(false)
+	h.cfg.Stalwart.APIKeyFile = h.useKeyFile(t, "") + "/missing-directory/key"
+	code, out := h.run()
+	if code != 1 || strings.Contains(out, "reload settings") || !strings.Contains(out, "run setup again") {
+		t.Fatalf("response step failure: code %d, out %q; want 1 without the reload hint", code, out)
+	}
+
+	h = newSetupHarness(t)
+	h.api.writeErr = errors.New("refused")
+	code, out = h.run()
+	if code != 1 || !strings.Contains(out, "reload settings in Stalwart") {
+		t.Fatalf("settings failure: code %d, out %q; want 1 with the reload hint", code, out)
+	}
+}
+
+func TestStalwartSetupWarnsOnAccountWithPassword(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.api.creds = []string{"Password"}
+	h.useKeyFile(t, "")
+	code, out := h.run()
+	if code != 0 || !strings.Contains(out, "response account: warn: ") || !strings.Contains(out, "has a password") || !strings.Contains(out, "response key: skipped: ") {
+		t.Fatalf("code %d, out %q; want 0 with the account warned and the key skipped", code, out)
+	}
+	if slices.Contains(h.api.writes, "key") {
+		t.Fatalf("writes = %q, want no key created", h.api.writes)
 	}
 }

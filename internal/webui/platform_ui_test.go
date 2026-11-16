@@ -73,7 +73,6 @@ func TestHandleEmailRendersWithMail(t *testing.T) {
 var cpanelOnlyEmailIDs = []string{
 	"email-tab-queue", "email-pane-queue", "kpi-queue",
 	"email-tab-held", "email-pane-held",
-	"email-tab-suspended", "email-pane-suspended",
 	"email-tab-forwarders", "email-pane-forwarders",
 	"email-tab-delays", "email-pane-delays",
 	"prot-av", "prot-watcher",
@@ -86,6 +85,10 @@ var anyMailEmailIDs = []string{
 	"email-tab-findings", "email-pane-findings",
 	"kpi-tagged", "kpi-malware", "kpi-other", "kpi-logins", "prot-smtp",
 }
+
+// suspendedEmailIDs need a mail server CSM can suspend mailboxes on:
+// cPanel, or Stalwart through its API.
+var suspendedEmailIDs = []string{"email-tab-suspended", "email-pane-suspended"}
 
 // rspamdEmailIDs describe CSM's own antispam, which a Stalwart host does
 // not run beside its filter.
@@ -116,6 +119,11 @@ func TestEmailPageRendersByFeature(t *testing.T) {
 				t.Errorf("%s: %s rendered without its backend", host.name, id)
 			}
 		}
+		for _, id := range suspendedEmailIDs {
+			if has(out, id) != (host.mta == platform.MTAStalwart) {
+				t.Errorf("%s: %s rendered %v", host.name, id, has(out, id))
+			}
+		}
 		for _, id := range rspamdEmailIDs {
 			if has(out, id) != (host.mta != platform.MTAStalwart) {
 				t.Errorf("%s: %s rendered %v", host.name, id, has(out, id))
@@ -128,7 +136,7 @@ func TestEmailPageRendersByFeature(t *testing.T) {
 
 	setTestPlatform(s, platform.PanelCPanel, platform.MTAExim)
 	out := renderRealPage(t, s, "email")
-	for _, id := range append(append(append([]string{}, anyMailEmailIDs...), cpanelOnlyEmailIDs...), rspamdEmailIDs...) {
+	for _, id := range append(append(append(append([]string{}, anyMailEmailIDs...), cpanelOnlyEmailIDs...), suspendedEmailIDs...), rspamdEmailIDs...) {
 		if !has(out, id) {
 			t.Errorf("cpanel: %s missing", id)
 		}

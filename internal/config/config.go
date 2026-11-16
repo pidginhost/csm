@@ -184,6 +184,8 @@ type StalwartConfig struct {
 	// APIURL is where `csm stalwart setup` and doctor reach Stalwart's
 	// admin API.
 	APIURL string `yaml:"api_url,omitempty"`
+	// APIKeyFile holds the API key the daemon acts on Stalwart with.
+	APIKeyFile string `yaml:"api_key_file,omitempty"`
 }
 
 type Config struct {
@@ -2252,6 +2254,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Stalwart.APIURL == "" {
 		cfg.Stalwart.APIURL = "http://127.0.0.1:8080"
 	}
+	if cfg.Stalwart.APIKeyFile == "" {
+		cfg.Stalwart.APIKeyFile = "/etc/csm/stalwart-api.key"
+	}
 
 	if cfg.Updates.Interval == "" {
 		cfg.Updates.Interval = "24h"
@@ -3071,6 +3076,10 @@ func validateStalwartField(cfg *Config) (string, error) {
 		if err := stalwartapi.ValidateURL(raw); err != nil {
 			return field, fmt.Errorf("%s: %w", field, err)
 		}
+	}
+	if p := cfg.Stalwart.APIKeyFile; p != "" && (!filepath.IsAbs(p) || filepath.Clean(p) != p || p == "/") {
+		const field = "stalwart.api_key_file"
+		return field, fmt.Errorf("%s: %q must be a clean absolute file path", field, p)
 	}
 	return "", nil
 }

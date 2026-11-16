@@ -31,6 +31,7 @@ const (
 // '.'), or a domain whose owning account is held.
 type mailboxCompromise struct {
 	Subject  string
+	Ref      string
 	Check    string
 	Reason   string
 	Evidence compromiseEvidence
@@ -39,7 +40,7 @@ type mailboxCompromise struct {
 }
 
 // mailBackend is the mail server's side of a suspension. suspend fills Kind,
-// Account and Applied; the caller stamps the rest of the record.
+// Account, Ref and Applied; the caller stamps the rest of the record.
 type mailBackend interface {
 	name() string
 	suspend(c mailboxCompromise) (store.MailboxSuspension, error)
@@ -102,6 +103,18 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 
 	backend := activeMailBackend
 	id := store.MailboxSuspensionID(backend.name(), c.Subject)
+	if b, ok := backend.(stalwartMailBackend); ok {
+		var err error
+		c.Ref, err = b.resolve(c.Subject)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not resolve %s: %v\n", stamp, c.Subject, err)
+			if c.Evidence == evidenceLogin {
+				return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{Backend: backend.name()}, err)}
+			}
+			return false, nil
+		}
+		id = stalwartSuspensionID(c.Ref)
+	}
 	unlock := lockMailResponse(id)
 	defer unlock()
 	now = time.Now()
@@ -142,7 +155,7 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not stop %s: %v\n", stamp, c.Subject, err)
 		if c.Evidence == evidenceLogin {
-			return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{}, err)}
+			return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{Backend: backend.name()}, err)}
 		}
 		return false, nil
 	}
@@ -164,6 +177,7 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 		Subject:     c.Subject,
 		Kind:        applied.Kind,
 		Account:     applied.Account,
+		Ref:         applied.Ref,
 		Applied:     applied.Applied,
 		Check:       c.Check,
 		Reason:      c.Reason,
@@ -187,7 +201,7 @@ func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err 
 	mailbox, domain, tenant := splitMailAccount(c.Subject)
 	if rec.Account != "" {
 		tenant = rec.Account
-	} else if tenant == "" && domain != "" {
+	} else if tenant == "" && domain != "" && rec.Backend != "stalwart" {
 		tenant = lookupCPanelUser(domain)
 	}
 	f := alert.Finding{
@@ -208,6 +222,8 @@ func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err 
 	default:
 		f.Message = fmt.Sprintf("Mailbox %s suspended after its password was cracked", c.Subject)
 		switch {
+		case slices.Contains(rec.Applied, store.AppliedDisableSignIn):
+			f.Details = "Sign-ins are stopped, which also stops sending. Sessions that are already open stay open until they end."
 		case !slices.Contains(rec.Applied, store.AppliedSuspendLogin):
 			f.Details = "Only outgoing mail is stopped; logins may still work."
 		case !slices.Contains(rec.Applied, store.AppliedSuspendOutgoing):
@@ -221,7 +237,8 @@ func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err 
 }
 
 // hostHasMailBackend reports whether this host has a mail server CSM can
-// suspend accounts on. var so tests can stand in for a cPanel host.
+// suspend accounts on. selectMailBackend replaces it on a Stalwart host. var
+// so tests can stand in for a cPanel host.
 var hostHasMailBackend = func() bool { return platform.Detect().IsCPanel() }
 
 // stolenLoginResponses suspends the mailbox behind each Critical login after
@@ -233,7 +250,12 @@ func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.
 		if f.Check != "mail_account_compromised" || f.Severity != alert.Critical {
 			continue
 		}
-		subject := loginMailbox(f.Mailbox)
+		subject := f.Mailbox
+		// These spellings belong to cPanel. On Stalwart a bare login
+		// containing '+' or '%' must not name another account's mailbox.
+		if activeMailBackend.name() == "cpanel" {
+			subject = loginMailbox(subject)
+		}
 		if subject == "" || !hostHasMailBackend() {
 			continue
 		}
@@ -280,7 +302,9 @@ type mailboxSuspensionStatus struct {
 
 // listMailboxSuspensions returns every stored suspension with the mail
 // server's live state. One the server no longer applies is marked released
-// outside CSM; one whose state cannot be read stays as it was.
+// outside CSM; one whose state cannot be read stays as it was. Only the
+// backend that made a row can read it: after the host's mail server changes,
+// the other backend's rows show an unknown state.
 func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 	db := store.Global()
 	if db == nil {
@@ -290,16 +314,17 @@ func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	backend := activeMailBackend
 	var open []store.MailboxSuspension
 	for _, r := range rows {
-		if r.ReleasedAt == nil {
+		if r.ReleasedAt == nil && r.Backend == backend.name() {
 			open = append(open, r)
 		}
 	}
 	live := map[string]bool{}
 	if len(open) > 0 {
 		var statusErr error
-		if live, statusErr = activeMailBackend.active(open); statusErr != nil {
+		if live, statusErr = backend.active(open); statusErr != nil {
 			fmt.Fprintf(os.Stderr, "[%s] mailbox suspensions: %v\n", time.Now().Format("2006-01-02 15:04:05"), statusErr)
 		}
 	}

@@ -31,8 +31,8 @@ const (
 )
 
 // stalwartDoctorChecks runs the Stalwart checks: the log checks, what the
-// log shows about client addresses and bans, and Stalwart's settings when an
-// admin login is in the environment.
+// log shows about client addresses and bans, CSM's API key, and Stalwart's
+// settings through that key or an admin login in the environment.
 func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus) []DoctorCheck {
 	mta := platform.DetectMTA()
 	if mta != platform.MTAStalwart {
@@ -53,9 +53,12 @@ func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	newAPI := func(url, user, password string) stalwartDoctorAPI {
-		return stalwartapi.NewWithPeerCheck(url, user, password, checkStalwartPeer)
+		return stalwartapi.NewWithPeerCheck(url, user, password, stalwartapi.CheckPeer)
 	}
-	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, defaultCheckStalwartListener, cfg.Stalwart, in)...)
+	newKeyAPI := func(url, key string) stalwartDoctorAPI {
+		return stalwartapi.NewKey(url, key, stalwartapi.CheckPeer)
+	}
+	return append(out, stalwartSettingsDoctorChecks(ctx, os.Getenv, newAPI, newKeyAPI, stalwartapi.CheckListener, cfg.Stalwart, in)...)
 }
 
 // stalwartLogDoctorCheck reports, on a Stalwart host, whether CSM finds a
@@ -268,49 +271,91 @@ func tailLines(path string, n int, maxBytes int64) ([]string, error) {
 	return lines, nil
 }
 
-// stalwartDoctorAPI is what doctor asks Stalwart: the setup steps, read
-// only, and one spam classification.
+// stalwartDoctorAPI is what doctor asks Stalwart: whose session it is, the
+// setup steps, read only, and one spam classification.
 type stalwartDoctorAPI interface {
 	stalwartsetup.API
+	SessionAccount(context.Context) (string, error)
 	ClassifySpam(context.Context, stalwartapi.SpamProbe) (stalwartapi.SpamProbeResult, error)
 }
 
-// stalwartSettingsDoctorChecks reports each setup step read-only. It needs
-// an admin login, which only the environment supplies.
-func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartDoctorAPI, checkListener func(url string) error, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
+// stalwartSettingsDoctorChecks reports CSM's API key and each setup step,
+// read-only. It logs in with the key when Stalwart accepts it, else with an
+// admin login from the environment.
+func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) string, newAPI func(url, user, password string) stalwartDoctorAPI, newKeyAPI func(url, key string) stalwartDoctorAPI, checkListener func(url string) error, sc config.StalwartConfig, in stalwartsetup.Inputs) (result []DoctorCheck) {
 	user, password := getenv("STALWART_USER"), getenv("STALWART_PASSWORD")
-	if user == "" || password == "" {
-		return []DoctorCheck{{Name: "stalwart settings", Status: "ok",
-			Message: "Not checked; set STALWART_USER and STALWART_PASSWORD to a Stalwart admin login to check Stalwart's settings"}}
-	}
+	var key string
+	redact := func(s string) string { return stalwartapi.Redact(stalwartapi.Redact(s, user, password), "", key) }
 	defer func() {
 		for i := range result {
-			result[i].Name = stalwartapi.Redact(result[i].Name, user, password)
-			result[i].Message = stalwartapi.Redact(result[i].Message, user, password)
-			result[i].Fix = stalwartapi.Redact(result[i].Fix, user, password)
+			result[i].Name = redact(result[i].Name)
+			result[i].Message = redact(result[i].Message)
+			result[i].Fix = redact(result[i].Fix)
 		}
 	}()
 	if err := checkListener(sc.APIURL); err != nil {
 		return []DoctorCheck{{Name: "stalwart settings", Status: "warn",
-			Message: "Not checked; the admin login is not sent to " + sc.APIURL + ": " + err.Error(),
+			Message: "Not checked; CSM sends no login to " + sc.APIURL + ": " + err.Error(),
 			Fix:     "start Stalwart, or find what else listens on its admin port"}}
 	}
-	if !stalwartapi.LocalURL(sc.APIURL) {
+	in.LocalAPI = stalwartapi.LocalURL(sc.APIURL)
+	if !in.LocalAPI {
 		in.LockManaged = false
 		in.LockedPorts = nil
 	}
-	api := newAPI(sc.APIURL, user, password)
+
+	keyCheck := DoctorCheck{Name: "stalwart API key", Status: "ok",
+		Message: "Not checked; Stalwart's API address is not on this host, and CSM's key works only from this host"}
+	var api stalwartDoctorAPI
+	// The key works only from this host, so it is never sent anywhere else.
+	if in.LocalAPI {
+		var keyAPI stalwartDoctorAPI
+		var account string
+		var err error
+		key, account, err = stalwartKeyAccount(ctx, sc.APIKeyFile, sc.APIURL, func(ctx context.Context, url, secret string) (string, error) {
+			keyAPI = newKeyAPI(url, secret)
+			return keyAPI.SessionAccount(ctx)
+		})
+		switch {
+		case err == nil:
+			api, in.KeyAccount = keyAPI, account
+			keyCheck.Message = "Stalwart accepts CSM's API key"
+		case errors.Is(err, stalwartapi.ErrNoKeyFile):
+			keyCheck = DoctorCheck{Name: keyCheck.Name, Status: "warn",
+				Message: "CSM has no API key at " + sc.APIKeyFile + ", so it cannot suspend mailboxes or lift Stalwart's bans",
+				Fix:     "run csm stalwart setup"}
+		case key == "":
+			keyCheck = DoctorCheck{Name: keyCheck.Name, Status: "fail", Message: err.Error()}
+		case errors.Is(err, stalwartapi.ErrUnauthorized), errors.Is(err, stalwartapi.ErrForbidden):
+			keyCheck = DoctorCheck{Name: keyCheck.Name, Status: "fail", Message: "Stalwart refused CSM's API key", Fix: "run csm stalwart setup"}
+		default:
+			keyCheck = DoctorCheck{Name: keyCheck.Name, Status: "warn", Message: "Could not check CSM's API key: " + err.Error()}
+		}
+	}
+	checks := []DoctorCheck{keyCheck}
+
+	fix := "run csm stalwart setup"
+	if api == nil {
+		if user == "" || password == "" {
+			message := "Not checked; set STALWART_USER and STALWART_PASSWORD to a Stalwart admin login to check Stalwart's settings"
+			if in.LocalAPI {
+				message = "Not checked; run csm stalwart setup, or set STALWART_USER and STALWART_PASSWORD to a Stalwart admin login"
+			}
+			return append(checks, DoctorCheck{Name: "stalwart settings", Status: "ok", Message: message})
+		}
+		api = newAPI(sc.APIURL, user, password)
+		fix = "check stalwart.api_url and the admin login"
+	}
 	plan, err := stalwartsetup.Inspect(ctx, api, in)
 	if err != nil {
-		return []DoctorCheck{{Name: "stalwart settings", Status: "warn",
-			Message: "Cannot read Stalwart's settings at " + sc.APIURL + ": " + strings.ReplaceAll(err.Error(), password, "[redacted]"),
-			Fix:     "check stalwart.api_url and the admin login"}}
+		return append(checks, DoctorCheck{Name: "stalwart settings", Status: "warn",
+			Message: "Cannot read Stalwart's settings at " + sc.APIURL + ": " + err.Error(), Fix: fix})
 	}
-	checks := stalwartStepChecks(plan)
+	checks = append(checks, stalwartStepChecks(plan)...)
 	// A filter that is off, or in an unknown state, may make no lookups.
 	for _, st := range plan.Steps {
 		if st.Name == "spam filter" && st.State != stalwartsetup.Warn {
-			checks = append(checks, stalwartBlocklistCheck(ctx, api, user, password))
+			checks = append(checks, stalwartBlocklistCheck(ctx, api, redact))
 		}
 	}
 	return checks
@@ -320,10 +365,10 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 // neither delivers nor learns from. Through a resolver the blocklists refuse,
 // such as a public one, the matched rules include ones named *_BLOCKED. The
 // verdict and score are ignored: the test sender fails SPF and DMARC.
-func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI, user, password string) DoctorCheck {
+func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI, redact func(string) string) DoctorCheck {
 	res, err := api.ClassifySpam(ctx, stalwartapi.BlocklistProbe)
 	if err != nil {
-		return DoctorCheck{Name: "stalwart blocklists", Status: "warn", Message: "Could not test Stalwart's DNS blocklists: " + stalwartDiagnosticText(stalwartapi.Redact(err.Error(), user, password), 512)}
+		return DoctorCheck{Name: "stalwart blocklists", Status: "warn", Message: "Could not test Stalwart's DNS blocklists: " + stalwartDiagnosticText(redact(err.Error()), 512)}
 	}
 	var blocked []string
 	for _, tag := range res.Tags {
@@ -334,7 +379,7 @@ func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI, user, pa
 				blocked = append(blocked, "...")
 				break
 			}
-			blocked = append(blocked, stalwartDiagnosticText(stalwartapi.Redact(tag, user, password), 96))
+			blocked = append(blocked, stalwartDiagnosticText(redact(tag), 96))
 		}
 	}
 	if len(blocked) == 0 {
@@ -374,6 +419,11 @@ func stalwartStepChecks(plan stalwartsetup.Plan) []DoctorCheck {
 			c.Status = "fail"
 		case stalwartsetup.Warn:
 			c.Status = "warn"
+			// The detail names what to clear by hand; setup then finishes
+			// CSM's role, account and key.
+			if strings.HasPrefix(s.Name, "response ") {
+				c.Fix = "run csm stalwart setup"
+			}
 		}
 		checks = append(checks, c)
 	}

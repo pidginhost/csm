@@ -75,8 +75,9 @@ These operations write here today: firewall blocks and unblocks (automatic and
 operator), whole-ruleset changes, file quarantine, surgical file cleaning,
 process termination, mailbox suspension, the account-wide outgoing mail
 hold, and an operator's release of either (`operate.release_mailbox`, one
-record per part undone). A hold record carries the quoted
-`whmapi1 release_outgoing_email` command that lifts it. Everything else appears in the
+record per part undone), and lifting Stalwart's ban of an address unblocked
+in CSM (`operate.clear_stalwart_ban`, one record per ban). A hold record
+carries the quoted `whmapi1 release_outgoing_email` command that lifts it. Everything else appears in the
 daemon log only. The column is the authoritative list. Tests exercise the
 operation paths, including failures and concurrent blocks.
 

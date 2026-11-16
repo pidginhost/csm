@@ -200,7 +200,7 @@ func TestStalwartCloudRelayUsesPTR(t *testing.T) {
 	if len(relay) != 1 || relay[0].SourceIP != "203.0.113.42" {
 		t.Fatalf("findings = %+v, want one cloud-relay finding naming 203.0.113.42", got)
 	}
-	if relay[0].Context != stalwartNoSuspendContext {
+	if relay[0].Context != stalwartNoKeyContext {
 		t.Fatalf("context = %q", relay[0].Context)
 	}
 	if len(*calls) != 0 {
@@ -225,7 +225,7 @@ func TestStalwartBareAccountMarksNoDomain(t *testing.T) {
 	if len(sender) != 1 || sender[0].Severity != alert.Critical {
 		t.Fatalf("findings = %+v, want one Critical sender finding", got)
 	}
-	if sender[0].Context != stalwartNoSuspendContext {
+	if sender[0].Context != stalwartNoKeyContext {
 		t.Fatalf("context = %q", sender[0].Context)
 	}
 	if hasRecentCompromisedFinding("example.org") {

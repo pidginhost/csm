@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -129,13 +130,17 @@ func TestStalwartDoctorSettingsWithoutLogin(t *testing.T) {
 	called := false
 	checks := stalwartSettingsDoctorChecks(context.Background(), func(string) string { return "" },
 		func(string, string, string) stalwartDoctorAPI { called = true; return nil },
+		func(string, string) stalwartDoctorAPI { called = true; return nil },
 		func(string) error { return nil },
-		config.StalwartConfig{APIURL: "http://127.0.0.1:8080"}, stalwartsetup.Inputs{})
-	if len(checks) != 1 || checks[0].Name != "stalwart settings" || checks[0].Status != "ok" {
-		t.Fatalf("checks = %+v, want one ok stalwart settings check", checks)
+		config.StalwartConfig{APIURL: "http://127.0.0.1:8080", APIKeyFile: filepath.Join(t.TempDir(), "stalwart-api.key")}, stalwartsetup.Inputs{})
+	if len(checks) != 2 || checks[0].Name != "stalwart API key" || checks[0].Status != "warn" || checks[1].Name != "stalwart settings" || checks[1].Status != "ok" {
+		t.Fatalf("checks = %+v, want the key warning and one ok stalwart settings check", checks)
 	}
-	if !strings.Contains(checks[0].Message, "STALWART_USER") || !strings.Contains(checks[0].Message, "STALWART_PASSWORD") {
-		t.Fatalf("message %q does not name both variables", checks[0].Message)
+	if !strings.HasPrefix(checks[1].Message, "Not checked; run csm stalwart setup") {
+		t.Fatalf("message %q does not say to run setup", checks[1].Message)
+	}
+	if !strings.Contains(checks[1].Message, "STALWART_USER") || !strings.Contains(checks[1].Message, "STALWART_PASSWORD") {
+		t.Fatalf("message %q does not name both variables", checks[1].Message)
 	}
 	if called {
 		t.Fatal("the API was contacted without a login")
@@ -152,6 +157,9 @@ func TestStalwartDoctorSettingsFromPlan(t *testing.T) {
 					t.Fatalf("login = %q", user)
 				}
 				return api
+			}, func(string, string) stalwartDoctorAPI {
+				t.Fatal("key client built without a key file")
+				return nil
 			}, func(string) error { return nil }, sc, in)
 	}
 	locked := stalwartsetup.Inputs{BlockExpiry: 24 * time.Hour, LockManaged: true, LockedPorts: []int{8080}}
@@ -182,8 +190,11 @@ func TestStalwartDoctorSettingsFromPlan(t *testing.T) {
 
 	api := &setupFakeAPI{readErr: errors.New("dial refused " + setupTestPassword)}
 	checks = run(api, locked)
-	if len(checks) != 1 || checks[0].Status != "warn" || strings.Contains(checks[0].Message, setupTestPassword) {
-		t.Fatalf("read error checks = %+v, want one warn without the password", checks)
+	if len(checks) != 2 || checks[0].Name != "stalwart API key" || checks[1].Name != "stalwart settings" || checks[1].Status != "warn" || strings.Contains(checks[1].Message, setupTestPassword) {
+		t.Fatalf("read error checks = %+v, want the key check and one settings warn without the password", checks)
+	}
+	if checks[1].Fix != "check stalwart.api_url and the admin login" {
+		t.Fatalf("read error fix = %q, want the admin login named", checks[1].Fix)
 	}
 }
 
@@ -236,6 +247,7 @@ func TestStalwartDoctorSettingsRefusesForeignListener(t *testing.T) {
 	called := false
 	checks := stalwartSettingsDoctorChecks(context.Background(), func(k string) string { return env[k] },
 		func(string, string, string) stalwartDoctorAPI { called = true; return nil },
+		func(string, string) stalwartDoctorAPI { called = true; return nil },
 		func(string) error { return errors.New("port 8080 is held by uid 1001") },
 		config.StalwartConfig{APIURL: "http://127.0.0.1:8080"}, stalwartsetup.Inputs{})
 	if called || len(checks) != 1 || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, "uid 1001") {
@@ -259,8 +271,8 @@ func TestStalwartDoctorSpamReadFailureKeepsOtherSteps(t *testing.T) {
 					t.Fatal("doctor exposed the password")
 				}
 			}
-			if len(checks) != 6 || len(h.api.writes) != 0 {
-				t.Fatalf("got %d checks, writes %q; want all six checks and no writes", len(checks), h.api.writes)
+			if len(checks) != 10 || len(h.api.writes) != 0 {
+				t.Fatalf("got %d checks, writes %q; want all ten checks and no writes", len(checks), h.api.writes)
 			}
 			if c := stalwartCheckNamed(t, checks, "stalwart spam filter"); c.Status != "warn" || c.Fix != "" || !strings.Contains(c.Message, "Cannot read") {
 				t.Fatalf("spam filter check = %+v", c)
@@ -272,14 +284,231 @@ func TestStalwartDoctorSpamReadFailureKeepsOtherSteps(t *testing.T) {
 	}
 }
 
-// doctorChecks runs the settings checks against the harness's fake API.
+// doctorChecks runs the settings checks against the harness's fake API. The
+// key client answers the session with keyAccount and keyErr.
 func (h *setupHarness) doctorChecks() []DoctorCheck {
 	cfg, _ := h.deps.loadConfig()
 	newAPI := func(url, user, password string) stalwartDoctorAPI {
 		h.deps.newAPI(url, user, password)
 		return h.api
 	}
-	return stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, newAPI, h.deps.checkListener, cfg.Stalwart, stalwartsetup.Inputs{})
+	newKeyAPI := func(url, key string) stalwartDoctorAPI {
+		h.gotURL, h.gotKey = url, key
+		h.api.session, h.api.sessionErr = h.keyAccount, h.keyErr
+		return h.api
+	}
+	return stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, newAPI, newKeyAPI, h.deps.checkListener, cfg.Stalwart, stalwartsetup.Inputs{})
+}
+
+const doctorTestKey = "test-key-1"
+
+// newDoctorKeyHarness has CSM's role, account and one key in Stalwart, and a
+// key file whose key Stalwart accepts for that account.
+func newDoctorKeyHarness(t *testing.T) *setupHarness {
+	t.Helper()
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, doctorTestKey)
+	h.keyAccount = "a1"
+	return h
+}
+
+func assertNoDoctorKey(t *testing.T, checks []DoctorCheck) {
+	t.Helper()
+	for _, c := range checks {
+		if strings.Contains(c.Name+c.Message+c.Fix, doctorTestKey) {
+			t.Fatalf("check %q exposed the key", c.Name)
+		}
+	}
+}
+
+func TestDoctorUsesKeyBeforeAdminLogin(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	checks := h.doctorChecks()
+	if h.gotKey != doctorTestKey || h.gotURL != "http://127.0.0.1:8080" {
+		t.Fatalf("key client built for %q with the wrong key", h.gotURL)
+	}
+	if h.gotUser != "" {
+		t.Fatal("the admin login was used although the key works")
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart API key"); c.Status != "ok" || c.Message != "Stalwart accepts CSM's API key" || c.Fix != "" {
+		t.Fatalf("key check = %+v, want ok", c)
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart failed-login logging"); c.Status != "warn" || c.Fix != "run csm stalwart setup" {
+		t.Fatalf("settings through the key = %+v, want the step read", c)
+	}
+	assertNoDoctorKey(t, checks)
+}
+
+func TestDoctorKeyStates(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		mutate          func(t *testing.T, h *setupHarness)
+		status, message string
+		fix             string
+		keySent, admin  bool
+	}{
+		{"missing", func(t *testing.T, h *setupHarness) {
+			h.useKeyFile(t, "")
+		}, "warn", "CSM has no API key at ", "run csm stalwart setup", false, true},
+		{"loose mode", func(t *testing.T, h *setupHarness) {
+			if err := os.Chmod(h.cfg.Stalwart.APIKeyFile, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "fail", "mode 0644 is open to group or others", "", false, true},
+		{"refused", func(_ *testing.T, h *setupHarness) {
+			h.keyErr = fmt.Errorf("stalwart /.well-known/jmap: bearer %s: %w", doctorTestKey, stalwartapi.ErrUnauthorized)
+		}, "fail", "Stalwart refused CSM's API key", "run csm stalwart setup", true, true},
+		{"forbidden", func(_ *testing.T, h *setupHarness) {
+			h.keyErr = fmt.Errorf("stalwart /.well-known/jmap: bearer %s: %w", doctorTestKey, stalwartapi.ErrForbidden)
+		}, "fail", "Stalwart refused CSM's API key", "run csm stalwart setup", true, true},
+		{"unreachable", func(_ *testing.T, h *setupHarness) {
+			h.keyErr = errors.New("stalwart /.well-known/jmap: dial tcp 127.0.0.1:8080: connection refused, bearer " + doctorTestKey)
+		}, "warn", "Could not check CSM's API key: stalwart /.well-known/jmap: dial tcp 127.0.0.1:8080: connection refused", "", true, true},
+		{"accepted", func(*testing.T, *setupHarness) {}, "ok", "Stalwart accepts CSM's API key", "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newDoctorKeyHarness(t)
+			tc.mutate(t, h)
+			if tc.keySent {
+				// Server text that echoes the key must not reach the output.
+				h.api.probe.Tags = []string{"DNSWL_BLOCKED_" + doctorTestKey}
+			}
+			checks := h.doctorChecks()
+			assertNoDoctorKey(t, checks)
+			c := stalwartCheckNamed(t, checks, "stalwart API key")
+			if c.Status != tc.status || !strings.Contains(c.Message, tc.message) || c.Fix != tc.fix {
+				t.Fatalf("key check = %+v, want %s with %q and fix %q", c, tc.status, tc.message, tc.fix)
+			}
+			if (h.gotKey != "") != tc.keySent || (h.gotUser != "") != tc.admin {
+				t.Fatalf("key sent %v, admin login sent %v; want %v, %v", h.gotKey != "", h.gotUser != "", tc.keySent, tc.admin)
+			}
+			// Either login reads the settings.
+			stalwartCheckNamed(t, checks, "stalwart failed-login logging")
+		})
+	}
+}
+
+func TestDoctorReportsRoleDrift(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	h.api.role.Enabled = slices.Clone(stalwartsetup.ResponsePermissions[1:])
+	checks := h.doctorChecks()
+	c := stalwartCheckNamed(t, checks, "stalwart response role")
+	if c.Status != "warn" || c.Fix != "run csm stalwart setup" || !strings.Contains(c.Message, "lacks authenticate") {
+		t.Fatalf("role check = %+v, want warn naming the missing permission", c)
+	}
+	if len(h.api.writes) != 0 {
+		t.Fatalf("doctor wrote %q", h.api.writes)
+	}
+}
+
+// A response step setup refuses still ends with a setup run once the operator
+// has cleared what it names; settings steps keep their own fixes.
+func TestDoctorResponseWarnSaysRunSetup(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	h.api.creds = []string{"Password"}
+	h.api.spam.Enabled = false
+	checks := h.doctorChecks()
+	if c := stalwartCheckNamed(t, checks, "stalwart response account"); c.Status != "warn" || c.Fix != "run csm stalwart setup" || !strings.Contains(c.Message, "has a password") {
+		t.Fatalf("account check = %+v, want warn with the setup fix", c)
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart spam filter"); c.Status != "warn" || c.Fix != "" {
+		t.Fatalf("spam filter check = %+v, want warn with no fix", c)
+	}
+}
+
+func TestDoctorFallsBackToAdminLogin(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, "")
+	checks := h.doctorChecks()
+	if h.gotKey != "" || h.gotUser != "admin" || h.gotPass != setupTestPassword {
+		t.Fatalf("key sent %v, admin login %q; want the admin login only", h.gotKey != "", h.gotUser)
+	}
+	// Six settings steps, three response steps, the blocklists and the key.
+	if len(checks) != 11 {
+		t.Fatalf("got %d checks, want 11: %+v", len(checks), checks)
+	}
+	if c := checks[0]; c.Name != "stalwart API key" || c.Status != "warn" || c.Fix != "run csm stalwart setup" {
+		t.Fatalf("first check = %+v, want the key warning", c)
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart response role"); c.Status != "ok" {
+		t.Fatalf("role check = %+v, want ok", c)
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart response key"); c.Status != "warn" || c.Fix != "run csm stalwart setup" || !strings.Contains(c.Message, "holds no working key") {
+		t.Fatalf("key step = %+v, want warn: no working key", c)
+	}
+	stalwartCheckNamed(t, checks, "stalwart blocklists")
+}
+
+func TestDoctorLocalHostShowsTrueResponseSteps(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	checks := h.doctorChecks()
+	for _, name := range []string{"stalwart response role", "stalwart response account", "stalwart response key"} {
+		c := stalwartCheckNamed(t, checks, name)
+		if c.Status != "ok" || strings.Contains(c.Message, "not on this host") {
+			t.Fatalf("%s = %+v, want ok from Stalwart's state", name, c)
+		}
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart response key"); !strings.Contains(c.Message, "holds the only key of csm-response@example.org") {
+		t.Fatalf("key step = %+v, want the key matched to the account", c)
+	}
+}
+
+func TestDoctorSendsNoKeyToRemoteAPI(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	h.cfg.Stalwart.APIURL = "https://mail.example.org"
+	checks := h.doctorChecks()
+	if h.gotKey != "" {
+		t.Fatal("the key was sent to a remote API address")
+	}
+	c := stalwartCheckNamed(t, checks, "stalwart API key")
+	if c.Status != "ok" || c.Message != "Not checked; Stalwart's API address is not on this host, and CSM's key works only from this host" {
+		t.Fatalf("key check = %+v", c)
+	}
+	if h.gotUser != "admin" {
+		t.Fatal("the admin login was not used for a remote API address")
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart response key"); c.Status != "ok" || !strings.Contains(c.Message, "not on this host") {
+		t.Fatalf("key step = %+v, want skipped as not on this host", c)
+	}
+
+	h.env = map[string]string{}
+	checks = h.doctorChecks()
+	if c := stalwartCheckNamed(t, checks, "stalwart settings"); c.Status != "ok" || !strings.Contains(c.Message, "STALWART_USER") || strings.Contains(c.Message, "run csm stalwart setup") {
+		t.Fatalf("settings check = %+v, want the admin login named, not setup", c)
+	}
+}
+
+func TestDoctorSendsNoKeyWhenListenerCheckFails(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	h.deps.checkListener = func(string) error { return errors.New("port 8080 is held by uid 1001") }
+	checks := h.doctorChecks()
+	if h.gotKey != "" || h.gotUser != "" {
+		t.Fatalf("key sent %v, admin login sent %v; want neither", h.gotKey != "", h.gotUser != "")
+	}
+	if len(checks) != 1 || checks[0].Name != "stalwart settings" || checks[0].Status != "warn" || !strings.Contains(checks[0].Message, "uid 1001") {
+		t.Fatalf("checks = %+v, want one warn naming the port's owner", checks)
+	}
+}
+
+func TestDoctorNeverWrites(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(false)
+	path := h.useKeyFile(t, doctorTestKey)
+	h.keyAccount = "a9"
+	checks := h.doctorChecks()
+	for _, name := range []string{"stalwart failed-login logging", "stalwart response role", "stalwart response account", "stalwart response key"} {
+		if c := stalwartCheckNamed(t, checks, name); c.Status != "warn" || c.Fix != "run csm stalwart setup" {
+			t.Fatalf("%s = %+v, want a change left to setup", name, c)
+		}
+	}
+	if len(h.api.writes) != 0 {
+		t.Fatalf("doctor wrote %q", h.api.writes)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != doctorTestKey+"\n" {
+		t.Fatalf("doctor changed the key file (%v)", err)
+	}
 }
 
 func TestStalwartBlocklistCheckWarnsOnBlockedTags(t *testing.T) {

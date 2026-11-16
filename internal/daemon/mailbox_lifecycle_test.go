@@ -17,12 +17,19 @@ import (
 )
 
 type lifecycleBackend struct {
+	// backend is the name the backend reports; empty is cpanel.
+	backend   string
 	suspendFn func(mailboxCompromise) (store.MailboxSuspension, error)
 	releaseFn func(store.MailboxSuspension, string) error
 	activeFn  func([]store.MailboxSuspension) (map[string]bool, error)
 }
 
-func (l lifecycleBackend) name() string { return "cpanel" }
+func (l lifecycleBackend) name() string {
+	if l.backend == "" {
+		return "cpanel"
+	}
+	return l.backend
+}
 func (l lifecycleBackend) suspend(c mailboxCompromise) (store.MailboxSuspension, error) {
 	return l.suspendFn(c)
 }
@@ -552,5 +559,59 @@ func TestLoginResponseFinding_FailureKeepsOwner(t *testing.T) {
 	}
 	if strings.Contains(f.Details, "can still log in and send") {
 		t.Fatalf("unreadable status claimed unrestricted access: %s", f.Details)
+	}
+}
+
+// After the host's mail server changes, the new backend cannot see rows the
+// old one made. It must not mark them released outside CSM.
+func TestMailboxLifecycle_ListAsksEachRowsOwnBackendOnly(t *testing.T) {
+	for _, backend := range []string{"cpanel", "stalwart"} {
+		t.Run(backend, func(t *testing.T) {
+			db := withMailboxStore(t)
+			rows := map[string]store.MailboxSuspension{
+				"cpanel":   cpanelRow("user1@example.com", store.AppliedSuspendLogin),
+				"stalwart": stalwartRow("user2@example.org", "acct2"),
+			}
+			putRows(t, db, rows["cpanel"], rows["stalwart"])
+			var asked []string
+			withLifecycleBackend(t, lifecycleBackend{
+				backend: backend,
+				activeFn: func(recs []store.MailboxSuspension) (map[string]bool, error) {
+					live := map[string]bool{}
+					for _, r := range recs {
+						asked = append(asked, r.ID)
+						live[r.ID] = false
+					}
+					return live, nil
+				},
+			})
+
+			got, err := listMailboxSuspensions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			own, other := rows[backend], rows["cpanel"]
+			if backend == "cpanel" {
+				other = rows["stalwart"]
+			}
+			if !reflect.DeepEqual(asked, []string{own.ID}) {
+				t.Fatalf("backend %s was asked about %v, want only %s", backend, asked, own.ID)
+			}
+			for _, st := range got {
+				switch st.ID {
+				case own.ID:
+					if st.ReleasedBy != releasedOutsideCSM {
+						t.Fatalf("own row = %+v, want released outside CSM", st)
+					}
+				case other.ID:
+					if !st.StatusUnknown || st.Active || st.ReleasedAt != nil {
+						t.Fatalf("other backend's row = %+v, want status unknown", st)
+					}
+				}
+			}
+			if stored := storedRow(t, db, other.ID); stored.ReleasedAt != nil {
+				t.Fatalf("other backend's row was released: %+v", stored)
+			}
+		})
 	}
 }

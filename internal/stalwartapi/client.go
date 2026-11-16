@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,8 +25,16 @@ const maxResponse = 4 << 20
 
 var using = []string{"urn:ietf:params:jmap:core", "urn:stalwart:jmap"}
 
-// ErrUnauthorized means Stalwart refused the admin login.
-var ErrUnauthorized = errors.New("stalwart refused the admin login")
+// ErrUnauthorized means Stalwart refused the login: a wrong password, or a
+// wrong or destroyed key.
+var ErrUnauthorized = errors.New("stalwart refused the login")
+
+// ErrForbidden means Stalwart accepted the login but refused this client
+// address or a suspended owner.
+var ErrForbidden = errors.New("stalwart refused access for this login")
+
+// errNotAcknowledged is a /set answer that leaves a requested write out.
+var errNotAcknowledged = errors.New("write was not acknowledged")
 
 // MethodError is a JMAP method failure, or one failed entry of a set call.
 type MethodError struct {
@@ -41,13 +50,15 @@ func (e *MethodError) Error() string {
 	return fmt.Sprintf("stalwart %s: %s: %s", e.Method, e.Type, e.Description)
 }
 
-// Client talks to one Stalwart server as one admin. Errors name the method
-// and URL path only, never the login.
+// Client talks to one Stalwart server as one admin or one API key. Errors
+// name the method and URL path only, never the login.
 type Client struct {
 	base     string
 	user     string
 	password string
-	hc       *http.Client
+	// bearer sends password as an API key; redaction treats both alike.
+	bearer bool
+	hc     *http.Client
 
 	mu      sync.Mutex
 	account string
@@ -100,7 +111,22 @@ func NewWithPeerCheck(baseURL, user, password string, check func(context.Context
 	return c
 }
 
+// NewKey returns a client that logs in with an API key. check verifies each
+// local TCP peer as in NewWithPeerCheck. The daemon builds one per call, so a
+// local client's own transport keeps no idle connection behind.
+func NewKey(baseURL, key string, check func(context.Context, net.Conn) error) *Client {
+	c := NewWithPeerCheck(baseURL, "", key, check)
+	c.bearer = true
+	if t, ok := c.hc.Transport.(*http.Transport); ok {
+		t.DisableKeepAlives = true
+	}
+	return c
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	if c.bearer && !LocalURL(c.base) {
+		return nil, errors.New("stalwart API keys may only be sent to a loopback address")
+	}
 	if err := ValidateURL(c.base); err != nil {
 		return nil, err
 	}
@@ -112,7 +138,11 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	if err != nil {
 		return nil, fmt.Errorf("stalwart %s: bad API address", path)
 	}
-	req.SetBasicAuth(c.user, c.password)
+	if c.bearer {
+		req.Header.Set("Authorization", "Bearer "+c.password)
+	} else {
+		req.SetBasicAuth(c.user, c.password)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -128,6 +158,9 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, fmt.Errorf("stalwart %s: %w", path, ErrUnauthorized)
 	}
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("stalwart %s: %w", path, ErrForbidden)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("stalwart %s: HTTP %d", path, resp.StatusCode)
 	}
@@ -141,8 +174,9 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 	return data, nil
 }
 
-// accountID reads the admin account id from the session document once.
-func (c *Client) accountID(ctx context.Context) (string, error) {
+// SessionAccount returns the session's primary account id: the admin, or the
+// key's owner. It is read once.
+func (c *Client) SessionAccount(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.account != "" {
@@ -167,9 +201,10 @@ func (c *Client) accountID(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// call sends one method call and returns its response arguments.
+// call sends one method call and returns its response arguments. An
+// accountId in args replaces the session's account.
 func (c *Client) call(ctx context.Context, method string, args map[string]any) (json.RawMessage, error) {
-	account, err := c.accountID(ctx)
+	account, err := c.SessionAccount(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +259,7 @@ func (c *Client) set(ctx context.Context, method string, args map[string]any) (j
 	var res struct {
 		Created      map[string]*struct{}  `json:"created"`
 		Updated      map[string]*struct{}  `json:"updated"`
+		Destroyed    []string              `json:"destroyed"`
 		NotCreated   map[string]setFailure `json:"notCreated"`
 		NotUpdated   map[string]setFailure `json:"notUpdated"`
 		NotDestroyed map[string]setFailure `json:"notDestroyed"`
@@ -240,8 +276,15 @@ func (c *Client) set(ctx context.Context, method string, args map[string]any) (j
 		if requested, ok := args[operation].(map[string]any); ok {
 			for id := range requested {
 				if value, ok := acknowledged[id]; !ok || (operation == "create" && value == nil) {
-					return nil, fmt.Errorf("stalwart %s: write was not acknowledged", method)
+					return nil, fmt.Errorf("stalwart %s: %w", method, errNotAcknowledged)
 				}
+			}
+		}
+	}
+	if requested, ok := args["destroy"].([]string); ok {
+		for _, id := range requested {
+			if !slices.Contains(res.Destroyed, id) {
+				return nil, fmt.Errorf("stalwart %s: %w", method, errNotAcknowledged)
 			}
 		}
 	}
@@ -253,11 +296,40 @@ type setFailure struct {
 	Description string `json:"description"`
 }
 
+// query sends a /query call and returns the matching ids.
+func (c *Client) query(ctx context.Context, method string, filter map[string]any) ([]string, error) {
+	return c.queryArgs(ctx, method, map[string]any{"filter": filter})
+}
+
+// queryArgs sends a /query call with args and returns the ids.
+func (c *Client) queryArgs(ctx context.Context, method string, args map[string]any) ([]string, error) {
+	out, err := c.call(ctx, method, args)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil || res.IDs == nil {
+		return nil, fmt.Errorf("stalwart %s: unexpected response", method)
+	}
+	return res.IDs, nil
+}
+
 // get sends a /get call and decodes its list into dst.
 func (c *Client) get(ctx context.Context, method string, ids []string, dst any) error {
+	return c.getFor(ctx, "", method, ids, dst)
+}
+
+// getFor is get for objects that belong to account. An empty account is the
+// session's.
+func (c *Client) getFor(ctx context.Context, account, method string, ids []string, dst any) error {
 	args := map[string]any{"ids": nil}
 	if ids != nil {
 		args["ids"] = ids
+	}
+	if account != "" {
+		args["accountId"] = account
 	}
 	out, err := c.call(ctx, method, args)
 	if err != nil {

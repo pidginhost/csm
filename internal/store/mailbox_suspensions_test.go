@@ -54,6 +54,24 @@ func TestMailboxSuspensionRoundTrip(t *testing.T) {
 	}
 }
 
+// A Stalwart suspension keeps the account id it was applied to, so a
+// release reaches that account even if another one takes the address.
+func TestMailboxSuspensionRefRoundTrips(t *testing.T) {
+	db := openTestDB(t)
+	want := MailboxSuspension{
+		ID: MailboxSuspensionID("stalwart", "alice@example.com"), Backend: "stalwart", Subject: "alice@example.com",
+		Kind: SuspensionKindMailbox, Ref: "c", Applied: []string{AppliedDisableSignIn},
+		Check: "mail_account_compromised", Reason: "test", SuspendedAt: time.Now().UTC().Truncate(time.Second),
+	}
+	if err := db.PutMailboxSuspension(want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := db.GetMailboxSuspension(want.ID)
+	if err != nil || !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip: ok %v, err %v\n got %+v\nwant %+v", ok, err, got, want)
+	}
+}
+
 func TestListMailboxSuspensionsNewestFirst(t *testing.T) {
 	db := openTestDB(t)
 	base := time.Now().Add(-3 * time.Hour)
