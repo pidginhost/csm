@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,10 @@ import (
 	"github.com/pidginhost/csm/internal/stalwartsetup"
 )
 
-const setupTestPassword = "s3cret-test"
+const (
+	setupTestPassword = "s3cret-test"
+	setupTestKey      = "API_test-secret-123"
+)
 
 // setupFakeAPI is a Stalwart with nothing prepared and one loopback HTTP
 // listener on 8080.
@@ -38,6 +42,14 @@ type setupFakeAPI struct {
 	probe     stalwartapi.SpamProbeResult
 	probeErr  error
 	probes    []stalwartapi.SpamProbe
+
+	// Stalwart's User role, CSM's role, csm-response and its keys.
+	userRole  bool
+	role      *stalwartapi.Role
+	account   *stalwartapi.Account
+	acctRoles []string
+	keys      []stalwartapi.APIKey
+	secret    string
 }
 
 func (f *setupFakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, error) {
@@ -82,6 +94,68 @@ func (f *setupFakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	f.writes = append(f.writes, "reload")
 	return []string{"store: reloaded with a note"}, f.reloadErr
 }
+func (f *setupFakeAPI) RoleByDescription(_ context.Context, description string) (stalwartapi.Role, bool, error) {
+	switch {
+	case description == "User" && f.userRole:
+		return stalwartapi.Role{ID: "u", Description: "User"}, true, f.readErr
+	case description == stalwartsetup.ResponseRole && f.role != nil:
+		return *f.role, true, f.readErr
+	}
+	return stalwartapi.Role{}, false, f.readErr
+}
+func (f *setupFakeAPI) SaveRole(_ context.Context, r stalwartapi.Role) (string, error) {
+	f.writes = append(f.writes, "role")
+	r.ID = "r1"
+	f.role = &r
+	return r.ID, f.writeErr
+}
+func (f *setupFakeAPI) Domains(context.Context) ([]stalwartapi.Domain, error) {
+	return []stalwartapi.Domain{{ID: "d1", Name: "example.org"}}, f.readErr
+}
+func (f *setupFakeAPI) AccountsNamed(context.Context, string) ([]stalwartapi.Account, error) {
+	if f.account == nil {
+		return nil, f.readErr
+	}
+	return []stalwartapi.Account{*f.account}, f.readErr
+}
+func (f *setupFakeAPI) AccountRoleIDs(context.Context, string) ([]string, error) {
+	return f.acctRoles, f.readErr
+}
+func (f *setupFakeAPI) CreateAccount(_ context.Context, name, _, roleID string) (string, error) {
+	f.writes = append(f.writes, "account")
+	f.account = &stalwartapi.Account{ID: "a1", Name: name, Email: name + "@example.org"}
+	f.acctRoles = []string{roleID}
+	return "a1", f.writeErr
+}
+func (f *setupFakeAPI) SetAccountRole(_ context.Context, _, roleID string) error {
+	f.writes = append(f.writes, "account role")
+	f.acctRoles = []string{roleID}
+	return f.writeErr
+}
+func (f *setupFakeAPI) APIKeys(context.Context, string) ([]stalwartapi.APIKey, error) {
+	return f.keys, f.readErr
+}
+func (f *setupFakeAPI) CreateAPIKey(context.Context, string, string, []string) (string, string, error) {
+	f.writes = append(f.writes, "key")
+	f.keys = append(f.keys, stalwartapi.APIKey{ID: "k-new", Description: "CSM"})
+	return "k-new", f.secret, f.writeErr
+}
+func (f *setupFakeAPI) DeleteAPIKeys(_ context.Context, _ string, ids []string) error {
+	f.writes = append(f.writes, "delete keys "+strings.Join(ids, ","))
+	return f.writeErr
+}
+
+// prepare gives the fake the User role and, with done, CSM's role and
+// account as setup leaves them.
+func (f *setupFakeAPI) prepare(done bool) {
+	f.userRole = true
+	f.secret = setupTestKey
+	if done {
+		f.role = &stalwartapi.Role{ID: "r1", Description: stalwartsetup.ResponseRole, Enabled: stalwartsetup.ResponsePermissions, RoleIDs: []string{"u"}}
+		f.account = &stalwartapi.Account{ID: "a1", Name: stalwartsetup.ResponseAccount, Email: "csm-response@example.org"}
+		f.acctRoles = []string{"r1"}
+	}
+}
 
 type setupHarness struct {
 	deps    stalwartSetupDeps
@@ -90,6 +164,12 @@ type setupHarness struct {
 	gotURL  string
 	gotUser string
 	gotPass string
+	cfg     *config.Config
+
+	// keyAccount and keyErr answer the key probe; gotKey is the key it got.
+	keyAccount string
+	keyErr     error
+	gotKey     string
 }
 
 func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
@@ -123,7 +203,12 @@ func newSetupHarness(t *testing.T) *setupHarness {
 			h.gotURL, h.gotUser, h.gotPass = url, user, password
 			return h.api
 		},
+		keyAccount: func(_ context.Context, _, key string) (string, error) {
+			h.gotKey = key
+			return h.keyAccount, h.keyErr
+		},
 	}
+	h.cfg = cfg
 	return h
 }
 
@@ -398,5 +483,141 @@ func TestStalwartSetupSpamReadFailures(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// useKeyFile points the harness at a key file in a temporary directory,
+// holding key when it is not empty.
+func (h *setupHarness) useKeyFile(t *testing.T, key string) string {
+	t.Helper()
+	path := t.TempDir() + "/stalwart-api.key"
+	h.cfg.Stalwart.APIKeyFile = path
+	if key != "" {
+		if err := os.WriteFile(path, []byte(key+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(stalwartapi.SetKeyFileOwnerForTest(uint32(os.Getuid())))
+	}
+	return path
+}
+
+func TestStalwartSetupNeverPrintsKey(t *testing.T) {
+	for name, fileWriteFails := range map[string]bool{"success": false, "key file write fails": true} {
+		t.Run(name, func(t *testing.T) {
+			h := newSetupHarness(t)
+			h.api.prepare(false)
+			path := h.useKeyFile(t, "")
+			if fileWriteFails {
+				h.cfg.Stalwart.APIKeyFile = path + "/missing-directory/key"
+			}
+			code, out := h.run()
+			if strings.Contains(out, setupTestKey) {
+				t.Fatalf("output contains the key: %q", out)
+			}
+			if fileWriteFails {
+				if code != 1 || !strings.Contains(out, "response key") || !slices.Contains(h.api.writes, "delete keys k-new") {
+					t.Fatalf("code %d, writes %q, out %q; want 1 naming the step, the new key deleted", code, h.api.writes, out)
+				}
+				return
+			}
+			if code != 0 || !strings.Contains(out, "response key: changed: ") {
+				t.Fatalf("code %d, out %q; want 0 with the key step changed", code, out)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != setupTestKey {
+				t.Fatalf("key file holds the wrong key (%v)", err)
+			}
+		})
+	}
+}
+
+func TestStalwartSetupDryRunWritesNoKey(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(false)
+	path := h.useKeyFile(t, "")
+	code, out := h.run("--dry-run")
+	if code != 0 {
+		t.Fatalf("code = %d, out %q", code, out)
+	}
+	for _, want := range []string{"response role: change: ", "response account: change: ", "response key: change: "} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q lacks %q", out, want)
+		}
+	}
+	if len(h.api.writes) != 0 {
+		t.Fatalf("dry run wrote %q", h.api.writes)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry run wrote the key file (%v)", err)
+	}
+}
+
+func TestStalwartSetupReadsExistingKey(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, "test-key-1")
+	h.keyAccount = "a1"
+	code, out := h.run("--dry-run")
+	if code != 0 || h.gotKey != "test-key-1" || !strings.Contains(out, "response key: done: ") {
+		t.Fatalf("code %d, out %q; want 0 with the key step done", code, out)
+	}
+	if strings.Contains(out, "test-key-1") {
+		t.Fatalf("output contains the key: %q", out)
+	}
+
+	for name, err := range map[string]error{
+		"refused":   fmt.Errorf("stalwart /.well-known/jmap: %w", stalwartapi.ErrUnauthorized),
+		"forbidden": fmt.Errorf("stalwart /.well-known/jmap: %w", stalwartapi.ErrForbidden),
+	} {
+		h = newSetupHarness(t)
+		h.api.prepare(true)
+		h.useKeyFile(t, "test-key-1")
+		h.keyErr = err
+		if code, out = h.run("--dry-run"); code != 0 || !strings.Contains(out, "response key: change: ") {
+			t.Fatalf("%s: code %d, out %q; want 0 with the key step to change", name, code, out)
+		}
+	}
+
+	h = newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, "test-key-1")
+	h.keyErr = errors.New("stalwart /.well-known/jmap: HTTP 500 for test-key-1")
+	code, out = h.run("--dry-run")
+	if code != 1 || strings.Contains(out, "test-key-1") || !strings.Contains(out, "HTTP 500") || h.gotUser != "" {
+		t.Fatalf("other error: code %d, admin login sent %v, out %q; want 1 with the error, the key hidden", code, h.gotUser != "", out)
+	}
+}
+
+// A key file setup cannot trust stops setup instead of being replaced.
+func TestStalwartSetupRefusesLooseKeyFile(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	path := h.useKeyFile(t, "test-key-1")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := h.run("--dry-run")
+	if code != 1 || !strings.Contains(out, "0644") || h.gotKey != "" {
+		t.Fatalf("code %d, key sent %v, out %q; want 1 naming the mode, no key sent", code, h.gotKey != "", out)
+	}
+}
+
+// The key works only from this host, so it is never sent to a remote API.
+func TestStalwartSetupSendsNoKeyToRemoteAPI(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.useKeyFile(t, "test-key-1")
+	code, out := h.run("--url", "https://mail.example.org", "--dry-run")
+	if code != 0 || h.gotKey != "" || !strings.Contains(out, "response key: skipped: ") {
+		t.Fatalf("code %d, key sent %v, out %q; want 0 with the key steps skipped", code, h.gotKey != "", out)
+	}
+}
+
+func TestStalwartSetupAccountDomainFlag(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(false)
+	h.useKeyFile(t, "")
+	if code, out := h.run("--dry-run", "--account-domain", "example.net"); code != 0 || !strings.Contains(out, "response account: skipped: ") || !strings.Contains(out, "example.net") {
+		t.Fatalf("code %d, out %q; want the unknown domain named", code, out)
 	}
 }

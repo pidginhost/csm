@@ -259,8 +259,8 @@ func TestStalwartDoctorSpamReadFailureKeepsOtherSteps(t *testing.T) {
 					t.Fatal("doctor exposed the password")
 				}
 			}
-			if len(checks) != 6 || len(h.api.writes) != 0 {
-				t.Fatalf("got %d checks, writes %q; want all six checks and no writes", len(checks), h.api.writes)
+			if len(checks) != 9 || len(h.api.writes) != 0 {
+				t.Fatalf("got %d checks, writes %q; want all nine checks and no writes", len(checks), h.api.writes)
 			}
 			if c := stalwartCheckNamed(t, checks, "stalwart spam filter"); c.Status != "warn" || c.Fix != "" || !strings.Contains(c.Message, "Cannot read") {
 				t.Fatalf("spam filter check = %+v", c)

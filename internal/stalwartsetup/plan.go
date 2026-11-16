@@ -4,6 +4,7 @@
 package stalwartsetup
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -28,6 +29,16 @@ type API interface {
 	SpamSettings(ctx context.Context) (stalwartapi.SpamSettings, error)
 	SpamFilterStageOff(ctx context.Context) (bool, error)
 	ReloadSettings(ctx context.Context) ([]string, error)
+	RoleByDescription(ctx context.Context, description string) (stalwartapi.Role, bool, error)
+	SaveRole(ctx context.Context, r stalwartapi.Role) (string, error)
+	Domains(ctx context.Context) ([]stalwartapi.Domain, error)
+	AccountsNamed(ctx context.Context, name string) ([]stalwartapi.Account, error)
+	AccountRoleIDs(ctx context.Context, id string) ([]string, error)
+	CreateAccount(ctx context.Context, name, domainID, roleID string) (string, error)
+	SetAccountRole(ctx context.Context, id, roleID string) error
+	APIKeys(ctx context.Context, accountID string) ([]stalwartapi.APIKey, error)
+	CreateAPIKey(ctx context.Context, accountID, description string, allowedIPs []string) (id, secret string, err error)
+	DeleteAPIKeys(ctx context.Context, accountID string, ids []string) error
 }
 
 // Inputs is what CSM knows about itself.
@@ -40,6 +51,17 @@ type Inputs struct {
 	LockedPorts []int
 	// WebUsers are the web server's users, for the lock line setup suggests.
 	WebUsers []string
+	// LocalAPI is true when the API address is on this host, the only place
+	// CSM's key works from.
+	LocalAPI bool
+	// AccountDomain names the domain for CSM's service account when Stalwart
+	// has several.
+	AccountDomain string
+	// KeyAccount is the account the key in CSM's key file logs in as; empty
+	// when there is no working key.
+	KeyAccount string
+	// WriteKey stores a new key in CSM's key file.
+	WriteKey func(secret string) error
 }
 
 // State is a step's outcome.
@@ -59,6 +81,8 @@ type Step struct {
 	State  State
 	Detail string
 	apply  func(ctx context.Context, api API) error
+	// noReload marks a step that changes no Stalwart setting.
+	noReload bool
 }
 
 // Plan is the setup steps in order.
@@ -72,6 +96,28 @@ const (
 	spamVerdictEvent = "spam.classify"
 	stalwartUser     = "stalwart"
 )
+
+// CSM's role, service account and API key in Stalwart.
+const (
+	ResponseRole    = "CSM response"
+	ResponseAccount = "csm-response"
+	ResponseKey     = "CSM"
+)
+
+// ResponsePermissions are what CSM's key needs beyond the User role: suspend
+// accounts, lift bans, and read every setting setup and doctor read.
+var ResponsePermissions = []string{
+	"authenticate", "sysAccountGet", "sysAccountQuery", "sysAccountUpdate",
+	"sysBlockedIpGet", "sysBlockedIpQuery", "sysBlockedIpDestroy",
+	"sysActionCreate", "actionReloadBlockedIps", "actionClassifySpam",
+	"sysEventTracingLevelGet", "sysEventTracingLevelQuery", "sysHttpGet",
+	"sysSecurityGet", "sysNetworkListenerGet", "sysNetworkListenerQuery",
+	"sysSystemSettingsGet", "sysSpamSettingsGet", "sysMtaStageDataGet",
+	"sysRoleGet", "sysRoleQuery", "sysDomainGet", "sysDomainQuery",
+}
+
+// keyAddresses limit CSM's key to this host.
+var keyAddresses = []string{"127.0.0.1", "::1"}
 
 // ErrNotReloaded means Stalwart stored the settings Apply wrote but did not
 // reload them. A later Inspect reads them as done, so the caller must tell
@@ -104,14 +150,218 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	return Plan{Steps: []Step{
+	response, err := inspectResponse(ctx, api, in)
+	if err != nil {
+		return Plan{}, err
+	}
+	return Plan{Steps: append([]Step{
 		failedLoginStep(levels),
 		clientAddressStep(httpSettings, listeners, in),
 		banExpiryStep(bans, in.BlockExpiry),
 		proxyStep(listeners, proxy),
 		tracingStep("spam verdict logging", spamVerdictEvent, levels, "; rejected and discarded spam is not logged until then"),
 		spamStep,
-	}}, nil
+	}, response...)}, nil
+}
+
+// inspectResponse plans CSM's role, its service account and the account's
+// key. The apply of each later step reads the ids an earlier one creates.
+func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
+	steps := []Step{{Name: "response role"}, {Name: "response account"}, {Name: "response key"}}
+	role, account, key := &steps[0], &steps[1], &steps[2]
+	skip := func(from []Step, why string) []Step {
+		for i := range from {
+			from[i].State, from[i].Detail = Skipped, why
+		}
+		return steps
+	}
+	if !in.LocalAPI {
+		return skip(steps, "Stalwart's API address is not on this host, and CSM's key works only from this host"), nil
+	}
+
+	user, found, err := api.RoleByDescription(ctx, "User")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		role.State = Warn
+		role.Detail = `Stalwart has no role named "User", which CSM's role must include for its key to change user accounts; restore it in Stalwart's admin interface`
+		return skip(steps[1:], "needs CSM's role"), nil
+	}
+	current, haveRole, err := api.RoleByDescription(ctx, ResponseRole)
+	if err != nil {
+		return nil, err
+	}
+	roleID := current.ID
+	var missing []string
+	for _, p := range ResponsePermissions {
+		if !slices.Contains(current.Enabled, p) {
+			missing = append(missing, p)
+		}
+	}
+	if !slices.Contains(current.RoleIDs, user.ID) {
+		missing = append(missing, "the User role")
+	}
+	switch {
+	case !haveRole:
+		role.State, role.Detail = Change, fmt.Sprintf("create role %q with CSM's permissions and the User role", ResponseRole)
+	case len(missing) > 0:
+		role.State, role.Detail = Change, fmt.Sprintf("role %q lacks %s; add them", ResponseRole, strings.Join(missing, ", "))
+	default:
+		role.State, role.Detail = Done, fmt.Sprintf("role %q holds CSM's permissions and the User role", ResponseRole)
+	}
+	if role.State == Change {
+		want := stalwartapi.Role{ID: current.ID, Description: ResponseRole, Enabled: slices.Clone(ResponsePermissions), RoleIDs: []string{user.ID}}
+		role.noReload = true
+		role.apply = func(ctx context.Context, api API) (err error) {
+			roleID, err = api.SaveRole(ctx, want)
+			return err
+		}
+	}
+
+	accounts, err := api.AccountsNamed(ctx, ResponseAccount)
+	if err != nil {
+		return nil, err
+	}
+	accountID, name := "", ""
+	switch len(accounts) {
+	case 0:
+		domain, why, err := responseDomain(ctx, api, in.AccountDomain)
+		if err != nil {
+			return nil, err
+		}
+		if why != "" {
+			account.State, account.Detail = Skipped, why
+			return skip(steps[2:], "needs CSM's service account"), nil
+		}
+		name = ResponseAccount + "@" + domain.Name
+		account.State = Change
+		account.Detail = fmt.Sprintf("create account %s with only CSM's role and no password; it can receive mail at that address", name)
+		account.noReload = true
+		account.apply = func(ctx context.Context, api API) (err error) {
+			accountID, err = api.CreateAccount(ctx, ResponseAccount, domain.ID, roleID)
+			return err
+		}
+	case 1:
+		a := accounts[0]
+		accountID, name = a.ID, cmp.Or(a.Email, a.Name)
+		roles, err := api.AccountRoleIDs(ctx, a.ID)
+		if err != nil {
+			return nil, err
+		}
+		if haveRole && slices.Equal(roles, []string{current.ID}) {
+			account.State, account.Detail = Done, name+" holds only CSM's role"
+			break
+		}
+		account.State, account.Detail = Change, name+" must hold only CSM's role; set it"
+		account.noReload = true
+		account.apply = func(ctx context.Context, api API) error {
+			return api.SetAccountRole(ctx, a.ID, roleID)
+		}
+	default:
+		names := make([]string, len(accounts))
+		for i, a := range accounts {
+			names[i] = cmp.Or(a.Email, a.Name)
+		}
+		account.State = Warn
+		account.Detail = fmt.Sprintf("%d accounts are named %s (%s); CSM needs exactly one, so delete the others in Stalwart's admin interface",
+			len(accounts), ResponseAccount, strings.Join(names, ", "))
+		return skip(steps[2:], "needs exactly one service account"), nil
+	}
+
+	if accountID != "" && in.KeyAccount == accountID {
+		key.State, key.Detail = Done, "CSM's key file holds a working key of "+name
+		return steps, nil
+	}
+	key.State = Change
+	key.Detail = "CSM's key file holds no working key"
+	if in.KeyAccount != "" {
+		key.Detail = "the key in CSM's key file belongs to another account"
+	}
+	key.Detail += fmt.Sprintf("; create a key of %s that works only from this host, store it in the key file and delete the account's other keys", name)
+	key.noReload = true
+	writeKey := in.WriteKey
+	key.apply = func(ctx context.Context, api API) error {
+		return replaceKey(ctx, api, accountID, writeKey)
+	}
+	return steps, nil
+}
+
+// responseDomain picks the domain for CSM's service account. why says what
+// is missing when there is no single choice.
+func responseDomain(ctx context.Context, api API, want string) (d stalwartapi.Domain, why string, err error) {
+	domains, err := api.Domains(ctx)
+	if err != nil {
+		return d, "", err
+	}
+	if want != "" {
+		// Aliases do not count: the account's address is in the domain itself.
+		for _, d := range domains {
+			if asciiEqualFold(d.Name, want) {
+				return d, "", nil
+			}
+		}
+		return d, fmt.Sprintf("Stalwart has no domain named %s; name one of its domains with --account-domain", want), nil
+	}
+	switch len(domains) {
+	case 0:
+		return d, "Stalwart has no domain for CSM's service account; add one first", nil
+	case 1:
+		return domains[0], "", nil
+	}
+	return d, fmt.Sprintf("Stalwart has %d domains; choose the one for CSM's service account with --account-domain NAME", len(domains)), nil
+}
+
+// asciiEqualFold ignores ASCII case only: a Unicode fold maps other letters,
+// such as the Kelvin sign, onto ASCII ones.
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	lower := func(c byte) byte {
+		if 'A' <= c && c <= 'Z' {
+			return c + 'a' - 'A'
+		}
+		return c
+	}
+	for i := 0; i < len(a); i++ {
+		if lower(a[i]) != lower(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// replaceKey creates a key of the account, stores it, then deletes the
+// account's other keys. A key that could not be stored is deleted again, so
+// the old key keeps working. The secret goes to write and nowhere else.
+func replaceKey(ctx context.Context, api API, accountID string, write func(string) error) error {
+	id, secret, err := api.CreateAPIKey(ctx, accountID, ResponseKey, keyAddresses)
+	if err != nil {
+		return err
+	}
+	if err = write(secret); err != nil {
+		if delErr := api.DeleteAPIKeys(ctx, accountID, []string{id}); delErr != nil {
+			return errors.Join(err, fmt.Errorf("deleting the key that was not stored: %w", delErr))
+		}
+		return err
+	}
+	keys, err := api.APIKeys(ctx, accountID)
+	if err == nil {
+		var old []string
+		for _, k := range keys {
+			if k.ID != id {
+				old = append(old, k.ID)
+			}
+		}
+		if len(old) > 0 {
+			err = api.DeleteAPIKeys(ctx, accountID, old)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("the new key is stored and works, but the account's older keys remain; delete them in Stalwart's admin interface: %w", err)
+	}
+	return nil
 }
 
 func inspectSpamFilter(ctx context.Context, api API) (Step, error) {
@@ -147,7 +397,9 @@ func (p *Plan) Apply(ctx context.Context, api API) ([]string, error) {
 			failed = fmt.Errorf("%s: %w", s.Name, err)
 			break
 		}
-		p.pendingReload = true
+		if !s.noReload {
+			p.pendingReload = true
+		}
 		s.apply = nil
 	}
 	if !p.pendingReload {

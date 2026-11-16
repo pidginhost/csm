@@ -25,6 +25,10 @@ func (c *Client) APIKeys(ctx context.Context, accountID string) ([]APIKey, error
 // from allowedIPs. Stalwart returns the secret once, here.
 func (c *Client) CreateAPIKey(ctx context.Context, accountID, description string, allowedIPs []string) (id, secret string, err error) {
 	const method = "x:ApiKey/set"
+	// An empty list may leave the key without an address limit.
+	if len(allowedIPs) == 0 {
+		return "", "", fmt.Errorf("stalwart %s: an API key needs at least one allowed address", method)
+	}
 	out, err := c.set(ctx, method, map[string]any{
 		"accountId": accountID,
 		"create": map[string]any{"k": map[string]any{

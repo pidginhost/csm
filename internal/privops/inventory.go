@@ -919,11 +919,11 @@ var operations = []Op{
 		Risk:             RiskReversible,
 		RecoveryGap:      "Setup prints the previous values; undoing a change is done by hand in Stalwart's admin interface.",
 		Subsystem:        "operator commands",
-		Summary:          "prepare Stalwart through its admin API: log failed logins, log rejected spam, trust the webmail client address behind CSM's port lock, and match ban length to CSM's blocks",
+		Summary:          "prepare Stalwart through its admin API: log failed logins, log rejected spam, trust the webmail client address behind CSM's port lock, match ban length to CSM's blocks, and create the role, service account and API key CSM acts through",
 		Privileges:       []Privilege{Root},
 		Trigger:          Operator,
 		Unsandboxed:      true,
-		Writes:           []string{"stalwart:failed-login and spam-verdict log levels, HTTP client address source, ban periods, settings reload"},
+		Writes:           []string{"stalwart:failed-login and spam-verdict log levels, HTTP client address source, ban periods, settings reload", "stalwart:response role, service account and API key", "/etc/csm/stalwart-api.key"},
 		WithoutPrivilege: "Stalwart is prepared by hand in its admin interface",
 	},
 	{

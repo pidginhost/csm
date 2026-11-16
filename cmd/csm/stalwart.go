@@ -20,7 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/stalwartsetup"
 )
 
-const stalwartSetupUsage = "usage: csm stalwart setup [--dry-run] [--password-file PATH] [--url URL]"
+const stalwartSetupUsage = "usage: csm stalwart setup [--dry-run] [--password-file PATH] [--url URL] [--account-domain NAME]"
 
 // stalwartSetupDeps is what `csm stalwart setup` reads from the host.
 type stalwartSetupDeps struct {
@@ -34,6 +34,8 @@ type stalwartSetupDeps struct {
 	// listening on.
 	checkListener func(url string) error
 	newAPI        func(url, user, password string) stalwartsetup.API
+	// keyAccount returns the account an API key logs in as.
+	keyAccount func(ctx context.Context, url, key string) (string, error)
 }
 
 func defaultStalwartSetupDeps() stalwartSetupDeps {
@@ -47,6 +49,9 @@ func defaultStalwartSetupDeps() stalwartSetupDeps {
 		checkListener: stalwartapi.CheckListener,
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			return stalwartapi.NewWithPeerCheck(url, user, password, stalwartapi.CheckPeer)
+		},
+		keyAccount: func(ctx context.Context, url, key string) (string, error) {
+			return stalwartapi.NewKey(url, key, stalwartapi.CheckPeer).SessionAccount(ctx)
 		},
 	}
 }
@@ -64,15 +69,24 @@ func runStalwart() {
 // failed, and 2 on a usage, login or host error.
 func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int {
 	user, password := deps.getenv("STALWART_USER"), deps.getenv("STALWART_PASSWORD")
+	// keys are the API key in the key file and any key setup creates.
+	var keys []string
 	var output bytes.Buffer
 	destination := out
 	out = &output
-	defer func() { _, _ = io.WriteString(destination, stalwartapi.Redact(output.String(), user, password)) }()
+	defer func() {
+		text := stalwartapi.Redact(output.String(), user, password)
+		for _, k := range keys {
+			text = stalwartapi.Redact(text, "", k)
+		}
+		_, _ = io.WriteString(destination, text)
+	}()
 	fs := flag.NewFlagSet("csm stalwart setup", flag.ContinueOnError)
 	fs.SetOutput(out)
 	dryRun := fs.Bool("dry-run", false, "show what would change and change nothing")
 	passwordFile := fs.String("password-file", "", "read the admin password from the first line of this file")
 	apiURL := fs.String("url", "", "Stalwart admin API address (default: stalwart.api_url)")
+	accountDomain := fs.String("account-domain", "", "domain for CSM's service account when Stalwart has several")
 	var discard string
 	fs.StringVar(&discard, "config", "", "config file path")
 	fs.StringVar(&discard, "config-dir", "", "conf.d directory")
@@ -128,13 +142,35 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 		return 2
 	}
 	in := stalwartSetupInputs(cfg, deps)
-	if !stalwartapi.LocalURL(url) {
+	in.LocalAPI = stalwartapi.LocalURL(url)
+	if !in.LocalAPI {
 		in.LockManaged = false
 		in.LockedPorts = nil
+	}
+	in.AccountDomain = *accountDomain
+	in.WriteKey = func(secret string) error {
+		keys = append(keys, secret)
+		return stalwartapi.WriteKeyFile(cfg.Stalwart.APIKeyFile, secret)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// The key works only from this host, so it is never sent anywhere else.
+	if in.LocalAPI {
+		key, keyErr := stalwartapi.ReadKeyFile(cfg.Stalwart.APIKeyFile)
+		if keyErr == nil {
+			keys = append(keys, key)
+			in.KeyAccount, keyErr = deps.keyAccount(ctx, url, key)
+		}
+		switch {
+		case errors.Is(keyErr, stalwartapi.ErrNoKeyFile), errors.Is(keyErr, stalwartapi.ErrUnauthorized), errors.Is(keyErr, stalwartapi.ErrForbidden):
+			// Setup replaces a missing or refused key.
+			in.KeyAccount = ""
+		case keyErr != nil:
+			fmt.Fprintf(out, "Cannot check CSM's Stalwart API key: %s\n", redact(keyErr.Error()))
+			return 1
+		}
+	}
 	api := deps.newAPI(url, user, password)
 	plan, err := stalwartsetup.Inspect(ctx, api, in)
 	if errors.Is(err, stalwartapi.ErrUnauthorized) {

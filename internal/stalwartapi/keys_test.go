@@ -85,3 +85,17 @@ func TestCreateAPIKeyReturnsSecretOnce(t *testing.T) {
 		}
 	}
 }
+
+// An empty address list may mean a key that works from anywhere.
+func TestCreateAPIKeyRefusesNoAllowedAddress(t *testing.T) {
+	f := newFake(t)
+	c := f.keyClient()
+	for _, ips := range [][]string{nil, {}} {
+		if _, _, err := c.CreateAPIKey(context.Background(), "d", "CSM", ips); err == nil {
+			t.Fatalf("CreateAPIKey(%q) = nil error, want a refusal", ips)
+		}
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("calls = %q, want none", f.methods())
+	}
+}
