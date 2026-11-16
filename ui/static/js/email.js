@@ -2132,7 +2132,7 @@
     // Mailboxes and accounts CSM suspended, with the mail server's live state
     // and a Release button. Names, reasons and actors come from mail logs, so
     // every value is set as text.
-    var SUSPENDED_PARTS = { suspend_login: 'logins', suspend_outgoing: 'outgoing', hold_outgoing: 'account hold' };
+    var SUSPENDED_PARTS = { suspend_login: 'logins', suspend_outgoing: 'outgoing', hold_outgoing: 'account hold', disable_signin: 'sign-ins' };
     var _suspendedSeq = 0;
     var _suspendedBusy = Object.create(null);
 

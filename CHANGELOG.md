@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Added
+
+- On Stalwart hosts CSM now suspends a hacked mailbox's sign-ins, listed with Release on the Email page. Run `csm stalwart setup` once to enable it.
+
 ### Fixed
 
 - Saving attack records after a burst of new or dropped addresses no longer takes minutes on slow disks, which had delayed shutdown and `csm threat forget`.

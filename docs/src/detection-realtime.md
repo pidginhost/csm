@@ -588,7 +588,7 @@ Signals:
 | `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern, or spray detection in observe mode matched an IMAP/POP source. The spray message names IMAP/POP and the rule | Visibility finding only. No auto-block |
 | `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
-| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on two or more mailboxes including another one, or on a missing one, or repeated failures on the same mailbox, the first at least an hour before the login | Critical findings block immediately and, under auto-response on cPanel, suspend the mailbox (a cPanel account's own login holds the account's outgoing mail instead). A source with established history on at least two other mailboxes from before its current untrusted failures emits a High advisory and is not auto-blocked. A login after failures on other mailboxes is Critical only in enforce mode when one of them was a missing mailbox many networks tried; every other spray case is a High advisory |
+| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on two or more mailboxes including another one, or on a missing one, or repeated failures on the same mailbox, the first at least an hour before the login | Critical findings block immediately and, under auto-response on cPanel or on Stalwart with its API key, suspend the mailbox (a cPanel account's own login holds the account's outgoing mail instead). A source with established history on at least two other mailboxes from before its current untrusted failures emits a High advisory and is not auto-blocked. A login after failures on other mailboxes is Critical only in enforce mode when one of them was a missing mailbox many networks tried; every other spray case is a High advisory |
 
 Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Established good sources with a confined stale-password pattern emit `mail_bruteforce_suspected` instead of an IP block, while wider spraying and compromise from a source without established multi-mailbox history still block. A compromise from an IP with established history on at least two other mailboxes from before its current untrusted failures remains visible as a High advisory but does not feed direct, incident, or spray auto-blocking. The `mail_bruteforce` and `mail_bruteforce_suspected` alerts name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so a real attack on a live mailbox is easy to tell apart from dictionary noise.
 
@@ -649,10 +649,16 @@ Setup also reports listeners that accept the PROXY protocol, which it does not c
 
 Known limits:
 
-- CSM does not suspend Stalwart mailboxes. Compromise findings say so, and the address blocks still apply.
+- Suspending a Stalwart mailbox stops new sign-ins only. Sessions that are already open stay open until they end.
 - Webmail logins appear in Stalwart's log from the proxy address, so a webmail login after failures is not detected as a compromise.
 - Sends through webmail or JMAP are not tied to an account, because one proxy connection can carry several users, so the send checks do not see them.
 - A listener behind PROXY protocol logs the client address, not the connecting peer. CSM cannot tell such listeners apart from the log alone.
+
+### Suspending Stalwart mailboxes
+
+With the API key that `csm stalwart setup` writes, CSM suspends a hacked Stalwart mailbox under the auto-response and dry-run settings, as on cPanel: after a Critical `mail_account_compromised`, `email_compromised_account` or `email_cloud_relay_abuse` finding it stops the account's sign-ins through Stalwart's API. That also stops it sending. The mailbox is listed on the Email page, Suspended tab, where Release allows sign-ins again on the same account. Release does not change the password. Sign-ins someone else had already stopped are left alone and not listed.
+
+CSM does not suspend admin accounts, accounts its key may not change, or account names without a domain. The finding then asks staff to change the password in Stalwart. Without the key file nothing is suspended, and compromise findings say the mailbox stays active. Address blocks apply either way.
 
 ## Admin-Panel Brute-Force Tracker
 

@@ -4332,6 +4332,14 @@ test('Suspended lists each suspension with its owner account and keeps server te
     assert.equal(link.getAttribute('href'), '/findings?check=email_spam_outbreak');
 });
 
+test('a Stalwart suspension says sign-ins were stopped and names no cPanel account', async () => {
+    const page = await suspendedPage([suspension(SID[0], { backend: 'stalwart', account: '', ref: 'c', applied: ['disable_signin'] })]);
+    const row = suspendedRow(page, SID[0]);
+    const applied = row.querySelector('[data-label="Applied"]');
+    assert.equal(applied.textContent, 'sign-ins');
+    assert.ok(!row.textContent.includes('cPanel account'), 'a Stalwart row named a cPanel account');
+});
+
 test('releasing a suspended mailbox asks, posts with the CSRF header and reads the list again', async () => {
     const page = await suspendedPage([suspension(SID[0])]);
     const asked = stubConfirm(page);

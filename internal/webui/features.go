@@ -29,7 +29,7 @@ func uiFeatures(info platform.Info, mta platform.MTAKind) map[string]bool {
 		"mailHeld":        cp,
 		"mailForwarders":  cp,
 		"mailDeferrals":   cp,
-		"mailSuspensions": cp,
+		"mailSuspensions": cp || mta == platform.MTAStalwart,
 		"emailAV":         cp,
 		"cphulk":          info.IsCPanel(),
 		"stalwartFilter":  mta == platform.MTAStalwart,

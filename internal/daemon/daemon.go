@@ -920,6 +920,10 @@ func (d *Daemon) Run() error {
 	// Loaded before anything can respond to or report a file.
 	checks.LoadRemovedFiles(d.cfg.StatePath)
 
+	// The dispatcher, the log watchers and the web UI all act through the
+	// mail backend, so it is chosen before any of them starts.
+	selectMailBackend(d.currentCfg)
+
 	// Start the alert dispatcher before any producer, held until the baseline
 	// scan below has published. Producers send non-blocking, so a dispatcher
 	// that started only after the baseline silently lost every realtime

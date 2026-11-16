@@ -338,19 +338,21 @@ func senderProfileObserve(cfg *config.Config, user, ip string, recipients []stri
 // respondToMailboxCompromise suspends the abused credential and marks its
 // domain so rate alerts stay quiet while the response settles. The domain
 // marker is correlation state, not an auto-response action, so it is kept
-// even when the suspension is disabled or dry-run gated.
-func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason string, at time.Time) {
+// even when the suspension is disabled or dry-run gated. It returns true when
+// sending from the mailbox was stopped.
+func respondToMailboxCompromise(cfg *config.Config, authUser, check, reason string, at time.Time) (stopped bool) {
 	domain := extractDomainFromEmail(authUser)
 	if domain == "" {
-		return
+		return false
 	}
 	if hostHasMailBackend() {
-		maybeSuspendMailbox(cfg, authUser, check, reason, at)
+		stopped = maybeSuspendMailbox(cfg, authUser, check, reason, at)
 	} else {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: no mailbox suspension on this mail server; %s left active\n",
 			time.Now().Format("2006-01-02 15:04:05"), authUser)
 	}
 	RecordCompromisedDomain(domain)
+	return stopped
 }
 
 // forgetSenderEvidence drops a released mailbox's sending evidence: its

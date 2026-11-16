@@ -46,7 +46,7 @@ func TestUIFeaturesByPlatform(t *testing.T) {
 		{"plesk postfix", platform.PanelPlesk, platform.MTAPostfix, []string{"mail"}},
 		{"directadmin exim", platform.PanelDA, platform.MTAExim, []string{"mail"}},
 		{"bare exim", platform.PanelNone, platform.MTAExim, []string{"mail"}},
-		{"bare stalwart", platform.PanelNone, platform.MTAStalwart, []string{"mail", "stalwartFilter"}},
+		{"bare stalwart", platform.PanelNone, platform.MTAStalwart, []string{"mail", "mailSuspensions", "stalwartFilter"}},
 		{"bare no mta", platform.PanelNone, platform.MTAUnknown, nil},
 	}
 	for _, c := range cases {
@@ -65,6 +65,21 @@ func TestUIFeaturesByPlatform(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// CSM suspends Stalwart mailboxes through its API, on any panel but cPanel,
+// which keeps its own backend.
+func TestUIFeaturesStalwartSuspensions(t *testing.T) {
+	for _, panel := range []platform.Panel{platform.PanelNone, platform.PanelPlesk, platform.PanelDA} {
+		if !uiFeatures(platform.Info{Panel: panel}, platform.MTAStalwart)["mailSuspensions"] {
+			t.Errorf("%q with Stalwart: no Suspended tab", panel)
+		}
+	}
+	for _, mta := range []platform.MTAKind{platform.MTAPostfix, platform.MTAExim, platform.MTAUnknown} {
+		if uiFeatures(platform.Info{Panel: platform.PanelNone}, mta)["mailSuspensions"] {
+			t.Errorf("%q without cPanel: Suspended tab shown", mta)
+		}
 	}
 }
 

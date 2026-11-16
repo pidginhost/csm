@@ -39,7 +39,7 @@ type mailboxCompromise struct {
 }
 
 // mailBackend is the mail server's side of a suspension. suspend fills Kind,
-// Account and Applied; the caller stamps the rest of the record.
+// Account, Ref and Applied; the caller stamps the rest of the record.
 type mailBackend interface {
 	name() string
 	suspend(c mailboxCompromise) (store.MailboxSuspension, error)
@@ -142,7 +142,7 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not stop %s: %v\n", stamp, c.Subject, err)
 		if c.Evidence == evidenceLogin {
-			return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{}, err)}
+			return false, []alert.Finding{loginResponseFinding(c, store.MailboxSuspension{Backend: backend.name()}, err)}
 		}
 		return false, nil
 	}
@@ -164,6 +164,7 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 		Subject:     c.Subject,
 		Kind:        applied.Kind,
 		Account:     applied.Account,
+		Ref:         applied.Ref,
 		Applied:     applied.Applied,
 		Check:       c.Check,
 		Reason:      c.Reason,
@@ -187,7 +188,7 @@ func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err 
 	mailbox, domain, tenant := splitMailAccount(c.Subject)
 	if rec.Account != "" {
 		tenant = rec.Account
-	} else if tenant == "" && domain != "" {
+	} else if tenant == "" && domain != "" && rec.Backend != "stalwart" {
 		tenant = lookupCPanelUser(domain)
 	}
 	f := alert.Finding{
@@ -208,6 +209,8 @@ func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err 
 	default:
 		f.Message = fmt.Sprintf("Mailbox %s suspended after its password was cracked", c.Subject)
 		switch {
+		case slices.Contains(rec.Applied, store.AppliedDisableSignIn):
+			f.Details = "Sign-ins are stopped, which also stops sending. Sessions that are already open stay open until they end."
 		case !slices.Contains(rec.Applied, store.AppliedSuspendLogin):
 			f.Details = "Only outgoing mail is stopped; logins may still work."
 		case !slices.Contains(rec.Applied, store.AppliedSuspendOutgoing):
@@ -221,7 +224,8 @@ func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err 
 }
 
 // hostHasMailBackend reports whether this host has a mail server CSM can
-// suspend accounts on. var so tests can stand in for a cPanel host.
+// suspend accounts on. selectMailBackend replaces it on a Stalwart host. var
+// so tests can stand in for a cPanel host.
 var hostHasMailBackend = func() bool { return platform.Detect().IsCPanel() }
 
 // stolenLoginResponses suspends the mailbox behind each Critical login after

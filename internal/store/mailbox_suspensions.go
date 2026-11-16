@@ -21,6 +21,7 @@ const (
 	AppliedSuspendLogin    = "suspend_login"
 	AppliedSuspendOutgoing = "suspend_outgoing"
 	AppliedHoldOutgoing    = "hold_outgoing"
+	AppliedDisableSignIn   = "disable_signin"
 )
 
 const mailboxSuspensionsBucket = "mail:suspensions"
@@ -41,6 +42,7 @@ type MailboxSuspension struct {
 	Subject     string     `json:"subject"`
 	Kind        string     `json:"kind"`
 	Account     string     `json:"account,omitempty"`
+	Ref         string     `json:"ref,omitempty"` // the mail server's id for what was suspended
 	Applied     []string   `json:"applied"`
 	Check       string     `json:"check"`
 	Reason      string     `json:"reason"`
