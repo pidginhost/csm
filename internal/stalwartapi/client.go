@@ -112,10 +112,14 @@ func NewWithPeerCheck(baseURL, user, password string, check func(context.Context
 }
 
 // NewKey returns a client that logs in with an API key. check verifies each
-// local TCP peer as in NewWithPeerCheck.
+// local TCP peer as in NewWithPeerCheck. The daemon builds one per call, so a
+// local client's own transport keeps no idle connection behind.
 func NewKey(baseURL, key string, check func(context.Context, net.Conn) error) *Client {
 	c := NewWithPeerCheck(baseURL, "", key, check)
 	c.bearer = true
+	if t, ok := c.hc.Transport.(*http.Transport); ok {
+		t.DisableKeepAlives = true
+	}
 	return c
 }
 

@@ -479,3 +479,27 @@ func TestMethodAccountIDIsKept(t *testing.T) {
 		t.Fatalf("accountId = %v, want c", got)
 	}
 }
+
+// The daemon builds a key client per call. Its own transport must not keep an
+// idle connection open after the call, and must still check the peer.
+func TestKeyClientKeepsNoIdleConnection(t *testing.T) {
+	var checked atomic.Int32
+	check := func(context.Context, net.Conn) error { checked.Add(1); return nil }
+	transport, ok := NewKey("http://127.0.0.1:8080", testKey, check).hc.Transport.(*http.Transport)
+	if !ok || !transport.DisableKeepAlives || transport.DialContext == nil || transport.Proxy != nil {
+		t.Fatalf("key client transport: own=%v keep-alives off=%v, want its own transport with keep-alives off, the peer check and no proxy", ok, ok && transport.DisableKeepAlives)
+	}
+	f := newFake(t)
+	key := NewKey(f.srv.URL, testKey, check)
+	for range 2 {
+		key.mu.Lock()
+		key.account = ""
+		key.mu.Unlock()
+		if _, err := key.SessionAccount(context.Background()); err != nil {
+			t.Fatalf("SessionAccount: %v", err)
+		}
+	}
+	if n := checked.Load(); n != 2 {
+		t.Fatalf("peer checks = %d, want one per request: each request on a new, checked connection", n)
+	}
+}
