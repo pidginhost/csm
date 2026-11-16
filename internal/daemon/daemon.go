@@ -145,6 +145,9 @@ type Daemon struct {
 	// stalwart is the Stalwart log state; nil unless this host's mail server
 	// is Stalwart.
 	stalwart *stalwartState
+	// stalwartUnban lifts Stalwart's bans of released addresses; nil unless
+	// this host's mail server is Stalwart.
+	stalwartUnban *stalwartUnban
 
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
@@ -887,6 +890,9 @@ func (d *Daemon) Run() error {
 	// first Apply() builds dos_exempt_nets with current data. The background
 	// refresh goroutine is registered here as well.
 	d.initMailRanges()
+
+	// Set before the firewall installs its release hook, which reads it.
+	d.stalwartUnban = newStalwartUnban(d)
 
 	// Start firewall engine if enabled
 	d.startFirewall()

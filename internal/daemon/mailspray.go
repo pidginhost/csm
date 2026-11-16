@@ -1207,7 +1207,11 @@ func (d *Daemon) persistMailSpray() {
 // unban drops only the address's re-block marker so the unban sticks; its
 // failure history and per-IP counts stay, so renewed spraying is blocked
 // again on the usual rules. Every other release is an operator release.
+// Either kind of release of one address also lifts Stalwart's own ban of it.
 func (d *Daemon) firewallReleased(ip string, kind firewall.ReleaseKind) {
+	if a, err := netip.ParseAddr(ip); err == nil && d.stalwartUnban != nil {
+		d.stalwartUnban.add(a.Unmap().String())
+	}
 	if kind != firewall.ReleaseUnban {
 		d.operatorReleased(ip)
 		return

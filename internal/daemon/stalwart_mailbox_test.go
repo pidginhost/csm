@@ -32,6 +32,21 @@ type fakeStalwart struct {
 	// unbounded counts calls whose context has no deadline within the
 	// backend's limit.
 	unbounded int
+
+	// bans is Stalwart's ban list by address. lookups and deletes record
+	// the calls on it, deletes one id list per call.
+	bans      map[string][]stalwartapi.BlockedIP
+	banErr    map[string]error
+	deleteErr error
+	lookups   []string
+	deletes   [][]string
+	// hold, when set, keeps each ban lookup waiting until it is closed or
+	// its context ends; held receives each address as its lookup starts and
+	// holdEnd the context's error if it ended first.
+	hold                  chan struct{}
+	held                  chan string
+	holdEnd               error
+	inFlight, maxInFlight int
 }
 
 func (f *fakeStalwart) bound(ctx context.Context) {
@@ -96,11 +111,42 @@ func (f *fakeStalwart) setSignIn(id string, disabled bool) {
 	}
 }
 
-func (f *fakeStalwart) BlockedIPs(context.Context, string) ([]stalwartapi.BlockedIP, error) {
-	return nil, nil
+func (f *fakeStalwart) BlockedIPs(ctx context.Context, address string) ([]stalwartapi.BlockedIP, error) {
+	f.mu.Lock()
+	f.bound(ctx)
+	f.lookups = append(f.lookups, address)
+	f.inFlight++
+	f.maxInFlight = max(f.maxInFlight, f.inFlight)
+	hold, held := f.hold, f.held
+	f.mu.Unlock()
+	if held != nil {
+		held <- address
+	}
+	var ended error
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			ended = ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inFlight--
+	if ended != nil {
+		f.holdEnd = ended
+		return nil, ended
+	}
+	return f.bans[address], f.banErr[address]
 }
 
-func (f *fakeStalwart) DeleteBlockedIPs(context.Context, []string) error { return nil }
+func (f *fakeStalwart) DeleteBlockedIPs(ctx context.Context, ids []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bound(ctx)
+	f.deletes = append(f.deletes, ids)
+	return f.deleteErr
+}
 
 func (f *fakeStalwart) account(id string) stalwartapi.Account {
 	f.mu.Lock()
