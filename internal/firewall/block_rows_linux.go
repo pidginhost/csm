@@ -106,6 +106,19 @@ func (e *Engine) BlockActionsUnproven() error {
 	return e.blockActionsUnproven
 }
 
+// filteredRowsLocked is st without the blocked rows whose address family
+// has no blocked set, as after IPv6 filtering was turned off.
+func (e *Engine) filteredRowsLocked(st FirewallState) FirewallState {
+	kept := make([]BlockedEntry, 0, len(st.Blocked))
+	for _, row := range st.Blocked {
+		if set, _, err := e.resolveIPSet(row.IP, e.setBlocked, e.setBlocked6); err == nil && set != nil {
+			kept = append(kept, row)
+		}
+	}
+	st.Blocked = kept
+	return st
+}
+
 // evictionVictimLocked picks the temporary block a new one replaces at the
 // cap. It leaves out the rows admission actions wrote: no legacy block,
 // automatic or operator, removes a block admission owns.

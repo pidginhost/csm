@@ -2996,6 +2996,9 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 	// against the cap. Fall back to the cached state.json count
 	// (existing behaviour) if the live query is unavailable.
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
+		// A row of a family the firewall does not filter holds no element:
+		// it fills no slot and no block can replace it.
+		st, victimState = e.filteredRowsLocked(st), e.filteredRowsLocked(victimState)
 		var perm, temp int
 		if timeout > 0 && !skipExisting && e.lifecycle == nil && hasAdmissionRows(st) {
 			// Count ownership and occupancy from one image, including replacement.
@@ -3044,9 +3047,6 @@ func (e *Engine) blockIPTargetFromStates(ip string, timeout time.Duration, skipE
 			victim, ok := e.evictionVictimLocked(victimState, ip, skipExisting)
 			if !ok {
 				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
-			}
-			if _, _, err := e.resolveIPSet(victim, e.setBlocked, e.setBlocked6); err != nil {
-				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and eviction target %s is unusable: %w", e.cfg.DenyTempIPLimit, victim, err)
 			}
 			return targetSet, key, false, victim, nil
 		}

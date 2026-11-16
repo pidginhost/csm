@@ -220,6 +220,10 @@ from their reason text. Older unstamped rows keep unknown origin.
 Automatic admission may replace a block that recorded its origin with a
 higher-priority one; a block of unknown origin is never replaced.
 
+Rows of an address family without a blocked set neither fill the temporary
+limit nor become replacement victims. Turning off IPv6 filtering therefore
+does not make saved IPv6 blocks refuse a new temporary block.
+
 Temporary IP blocks use a firewall clock that counts elapsed time and never
 moves backward. Setting the system clock back does not add that step to their
 lifetime; a forward step can shorten restored blocks. While the firewall clock
