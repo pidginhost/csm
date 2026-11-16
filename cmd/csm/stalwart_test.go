@@ -286,7 +286,7 @@ func TestStalwartSetupNeverPrintsPassword(t *testing.T) {
 }
 
 func TestStalwartSetupDryRunWritesNothing(t *testing.T) {
-	h := newSetupHarness(t)
+	h := newDoctorKeyHarness(t)
 	code, out := h.run("--dry-run")
 	if code != 0 {
 		t.Fatalf("code = %d, out %q", code, out)
@@ -310,13 +310,13 @@ func TestStalwartSetupDryRunWritesNothing(t *testing.T) {
 }
 
 func TestStalwartSetupPrintsSpamSteps(t *testing.T) {
-	h := newSetupHarness(t)
+	h := newDoctorKeyHarness(t)
 	code, out := h.run("--dry-run")
 	if code != 0 || !strings.Contains(out, "spam verdict logging: change: ") || !strings.Contains(out, "spam filter: done: ") {
 		t.Fatalf("code %d, out %q; want 0 with both spam steps", code, out)
 	}
 
-	h = newSetupHarness(t)
+	h = newDoctorKeyHarness(t)
 	h.api.spam.Enabled = false
 	if code, out := h.run("--dry-run"); code != 0 || !strings.Contains(out, "spam filter: warn: ") {
 		t.Fatalf("filter off: code %d, out %q; want 0 with the spam filter warned", code, out)
@@ -324,7 +324,7 @@ func TestStalwartSetupPrintsSpamSteps(t *testing.T) {
 }
 
 func TestStalwartSetupAppliesAndReloadsOnce(t *testing.T) {
-	h := newSetupHarness(t)
+	h := newDoctorKeyHarness(t)
 	code, out := h.run("--url", "http://127.0.0.1:18080")
 	if code != 0 {
 		t.Fatalf("code = %d, out %q", code, out)
@@ -354,7 +354,7 @@ func TestStalwartSetupLockNeedsRunningDaemon(t *testing.T) {
 		"no snapshot": func(*testing.T) ([]byte, error) { return []byte(`{"version":"x"}`), nil },
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newSetupHarness(t)
+			h := newDoctorKeyHarness(t)
 			b, err := status(t)
 			h.deps.readStatus = func() ([]byte, error) { return b, err }
 			code, out := h.run("--dry-run")
@@ -369,32 +369,32 @@ func TestStalwartSetupLockNeedsRunningDaemon(t *testing.T) {
 }
 
 func TestStalwartSetupExitCodes(t *testing.T) {
-	h := newSetupHarness(t)
+	h := newDoctorKeyHarness(t)
 	h.api.http = stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1}
 	h.deps.readStatus = func() ([]byte, error) { return nil, errors.New("down") }
 	if code, out := h.run("--dry-run"); code != 1 || !strings.Contains(out, "unsafe") {
 		t.Fatalf("unsafe: code %d, out %q; want 1", code, out)
 	}
 
-	h = newSetupHarness(t)
+	h = newDoctorKeyHarness(t)
 	h.api.writeErr = errors.New("refused")
 	if code, out := h.run(); code != 1 || !strings.Contains(out, "refused") {
 		t.Fatalf("write error: code %d, out %q; want 1", code, out)
 	}
 
-	h = newSetupHarness(t)
+	h = newDoctorKeyHarness(t)
 	h.deps.readStatus = func() ([]byte, error) { return nil, errors.New("down") }
 	if code, out := h.run(); code != 0 {
 		t.Fatalf("skipped step: code %d, out %q; want 0", code, out)
 	}
 
-	h = newSetupHarness(t)
+	h = newDoctorKeyHarness(t)
 	h.api.readErr = fmt.Errorf("stalwart /jmap/: %w", stalwartapi.ErrUnauthorized)
 	if code, _ := h.run(); code != 2 {
 		t.Fatalf("refused login: code %d, want 2", code)
 	}
 
-	h = newSetupHarness(t)
+	h = newDoctorKeyHarness(t)
 	if code, _ := h.run("extra"); code != 2 {
 		t.Fatalf("stray argument: code %d, want 2", code)
 	}
@@ -460,7 +460,8 @@ func TestStalwartSetupSpamReadFailures(t *testing.T) {
 		for _, dryRun := range []bool{true, false} {
 			for _, unauthorized := range []bool{true, false} {
 				t.Run(fmt.Sprintf("%s/dry=%t/unauthorized=%t", method, dryRun, unauthorized), func(t *testing.T) {
-					h := newSetupHarness(t)
+					// CSM's account and key are in place, so only the spam status warns.
+					h := newDoctorKeyHarness(t)
 					err := errors.New("API error " + setupTestPassword)
 					if unauthorized {
 						err = fmt.Errorf("%s: %w", setupTestPassword, stalwartapi.ErrUnauthorized)
@@ -664,9 +665,12 @@ func TestStalwartSetupWarnsOnAccountWithPassword(t *testing.T) {
 	h.api.prepare(true)
 	h.api.creds = []string{"Password"}
 	h.useKeyFile(t, "")
+	if code, out := h.run("--dry-run"); code != 1 || !strings.Contains(out, "response account: warn: ") {
+		t.Fatalf("dry run: code %d, out %q; want 1 with the account warned", code, out)
+	}
 	code, out := h.run()
-	if code != 0 || !strings.Contains(out, "response account: warn: ") || !strings.Contains(out, "has a password") || !strings.Contains(out, "response key: skipped: ") {
-		t.Fatalf("code %d, out %q; want 0 with the account warned and the key skipped", code, out)
+	if code != 1 || !strings.Contains(out, "response account: warn: ") || !strings.Contains(out, "has a password") || !strings.Contains(out, "response key: skipped: ") {
+		t.Fatalf("code %d, out %q; want 1 with the account warned and the key skipped", code, out)
 	}
 	if slices.Contains(h.api.writes, "key") {
 		t.Fatalf("writes = %q, want no key created", h.api.writes)
