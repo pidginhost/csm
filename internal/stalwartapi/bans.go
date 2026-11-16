@@ -1,6 +1,9 @@
 package stalwartapi
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // BlockedIP is one of Stalwart's own IP bans.
 type BlockedIP struct {
@@ -24,15 +27,20 @@ func (c *Client) BlockedIPs(ctx context.Context, address string) ([]BlockedIP, e
 
 // DeleteBlockedIPs lifts the bans with these ids, then has Stalwart reload
 // its ban list so the change takes effect. A failed reload is an error.
+// When Stalwart answers that only some ids were destroyed, the reload still
+// runs: the others are gone from the store but enforced until a reload, and a
+// retry finds no ids left to delete.
 func (c *Client) DeleteBlockedIPs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	if _, err := c.set(ctx, "x:BlockedIp/set", map[string]any{"destroy": ids}); err != nil {
+	_, err := c.set(ctx, "x:BlockedIp/set", map[string]any{"destroy": ids})
+	var me *MethodError
+	if err != nil && !errors.As(err, &me) && !errors.Is(err, errNotAcknowledged) {
 		return err
 	}
-	_, err := c.set(ctx, "x:Action/set", map[string]any{
+	_, reloadErr := c.set(ctx, "x:Action/set", map[string]any{
 		"create": map[string]any{"r": map[string]any{"@type": "ReloadBlockedIps"}},
 	})
-	return err
+	return errors.Join(err, reloadErr)
 }

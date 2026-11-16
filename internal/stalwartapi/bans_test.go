@@ -2,7 +2,12 @@ package stalwartapi
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
 )
 
@@ -75,20 +80,60 @@ func TestDeleteBlockedIPsReloads(t *testing.T) {
 		t.Fatalf("reload = %s", s)
 	}
 
-	destroyed = []string{"b1"}
 	before := len(f.methods())
-	if err := c.DeleteBlockedIPs(ctx, []string{"b1", "b2"}); err == nil {
-		t.Fatal("an id missing from destroyed reported success")
-	}
-	if got := f.methods()[before:]; !reflect.DeepEqual(got, []string{"x:BlockedIp/set"}) {
-		t.Fatalf("calls after a partial destroy = %q, want no reload", got)
-	}
-
-	before = len(f.methods())
 	if err := c.DeleteBlockedIPs(ctx, nil); err != nil {
 		t.Fatalf("no ids: %v", err)
 	}
 	if len(f.methods()) != before {
 		t.Fatal("no ids still sent a request")
+	}
+}
+
+// Stalwart enforces bans from memory until a reload, so the ids it did
+// destroy must still be reloaded when others fail.
+func TestDeleteBlockedIPsReloadsAfterPartialDestroy(t *testing.T) {
+	for name, reply := range map[string]map[string]any{
+		"notDestroyed": {"destroyed": []string{"b1"}, "notDestroyed": map[string]any{"b2": map[string]any{"type": "notFound"}}},
+		"missing":      {"destroyed": []string{"b1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, _ map[string]any) (string, any) {
+				if method == "x:Action/set" {
+					return method, map[string]any{"created": map[string]any{"r": map[string]any{}}}
+				}
+				return method, reply
+			}
+			err := f.keyClient().DeleteBlockedIPs(context.Background(), []string{"b1", "b2"})
+			if err == nil {
+				t.Fatal("a partial destroy reported success")
+			}
+			var me *MethodError
+			if name == "notDestroyed" && (!errors.As(err, &me) || me.Type != "notFound") {
+				t.Fatalf("err = %v, want the notFound failure", err)
+			}
+			if want := []string{"x:BlockedIp/set", "x:Action/set"}; !reflect.DeepEqual(f.methods(), want) {
+				t.Fatalf("calls = %q, want %q", f.methods(), want)
+			}
+		})
+	}
+}
+
+func TestDeleteBlockedIPsNoReloadWithoutAnswer(t *testing.T) {
+	var jmap atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/jmap" {
+			_, _ = io.WriteString(w, `{"primaryAccounts":{"urn:stalwart:jmap":"`+testAccount+`"}}`)
+			return
+		}
+		jmap.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	if err := NewKey(srv.URL, testKey, allowPeer).DeleteBlockedIPs(context.Background(), []string{"b1"}); err == nil {
+		t.Fatal("HTTP 500 on destroy reported success")
+	}
+	if jmap.Load() != 1 {
+		t.Fatalf("JMAP requests = %d, want only the destroy", jmap.Load())
 	}
 }

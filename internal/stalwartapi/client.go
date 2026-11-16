@@ -33,6 +33,9 @@ var ErrUnauthorized = errors.New("stalwart refused the login")
 // address or a suspended owner.
 var ErrForbidden = errors.New("stalwart refused access for this login")
 
+// errNotAcknowledged is a /set answer that leaves a requested write out.
+var errNotAcknowledged = errors.New("write was not acknowledged")
+
 // MethodError is a JMAP method failure, or one failed entry of a set call.
 type MethodError struct {
 	Method      string
@@ -266,7 +269,7 @@ func (c *Client) set(ctx context.Context, method string, args map[string]any) (j
 		if requested, ok := args[operation].(map[string]any); ok {
 			for id := range requested {
 				if value, ok := acknowledged[id]; !ok || (operation == "create" && value == nil) {
-					return nil, fmt.Errorf("stalwart %s: write was not acknowledged", method)
+					return nil, fmt.Errorf("stalwart %s: %w", method, errNotAcknowledged)
 				}
 			}
 		}
@@ -274,7 +277,7 @@ func (c *Client) set(ctx context.Context, method string, args map[string]any) (j
 	if requested, ok := args["destroy"].([]string); ok {
 		for _, id := range requested {
 			if !slices.Contains(res.Destroyed, id) {
-				return nil, fmt.Errorf("stalwart %s: write was not acknowledged", method)
+				return nil, fmt.Errorf("stalwart %s: %w", method, errNotAcknowledged)
 			}
 		}
 	}
