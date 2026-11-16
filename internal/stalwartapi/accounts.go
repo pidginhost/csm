@@ -2,7 +2,9 @@ package stalwartapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -179,12 +181,24 @@ func (r rawAccount) account() Account {
 	}
 }
 
+// accountProperties are the fields rawAccount decodes. A whole account also
+// carries its credentials, secrets included, which CSM must never read.
+var accountProperties = []string{"id", "name", "emailAddress", "permissions", "roles", "aliases"}
+
 func (c *Client) rawAccounts(ctx context.Context, ids []string) ([]rawAccount, error) {
-	var raw []rawAccount
-	if err := c.get(ctx, "x:Account/get", ids, &raw); err != nil {
+	const method = "x:Account/get"
+	out, err := c.call(ctx, method, map[string]any{"ids": ids, "properties": accountProperties})
+	if err != nil {
 		return nil, err
 	}
-	return raw, nil
+	var res struct {
+		List []rawAccount `json:"list"`
+	}
+	// A decode error can quote the response, so it is not passed on.
+	if json.Unmarshal(out, &res) != nil || res.List == nil {
+		return nil, fmt.Errorf("stalwart %s: unexpected response", method)
+	}
+	return res.List, nil
 }
 
 func (c *Client) accounts(ctx context.Context, ids []string) ([]Account, error) {

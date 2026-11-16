@@ -293,6 +293,42 @@ func TestAccountByAddressAliasScanStopsOnRepeatedPage(t *testing.T) {
 	}
 }
 
+// A whole account carries its credentials, secrets included. Every read of
+// the account reader names only the fields it decodes.
+func TestAccountReadsNameTheirProperties(t *testing.T) {
+	f := directory(t, 600)
+	c := f.keyClient()
+	ctx := context.Background()
+	if _, found, err := c.AccountByAddress(ctx, "robert@example.org"); err != nil || !found {
+		t.Fatalf("alias: found %v, err %v", found, err)
+	}
+	if _, found, err := c.AccountByAddress(ctx, "bob@example.org"); err != nil || !found {
+		t.Fatalf("primary: found %v, err %v", found, err)
+	}
+	if _, found, err := c.Account(ctx, "bob1"); err != nil || !found {
+		t.Fatalf("Account: found %v, err %v", found, err)
+	}
+	if err := c.EnableSignIn(ctx, "bob1"); err != nil {
+		t.Fatalf("EnableSignIn: %v", err)
+	}
+	gets := 0
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, call := range f.calls {
+		if call.Method != "x:Account/get" {
+			continue
+		}
+		gets++
+		if s := asJSON(t, call.Args["properties"]); s != `["id","name","emailAddress","permissions","roles","aliases"]` {
+			t.Fatalf("x:Account/get properties = %s", s)
+		}
+	}
+	// Two walk pages, the primary lookup, Account and EnableSignIn's read.
+	if gets != 5 {
+		t.Fatalf("x:Account/get calls = %d, want 5", gets)
+	}
+}
+
 func TestDomainsReadsAliases(t *testing.T) {
 	got, err := directory(t, 0).keyClient().Domains(context.Background())
 	want := []Domain{{ID: "a", Name: "example.org", Aliases: []string{"example.net"}}, {ID: "b", Name: "example.com"}, {ID: "c", Name: "example.info"}}
