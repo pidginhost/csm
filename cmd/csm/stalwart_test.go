@@ -154,6 +154,7 @@ func (f *setupFakeAPI) prepare(done bool) {
 		f.role = &stalwartapi.Role{ID: "r1", Description: stalwartsetup.ResponseRole, Enabled: stalwartsetup.ResponsePermissions, RoleIDs: []string{"u"}}
 		f.account = &stalwartapi.Account{ID: "a1", Name: stalwartsetup.ResponseAccount, Email: "csm-response@example.org"}
 		f.acctRoles = []string{"r1"}
+		f.keys = []stalwartapi.APIKey{{ID: "k1", Description: "CSM"}}
 	}
 }
 
@@ -619,5 +620,23 @@ func TestStalwartSetupAccountDomainFlag(t *testing.T) {
 	h.useKeyFile(t, "")
 	if code, out := h.run("--dry-run", "--account-domain", "example.net"); code != 0 || !strings.Contains(out, "response account: skipped: ") || !strings.Contains(out, "example.net") {
 		t.Fatalf("code %d, out %q; want the unknown domain named", code, out)
+	}
+}
+
+// Only a failed settings write leaves settings to reload by hand.
+func TestStalwartSetupReloadHintOnlyForSettings(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(false)
+	h.cfg.Stalwart.APIKeyFile = h.useKeyFile(t, "") + "/missing-directory/key"
+	code, out := h.run()
+	if code != 1 || strings.Contains(out, "reload settings") || !strings.Contains(out, "run setup again") {
+		t.Fatalf("response step failure: code %d, out %q; want 1 without the reload hint", code, out)
+	}
+
+	h = newSetupHarness(t)
+	h.api.writeErr = errors.New("refused")
+	code, out = h.run()
+	if code != 1 || !strings.Contains(out, "reload settings in Stalwart") {
+		t.Fatalf("settings failure: code %d, out %q; want 1 with the reload hint", code, out)
 	}
 }

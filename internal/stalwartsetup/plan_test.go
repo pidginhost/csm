@@ -336,8 +336,8 @@ func TestPlanApplyStopsAtFailedWrite(t *testing.T) {
 	api.calls = nil
 	api.writeErr = errors.New("refused")
 	_, err := p.Apply(context.Background(), api)
-	if !errors.Is(err, api.writeErr) || !strings.Contains(err.Error(), "failed-login logging") {
-		t.Fatalf("err = %v, want the write error naming the step", err)
+	if !errors.Is(err, api.writeErr) || !errors.Is(err, ErrSettingsWrite) || !strings.Contains(err.Error(), "failed-login logging") {
+		t.Fatalf("err = %v, want the settings write error naming the step", err)
 	}
 	if len(api.calls) != 1 {
 		t.Fatalf("calls after the failure = %q, want the one failed write", api.calls)
@@ -705,13 +705,20 @@ func responseAPI() *fakeAPI {
 	return api
 }
 
-// preparedAPI also holds CSM's role and account a1 with two keys.
+// preparedAPI also holds CSM's role and account a1 with its one key.
 func preparedAPI() *fakeAPI {
 	api := responseAPI()
 	api.roles = append(api.roles, stalwartapi.Role{ID: "r1", Description: ResponseRole, Enabled: slices.Clone(ResponsePermissions), RoleIDs: []string{"u"}})
 	api.accounts = []stalwartapi.Account{{ID: "a1", Name: ResponseAccount, Email: "csm-response@example.org"}}
 	api.acctRoles["a1"] = []string{"r1"}
-	api.keys["a1"] = []stalwartapi.APIKey{{ID: "old1", Description: "CSM"}, {ID: "old2", Description: "CSM"}}
+	api.keys["a1"] = []stalwartapi.APIKey{{ID: "old1", Description: "CSM"}}
+	return api
+}
+
+// twoKeyAPI is preparedAPI with a second key on a1.
+func twoKeyAPI() *fakeAPI {
+	api := preparedAPI()
+	api.keys["a1"] = append(api.keys["a1"], stalwartapi.APIKey{ID: "old2", Description: "CSM"})
 	return api
 }
 
@@ -772,7 +779,7 @@ func TestPlanKeepsWorkingKey(t *testing.T) {
 func TestPlanReplacesForeignOrMissingKey(t *testing.T) {
 	for _, keyAccount := range []string{"", "a9"} {
 		t.Run("key account "+keyAccount, func(t *testing.T) {
-			api := preparedAPI()
+			api := twoKeyAPI()
 			p := inspect(t, api, responseInputs(api, keyAccount, nil))
 			if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
@@ -789,13 +796,13 @@ func TestPlanReplacesForeignOrMissingKey(t *testing.T) {
 }
 
 func TestKeyStepRemovesKeyWhenFileWriteFails(t *testing.T) {
-	api := preparedAPI()
+	api := twoKeyAPI()
 	writeErr := errors.New("disk full")
 	p := inspect(t, api, responseInputs(api, "", writeErr))
 	api.calls = nil
 	_, err := p.Apply(context.Background(), api)
-	if !errors.Is(err, writeErr) || !strings.Contains(err.Error(), "response key") {
-		t.Fatalf("err = %v, want the write error naming the step", err)
+	if !errors.Is(err, writeErr) || errors.Is(err, ErrSettingsWrite) || !strings.Contains(err.Error(), "response key") {
+		t.Fatalf("err = %v, want the write error naming the step, not a settings write", err)
 	}
 	want := []string{"CreateAPIKey(a1,CSM,127.0.0.1 ::1)", "WriteKey(test-key-1)", "DeleteAPIKeys(a1,id1)"}
 	if !reflect.DeepEqual(api.calls, want) {
@@ -806,9 +813,10 @@ func TestKeyStepRemovesKeyWhenFileWriteFails(t *testing.T) {
 	}
 }
 
-// The new key is in the file and works, so a failed clean-up keeps it.
+// The new key is in the file and works, so a failed clean-up keeps it, and
+// the next run, whose key file names a1, finishes the clean-up.
 func TestKeyStepKeepsNewKeyWhenOldKeysStay(t *testing.T) {
-	api := preparedAPI()
+	api := twoKeyAPI()
 	p := inspect(t, api, responseInputs(api, "", nil))
 	api.failOn = "DeleteAPIKeys"
 	api.calls = nil
@@ -818,6 +826,42 @@ func TestKeyStepKeepsNewKeyWhenOldKeysStay(t *testing.T) {
 	}
 	if len(api.keys["a1"]) != 3 || slices.Contains(api.calls, "DeleteAPIKeys(a1,id1)") {
 		t.Fatalf("keys = %+v, calls %q; want the new key kept", api.keys["a1"], api.calls)
+	}
+
+	api.failOn = ""
+	p = inspect(t, api, responseInputs(api, "a1", nil))
+	if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rerun states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	applyCalls(t, api, p)
+	if want := []stalwartapi.APIKey{{ID: "id2", Description: "CSM"}}; !reflect.DeepEqual(api.keys["a1"], want) {
+		t.Fatalf("rerun keys = %+v, want only the newest", api.keys["a1"])
+	}
+}
+
+// Secrets are not listed, so CSM cannot tell which of several keys is in
+// its file; it replaces them all.
+func TestPlanReplacesKeyWhenAccountHasExtraKeys(t *testing.T) {
+	api := twoKeyAPI()
+	p := inspect(t, api, responseInputs(api, "a1", nil))
+	if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	if s := p.Steps[8]; !strings.Contains(s.Detail, "extra") {
+		t.Fatalf("key step = %+v, want the extra keys named", s)
+	}
+	want := []string{"CreateAPIKey(a1,CSM,127.0.0.1 ::1)", "WriteKey(test-key-1)", "APIKeys", "DeleteAPIKeys(a1,old1,old2)"}
+	if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+	if want := []stalwartapi.APIKey{{ID: "id1", Description: "CSM"}}; !reflect.DeepEqual(api.keys["a1"], want) {
+		t.Fatalf("keys = %+v, want only the new one", api.keys["a1"])
+	}
+
+	api = preparedAPI()
+	api.keys["a1"] = nil
+	if s := inspect(t, api, responseInputs(api, "a1", nil)).Steps[8]; s.State != Change {
+		t.Fatalf("no keys listed: key step = %+v, want Change", s)
 	}
 }
 

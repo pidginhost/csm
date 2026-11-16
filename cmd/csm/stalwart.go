@@ -190,11 +190,14 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	warnings, err := plan.Apply(ctx, api)
 	if err != nil {
 		fmt.Fprintf(out, "Setup stopped at %s\n", redact(err.Error()))
-		if errors.Is(err, stalwartsetup.ErrNotReloaded) {
+		switch {
+		case errors.Is(err, stalwartsetup.ErrNotReloaded):
 			// A rerun reads the stored settings as done and sends no reload.
 			fmt.Fprintln(out, "Stalwart stored the settings but is not using them yet; restart Stalwart to apply them.")
-		} else {
+		case errors.Is(err, stalwartsetup.ErrSettingsWrite):
 			fmt.Fprintln(out, "Some settings may have been stored. Resolve the error and reload settings in Stalwart before running setup again.")
+		default:
+			fmt.Fprintln(out, "Resolve the error and run setup again.")
 		}
 		return 1
 	}

@@ -124,6 +124,10 @@ var keyAddresses = []string{"127.0.0.1", "::1"}
 // the operator to restart Stalwart.
 var ErrNotReloaded = errors.New("settings stored but not reloaded")
 
+// ErrSettingsWrite marks a failed write of a Stalwart setting: part of it may
+// be stored and not reloaded.
+var ErrSettingsWrite = errors.New("stalwart setting not written")
+
 // Inspect reads Stalwart's settings and plans each step. It writes nothing.
 func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 	levels, err := api.TracingLevels(ctx)
@@ -226,9 +230,9 @@ func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
 	accountID, name := "", ""
 	switch len(accounts) {
 	case 0:
-		domain, why, err := responseDomain(ctx, api, in.AccountDomain)
-		if err != nil {
-			return nil, err
+		domain, why, domainErr := responseDomain(ctx, api, in.AccountDomain)
+		if domainErr != nil {
+			return nil, domainErr
 		}
 		if why != "" {
 			account.State, account.Detail = Skipped, why
@@ -245,9 +249,9 @@ func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
 	case 1:
 		a := accounts[0]
 		accountID, name = a.ID, cmp.Or(a.Email, a.Name)
-		roles, err := api.AccountRoleIDs(ctx, a.ID)
-		if err != nil {
-			return nil, err
+		roles, rolesErr := api.AccountRoleIDs(ctx, a.ID)
+		if rolesErr != nil {
+			return nil, rolesErr
 		}
 		if haveRole && slices.Equal(roles, []string{current.ID}) {
 			account.State, account.Detail = Done, name+" holds only CSM's role"
@@ -269,14 +273,28 @@ func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
 		return skip(steps[2:], "needs exactly one service account"), nil
 	}
 
+	// Stalwart does not list secrets, so with several keys CSM cannot tell
+	// which one its file holds; replacing them all removes the others.
+	var keys []stalwartapi.APIKey
 	if accountID != "" && in.KeyAccount == accountID {
-		key.State, key.Detail = Done, "CSM's key file holds a working key of "+name
-		return steps, nil
+		if keys, err = api.APIKeys(ctx, accountID); err != nil {
+			return nil, err
+		}
+		if len(keys) == 1 {
+			key.State, key.Detail = Done, "CSM's key file holds the only key of "+name
+			return steps, nil
+		}
 	}
 	key.State = Change
-	key.Detail = "CSM's key file holds no working key"
-	if in.KeyAccount != "" {
+	switch {
+	case in.KeyAccount == "":
+		key.Detail = "CSM's key file holds no working key"
+	case in.KeyAccount != accountID:
 		key.Detail = "the key in CSM's key file belongs to another account"
+	case len(keys) == 0:
+		key.Detail = "Stalwart lists no key of " + name
+	default:
+		key.Detail = name + " has extra API keys besides the one in CSM's key file"
 	}
 	key.Detail += fmt.Sprintf("; create a key of %s that works only from this host, store it in the key file and delete the account's other keys", name)
 	key.noReload = true
@@ -395,6 +413,9 @@ func (p *Plan) Apply(ctx context.Context, api API) ([]string, error) {
 		}
 		if err := s.apply(ctx, api); err != nil {
 			failed = fmt.Errorf("%s: %w", s.Name, err)
+			if !s.noReload {
+				failed = settingsWriteError{failed}
+			}
 			break
 		}
 		if !s.noReload {
@@ -412,6 +433,12 @@ func (p *Plan) Apply(ctx context.Context, api API) ([]string, error) {
 	p.pendingReload = false
 	return warnings, failed
 }
+
+// settingsWriteError adds ErrSettingsWrite to a failed settings step's error
+// without changing its text.
+type settingsWriteError struct{ error }
+
+func (e settingsWriteError) Unwrap() []error { return []error{e.error, ErrSettingsWrite} }
 
 func failedLoginStep(levels []stalwartapi.TracingLevel) Step {
 	return tracingStep("failed-login logging", failedLoginEvent, levels, "")
