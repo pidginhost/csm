@@ -41,6 +41,9 @@ type fakeStalwart struct {
 	deleteErr error
 	lookups   []string
 	deletes   [][]string
+	// reloads counts ban list reloads asked for on their own.
+	reloads   int
+	reloadErr error
 	// hold, when set, keeps each ban lookup waiting until it is closed or
 	// its context ends; held receives each address as its lookup starts and
 	// holdEnd the context's error if it ended first.
@@ -147,6 +150,14 @@ func (f *fakeStalwart) DeleteBlockedIPs(ctx context.Context, ids []string) error
 	f.bound(ctx)
 	f.deletes = append(f.deletes, ids)
 	return f.deleteErr
+}
+
+func (f *fakeStalwart) ReloadBlockedIPs(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bound(ctx)
+	f.reloads++
+	return f.reloadErr
 }
 
 func (f *fakeStalwart) account(id string) stalwartapi.Account {

@@ -533,3 +533,75 @@ func TestNotStalwartHostDoesNothing(t *testing.T) {
 		}
 	}
 }
+
+// A lift whose reload was lost leaves a ban Stalwart enforces but no longer
+// lists. An unblock that lifts nothing must still reload, so unblocking the
+// address again finishes it.
+func TestUnblockReloadsWhenNothingIsLifted(t *testing.T) {
+	const ip = "203.0.113.30"
+	for _, tc := range []struct {
+		name string
+		bans []stalwartapi.BlockedIP
+	}{
+		{"no ban listed", nil},
+		{"manual only", []stalwartapi.BlockedIP{manualBlock("m1", ip)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := captureActionRecords(t)
+			f := &fakeStalwart{bans: map[string][]stalwartapi.BlockedIP{ip: tc.bans}}
+			d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+
+			d.stalwartUnban.add(ip)
+			waitDrain(d)
+
+			if f.reloads != 1 {
+				t.Fatalf("reloads = %d, want one", f.reloads)
+			}
+			if len(f.deletes) != 0 {
+				t.Fatalf("deletes = %v, want none", f.deletes)
+			}
+			if len(sink.records) != 0 {
+				t.Fatalf("action records = %+v, want none for a reload", sink.records)
+			}
+			if f.unbounded != 0 {
+				t.Fatalf("%d Stalwart calls ran without a 10 second deadline", f.unbounded)
+			}
+		})
+	}
+}
+
+// The delete call reloads the list itself; a second reload would be waste.
+func TestUnblockLiftSendsNoExtraReload(t *testing.T) {
+	const ip = "203.0.113.31"
+	f := &fakeStalwart{bans: map[string][]stalwartapi.BlockedIP{ip: {autoBan("b1", ip)}}}
+	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+
+	d.stalwartUnban.add(ip)
+	waitDrain(d)
+
+	if !reflect.DeepEqual(f.deletes, [][]string{{"b1"}}) || f.reloads != 0 {
+		t.Fatalf("deletes = %v, reloads = %d, want one delete and no separate reload", f.deletes, f.reloads)
+	}
+}
+
+func TestUnblockFailedReloadIsLoggedAndKeepsDraining(t *testing.T) {
+	const bad, good = "203.0.113.32", "203.0.113.33"
+	f := &fakeStalwart{
+		bans:      map[string][]stalwartapi.BlockedIP{good: {autoBan("b6", good)}},
+		reloadErr: errors.New("stalwart: HTTP 500"),
+	}
+	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+
+	out := captureAppliedBlockStderr(t, func() {
+		d.stalwartUnban.add(bad)
+		d.stalwartUnban.add(good)
+		waitDrain(d)
+	})
+
+	if n := strings.Count(out, "Stalwart may still refuse "+bad); n != 1 || !strings.Contains(out, "reloading Stalwart's ban list") {
+		t.Fatalf("log = %q, want one line saying the reload for %s failed", out, bad)
+	}
+	if !reflect.DeepEqual(f.deletes, [][]string{{"b6"}}) {
+		t.Fatalf("deletes = %v, want b6 lifted after the failed reload", f.deletes)
+	}
+}

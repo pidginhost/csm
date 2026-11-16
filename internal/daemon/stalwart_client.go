@@ -16,6 +16,7 @@ type stalwartAPI interface {
 	EnableSignIn(ctx context.Context, id string) error
 	BlockedIPs(ctx context.Context, address string) ([]stalwartapi.BlockedIP, error)
 	DeleteBlockedIPs(ctx context.Context, ids []string) error
+	ReloadBlockedIPs(ctx context.Context) error
 }
 
 // newStalwartKeyClient is a var so tests can see what the client is built

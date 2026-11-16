@@ -27,6 +27,15 @@ func (c *Client) BlockedIPs(ctx context.Context, address string) ([]BlockedIP, e
 	return list, nil
 }
 
+// ReloadBlockedIPs has Stalwart read its ban list again, which is when a
+// lifted ban stops being enforced.
+func (c *Client) ReloadBlockedIPs(ctx context.Context) error {
+	_, err := c.set(ctx, "x:Action/set", map[string]any{
+		"create": map[string]any{"r": map[string]any{"@type": "ReloadBlockedIps"}},
+	})
+	return err
+}
+
 // DeleteBlockedIPs lifts the bans with these ids, then has Stalwart reload
 // its ban list so the change takes effect. A failed reload is an error.
 // Once the destroy is answered, Stalwart no longer lists the bans but
@@ -45,9 +54,7 @@ func (c *Client) DeleteBlockedIPs(ctx context.Context, ids []string) error {
 	var reloadErr error
 	for range 2 {
 		reloadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_, reloadErr = c.set(reloadCtx, "x:Action/set", map[string]any{
-			"create": map[string]any{"r": map[string]any{"@type": "ReloadBlockedIps"}},
-		})
+		reloadErr = c.ReloadBlockedIPs(reloadCtx)
 		cancel()
 		if reloadErr == nil {
 			return err
