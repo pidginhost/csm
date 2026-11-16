@@ -149,17 +149,26 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 		if err := login(); err != nil {
 			t.Fatalf("login before DisableSignIn: %v", err)
 		}
-		if err := key.DisableSignIn(ctx, a); err != nil {
-			t.Fatalf("DisableSignIn: %v", err)
-		}
-		if err := login(); !errors.Is(err, stalwartapi.ErrForbidden) {
-			t.Fatalf("login after DisableSignIn: %v, want ErrForbidden", err)
-		}
-		if err := key.EnableSignIn(ctx, a.ID); err != nil {
-			t.Fatalf("EnableSignIn: %v", err)
-		}
-		if err := login(); err != nil {
-			t.Fatalf("login after EnableSignIn: %v", err)
+		// The second round starts from the permissions the first release
+		// left: an empty Merge, which the path patch must still work on.
+		for round := 1; round <= 2; round++ {
+			if round == 2 {
+				if a, _, err = key.Account(ctx, smokeID); err != nil {
+					t.Fatalf("round %d: Account: %v", round, err)
+				}
+			}
+			if err := key.DisableSignIn(ctx, a); err != nil {
+				t.Fatalf("round %d: DisableSignIn: %v", round, err)
+			}
+			if err := login(); !errors.Is(err, stalwartapi.ErrForbidden) {
+				t.Fatalf("round %d: login after DisableSignIn: %v, want ErrForbidden", round, err)
+			}
+			if err := key.EnableSignIn(ctx, a.ID); err != nil {
+				t.Fatalf("round %d: EnableSignIn: %v", round, err)
+			}
+			if err := login(); err != nil {
+				t.Fatalf("round %d: login after EnableSignIn: %v", round, err)
+			}
 		}
 	})
 
@@ -237,8 +246,8 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 		}
 		var me *stalwartapi.MethodError
 		keys, err := key.APIKeys(ctx, admin.ID)
-		if !errors.As(err, &me) {
-			t.Errorf("APIKeys(admin) through the key = %d keys, %v; want a method error", len(keys), err)
+		if !errors.As(err, &me) || (me.Type != "accountNotFound" && me.Type != "forbidden") {
+			t.Errorf("APIKeys(admin) through the key = %d keys, %v; want accountNotFound or forbidden", len(keys), err)
 		}
 		t.Logf("APIKeys(admin) refused: %v", err)
 		asKey := "Bearer " + secret
@@ -304,7 +313,7 @@ func jmapSet(ctx context.Context, url, auth, account, method string, args map[st
 	}
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
 		return err
 	}
