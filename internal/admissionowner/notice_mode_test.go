@@ -530,6 +530,60 @@ func TestOwnerLiveNoticeDoesNotWaitForPreviewBackoff(t *testing.T) {
 	}
 }
 
+// The live start clears the preview records, and with them the wait their
+// failed deliveries built up: a preview raised after it goes out at once.
+func TestOwnerLiveStartEndsThePreviewBackoff(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	previous := deliveryNow
+	deliveryNow = clock.now
+	t.Cleanup(func() { deliveryNow = previous })
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{previewErr: errors.New("history unavailable")}
+	o, r := noticeOwner(t, f, dryPolicy(1), sink)
+	install := func(next ExecutionPolicy) {
+		t.Helper()
+		f.host.advance(time.Minute)
+		if err := o.do(o.tick); err != nil {
+			t.Fatal(err)
+		}
+		r.publish(next)
+		if err := o.do(o.refreshPolicy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	criticalGap(t, o, p, f.host)
+	for range 4 {
+		o.notices.cycle()
+	}
+	if sink.count() != 3 {
+		t.Fatalf("failing previews = %d deliveries, want 3 before the wait", sink.count())
+	}
+	install(validPolicy(2))
+	install(dryPolicy(3))
+	if err := o.do(func() error {
+		if !o.ledger.LiveStarted() {
+			t.Error("the fixture ledger never started live")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.host.advance(time.Minute)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
+	if err := o.do(func() error { _, err := o.ledger.Terminate(id, admission.ReasonInvalid); return err }); err != nil {
+		t.Fatal(err)
+	}
+	sink.setPreview(nil)
+	o.notices.cycle()
+	if sink.count() != 4 || !sink.lastPreview() {
+		t.Fatalf("a preview after the live start waited: %d deliveries, want 4; preview %v", sink.count(), sink.lastPreview())
+	}
+}
+
 // A delivery of every due group ends the backoff: a later failure is
 // retried at once again, as after any first failure.
 func TestOwnerNoticeDeliveryResetsBackoffAfterSuccess(t *testing.T) {
