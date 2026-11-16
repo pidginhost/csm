@@ -13,6 +13,7 @@ func FuzzParse(f *testing.F) {
 		f.Add(line + "\n")
 		f.Add(line + "\r\n")
 	}
+	f.Add(`2026-11-16T14:00:00Z INFO DKIM verification passed (smtp.dkim-pass) remoteIp = 2001:db8::5, result = [DKIM verification passed (dkim.pass) { domain = "example.org", r = X (a.b) {} }], elapsed = 38ms`)
 	f.Fuzz(func(t *testing.T, line string) {
 		ev, ok := Parse(line)
 		if !ok {

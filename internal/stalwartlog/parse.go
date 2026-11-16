@@ -54,7 +54,7 @@ func Parse(line string) (Event, bool) {
 		return Event{}, false
 	}
 	ev := Event{Time: at, Level: level, Name: name, Fields: map[string]string{}, Lists: map[string][]string{}}
-	if !parseFields(tail, &ev) {
+	if _, ok := parseFields(tail, &ev, 0, ""); !ok {
 		return Event{}, false
 	}
 	return ev, true
@@ -147,12 +147,25 @@ func isEventName(s string) bool {
 }
 
 // parseFields reads "key = value" pairs separated by ", ".
-func parseFields(s string, ev *Event) bool {
+// maxNesting bounds how deep sub-event values may nest.
+const maxNesting = 4
+
+// parseFields reads "key = value, ..." up to closing, or to the end of s when
+// closing is empty. Values go into ev, first key wins; a nil ev discards them,
+// which is how keys inside a sub-event stay out of the top-level fields.
+func parseFields(s string, ev *Event, depth int, closing string) (string, bool) {
+	if s == "" && closing == "" {
+		return "", true
+	}
+	stops := []string{", "}
+	if closing != "" {
+		stops = append(stops, closing)
+	}
 	seen := map[string]bool{}
-	for s != "" {
+	for {
 		key := keyLen(s)
 		if key == 0 || !strings.HasPrefix(s[key:], " = ") {
-			return false
+			return "", false
 		}
 		name := s[:key]
 		s = s[key+len(" = "):]
@@ -167,17 +180,21 @@ func parseFields(s string, ev *Event) bool {
 		case strings.HasPrefix(s, `"`):
 			scalar, s, ok = quoted(s)
 		case strings.HasPrefix(s, "["):
-			list, s, ok = listValue(s)
+			list, s, ok = listValue(s, depth)
 			isList = true
 		case strings.HasPrefix(s, "(null)"):
 			s, null, ok = s[len("(null)"):], true, true
 		default:
-			scalar, s, ok = bare(s, ", ")
+			if name, after, isEvent, valid := subEvent(s, depth); isEvent {
+				scalar, s, ok = name, after, valid
+			} else {
+				scalar, s, ok = bare(s, stops...)
+			}
 		}
 		if !ok {
-			return false
+			return "", false
 		}
-		if !seen[name] {
+		if ev != nil && !seen[name] {
 			seen[name] = true
 			switch {
 			case null:
@@ -187,16 +204,69 @@ func parseFields(s string, ev *Event) bool {
 				ev.Fields[name] = scalar
 			}
 		}
-		if s == "" {
-			return true
+		if closing == "" && s == "" {
+			return "", true
+		}
+		if closing != "" {
+			if after, done := strings.CutPrefix(s, closing); done {
+				return after, true
+			}
 		}
 		var more bool
 		s, more = strings.CutPrefix(s, ", ")
 		if !more {
-			return false
+			return "", false
 		}
 	}
-	return true
+}
+
+// subEvent reads a value that is itself an event, as Stalwart writes a
+// result or reason: "<description> (<event.name>)", optionally followed by
+// " { key = value, ... }". The value is the event name; the block's keys are
+// checked and dropped. isEvent reports whether s starts with a sub-event at
+// all; ok whether it is well formed.
+func subEvent(s string, depth int) (name, rest string, isEvent, ok bool) {
+	for i := 1; i+1 < len(s); i++ {
+		if s[i] != '(' || s[i-1] != ' ' {
+			continue
+		}
+		desc := s[:i-1]
+		if desc == "" || strings.ContainsAny(desc, `"[]{}`) || strings.Contains(desc, ", ") {
+			return "", "", false, false
+		}
+		end := strings.IndexByte(s[i:], ')')
+		if end < 0 {
+			return "", "", false, false
+		}
+		end += i
+		after := s[end+1:]
+		if !isEventName(s[i+1:end]) || !endsValue(after) {
+			continue
+		}
+		if depth >= maxNesting {
+			return "", "", true, false
+		}
+		name, rest = s[i+1:end], after
+		if after, empty := strings.CutPrefix(rest, " {}"); empty {
+			return name, after, true, true
+		}
+		if after, block := strings.CutPrefix(rest, " { "); block {
+			rest, ok = parseFields(after, nil, depth+1, " }")
+			return name, rest, true, ok
+		}
+		return name, rest, true, true
+	}
+	return "", "", false, false
+}
+
+// endsValue reports whether s can follow a sub-event's name.
+func endsValue(s string) bool {
+	for _, next := range []string{", ", " {", " }", "]"} {
+		if strings.HasPrefix(s, next) {
+			return true
+		}
+	}
+	return s == ""
 }
 
 func keyLen(s string) int {
@@ -273,8 +343,9 @@ func unicodeEscape(s string) (rune, int) {
 	return r, end + 1
 }
 
-// listValue reads ["a", "b"]. Elements are quoted strings or bare tokens.
-func listValue(s string) (list []string, rest string, ok bool) {
+// listValue reads ["a", "b"]. Elements are quoted strings, sub-events (their
+// event name) or bare tokens.
+func listValue(s string, depth int) (list []string, rest string, ok bool) {
 	s = s[1:]
 	if after, empty := strings.CutPrefix(s, "]"); empty {
 		return []string{}, after, true
@@ -283,6 +354,8 @@ func listValue(s string) (list []string, rest string, ok bool) {
 		var v string
 		if strings.HasPrefix(s, `"`) {
 			v, s, ok = quoted(s)
+		} else if name, after, isEvent, valid := subEvent(s, depth); isEvent {
+			v, s, ok = name, after, valid
 		} else {
 			v, s, ok = bare(s, ", ", "]")
 		}

@@ -221,3 +221,76 @@ func TestParseAuthFailedLayouts(t *testing.T) {
 		}
 	}
 }
+
+func TestParseNestedEventValues(t *testing.T) {
+	failed := mustParse(t, `2026-11-16T14:00:00Z INFO Delivery failed (delivery.failed) from = "a@example.org", size = 5950, total = 1, queueId = 7, queueName = "remote", to = "b@example.net", reason = SMTP error occurred (delivery.unexpected-response) { details = "Unexpected reply, try later", code = 421, command = "MAIL FROM:<a@example.org>", reason = "line one\nline } two" }, details = 2026-11-16T14:00:00Z, expires = 2026-11-21T14:00:00Z`)
+	if got := failed.Fields["reason"]; got != "delivery.unexpected-response" {
+		t.Fatalf("reason = %q, want the nested event name", got)
+	}
+	if got := failed.Fields["details"]; got != "2026-11-16T14:00:00Z" {
+		t.Fatalf("details = %q, a nested key reached the top level", got)
+	}
+	if got := failed.Fields["expires"]; got != "2026-11-21T14:00:00Z" {
+		t.Fatalf("expires = %q", got)
+	}
+	if _, ok := failed.Fields["code"]; ok {
+		t.Fatal("nested key code reached the top level")
+	}
+
+	iprev := mustParse(t, `2026-11-16T14:00:00Z INFO IPREV check passed (smtp.iprev-pass) listenerId = "smtp", localPort = 25, remoteIp = 2001:db8::5, remotePort = 46541, domain = "mx.example.org", result = IPREV check passed (iprev.pass) { details = ["mx.example.org."] }, elapsed = 83ms`)
+	if iprev.Fields["result"] != "iprev.pass" || iprev.Fields["elapsed"] != "83ms" {
+		t.Fatalf("iprev fields = %+v", iprev.Fields)
+	}
+	if _, ok := iprev.Lists["details"]; ok {
+		t.Fatal("nested list reached the top level")
+	}
+
+	dkim := mustParse(t, `2026-11-16T14:00:00Z INFO DKIM verification passed (smtp.dkim-pass) listenerId = "smtp", localPort = 25, remoteIp = 2001:db8::5, remotePort = 46541, strict = false, result = [DKIM verification passed (dkim.pass) { domain = "example.org" }, DKIM verification failed (dkim.fail) {}], elapsed = 38ms`)
+	if got := dkim.Lists["result"]; !slices.Equal(got, []string{"dkim.pass", "dkim.fail"}) {
+		t.Fatalf("result = %q", got)
+	}
+	if dkim.Fields["elapsed"] != "38ms" {
+		t.Fatalf("elapsed = %q", dkim.Fields["elapsed"])
+	}
+}
+
+func TestParseNestedKeysCannotSupplySession(t *testing.T) {
+	ev := mustParse(t, `2026-11-16T14:00:00Z INFO Authentication failed (auth.failed) listenerId = "smtp", localPort = 587, reason = Check failed (iprev.fail) { remoteIp = 198.51.100.9, remotePort = 1 }, accountName = "x"`)
+	for _, key := range []string{"remoteIp", "remotePort"} {
+		if _, ok := ev.Fields[key]; ok {
+			t.Fatalf("nested %s reached the top level", key)
+		}
+	}
+	if _, ok := ev.Session(); ok {
+		t.Fatal("a nested block supplied the session")
+	}
+	if ev.Fields["accountName"] != "x" {
+		t.Fatalf("accountName = %q", ev.Fields["accountName"])
+	}
+}
+
+func TestParseRejectsBrokenNestedValues(t *testing.T) {
+	deep := `a = 1`
+	for range 6 {
+		deep = `r = X (a.b) { ` + deep + ` }`
+	}
+	for _, tail := range []string{
+		`reason = SMTP error occurred (smtp.error) { code = 421`,
+		`reason = SMTP error occurred (smtp.error) { code = 421 } extra`,
+		`reason = SMTP error occurred (smtp.error) { code }`,
+		`result = [DKIM verification passed (dkim.pass) { domain = "example.org" }`,
+		deep,
+	} {
+		line := `2026-11-16T14:00:00Z INFO Delivery failed (delivery.failed) ` + tail
+		if ev, ok := Parse(line); ok {
+			t.Errorf("Parse(%q) = %+v, want rejection", line, ev)
+		}
+	}
+}
+
+func TestParseBareTokenWithParenthesesStaysBare(t *testing.T) {
+	ev := mustParse(t, `2026-11-16T14:00:00Z INFO Delivery failed (delivery.failed) note = x (a.b)c, size = 1`)
+	if ev.Fields["note"] != "x (a.b)c" || ev.Fields["size"] != "1" {
+		t.Fatalf("fields = %+v", ev.Fields)
+	}
+}
