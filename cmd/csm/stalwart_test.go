@@ -37,6 +37,7 @@ type setupFakeAPI struct {
 	stageErr  error
 	readErr   error
 	writeErr  error
+	deleteErr error
 	reloadErr error
 	writes    []string
 	probe     stalwartapi.SpamProbeResult
@@ -154,7 +155,7 @@ func (f *setupFakeAPI) CreateAPIKey(context.Context, string, string, []string) (
 }
 func (f *setupFakeAPI) DeleteAPIKeys(_ context.Context, _ string, ids []string) error {
 	f.writes = append(f.writes, "delete keys "+strings.Join(ids, ","))
-	return f.writeErr
+	return errors.Join(f.writeErr, f.deleteErr)
 }
 
 // prepare gives the fake the User role and, with done, CSM's role and
@@ -522,6 +523,8 @@ func TestStalwartSetupNeverPrintsKey(t *testing.T) {
 			path := h.useKeyFile(t, "")
 			if fileWriteFails {
 				h.cfg.Stalwart.APIKeyFile = path + "/missing-directory/key"
+				// An error that quotes the new key must not print it.
+				h.api.deleteErr = errors.New("key " + setupTestKey + " is in use")
 			}
 			code, out := h.run()
 			if strings.Contains(out, setupTestKey) {
@@ -530,6 +533,9 @@ func TestStalwartSetupNeverPrintsKey(t *testing.T) {
 			if fileWriteFails {
 				if code != 1 || !strings.Contains(out, "response key") || !slices.Contains(h.api.writes, "delete keys k-new") {
 					t.Fatalf("code %d, writes %q, out %q; want 1 naming the step, the new key deleted", code, h.api.writes, out)
+				}
+				if !strings.Contains(out, "key [redacted] is in use") {
+					t.Fatalf("out %q; want the delete error printed with the key redacted", out)
 				}
 				return
 			}
