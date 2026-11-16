@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +122,100 @@ func TestOwnerRetriesAnEvictedRow(t *testing.T) {
 		if len(call) != 1 || call[0] != want {
 			t.Fatalf("retired %v, want only the victim's row", retires)
 		}
+	}
+}
+
+// A row the engine keeps reporting present is tried twice more at once,
+// then after waits that double up to a minute. A row that leaves ends the
+// wait, and a new eviction is retired at once whatever the wait.
+func TestOwnerBacksOffAStuckEvictedRow(t *testing.T) {
+	o, blocks, victim, _ := evictionOwner(t, firewall.BlockResult{Effect: firewall.BlockApplied, Victim: firewall.VictimRemoved})
+	mono := &fakeMono{now: monoNow()}
+	setOwnerHook(t, o, &monoNow, mono.read)
+	stuck := firewall.BlockAction{Action: fmt.Sprintf("act_%032x", 98), IP: "192.0.2.20"}
+	other := firewall.BlockAction{Action: fmt.Sprintf("act_%032x", 99), IP: "192.0.2.21"}
+	blocks.set(func(b *fakeBlocks) { b.present[stuck.IP], b.present[other.IP] = true, true })
+	if err := o.do(func() error { o.evicted = []firewall.BlockAction{stuck, other}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	pass := func() int {
+		calls := len(blocks.retireCalls())
+		if err := o.do(o.retireEvicted); err != nil {
+			t.Fatal(err)
+		}
+		return len(blocks.retireCalls()) - calls
+	}
+	prompt := func(why string) {
+		t.Helper()
+		for i := range 3 {
+			if n := pass(); n != 1 {
+				t.Fatalf("%s: try %d made %d calls, want it at once", why, i+1, n)
+			}
+		}
+	}
+	prompt("first failures")
+	for wait := 2 * time.Second; wait <= 4*maxProbeWait; wait *= 2 {
+		w := min(wait, maxProbeWait)
+		if n := pass(); n != 0 {
+			t.Fatalf("a stuck row was retried at once after a wait of %v began", w)
+		}
+		mono.advance(w - time.Nanosecond)
+		if n := pass(); n != 0 {
+			t.Fatalf("a stuck row was retried before its wait of %v", w)
+		}
+		mono.advance(time.Nanosecond)
+		if n := pass(); n != 1 {
+			t.Fatalf("a stuck row was not retried after its wait of %v", w)
+		}
+	}
+	blocks.set(func(b *fakeBlocks) { delete(b.present, other.IP) })
+	mono.advance(maxProbeWait)
+	if n := pass(); n != 1 {
+		t.Fatal("the rows were not retried after the longest wait")
+	}
+	prompt("after a row left")
+	if n := pass(); n != 0 {
+		t.Fatal("a stuck row was retried at once after a wait began")
+	}
+	want := firewall.BlockAction{Action: string(victim.Attempt.ID), IP: "192.0.2.10"}
+	mono.advance(batchEvery)
+	turn(t, o)
+	calls := blocks.retireCalls()
+	if last := calls[len(calls)-1]; !slices.Contains(last, want) {
+		t.Fatalf("a new eviction waited behind a stuck row: %v", calls)
+	}
+}
+
+// A new eviction goes ahead of a stuck backlog longer than one batch, so
+// its row is in the very next call.
+func TestOwnerNewEvictionPrecedesAStuckBacklog(t *testing.T) {
+	o, blocks, victim, _ := evictionOwner(t, firewall.BlockResult{Effect: firewall.BlockApplied, Victim: firewall.VictimRemoved})
+	backlog := make([]firewall.BlockAction, firewall.MaxBlockBatchMembers+1)
+	for i := range backlog {
+		backlog[i] = firewall.BlockAction{Action: fmt.Sprintf("act_%032x", 100+i), IP: fmt.Sprintf("2001:db8::%x", 100+i)}
+	}
+	blocks.set(func(b *fakeBlocks) {
+		for _, a := range backlog {
+			b.present[a.IP] = true
+		}
+	})
+	if err := o.do(func() error { o.evicted = append([]firewall.BlockAction(nil), backlog...); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	turn(t, o)
+	want := firewall.BlockAction{Action: string(victim.Attempt.ID), IP: "192.0.2.10"}
+	calls := blocks.retireCalls()
+	last := calls[len(calls)-1]
+	if !slices.Contains(last, want) || len(last) > firewall.MaxBlockBatchMembers {
+		t.Fatalf("a new eviction waited behind a stuck backlog: %d calls, last %v", len(calls), last)
+	}
+	if err := o.do(func() error {
+		if len(o.evicted) != len(backlog) {
+			t.Errorf("queued after the call: %d rows, want the backlog of %d", len(o.evicted), len(backlog))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -274,9 +274,11 @@ type Owner struct {
 	retireAt   time.Time
 	retireWait time.Duration
 	// evicted names the victims whose eviction the ledger recorded and
-	// whose rows the engine has yet to retire.
-	evicted    []firewall.BlockAction
-	evictedErr error
+	// whose rows the engine has yet to retire. evictedWait spaces passes
+	// that clear none of them.
+	evicted     []firewall.BlockAction
+	evictedErr  error
+	evictedWait retryBackoff
 	// heldAt is the monotonic time of the next held check (observeHeld).
 	heldAt time.Time
 	// replacements counts this process's previews that took the slot of a

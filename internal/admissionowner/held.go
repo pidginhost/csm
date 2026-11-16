@@ -51,7 +51,7 @@ func (o *Owner) observeHeld() error {
 		// an evicted victim's row, so a firewall reload cannot restore what
 		// the ledger no longer counts.
 		addr, _ := h.Target.Addr()
-		o.evicted = append(o.evicted, firewall.BlockAction{Action: string(h.Action), IP: addr.String()})
+		o.queueEvicted(firewall.BlockAction{Action: string(h.Action), IP: addr.String()})
 	}
 	if len(gone) > 0 {
 		// Do not leave restorable rows waiting for the next held check.
