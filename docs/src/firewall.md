@@ -319,8 +319,9 @@ ruleset and engine configuration and cancels that timer. While confirmation
 remains pending, `csm firewall restart` and another `apply-confirmed` are refused.
 A rollback restores the ruleset and the saved blocks of the moment the window
 opened. When the window ends, CSM retimes temporary blocks from readable
-saved state. Normal rollback restores the saved engine configuration first;
-confirmation after an unreadable saved configuration accepts the current
+saved state, including IPv6 blocks when a restart during the window had
+disabled IPv6 filtering. Normal rollback restores the saved engine configuration
+first; confirmation after an unreadable saved configuration accepts the current
 configuration. A retiming failure logs a warning and releases the hold, so
 restored timers may still outlast the displayed expiry. Older windows with
 no saved block snapshot keep their restored timers.

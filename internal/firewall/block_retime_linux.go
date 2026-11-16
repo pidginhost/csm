@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/google/nftables"
 )
 
 // RetimeBlocks replaces the elements of the blocked address sets with the
@@ -52,15 +54,24 @@ func (e *Engine) RetimeBlocks() error {
 	if err := addElementsChunked(conn, e.setBlocked, initial.blocked4); err != nil {
 		return err
 	}
-	// A set an earlier ruleset left behind is not in the kernel.
-	if e.setBlocked6 != nil && e.cfg.IPv6 {
-		conn.FlushSet(e.setBlocked6)
-		if err := addElementsChunked(conn, e.setBlocked6, initial.blocked6); err != nil {
+	blocked6 := e.setBlocked6
+	if e.cfg.IPv6 {
+		// A restart inside a window with IPv6 disabled creates no IPv6
+		// reference, even when the rollback restores IPv6 filtering.
+		if blocked6 == nil {
+			blocked6 = &nftables.Set{
+				Table: e.table, Name: "blocked_ips6",
+				KeyType: nftables.TypeIP6Addr, HasTimeout: true,
+			}
+		}
+		conn.FlushSet(blocked6)
+		if err := addElementsChunked(conn, blocked6, initial.blocked6); err != nil {
 			return err
 		}
 	}
 	if err := conn.Flush(); err != nil {
 		return fmt.Errorf("retiming blocked sets: %w", err)
 	}
+	e.setBlocked6 = blocked6
 	return nil
 }

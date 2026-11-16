@@ -1224,8 +1224,10 @@ with the restore. The restored ruleset also gives each timed block the time
 it had left when the window opened. When the hold ends, `RetimeBlocks`
 uses one strictly read row image and replaces the blocked sets in one
 transaction. Normal rollback restores configuration first; explicit
-confirmation accepts the current configuration. An unreadable image sends
-nothing, even with a cache or a successfully preserved corrupt state file.
+confirmation accepts the current configuration. If startup with IPv6 disabled
+left no blocked-set reference, retiming binds the restored IPv6 set after a
+successful transaction. An unreadable image sends nothing, even with a cache
+or a successfully preserved corrupt state file.
 A retiming failure warns and releases the hold. A restart with a window pending holds them before the owner sees
 the engine, until startup recovery settles the window. A window opened between
 member checks and apply also holds execution, but is not an apply fault:

@@ -70,6 +70,9 @@ func TestKernelRetimeBlocksRestoresRowLifetimes(t *testing.T) {
 		t.Fatal("a row proved an element with a stale timer")
 	}
 
+	// A restart with IPv6 disabled leaves no reference to the set that
+	// the rollback restores. Retiming must bind it again for later batches.
+	e.setBlocked6 = nil
 	if err := e.RetimeBlocks(); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ package firewall
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -106,6 +107,51 @@ func TestRetimeBlocksReplacesEachSetFromItsRows(t *testing.T) {
 		if got := retimedTimeouts(t, *captured, set); !slices.Equal(got, want) {
 			t.Errorf("%s element timeouts = %v, want %v", set, got, want)
 		}
+	}
+}
+
+// Startup with IPv6 disabled creates no IPv6 set reference. A subsequent
+// rollback can restore a ruleset and configuration that filter IPv6.
+func TestRetimeBlocksRestoresMissingIPv6Reference(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("empty=%t", empty), func(t *testing.T) {
+			conn, captured := nftConnCapturingRules(t)
+			e := retimeEngine(t, conn)
+			if empty {
+				writeRawFirewallState(t, e, FirewallState{})
+			}
+			e.SetConfig(&FirewallConfig{IPv6: true})
+			if err := e.RetimeBlocks(); err != nil {
+				t.Fatal(err)
+			}
+			wantChanges := []string{"flush"}
+			var wantTimeouts []time.Duration
+			if !empty {
+				wantChanges = append(wantChanges, "add")
+				wantTimeouts = []time.Duration{30 * time.Minute}
+			}
+			if got := setChanges(t, *captured, "blocked_ips6"); !slices.Equal(got, wantChanges) {
+				t.Errorf("IPv6 changes = %v, want %v", got, wantChanges)
+			}
+			if got := retimedTimeouts(t, *captured, "blocked_ips6"); !slices.Equal(got, wantTimeouts) {
+				t.Errorf("IPv6 timeouts = %v, want %v", got, wantTimeouts)
+			}
+			if e.setBlocked6 == nil || e.setBlocked6.Name != "blocked_ips6" || e.setBlocked6.Table != e.table || !e.setBlocked6.HasTimeout || e.setBlocked6.KeyType != nftables.TypeIP6Addr {
+				t.Fatalf("restored IPv6 set reference = %+v", e.setBlocked6)
+			}
+		})
+	}
+}
+
+func TestRetimeBlocksDoesNotPublishARefusedIPv6Reference(t *testing.T) {
+	conn, _ := nftConnReturningErrsThenOK(t, syscall.ENOENT)
+	e := retimeEngine(t, conn)
+	e.SetConfig(&FirewallConfig{IPv6: true})
+	if err := e.RetimeBlocks(); !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("retiming error = %v, want ENOENT", err)
+	}
+	if e.setBlocked6 != nil {
+		t.Fatalf("a refused transaction published an IPv6 set: %+v", e.setBlocked6)
 	}
 }
 

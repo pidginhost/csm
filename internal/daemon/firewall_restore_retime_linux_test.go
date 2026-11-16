@@ -44,11 +44,12 @@ func retimedFirewall(t *testing.T, unproven, configured *bool) (d *Daemon, start
 func TestRolledBackWindowRetimesItsBlocksBeforeRelease(t *testing.T) {
 	for _, mode := range []string{"deadman", "failed apply", "restart"} {
 		t.Run(mode, func(t *testing.T) {
-			unproven, configured := true, true
+			unproven, configured := false, true
 			d, start, calls := retimedFirewall(t, &unproven, &configured)
 			confirmFile, rollbackFile, legacyRollbackFile := firewallRollbackFiles(d.cfg.StatePath)
 			prepare := func() (*firewall.FirewallConfig, error) {
 				configured = false
+				unproven = true
 				return &firewall.FirewallConfig{}, nil
 			}
 			restore := func(*firewall.FirewallConfig) { configured = true }
@@ -82,6 +83,7 @@ func TestRolledBackWindowRetimesItsBlocksBeforeRelease(t *testing.T) {
 				restoreFirewallEngineConfig = func(*Daemon, *firewall.FirewallConfig) { configured = true }
 				t.Cleanup(func() { restoreFirewallEngineConfig = oldRestore })
 				start()
+				unproven = true
 				d.recoverFirewallApplyConfirmed()
 			}
 			if len(*calls) != 1 || (*calls)[0] != (retimeCall{gated: true, held: true, configured: true}) {
