@@ -138,6 +138,13 @@ func (s *sender) cycle() {
 		}
 		var readErr error
 		due, readErr = l.PendingNotices()
+		if readErr == nil && len(due) > 0 && read.IsZero() {
+			// Startup can deliver saved notices before its first valid
+			// clock reading. Keep the persisted read boundary as well.
+			var clock admission.Clock
+			clock, readErr = store.ReadAdmissionClock(s.o.opts.DB)
+			read = clock.Now()
+		}
 		return readErr
 	})
 	if err != nil || l == nil {
@@ -176,10 +183,17 @@ func (s *sender) cycle() {
 		if len(findings) == 0 {
 			continue
 		}
-		if !s.deliver(&s.ledgerRetry, findings, preview) {
+		// Both groups share the ledger retry. A partial success must not
+		// erase failures of the other group.
+		retry := s.ledgerRetry
+		if !s.deliver(&retry, findings, preview) {
+			s.ledgerRetry = retry
 			break
 		}
 		acks = append(acks, group...)
+	}
+	if len(acks) == len(due) {
+		s.ledgerRetry = retryBackoff{}
 	}
 	if len(acks) == 0 {
 		return
@@ -310,6 +324,11 @@ type liveSpan struct{ since, until time.Time }
 // it started in. A span boundary shares its time with the events beside
 // it, so an event at a flip counts as live.
 func (o *Owner) noteMode() {
+	// Keep the initial mode for restored notices. A later policy cannot
+	// bound its span until startup gets its first admission clock reading.
+	if o.modeNoted && o.now.IsZero() {
+		return
+	}
 	open := len(o.liveSpans) > 0 && o.liveSpans[len(o.liveSpans)-1].until.IsZero()
 	switch live := o.executing(); {
 	case live && !open:

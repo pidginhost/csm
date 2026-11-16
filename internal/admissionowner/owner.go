@@ -598,6 +598,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 		return reading, fmt.Errorf("reading the admission clock: %w", err)
 	}
 	o.tickErr, o.degraded, o.lastTick, o.now = nil, t.Degraded, reading.Wall, t.Now
+	o.noteMode()
 	// A forecast meters the committed clock as the ledger's ceiling does.
 	// One that cannot starts over at its next turn.
 	if o.shadow != nil && o.shadow.advance(t) != nil {

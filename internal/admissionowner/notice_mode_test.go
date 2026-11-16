@@ -129,6 +129,75 @@ func TestOwnerNoticesKeepTheModeTheyWereRaisedIn(t *testing.T) {
 	}
 }
 
+// A policy can change while startup has no admission clock yet. That
+// failed live start must not turn later dry-run events into live notices.
+func TestOwnerNoticeModeAfterClockFailureAtStartup(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{}
+	previous, _ := noticeOwner(t, f, validPolicy(1), sink)
+	previous.Stop()
+	f.host.set(func(h *fakeHost) { h.clockErr = errors.New("clock unavailable") })
+	o, r := noticeOwner(t, f, validPolicy(1), sink)
+	if ownerStarted(t, o) {
+		t.Fatal("fixture startup did not fail")
+	}
+	r.publish(dryPolicy(2))
+	f.host.set(func(h *fakeHost) { h.clockErr = nil })
+	if err := o.do(func() error {
+		o.startErr = o.start()
+		return o.startErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.host.advance(time.Second)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	criticalGap(t, o, p, f.host)
+	o.notices.cycle()
+	if sink.count() != 1 || !sink.lastPreview() || len(sink.last()) != 2 {
+		t.Fatalf("dry-run gap after startup recovery: %d deliveries, preview %v, findings %+v", sink.count(), sink.lastPreview(), sink.last())
+	}
+}
+
+// Restored notices retain the initial startup mode even when a clock
+// failure delays startup until after another policy is installed.
+func TestOwnerRestoredNoticeKeepsStartupModeAfterClockFailure(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		t.Run(fmt.Sprintf("startup_live_%v", live), func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			previous, _ := noticeOwner(t, f, validPolicy(1), &noticeSink{})
+			criticalGap(t, previous, p, f.host)
+			previous.Stop()
+			f.host.set(func(h *fakeHost) { h.clockErr = errors.New("clock unavailable") })
+			first, next := dryPolicy(1), validPolicy(2)
+			if live {
+				first, next = validPolicy(1), dryPolicy(2)
+			}
+			sink := &noticeSink{}
+			o, r := noticeOwner(t, f, first, sink)
+			if ownerStarted(t, o) {
+				t.Fatal("fixture startup did not fail")
+			}
+			r.publish(next)
+			f.host.set(func(h *fakeHost) { h.clockErr = nil })
+			f.host.advance(time.Second)
+			if err := o.do(func() error {
+				o.startErr = o.start()
+				return o.startErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			o.notices.cycle()
+			if sink.count() != 1 || sink.lastPreview() == live || len(sink.last()) != 2 {
+				t.Fatalf("restored gap: %d deliveries, preview %v, findings %+v", sink.count(), sink.lastPreview(), sink.last())
+			}
+		})
+	}
+}
+
 // A record is live when it comes only from a real attempt, or when an
 // event it has not delivered may fall in a live span of this process.
 // Undelivered events are no older than the read of the last acknowledged
@@ -215,6 +284,78 @@ func TestOwnerNoticeKeepsLiveEventsRaisedDuringDelivery(t *testing.T) {
 	}
 }
 
+// Pending records can be read before startup gets a valid clock reading.
+// Delivery must still retain the saved read time when startup recovers
+// and raises new live events before that delivery is acknowledged.
+func TestOwnerNoticeReadBeforeStartupClockKeepsLiveEvents(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	previous, _ := noticeOwner(t, f, validPolicy(1), &noticeSink{})
+	criticalGap(t, previous, p, f.host)
+	previous.Stop()
+	f.host.set(func(h *fakeHost) { h.clockErr = errors.New("clock unavailable") })
+	r := &policyReader{p: dryPolicy(1)}
+	sink := &noticeSink{}
+	var during func()
+	opts := executeOptions(f, newFakeBlocks())
+	opts.Policy = r.read
+	opts.Deliver = func(fs []alert.Finding, preview bool) error {
+		err := sink.deliver(fs, preview)
+		if preview && during != nil {
+			fn := during
+			during = nil
+			fn()
+		}
+		return err
+	}
+	o := f.start(opts)
+	if ownerStarted(t, o) {
+		t.Fatal("fixture startup did not fail")
+	}
+	advance := func(d time.Duration) {
+		t.Helper()
+		f.host.advance(d)
+		if err := o.do(o.tick); err != nil {
+			t.Fatal(err)
+		}
+	}
+	during = func() {
+		f.host.set(func(h *fakeHost) { h.clockErr = nil })
+		f.host.advance(time.Second)
+		r.publish(validPolicy(2))
+		if err := o.do(func() error {
+			o.startErr = o.start()
+			return o.startErr
+		}); err != nil {
+			t.Fatal(err)
+		}
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
+		if err := o.do(func() error { _, err := o.ledger.Terminate(id, admission.ReasonPolicy); return err }); err != nil {
+			t.Fatal(err)
+		}
+		advance(time.Second)
+		r.publish(dryPolicy(3))
+		if err := o.Reload(); err != nil {
+			t.Fatal(err)
+		}
+		advance(time.Second)
+	}
+	o.notices.cycle()
+	if ledgerDeliveries(sink) != 1 || !sink.lastPreview() {
+		t.Fatalf("startup delivery = %d, preview %v", ledgerDeliveries(sink), sink.lastPreview())
+	}
+	advance(time.Hour)
+	o.notices.cycle()
+	if ledgerDeliveries(sink) != 2 || sink.lastPreview() || len(sink.last()) != 2 {
+		t.Fatalf("events raised during delivery = %d, preview %v, findings %+v", ledgerDeliveries(sink), sink.lastPreview(), sink.last())
+	}
+	for _, fd := range sink.last() {
+		if fd.Severity != alert.Critical || !strings.HasPrefix(fd.Details, "events=1 ") {
+			t.Errorf("live notice = %+v", fd)
+		}
+	}
+}
+
 // Records of both modes go out live first, then as previews, and only
 // what went out is acknowledged: a failed preview group stays due and is
 // the only one sent again.
@@ -262,6 +403,76 @@ func TestOwnerSplitNoticeDeliveryAcknowledgesOnlySuccess(t *testing.T) {
 	o.notices.cycle()
 	if sink.count() != 3 {
 		t.Fatalf("an acknowledged group went out again: %d deliveries", sink.count())
+	}
+}
+
+// A successful live group cannot erase repeated failures of the preview
+// group in the same ledger batch.
+func TestOwnerSplitNoticeDeliveryKeepsBackoff(t *testing.T) {
+	clock := &testClock{t: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	previous := deliveryNow
+	deliveryNow = clock.now
+	t.Cleanup(func() { deliveryNow = previous })
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{previewErr: errors.New("history unavailable")}
+	o, r := noticeOwner(t, f, validPolicy(1), sink)
+	advance := func() {
+		t.Helper()
+		f.host.advance(time.Minute)
+		clock.advance(time.Minute)
+		if err := o.do(o.tick); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gap := func(addr string, reason admission.Reason) {
+		t.Helper()
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, addr)
+		if err := o.do(func() error { _, err := o.ledger.Terminate(id, reason); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	criticalGap(t, o, p, f.host)
+	advance()
+	r.publish(dryPolicy(2))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	advance()
+	gap("192.0.2.11", admission.ReasonInvalid)
+	o.notices.cycle()
+	advance()
+	r.publish(validPolicy(3))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		advance()
+		gap(fmt.Sprintf("192.0.2.%d", 12+i), admission.ReasonPolicy)
+		o.notices.cycle()
+	}
+	if sink.count() != 6 {
+		t.Fatalf("deliveries = %d, want three live/preview pairs", sink.count())
+	}
+	for i := range 6 {
+		fs, preview := sink.delivery(i)
+		if len(fs) == 0 || preview != (i%2 == 1) {
+			t.Fatalf("delivery %d: %d findings, preview %v", i, len(fs), preview)
+		}
+	}
+	sink.setPreview(nil)
+	o.notices.cycle()
+	if sink.count() != 6 {
+		t.Fatalf("partial successes erased preview backoff: %d deliveries", sink.count())
+	}
+	clock.advance(2 * defaultNoticeEvery)
+	o.notices.cycle()
+	if sink.count() != 7 || !sink.lastPreview() || len(sink.last()) != 1 {
+		t.Fatalf("retry = %d deliveries, last %+v, preview %v", sink.count(), sink.last(), sink.lastPreview())
+	}
+	o.notices.cycle()
+	if sink.count() != 7 {
+		t.Fatal("an acknowledged group was delivered again")
 	}
 }
 
