@@ -224,6 +224,8 @@ higher-priority one; a block of unknown origin is never replaced.
 Rows of an address family without a blocked set neither fill the temporary
 limit nor become replacement victims. Turning off IPv6 filtering therefore
 does not make saved IPv6 blocks refuse a new temporary block.
+Checking the limit does not remove blocks. Dry runs and allowed verdicts keep
+existing blocks, even when the limit would require a replacement.
 
 At the temporary limit, replacement uses the same live set image as the
 limit count. A saved row without an element cannot free a slot. When no
