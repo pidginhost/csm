@@ -364,6 +364,7 @@ stalwart:
   log_prefix: stalwart.log              # file name before the date suffix
   ports: []                             # non-standard listeners as PORT:PROTOCOL (smtp, imap, pop3, sieve, http), e.g. ["10465:smtp"]
   api_url: http://127.0.0.1:8080        # Stalwart admin API for csm stalwart setup and csm doctor; https unless on this host; file-only, the login comes from the environment
+  api_key_file: /etc/csm/stalwart-api.key  # API key CSM uses to act on Stalwart; a regular file owned by root with no group or other access (0600); file-only
 
 # --- State ---
 state_path: "/var/lib/csm/state"        # bbolt DB and state files

@@ -2145,6 +2145,36 @@ func TestStalwartAPIURLDefaultAndValidation(t *testing.T) {
 	}
 }
 
+func TestStalwartConfigDefaults(t *testing.T) {
+	builtIn, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	packaged, err := LoadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builtIn.Stalwart.APIKeyFile != "/etc/csm/stalwart-api.key" || packaged.Stalwart.APIKeyFile != builtIn.Stalwart.APIKeyFile {
+		t.Fatalf("api_key_file: built-in %q, packaged %q", builtIn.Stalwart.APIKeyFile, packaged.Stalwart.APIKeyFile)
+	}
+}
+
+func TestStalwartKeyFileValidation(t *testing.T) {
+	if _, err := LoadBytes([]byte("stalwart:\n  api_key_file: /etc/csm/stalwart-api.key\n")); err != nil {
+		t.Fatalf("default path refused: %v", err)
+	}
+	for _, bad := range []string{"relative/key", "/", "/etc/csm/../csm/stalwart-api.key", "/etc/csm/"} {
+		_, err := LoadBytes([]byte("stalwart:\n  api_key_file: \"" + bad + "\"\n"))
+		if err == nil || !strings.Contains(err.Error(), "stalwart.api_key_file") {
+			t.Errorf("%s: err = %v, want a stalwart.api_key_file error", bad, err)
+		}
+	}
+}
+
 func TestStalwartAPIURLRejectsAmbiguousOrigin(t *testing.T) {
 	for _, address := range []string{"https://mail.example.org/?q=x", "https://mail.example.org/#x"} {
 		if _, err := LoadBytes([]byte("stalwart:\n  api_url: " + address + "\n")); err == nil {
