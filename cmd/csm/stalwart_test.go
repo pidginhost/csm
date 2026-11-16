@@ -676,3 +676,47 @@ func TestStalwartSetupWarnsOnAccountWithPassword(t *testing.T) {
 		t.Fatalf("writes = %q, want no key created", h.api.writes)
 	}
 }
+
+func TestStalwartSetupExitStates(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state stalwartsetup.State
+		want  int
+	}{
+		{"response role", stalwartsetup.Warn, 1},
+		{"response account", stalwartsetup.Warn, 1},
+		{"response key", stalwartsetup.Warn, 1},
+		{"spam filter", stalwartsetup.Warn, 0},
+		{"proxy protocol listeners", stalwartsetup.Warn, 0},
+		{"webmail client addresses", stalwartsetup.Unsafe, 1},
+		{"response role", stalwartsetup.Done, 0},
+		{"response account", stalwartsetup.Change, 0},
+		{"response key", stalwartsetup.Skipped, 0},
+	} {
+		t.Run(tc.name+"/"+string(tc.state), func(t *testing.T) {
+			plan := stalwartsetup.Plan{Steps: []stalwartsetup.Step{{Name: tc.name, State: tc.state}}}
+			if got := stalwartSetupExit(plan); got != tc.want {
+				t.Fatalf("exit = %d; want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStalwartSetupMissingUserRoleFails(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprint(dryRun), func(t *testing.T) {
+			h := newDoctorKeyHarness(t)
+			h.api.userRole = false
+			var args []string
+			if dryRun {
+				args = []string{"--dry-run"}
+			}
+			if code, out := h.run(args...); code != 1 || !strings.Contains(out, "response role: warn: ") {
+				t.Fatalf("code %d, out %q; want exit 1 naming the missing role", code, out)
+			}
+			if dryRun && len(h.api.writes) != 0 {
+				t.Fatal("dry run wrote settings")
+			}
+		})
+	}
+}

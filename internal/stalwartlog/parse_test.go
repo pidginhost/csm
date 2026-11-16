@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -224,8 +225,8 @@ func TestParseAuthFailedLayouts(t *testing.T) {
 
 func TestParseNestedEventValues(t *testing.T) {
 	failed := mustParse(t, `2026-11-16T14:00:00Z INFO Delivery failed (delivery.failed) from = "a@example.org", size = 5950, total = 1, queueId = 7, queueName = "remote", to = "b@example.net", reason = SMTP error occurred (delivery.unexpected-response) { details = "Unexpected reply, try later", code = 421, command = "MAIL FROM:<a@example.org>", reason = "line one\nline } two" }, details = 2026-11-16T14:00:00Z, expires = 2026-11-21T14:00:00Z`)
-	if got := failed.Fields["reason"]; got != "delivery.unexpected-response" {
-		t.Fatalf("reason = %q, want the nested event name", got)
+	if got := failed.Fields["reason"]; got != `SMTP error occurred (delivery.unexpected-response) { details = "Unexpected reply, try later", code = 421, command = "MAIL FROM:<a@example.org>", reason = "line one\nline } two" }` {
+		t.Fatalf("reason = %q, want the complete nested event", got)
 	}
 	if got := failed.Fields["details"]; got != "2026-11-16T14:00:00Z" {
 		t.Fatalf("details = %q, a nested key reached the top level", got)
@@ -238,7 +239,7 @@ func TestParseNestedEventValues(t *testing.T) {
 	}
 
 	iprev := mustParse(t, `2026-11-16T14:00:00Z INFO IPREV check passed (smtp.iprev-pass) listenerId = "smtp", localPort = 25, remoteIp = 2001:db8::5, remotePort = 46541, domain = "mx.example.org", result = IPREV check passed (iprev.pass) { details = ["mx.example.org."] }, elapsed = 83ms`)
-	if iprev.Fields["result"] != "iprev.pass" || iprev.Fields["elapsed"] != "83ms" {
+	if iprev.Fields["result"] != `IPREV check passed (iprev.pass) { details = ["mx.example.org."] }` || iprev.Fields["elapsed"] != "83ms" {
 		t.Fatalf("iprev fields = %+v", iprev.Fields)
 	}
 	if _, ok := iprev.Lists["details"]; ok {
@@ -246,7 +247,7 @@ func TestParseNestedEventValues(t *testing.T) {
 	}
 
 	dkim := mustParse(t, `2026-11-16T14:00:00Z INFO DKIM verification passed (smtp.dkim-pass) listenerId = "smtp", localPort = 25, remoteIp = 2001:db8::5, remotePort = 46541, strict = false, result = [DKIM verification passed (dkim.pass) { domain = "example.org" }, DKIM verification failed (dkim.fail) {}], elapsed = 38ms`)
-	if got := dkim.Lists["result"]; !slices.Equal(got, []string{"dkim.pass", "dkim.fail"}) {
+	if got := dkim.Lists["result"]; !slices.Equal(got, []string{`DKIM verification passed (dkim.pass) { domain = "example.org" }`, `DKIM verification failed (dkim.fail) {}`}) {
 		t.Fatalf("result = %q", got)
 	}
 	if dkim.Fields["elapsed"] != "38ms" {
@@ -292,5 +293,51 @@ func TestParseBareTokenWithParenthesesStaysBare(t *testing.T) {
 	ev := mustParse(t, `2026-11-16T14:00:00Z INFO Delivery failed (delivery.failed) note = x (a.b)c, size = 1`)
 	if ev.Fields["note"] != "x (a.b)c" || ev.Fields["size"] != "1" {
 		t.Fatalf("fields = %+v", ev.Fields)
+	}
+}
+
+// Event-shaped scalars were accepted before nested blocks were supported.
+// Keep their text and every other field, across all daemon-consumed events.
+func TestParseConsumedEventsPreserveValues(t *testing.T) {
+	for _, name := range []string{"auth.failed", "auth.success", "security.authentication-ban", "security.abuse-ban", "security.scan-ban", "queue.authenticated-message-queued", "queue.message-queued", "message-ingest.ham", "message-ingest.spam", "spam.classify"} {
+		for _, value := range []string{"Check failed (iprev.fail)", "Check failed (iprev.fail) {}", "Check failed (iprev.fail)]suffix", "Check failed (iprev.fail) }suffix"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				line := `2026-11-11T10:00:00Z INFO Event (` + name + `) listenerId = "smtp", localPort = 25, remoteIp = 203.0.113.10, remotePort = 50123, reason = ` + value + `, result = reject, queueId = 7, accountName = "user@example.org", to = ["a@example.org"], details = " } (x.y), remoteIp = 198.51.100.9"`
+				ev := mustParse(t, line)
+				want := map[string]string{"listenerId": "smtp", "localPort": "25", "remoteIp": "203.0.113.10", "remotePort": "50123", "reason": value, "result": "reject", "queueId": "7", "accountName": "user@example.org", "details": " } (x.y), remoteIp = 198.51.100.9"}
+				if !reflect.DeepEqual(ev.Fields, want) || !reflect.DeepEqual(ev.Lists, map[string][]string{"to": {"a@example.org"}}) {
+					t.Fatalf("fields = %#v, lists = %#v; want %#v and original recipients", ev.Fields, ev.Lists, want)
+				}
+			})
+		}
+	}
+}
+
+func TestParseNestedValuesPreserveTextAndIsolateKeys(t *testing.T) {
+	values := []string{
+		`Check failed (iprev.fail)`,
+		`Check failed (iprev.fail) {}`,
+		`Check failed (iprev.fail) { remoteIp = 198.51.100.9, remotePort = 1, to = ["forged@example.org"], details = " } (x.y), remoteIp = 198.51.100.8" }`,
+	}
+	for _, value := range values {
+		for _, list := range []bool{false, true} {
+			t.Run(value+strconv.FormatBool(list), func(t *testing.T) {
+				tail := value
+				wantFields := map[string]string{"reason": value, "accountName": "user@example.org"}
+				wantLists := map[string][]string{}
+				if list {
+					tail = "[" + value + `, " } (x.y), "]`
+					delete(wantFields, "reason")
+					wantLists["reason"] = []string{value, " } (x.y), "}
+				}
+				ev := mustParse(t, `2026-11-11T10:00:00Z INFO Authentication failed (auth.failed) reason = `+tail+`, accountName = "user@example.org"`)
+				if !reflect.DeepEqual(ev.Fields, wantFields) || !reflect.DeepEqual(ev.Lists, wantLists) {
+					t.Fatalf("fields = %#v, lists = %#v; want %#v, %#v", ev.Fields, ev.Lists, wantFields, wantLists)
+				}
+				if _, ok := ev.Session(); ok {
+					t.Fatal("nested values supplied a session")
+				}
+			})
+		}
 	}
 }

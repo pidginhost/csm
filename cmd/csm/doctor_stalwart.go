@@ -328,7 +328,7 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 			keyCheck.Message = "Stalwart accepts CSM's API key"
 		case errors.Is(err, stalwartapi.ErrNoKeyFile):
 			keyCheck = stalwartNoKeyCheck(sc.APIKeyFile)
-		case errors.Is(err, fs.ErrPermission):
+		case key == "" && errors.Is(err, fs.ErrPermission):
 			keyCheck = DoctorCheck{Name: keyCheck.Name, Status: "warn",
 				Message: "Not checked; only root can read CSM's API key at " + sc.APIKeyFile,
 				Fix:     "run csm doctor as root"}

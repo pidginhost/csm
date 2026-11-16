@@ -15,7 +15,8 @@ import (
 )
 
 // Event is one parsed log line. Fields holds scalar values with quotes
-// removed and escapes decoded; Lists holds list values. A (null) value
+// removed and escapes decoded; Lists holds list values. Sub-event values
+// retain their full text, with nested keys kept out of both maps. A (null) value
 // leaves its key absent from both.
 type Event struct {
 	Time   time.Time
@@ -146,7 +147,6 @@ func isEventName(s string) bool {
 	return dots > 0 && prev != '.'
 }
 
-// parseFields reads "key = value" pairs separated by ", ".
 // maxNesting bounds how deep sub-event values may nest.
 const maxNesting = 4
 
@@ -220,19 +220,17 @@ func parseFields(s string, ev *Event, depth int, closing string) (string, bool) 
 	}
 }
 
-// subEvent reads a value that is itself an event, as Stalwart writes a
-// result or reason: "<description> (<event.name>)", optionally followed by
-// " { key = value, ... }". The value is the event name; the block's keys are
-// checked and dropped. isEvent reports whether s starts with a sub-event at
-// all; ok whether it is well formed.
-func subEvent(s string, depth int) (name, rest string, isEvent, ok bool) {
-	for i := 1; i+1 < len(s); i++ {
-		if s[i] != '(' || s[i-1] != ' ' {
-			continue
-		}
-		desc := s[:i-1]
-		if desc == "" || strings.ContainsAny(desc, `"[]{}`) || strings.Contains(desc, ", ") {
+// subEvent reads an event with a field block. Blockless events stay bare
+// values, preserving the text callers already received. Nested keys are
+// validated and discarded; the enclosing value retains its original text.
+func subEvent(s string, depth int) (value, rest string, isEvent, ok bool) {
+	for i := 0; i < len(s); i++ {
+		// Never search subsequent values or quoted client text for an event.
+		if strings.ContainsRune(`"[]{}`, rune(s[i])) || strings.HasPrefix(s[i:], ", ") {
 			return "", "", false, false
+		}
+		if s[i] != '(' || i < 2 || s[i-1] != ' ' {
+			continue
 		}
 		end := strings.IndexByte(s[i:], ')')
 		if end < 0 {
@@ -240,33 +238,24 @@ func subEvent(s string, depth int) (name, rest string, isEvent, ok bool) {
 		}
 		end += i
 		after := s[end+1:]
-		if !isEventName(s[i+1:end]) || !endsValue(after) {
+		if !isEventName(s[i+1:end]) || !strings.HasPrefix(after, " {") {
 			continue
 		}
 		if depth >= maxNesting {
 			return "", "", true, false
 		}
-		name, rest = s[i+1:end], after
-		if after, empty := strings.CutPrefix(rest, " {}"); empty {
-			return name, after, true, true
+		if tail, empty := strings.CutPrefix(after, " {}"); empty {
+			return s[:len(s)-len(tail)], tail, true, true
 		}
-		if after, block := strings.CutPrefix(rest, " { "); block {
-			rest, ok = parseFields(after, nil, depth+1, " }")
-			return name, rest, true, ok
+		if fields, block := strings.CutPrefix(after, " { "); block {
+			rest, ok = parseFields(fields, nil, depth+1, " }")
+			if ok {
+				return s[:len(s)-len(rest)], rest, true, true
+			}
 		}
-		return name, rest, true, true
+		return "", "", true, false
 	}
 	return "", "", false, false
-}
-
-// endsValue reports whether s can follow a sub-event's name.
-func endsValue(s string) bool {
-	for _, next := range []string{", ", " {", " }", "]"} {
-		if strings.HasPrefix(s, next) {
-			return true
-		}
-	}
-	return s == ""
 }
 
 func keyLen(s string) int {
@@ -343,8 +332,8 @@ func unicodeEscape(s string) (rune, int) {
 	return r, end + 1
 }
 
-// listValue reads ["a", "b"]. Elements are quoted strings, sub-events (their
-// event name) or bare tokens.
+// listValue reads ["a", "b"]. Elements are quoted strings, sub-events or
+// bare tokens.
 func listValue(s string, depth int) (list []string, rest string, ok bool) {
 	s = s[1:]
 	if after, empty := strings.CutPrefix(s, "]"); empty {

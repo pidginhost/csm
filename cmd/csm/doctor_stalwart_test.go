@@ -363,6 +363,9 @@ func TestDoctorKeyStates(t *testing.T) {
 		{"forbidden", func(_ *testing.T, h *setupHarness) {
 			h.keyErr = fmt.Errorf("stalwart /.well-known/jmap: bearer %s: %w", doctorTestKey, stalwartapi.ErrForbidden)
 		}, "fail", "Stalwart refused CSM's API key", "run csm stalwart setup", true, true},
+		{"probe permission", func(_ *testing.T, h *setupHarness) {
+			h.keyErr = fmt.Errorf("dial: %w", fs.ErrPermission)
+		}, "warn", "Could not check CSM's API key: dial: permission denied", "", true, true},
 		{"unreachable", func(_ *testing.T, h *setupHarness) {
 			h.keyErr = errors.New("stalwart /.well-known/jmap: dial tcp 127.0.0.1:8080: connection refused, bearer " + doctorTestKey)
 		}, "warn", "Could not check CSM's API key: stalwart /.well-known/jmap: dial tcp 127.0.0.1:8080: connection refused", "", true, true},
@@ -815,5 +818,19 @@ func TestStalwartMalformedLoginIsNotAnEvent(t *testing.T) {
 	sc := stalwartDoctorDir(t, "stalwart.log.2026-11-11", doctorAuthFailed+`, details = [1, 2`)
 	if found, err := logHasEvent(filepath.Join(sc.LogDir, "stalwart.log.2026-11-11"), "auth.failed"); err != nil || found {
 		t.Fatalf("found=%v, err=%v", found, err)
+	}
+}
+
+func TestDoctorMissingKeyNotReportedForFailedRemoteListener(t *testing.T) {
+	h := newDoctorKeyHarness(t)
+	h.useKeyFile(t, "")
+	h.cfg.Stalwart.APIURL = "https://mail.example.org"
+	h.deps.checkListener = func(string) error { return errors.New("connection refused") }
+	checks := h.doctorChecks()
+	if len(checks) != 1 || checks[0].Name != "stalwart settings" || checks[0].Status != "warn" {
+		t.Fatalf("checks = %+v; want only the remote listener warning", checks)
+	}
+	if h.gotKey != "" || h.gotUser != "" {
+		t.Fatal("a failed listener check sent a login")
 	}
 }

@@ -26,7 +26,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - With IPv6 filtering turned off, saved IPv6 blocks no longer cause new temporary blocks to be refused at the temporary block limit.
 - At the temporary block limit, a new block now replaces a block still in the firewall or is refused, instead of going in above the limit.
 - After a firewall rollback, temporary blocks end at the time shown instead of staying blocked for as long again as the confirmation window was open.
-- `csm doctor` on Stalwart hosts no longer warns about Stalwart delivery, DKIM and reverse DNS log lines CSM reads correctly.
+- `csm doctor` on Stalwart hosts accepts nested delivery and authentication details without changing login, ban, or mail tracking.
+- `csm doctor` now distinguishes an unreadable Stalwart key from a permission error while connecting to Stalwart.
 
 ## [4.13.0] - 2026-11-15
 
