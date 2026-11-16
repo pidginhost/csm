@@ -365,8 +365,8 @@ func TestUnblockWithoutKeyLogsAndReturns(t *testing.T) {
 		waitDrain(d)
 	})
 
-	if len(f.lookups) != 0 || len(f.deletes) != 0 {
-		t.Fatalf("lookups=%v deletes=%v, want no Stalwart call without a key", f.lookups, f.deletes)
+	if len(f.lookups) != 0 || len(f.deletes) != 0 || f.reloads != 0 {
+		t.Fatalf("lookups=%v deletes=%v reloads=%d, want no Stalwart call without a key", f.lookups, f.deletes, f.reloads)
 	}
 	if n := strings.Count(out, "Stalwart may still refuse "+ip); n != 2 {
 		t.Fatalf("log = %q, want one line per unblock of %s", out, ip)
@@ -589,19 +589,95 @@ func TestUnblockFailedReloadIsLoggedAndKeepsDraining(t *testing.T) {
 	f := &fakeStalwart{
 		bans:      map[string][]stalwartapi.BlockedIP{good: {autoBan("b6", good)}},
 		reloadErr: errors.New("stalwart: HTTP 500"),
+		hold:      make(chan struct{}),
+		held:      make(chan string, 2),
 	}
 	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
 
 	out := captureAppliedBlockStderr(t, func() {
 		d.stalwartUnban.add(bad)
+		if got := heldLookup(t, f); got != bad {
+			t.Fatalf("first lookup = %s, want %s", got, bad)
+		}
 		d.stalwartUnban.add(good)
+		close(f.hold)
 		waitDrain(d)
 	})
 
-	if n := strings.Count(out, "Stalwart may still refuse "+bad); n != 1 || !strings.Contains(out, "reloading Stalwart's ban list") {
+	if n := strings.Count(out, "Stalwart may still refuse "+bad); n != 1 || strings.Count(out, "\n") != 1 || !strings.Contains(out, "reloading Stalwart's ban list") {
 		t.Fatalf("log = %q, want one line saying the reload for %s failed", out, bad)
+	}
+	if !slices.Equal(f.lookups, []string{bad, good}) || f.reloads != 1 {
+		t.Fatalf("lookups=%v reloads=%d, want bad then good and one failed reload", f.lookups, f.reloads)
 	}
 	if !reflect.DeepEqual(f.deletes, [][]string{{"b6"}}) {
 		t.Fatalf("deletes = %v, want b6 lifted after the failed reload", f.deletes)
+	}
+}
+
+func heldReload(t *testing.T, f *fakeStalwart) {
+	t.Helper()
+	select {
+	case <-f.reloadHeld:
+	case <-time.After(stalwartCallTimeout):
+		t.Fatal("no drain asked Stalwart to reload its bans")
+	}
+}
+
+func TestUnblockStopCancelsReload(t *testing.T) {
+	const ip = "203.0.113.34"
+	f := &fakeStalwart{reloadHold: make(chan struct{}), reloadHeld: make(chan struct{}, 2)}
+	d, clients := unbanDaemon(t, platform.MTAStalwart, f)
+
+	out := captureAppliedBlockStderr(t, func() {
+		d.stalwartUnban.add(ip)
+		heldReload(t, f)
+		d.stalwartUnban.add("203.0.113.35")
+		d.stalwartUnban.stop()
+	})
+	if !errors.Is(f.reloadEnd, context.Canceled) {
+		t.Fatalf("reload ended with %v, want cancellation by stop", f.reloadEnd)
+	}
+	if out != "" {
+		t.Fatalf("log = %q, want nothing for a stopped reload", out)
+	}
+	d.stalwartUnban.add("203.0.113.36")
+	waitDrain(d)
+	if *clients != 1 || !slices.Equal(f.lookups, []string{ip}) || f.reloads != 1 {
+		t.Fatalf("clients=%d lookups=%v reloads=%d, want only the canceled call", *clients, f.lookups, f.reloads)
+	}
+}
+
+// Requests arriving during a reload still use the one drain and coalesce
+// by address, including another unblock of the address being reloaded.
+func TestUnblockReloadCoalescesPendingRequests(t *testing.T) {
+	const ip = "203.0.113.37"
+	f := &fakeStalwart{reloadHold: make(chan struct{}), reloadHeld: make(chan struct{}, 2)}
+	d, _ := unbanDaemon(t, platform.MTAStalwart, f)
+	d.firewallReleased(ip, firewall.ReleaseUnban)
+	heldReload(t, f)
+
+	var adders sync.WaitGroup
+	for _, kind := range []firewall.ReleaseKind{firewall.ReleaseUnban, firewall.ReleaseOperator} {
+		adders.Go(func() {
+			for range 100 {
+				d.firewallReleased(ip, kind)
+			}
+		})
+	}
+	adders.Wait()
+	d.stalwartUnban.mu.Lock()
+	pending := len(d.stalwartUnban.pending)
+	d.stalwartUnban.mu.Unlock()
+	f.mu.Lock()
+	lookups, reloads := len(f.lookups), f.reloads
+	f.mu.Unlock()
+	if pending != 1 || lookups != 1 || reloads != 1 {
+		t.Fatalf("pending=%d lookups=%d reloads=%d, want one pending behind the held reload", pending, lookups, reloads)
+	}
+	close(f.reloadHold)
+	waitDrain(d)
+	if !slices.Equal(f.lookups, []string{ip, ip}) || f.reloads != 2 || f.reloadEnd != nil || f.unbounded != 0 {
+		t.Fatalf("lookups=%v reloads=%d ended=%v unbounded=%d, want two bounded calls without retries", f.lookups, f.reloads, f.reloadEnd, f.unbounded)
 	}
 }

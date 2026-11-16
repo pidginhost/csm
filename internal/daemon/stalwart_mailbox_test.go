@@ -44,6 +44,10 @@ type fakeStalwart struct {
 	// reloads counts ban list reloads asked for on their own.
 	reloads   int
 	reloadErr error
+	// reloadHold and reloadHeld let tests stop the worker during a reload.
+	reloadHold chan struct{}
+	reloadHeld chan struct{}
+	reloadEnd  error
 	// hold, when set, keeps each ban lookup waiting until it is closed or
 	// its context ends; held receives each address as its lookup starts and
 	// holdEnd the context's error if it ended first.
@@ -154,9 +158,30 @@ func (f *fakeStalwart) DeleteBlockedIPs(ctx context.Context, ids []string) error
 
 func (f *fakeStalwart) ReloadBlockedIPs(ctx context.Context) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.bound(ctx)
 	f.reloads++
+	hold, held := f.reloadHold, f.reloadHeld
+	f.mu.Unlock()
+	if held != nil {
+		select {
+		case held <- struct{}{}:
+		default:
+		}
+	}
+	var ended error
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			ended = ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ended != nil {
+		f.reloadEnd = ended
+		return ended
+	}
 	return f.reloadErr
 }
 
