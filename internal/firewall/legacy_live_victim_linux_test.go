@@ -4,6 +4,7 @@ package firewall
 
 import (
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,39 @@ func TestLegacyVictimHoldsALiveElement(t *testing.T) {
 	liveDump(e, nil, owned.IP, live.IP)
 	if victim, err := capVictim(e, "198.51.100.41", false); err != nil || victim != live.IP {
 		t.Errorf("beside an admission row: victim %q, %v; want the row with an element", victim, err)
+	}
+}
+
+// An IPv4-mapped key in the IPv6 set is not the IPv4 element a saved row
+// would delete. It must not make that row eligible for replacement.
+func TestLegacyVictimRequiresItsOwnFamilyElement(t *testing.T) {
+	gone := BlockedEntry{IP: "192.0.2.53", ExpiresAt: time.Now().Add(time.Minute)}
+	live := BlockedEntry{IP: "2001:db8::53", ExpiresAt: time.Now().Add(time.Hour)}
+	for _, automatic := range []bool{false, true} {
+		for _, hasVictim := range []bool{false, true} {
+			e := capEngine(t, 0, gone, live)
+			e.cfg.IPv6 = true
+			e.setBlocked6 = &nftables.Set{Name: "blocked_ips6", KeyType: nftables.TypeIP6Addr}
+			e.liveBlockCounts = nil
+			e.liveBlockedDump = func(set *nftables.Set) ([]nftables.SetElement, error) {
+				if set == e.setBlocked {
+					return nil, nil
+				}
+				elements := []nftables.SetElement{{Key: net.ParseIP(gone.IP).To16(), Timeout: time.Hour}}
+				if hasVictim {
+					elements = append(elements, nftables.SetElement{Key: net.ParseIP(live.IP).To16(), Timeout: time.Hour})
+				}
+				return elements, nil
+			}
+			victim, err := capVictim(e, "198.51.100.53", automatic)
+			if hasVictim {
+				if err != nil || victim != live.IP {
+					t.Errorf("automatic=%v: victim %q, %v; want the IPv6 row", automatic, victim, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "no temp entry to evict") {
+				t.Errorf("automatic=%v: victim %q, %v; want no entry to evict", automatic, victim, err)
+			}
+		}
 	}
 }
 

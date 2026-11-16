@@ -3452,7 +3452,7 @@ func (e *Engine) livePermTempCountsLocked(state FirewallState) (perm, temp int, 
 		perm += p
 		temp += t
 		for _, el := range elements {
-			if ip, valid := setElementIPString(el.Key); valid {
+			if ip, valid := blockSetIP(set, el.Key); valid {
 				live[ip] = true
 			}
 		}

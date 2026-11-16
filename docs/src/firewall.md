@@ -231,6 +231,8 @@ At the temporary limit, replacement uses the same live set image as the
 limit count. A saved row without an element cannot free a slot. When no
 replaceable row has an element, the new block is refused; if a complete
 image cannot be read, the saved rows remain the fallback.
+The element must belong to the address's own family: an IPv4-mapped key
+in the IPv6 set does not prove that an IPv4 block is present.
 
 Temporary IP blocks use a firewall clock that counts elapsed time and never
 moves backward. Setting the system clock back does not add that step to their
