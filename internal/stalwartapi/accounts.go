@@ -31,7 +31,9 @@ func (c *Client) AccountsNamed(ctx context.Context, name string) ([]Account, err
 // AccountByAddress finds the account that signs in as address: by its own
 // address, or through a mailbox alias, a domain alias, or both. An address
 // without a local part is not found. Case is ignored for ASCII letters only:
-// a Unicode fold could map a crafted name onto another account.
+// a Unicode fold could map a crafted name onto another account. The own
+// address is tried first, by local part alone, so it does not depend on
+// reading the whole domain list.
 func (c *Client) AccountByAddress(ctx context.Context, address string) (Account, bool, error) {
 	address = asciiLower(address)
 	at := strings.LastIndexByte(address, '@')
@@ -39,6 +41,15 @@ func (c *Client) AccountByAddress(ctx context.Context, address string) (Account,
 		return Account{}, false, nil
 	}
 	local, domainName := address[:at], address[at+1:]
+	list, err := c.AccountsNamed(ctx, local)
+	if err != nil {
+		return Account{}, false, err
+	}
+	for _, a := range list {
+		if asciiLower(a.Email) == address {
+			return a, true, nil
+		}
+	}
 	domains, err := c.Domains(ctx)
 	if err != nil {
 		return Account{}, false, err
@@ -50,10 +61,6 @@ func (c *Client) AccountByAddress(ctx context.Context, address string) (Account,
 		return Account{}, false, nil
 	}
 	domain := domains[i]
-	list, err := c.AccountsNamed(ctx, local)
-	if err != nil {
-		return Account{}, false, err
-	}
 	for _, a := range list {
 		if asciiLower(a.Email) == local+"@"+domain.Name {
 			return a, true, nil

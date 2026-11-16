@@ -67,10 +67,10 @@ func TestAccountByAddressPicksMatchingDomain(t *testing.T) {
 	if err != nil || !found || got.ID != "a2" || got.Email != "alice@example.net" {
 		t.Fatalf("AccountByAddress = %+v, %v, %v; want a2", got, found, err)
 	}
-	if m := f.methods(); !reflect.DeepEqual(m, []string{"x:Domain/get", "x:Account/query", "x:Account/get"}) {
-		t.Fatalf("calls = %v; want the domain list and one name query, no walk over every account", m)
+	if m := f.methods(); !reflect.DeepEqual(m, []string{"x:Account/query", "x:Account/get"}) {
+		t.Fatalf("calls = %v; want one name query, no domain list and no walk over every account", m)
 	}
-	if s := asJSON(t, f.callAt(1).Args["filter"]); s != `{"name":"alice"}` {
+	if s := asJSON(t, f.callAt(0).Args["filter"]); s != `{"name":"alice"}` {
 		t.Fatalf("query filter = %s", s)
 	}
 	// U+0130 lowers to an ASCII i under Unicode rules; it must not reach alice.
@@ -188,6 +188,26 @@ func TestAccountByAddressResolvesAlias(t *testing.T) {
 	}
 	if n := len(walks(f)); n != before {
 		t.Fatalf("a primary-address match walked every account (%d walks)", n-before)
+	}
+}
+
+// A primary address is found by its local part alone, so a domain list that
+// is too long to read whole cannot hide it.
+func TestAccountByAddressPrimaryNeedsNoDomainList(t *testing.T) {
+	f := directory(t, 0)
+	inner := f.reply
+	f.reply = func(method string, args map[string]any) (string, any) {
+		if method == "x:Domain/get" {
+			return "error", map[string]any{"type": "requestTooLarge"}
+		}
+		return inner(method, args)
+	}
+	got, found, err := f.keyClient().AccountByAddress(context.Background(), "Bob@Example.org")
+	if err != nil || !found || got.ID != "bob1" {
+		t.Fatalf("AccountByAddress = %+v, %v, %v; want bob1", got, found, err)
+	}
+	if m := f.methods(); !reflect.DeepEqual(m, []string{"x:Account/query", "x:Account/get"}) {
+		t.Fatalf("calls = %v; want the name query and its read only", m)
 	}
 }
 
