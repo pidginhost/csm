@@ -268,6 +268,9 @@ func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
 			why = fmt.Sprintf("sign-ins are stopped for %s; allow them in Stalwart or remove the account, then run setup", name)
 		case slices.Contains(creds, "Password") || slices.Contains(creds, "AppPassword"):
 			why = fmt.Sprintf("%s has a password, and CSM's account must have none; remove the password or the account, then run setup", name)
+		case slices.ContainsFunc(creds, func(k string) bool { return k != "ApiKey" }):
+			// A kind CSM does not know, or none, may sign in from anywhere.
+			why = fmt.Sprintf("%s has a sign-in credential CSM does not know; remove it or the account, then run setup", name)
 		case !ours && len(creds) > 0:
 			why = fmt.Sprintf("an account named %s exists that CSM did not make; remove or rename it, then run setup", name)
 		}

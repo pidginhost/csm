@@ -1077,3 +1077,18 @@ func TestPlanAdoptsEmptyAccount(t *testing.T) {
 		t.Fatalf("roles = %v, want the response role only", api.acctRoles["a1"])
 	}
 }
+
+// Only keys are safe on CSM's account: any other kind, including one Stalwart
+// adds later or an entry with no kind, may sign in from anywhere.
+func TestPlanWarnsOnUnknownCredentialKind(t *testing.T) {
+	for _, creds := range [][]string{{"ApiKey", "Totp"}, {""}, {"ApiKey", "x\x1b[2J"}} {
+		t.Run(fmt.Sprintf("%q", creds), func(t *testing.T) {
+			api := preparedAPI()
+			api.creds = map[string][]string{"a1": creds}
+			foreignAccountPlan(t, api, "sign-in credential CSM does not know")
+			if d := inspect(t, api, responseInputs(api, "", nil)).Steps[7].Detail; strings.Contains(d, "\x1b") {
+				t.Fatalf("detail %q prints a raw credential kind", d)
+			}
+		})
+	}
+}
