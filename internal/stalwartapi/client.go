@@ -306,9 +306,18 @@ func (c *Client) query(ctx context.Context, method string, filter map[string]any
 
 // get sends a /get call and decodes its list into dst.
 func (c *Client) get(ctx context.Context, method string, ids []string, dst any) error {
+	return c.getFor(ctx, "", method, ids, dst)
+}
+
+// getFor is get for objects that belong to account. An empty account is the
+// session's.
+func (c *Client) getFor(ctx context.Context, account, method string, ids []string, dst any) error {
 	args := map[string]any{"ids": nil}
 	if ids != nil {
 		args["ids"] = ids
+	}
+	if account != "" {
+		args["accountId"] = account
 	}
 	out, err := c.call(ctx, method, args)
 	if err != nil {
