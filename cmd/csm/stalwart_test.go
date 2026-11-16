@@ -51,6 +51,14 @@ type setupFakeAPI struct {
 	keys      []stalwartapi.APIKey
 	creds     []string
 	secret    string
+
+	// session and sessionErr answer SessionAccount.
+	session    string
+	sessionErr error
+}
+
+func (f *setupFakeAPI) SessionAccount(context.Context) (string, error) {
+	return f.session, f.sessionErr
 }
 
 func (f *setupFakeAPI) TracingLevels(context.Context) ([]stalwartapi.TracingLevel, error) {

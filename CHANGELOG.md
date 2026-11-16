@@ -15,6 +15,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Unblocking an address in CSM on a Stalwart host now also lifts Stalwart's own automatic ban of it.
 - `csm stalwart setup` now creates the Stalwart API key CSM uses to suspend mailboxes and lift bans, stored in a root-only file.
 
+### Changed
+
+- `csm doctor` on Stalwart hosts now checks Stalwart's settings with CSM's own API key, with no admin login needed.
+
 ### Fixed
 
 - Saving attack records after a burst of new or dropped addresses no longer takes minutes on slow disks, which had delayed shutdown and `csm threat forget`.

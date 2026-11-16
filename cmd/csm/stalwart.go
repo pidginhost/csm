@@ -157,11 +157,11 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	defer cancel()
 	// The key works only from this host, so it is never sent anywhere else.
 	if in.LocalAPI {
-		key, keyErr := stalwartapi.ReadKeyFile(cfg.Stalwart.APIKeyFile)
-		if keyErr == nil {
+		key, account, keyErr := stalwartKeyAccount(ctx, cfg.Stalwart.APIKeyFile, url, deps.keyAccount)
+		if key != "" {
 			keys = append(keys, key)
-			in.KeyAccount, keyErr = deps.keyAccount(ctx, url, key)
 		}
+		in.KeyAccount = account
 		switch {
 		case errors.Is(keyErr, stalwartapi.ErrNoKeyFile), errors.Is(keyErr, stalwartapi.ErrUnauthorized), errors.Is(keyErr, stalwartapi.ErrForbidden):
 			// Setup replaces a missing or refused key.
@@ -206,6 +206,18 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 		fmt.Fprintf(out, "Stalwart reload warning: %s\n", redact(w))
 	}
 	return stalwartSetupExit(plan)
+}
+
+// stalwartKeyAccount reads CSM's key file and asks Stalwart which account the
+// key logs in as. A key that was read comes back even when the probe fails,
+// so the caller can redact it.
+func stalwartKeyAccount(ctx context.Context, path, url string, keyAccount func(ctx context.Context, url, key string) (string, error)) (key, account string, err error) {
+	key, err = stalwartapi.ReadKeyFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	account, err = keyAccount(ctx, url, key)
+	return key, account, err
 }
 
 // stalwartSetupInputs reads the running daemon's status for the planner. A
