@@ -122,6 +122,41 @@ func (c *Client) AccountRoleIDs(ctx context.Context, id string) ([]string, error
 	return nil, fmt.Errorf("stalwart %s: account not found", method)
 }
 
+// AccountCredentialTypes lists the kinds of the account's credentials, such
+// as Password, AppPassword or ApiKey, sorted. The credentials carry secrets,
+// so only their kinds are decoded. An unknown account is an error.
+func (c *Client) AccountCredentialTypes(ctx context.Context, id string) ([]string, error) {
+	const method = "x:Account/get"
+	out, err := c.call(ctx, method, map[string]any{"ids": []string{id}, "properties": []string{"id", "credentials"}})
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		List []struct {
+			ID          string `json:"id"`
+			Credentials map[string]struct {
+				Type string `json:"@type"`
+			} `json:"credentials"`
+		} `json:"list"`
+	}
+	// A decode error can quote the response, so it is not passed on.
+	if json.Unmarshal(out, &res) != nil {
+		return nil, fmt.Errorf("stalwart %s: unexpected response", method)
+	}
+	for _, a := range res.List {
+		if a.ID != id {
+			continue
+		}
+		types := make([]string, 0, len(a.Credentials))
+		for _, cred := range a.Credentials {
+			types = append(types, cred.Type)
+		}
+		slices.Sort(types)
+		return types, nil
+	}
+	return nil, fmt.Errorf("stalwart %s: account not found", method)
+}
+
 // SetAccountRole makes roleID the account's only role.
 func (c *Client) SetAccountRole(ctx context.Context, id, roleID string) error {
 	_, err := c.set(ctx, "x:Account/set", map[string]any{"update": map[string]any{id: map[string]any{"roles": customRoles(roleID)}}})

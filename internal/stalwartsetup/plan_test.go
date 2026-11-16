@@ -35,6 +35,7 @@ type fakeAPI struct {
 	acctRoles map[string][]string
 	keys      map[string][]stalwartapi.APIKey
 	keyIPs    map[string][]string
+	creds     map[string][]string
 	nextID    int
 }
 
@@ -651,6 +652,9 @@ func (f *fakeAPI) AccountsNamed(_ context.Context, name string) ([]stalwartapi.A
 func (f *fakeAPI) AccountRoleIDs(_ context.Context, id string) ([]string, error) {
 	return f.acctRoles[id], f.read("AccountRoleIDs")
 }
+func (f *fakeAPI) AccountCredentialTypes(_ context.Context, id string) ([]string, error) {
+	return f.creds[id], f.read("AccountCredentialTypes")
+}
 func (f *fakeAPI) CreateAccount(_ context.Context, name, domainID, roleID string) (string, error) {
 	if err := f.write(fmt.Sprintf("CreateAccount(%s,%s,%s)", name, domainID, roleID)); err != nil {
 		return "", err
@@ -1001,5 +1005,75 @@ func TestPlanResponseStepsReloadOnlyForSettings(t *testing.T) {
 	calls := applyCalls(t, api, p)
 	if slices.Index(calls, "ReloadSettings") != len(calls)-1 || !slices.Contains(calls, "WriteKey(test-key-1)") {
 		t.Fatalf("calls = %q, want one reload after every write", calls)
+	}
+}
+
+// responseState is the fake's role, account and key state, to show a run
+// changed nothing.
+func responseState(api *fakeAPI) string {
+	return fmt.Sprintf("%+v %+v %+v %+v", api.roles, api.accounts, api.acctRoles, api.keys)
+}
+
+// foreignAccountPlan inspects and applies a plan for an existing csm-response
+// account and checks the account step warns with want, the key step is
+// skipped and nothing was written.
+func foreignAccountPlan(t *testing.T, api *fakeAPI, want string) {
+	t.Helper()
+	before := responseState(api)
+	p := inspect(t, api, responseInputs(api, "", nil))
+	if s := p.Steps[7]; s.State != Warn || !strings.Contains(s.Detail, want) {
+		t.Fatalf("account step = %+v, want Warn saying %q", s, want)
+	}
+	if s := p.Steps[8]; s.State != Skipped {
+		t.Fatalf("key step = %+v, want Skipped", s)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+	if after := responseState(api); after != before {
+		t.Fatalf("state changed:\n%s\n%s", before, after)
+	}
+}
+
+func TestPlanWarnsOnAccountWithSignInStopped(t *testing.T) {
+	api := preparedAPI()
+	api.accounts[0].SignInDisabled = true
+	api.creds = map[string][]string{"a1": {"ApiKey"}}
+	foreignAccountPlan(t, api, "sign-ins are stopped")
+}
+
+func TestPlanWarnsOnAccountWithPassword(t *testing.T) {
+	for name, roles := range map[string][]string{"response role": {"r1"}, "other role": {"u"}} {
+		for _, kind := range []string{"Password", "AppPassword"} {
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				api := preparedAPI()
+				api.acctRoles["a1"] = roles
+				api.creds = map[string][]string{"a1": {"ApiKey", kind}}
+				foreignAccountPlan(t, api, "has a password")
+			})
+		}
+	}
+}
+
+func TestPlanWarnsOnForeignAccountWithKey(t *testing.T) {
+	api := preparedAPI()
+	api.acctRoles["a1"] = []string{"u"}
+	api.creds = map[string][]string{"a1": {"ApiKey"}}
+	foreignAccountPlan(t, api, "CSM did not make")
+}
+
+func TestPlanAdoptsEmptyAccount(t *testing.T) {
+	api := preparedAPI()
+	api.acctRoles["a1"] = []string{"u"}
+	api.keys["a1"] = nil
+	p := inspect(t, api, responseInputs(api, "", nil))
+	if got, want := responseStates(p), []State{Done, Change, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	}
+	if calls := applyCalls(t, api, p); len(calls) == 0 || calls[0] != "SetAccountRole(a1,r1)" {
+		t.Fatalf("calls = %q, want the role set first", calls)
+	}
+	if !reflect.DeepEqual(api.acctRoles["a1"], []string{"r1"}) {
+		t.Fatalf("roles = %v, want the response role only", api.acctRoles["a1"])
 	}
 }

@@ -157,3 +157,42 @@ func TestAccountRole(t *testing.T) {
 		t.Fatalf("%s update = %s", got.Method, s)
 	}
 }
+
+func TestAccountCredentialTypes(t *testing.T) {
+	const pwSecret = "made-up-password-hash-must-not-leak"
+	f := newFake(t)
+	f.reply = func(method string, args map[string]any) (string, any) {
+		var list []any
+		switch ids, _ := args["ids"].([]any); {
+		case len(ids) == 1 && ids[0] == "a1":
+			list = []any{map[string]any{"id": "a1", "credentials": map[string]any{
+				"0": map[string]any{"@type": "Password", "credentialId": "a", "expiresAt": nil, "allowedIps": map[string]any{}, "secret": pwSecret},
+				"1": map[string]any{"@type": "ApiKey", "credentialId": "k1", "expiresAt": nil, "allowedIps": map[string]any{"127.0.0.1": true}, "secret": pwSecret},
+			}}}
+		case len(ids) == 1 && ids[0] == "a2":
+			list = []any{map[string]any{"id": "a2", "credentials": map[string]any{}}}
+		case len(ids) == 1 && ids[0] == "bad":
+			list = []any{map[string]any{"id": "bad", "credentials": map[string]any{"0": map[string]any{"@type": 7, "secret": pwSecret}}}}
+		}
+		return method, map[string]any{"list": list, "notFound": []any{}}
+	}
+	c := f.keyClient()
+	ctx := context.Background()
+
+	got, err := c.AccountCredentialTypes(ctx, "a1")
+	if err != nil || !reflect.DeepEqual(got, []string{"ApiKey", "Password"}) {
+		t.Fatalf("password and key = %q, %v; want ApiKey Password", got, err)
+	}
+	if s := asJSON(t, f.last().Args["properties"]); f.last().Method != "x:Account/get" || s != `["id","credentials"]` {
+		t.Fatalf("%s properties = %s", f.last().Method, s)
+	}
+	if got, err := c.AccountCredentialTypes(ctx, "a2"); err != nil || len(got) != 0 {
+		t.Fatalf("no credentials = %q, %v; want none", got, err)
+	}
+	if got, err := c.AccountCredentialTypes(ctx, "gone"); err == nil {
+		t.Fatalf("missing account = %q, want an error", got)
+	}
+	if _, err := c.AccountCredentialTypes(ctx, "bad"); err == nil || strings.Contains(err.Error(), pwSecret) {
+		t.Fatalf("malformed credentials error = %v, want an error without the secret", err)
+	}
+}

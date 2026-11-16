@@ -34,6 +34,7 @@ type API interface {
 	Domains(ctx context.Context) ([]stalwartapi.Domain, error)
 	AccountsNamed(ctx context.Context, name string) ([]stalwartapi.Account, error)
 	AccountRoleIDs(ctx context.Context, id string) ([]string, error)
+	AccountCredentialTypes(ctx context.Context, id string) ([]string, error)
 	CreateAccount(ctx context.Context, name, domainID, roleID string) (string, error)
 	SetAccountRole(ctx context.Context, id, roleID string) error
 	APIKeys(ctx context.Context, accountID string) ([]stalwartapi.APIKey, error)
@@ -253,8 +254,29 @@ func inspectResponse(ctx context.Context, api API, in Inputs) ([]Step, error) {
 		if rolesErr != nil {
 			return nil, rolesErr
 		}
-		if haveRole && slices.Equal(roles, []string{current.ID}) {
-			account.State, account.Detail = Done, name+" holds only CSM's role"
+		creds, credsErr := api.AccountCredentialTypes(ctx, a.ID)
+		if credsErr != nil {
+			return nil, credsErr
+		}
+		// The key's loopback limit does not cover a password, and a key
+		// for an account that cannot sign in never works: setup adopts an
+		// existing account only when it holds nothing of anyone else's.
+		ours := haveRole && slices.Equal(roles, []string{current.ID})
+		why := ""
+		switch {
+		case a.SignInDisabled:
+			why = fmt.Sprintf("sign-ins are stopped for %s; allow them in Stalwart or remove the account, then run setup", name)
+		case slices.Contains(creds, "Password") || slices.Contains(creds, "AppPassword"):
+			why = fmt.Sprintf("%s has a password, and CSM's account must have none; remove the password or the account, then run setup", name)
+		case !ours && len(creds) > 0:
+			why = fmt.Sprintf("an account named %s exists that CSM did not make; remove or rename it, then run setup", name)
+		}
+		if why != "" {
+			account.State, account.Detail = Warn, why
+			return skip(steps[2:], "needs CSM's own service account"), nil
+		}
+		if ours {
+			account.State, account.Detail = Done, name+" holds only CSM's role and no password"
 			break
 		}
 		account.State, account.Detail = Change, name+" must hold only CSM's role; set it"

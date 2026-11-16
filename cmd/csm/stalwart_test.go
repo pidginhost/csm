@@ -49,6 +49,7 @@ type setupFakeAPI struct {
 	account   *stalwartapi.Account
 	acctRoles []string
 	keys      []stalwartapi.APIKey
+	creds     []string
 	secret    string
 }
 
@@ -120,6 +121,9 @@ func (f *setupFakeAPI) AccountsNamed(context.Context, string) ([]stalwartapi.Acc
 }
 func (f *setupFakeAPI) AccountRoleIDs(context.Context, string) ([]string, error) {
 	return f.acctRoles, f.readErr
+}
+func (f *setupFakeAPI) AccountCredentialTypes(context.Context, string) ([]string, error) {
+	return f.creds, f.readErr
 }
 func (f *setupFakeAPI) CreateAccount(_ context.Context, name, _, roleID string) (string, error) {
 	f.writes = append(f.writes, "account")
@@ -638,5 +642,19 @@ func TestStalwartSetupReloadHintOnlyForSettings(t *testing.T) {
 	code, out = h.run()
 	if code != 1 || !strings.Contains(out, "reload settings in Stalwart") {
 		t.Fatalf("settings failure: code %d, out %q; want 1 with the reload hint", code, out)
+	}
+}
+
+func TestStalwartSetupWarnsOnAccountWithPassword(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.prepare(true)
+	h.api.creds = []string{"Password"}
+	h.useKeyFile(t, "")
+	code, out := h.run()
+	if code != 0 || !strings.Contains(out, "response account: warn: ") || !strings.Contains(out, "has a password") || !strings.Contains(out, "response key: skipped: ") {
+		t.Fatalf("code %d, out %q; want 0 with the account warned and the key skipped", code, out)
+	}
+	if slices.Contains(h.api.writes, "key") {
+		t.Fatalf("writes = %q, want no key created", h.api.writes)
 	}
 }
