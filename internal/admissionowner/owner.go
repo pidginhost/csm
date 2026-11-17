@@ -1481,6 +1481,9 @@ func (o *Owner) refreshStatus() {
 	if o.ledger != nil {
 		ls := o.ledger.Status()
 		s.Ledger = &ls
+		if ls.Unresolved.Unknown > 0 {
+			s.Owner.RetirementHeldBy = o.retirementHeldBy()
+		}
 		if o.set != nil && ls.Effects.Error == "" {
 			s.Owner.Set = setStatus(*o.set, ls.Effects)
 		}

@@ -1220,7 +1220,16 @@ missing or unreadable attempt uses the same wait without preventing other
 attempts from retiring. An unreadable intent list delays the whole pass.
 Each fault is reported once, in `admission.owner.retirement_error` and the
 doctor row `admission retirement`, until no attempt, list read or engine
-retirement check is left faulted; no retirement fault fails a turn. A stop
+retirement check is left faulted; no retirement fault fails a turn. An
+owner without the firewall engine, or under a refused execution policy,
+retires nothing and keeps each unknown's address held past its expiry:
+`admission.owner.retirement_held_by` names that cause (`engine` or `policy`)
+while unknown outcomes remain, and the doctor row `admission unresolved
+outcomes` names it with its fix instead of a retire time. Once the cause
+is gone, each unknown still retires only after its expiry and the engine's
+proof under a valid clock. A configured engine that has not started names
+no cause: retirement retries on its waits and the firewall reports its own
+startup error. A stop
 between the row removal and the ledger retirement leaves a
 row-less unknown that the next pass retires. The turn wakes for the earliest
 expiry or monotonic retry. With one noted, a turn lists no intents until it

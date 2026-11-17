@@ -19,9 +19,33 @@ func admissionDoctorChecks(a *health.AdmissionStatus, started time.Time) []Docto
 	rows := admission.DoctorChecks(a.Ledger, a.Ingress, a.CheckedAt, admissionExecuting(a))
 	checks := make([]DoctorCheck, 0, len(rows))
 	for _, r := range rows {
-		checks = append(checks, DoctorCheck{Name: r.Name, Status: r.Status, Message: r.Message, Fix: r.Fix})
+		c := DoctorCheck{Name: r.Name, Status: r.Status, Message: r.Message, Fix: r.Fix}
+		if r.Name == admission.UnresolvedOutcomesRow {
+			c = retirementHeldCheck(c, a)
+		}
+		checks = append(checks, c)
 	}
 	return warnUntilSettled(a, started, append(checks, ownerDoctorChecks(a)...))
+}
+
+// retirementHeldCheck names what keeps unknown outcomes from retiring, and
+// its fix, in place of a retire time that cannot come: no firewall engine
+// or a refused execution policy. Their addresses stay held either way.
+func retirementHeldCheck(c DoctorCheck, a *health.AdmissionStatus) DoctorCheck {
+	if a.Owner == nil || a.Ledger == nil {
+		return c
+	}
+	closing, _ := admission.DoctorImpact(admissionExecuting(a))
+	n := a.Ledger.Unresolved.Unknown
+	switch a.Owner.RetirementHeldBy {
+	case "engine":
+		c.Message = fmt.Sprintf("%d automatic blocks have an unproven outcome and stay unresolved until the firewall engine can prove them; their addresses stay held; %s", n, closing)
+		c.Fix = "enable the firewall (firewall.enabled true, mode not observe) and restart csm.service; each block then retires once it has expired and the firewall shows nothing of it"
+	case "policy":
+		c.Message = fmt.Sprintf("%d automatic blocks have an unproven outcome and stay unresolved while the execution policy is refused; their addresses stay held; %s", n, closing)
+		c.Fix = "correct the setting the admission execution row names; each block then retires once it has expired and the firewall shows nothing of it"
+	}
+	return c
 }
 
 // warnUntilSettled lowers an executing owner's failures to warnings until

@@ -366,7 +366,14 @@ It never applies them; the view is not an enforcement record.
   whether it has completed a turn since the daemon started (`settled`), and
   names why the ledger owner is not running (`error`), why its last turn
   failed while it runs (`turn_error`), the last fault met while retiring
-  uncertain blocks (`retirement_error`, kept until none is left faulted), why
+  uncertain blocks (`retirement_error`, kept until none is left faulted),
+  what keeps unknown outcomes from retiring while the ledger holds some
+  (`retirement_held_by`: `engine` for an owner without the firewall
+  engine, as with the firewall disabled or in observe mode, `policy` for a
+  refused execution policy; their addresses stay held). It is omitted
+  otherwise, including while a configured firewall engine has not
+  started. Once the cause is gone, each block still retires only after it
+  has expired and the firewall shows nothing of it. The owner also reports why
   the last clock reading or its live start failed (`tick_error`), whether
   the clock is degraded, where the ceiling came from (`ceiling_source`:
   `default`, `configured` or `clamped`), the legacy hourly count imported at
