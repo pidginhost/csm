@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -27,6 +28,10 @@ const (
 // verifySnapshot only accepts private, stopped snapshots. Callers keep
 // them private until the subsequent bbolt read or mutation completes.
 func verifySnapshot(path string) error {
+	return verifyStoppedDatabase(path, false)
+}
+
+func verifyStoppedDatabase(path string, allowLeakedPages bool) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -34,16 +39,37 @@ func verifySnapshot(path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("bbolt snapshot is not a regular file")
 	}
-	// #nosec G304 -- path is a private snapshot staged by backup or import.
+	// #nosec G304 -- the caller holds the state lock or owns the private snapshot.
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if err := checkSnapshot(f, info.Size()); err != nil {
+	err = checkSnapshot(f, info.Size())
+	if allowLeakedPages && errors.Is(err, errLeakedPages) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("bbolt snapshot is damaged: %w", err)
 	}
 	return nil
+}
+
+var errLeakedPages = errors.New("snapshot has unreachable unfreed pages")
+
+// verifyDatabase checks a stopped live database as verifySnapshot checks a
+// snapshot, but accepts leaked pages: they waste space, and bbolt reads and
+// writes around them. A missing file is a new database.
+func verifyDatabase(path string) error {
+	err := verifyStoppedDatabase(path, true)
+	if os.IsNotExist(err) {
+		// A dangling link is an existing target. A writable bbolt open
+		// would create its missing referent, possibly outside the state dir.
+		if _, linkErr := os.Lstat(path); os.IsNotExist(linkErr) {
+			return nil
+		}
+	}
+	return err
 }
 
 type snapshotMeta struct {
@@ -70,11 +96,19 @@ func readSnapshotMeta(r io.ReaderAt, offset int64) (snapshotMeta, bool) {
 }
 
 func checkSnapshot(r io.ReaderAt, size int64) error {
+	// bbolt probes the first 4 KiB for the page size. A shorter file can
+	// pass the metadata checksum while bbolt uses a different page size.
+	if size < 4096 {
+		return fmt.Errorf("database too short for bbolt metadata")
+	}
 	m, valid := readSnapshotMeta(r, 0)
 	if !valid {
 		// Match bbolt's recovery of the page size from the second meta.
-		for offset := int64(1024); offset <= 1024<<14 && offset < size; offset *= 2 {
+		for offset := int64(1024); offset <= 1024<<14 && offset < size-1024; offset *= 2 {
 			if m, valid = readSnapshotMeta(r, offset); valid {
+				if m.pageSize != offset {
+					return fmt.Errorf("misplaced snapshot recovery metadata")
+				}
 				break
 			}
 		}
@@ -88,6 +122,10 @@ func checkSnapshot(r io.ReaderAt, size int64) error {
 	}
 	if otherValid && other.txid > m.txid {
 		m = other
+	}
+	// The next write must supersede this transaction.
+	if m.txid == math.MaxUint64 {
+		return fmt.Errorf("snapshot transaction ID exhausted")
 	}
 	if m.pages < 2 || m.pages > math.MaxInt64 || int64(m.pages) > size/m.pageSize {
 		return fmt.Errorf("snapshot pages exceed file bounds")
@@ -111,7 +149,7 @@ func checkSnapshot(r io.ReaderAt, size int64) error {
 		work = append(work, children...)
 	}
 	if m.freelist != ^uint64(0) && uint64(len(v.used)) != m.pages-2 {
-		return fmt.Errorf("snapshot has unreachable unfreed pages")
+		return errLeakedPages
 	}
 	return nil
 }
@@ -195,10 +233,12 @@ func (v *snapshotVerifier) freePages() error {
 }
 
 type snapshotTree struct {
-	id       uint64
-	inline   *io.SectionReader
-	min, max []byte
-	root     bool // the top-level tree may contain only bucket entries
+	id        uint64
+	inline    *io.SectionReader
+	min, max  []byte
+	depth     int
+	leafDepth *int // shared within a single branched bucket
+	root      bool // the top-level tree may contain only bucket entries
 }
 
 func (v *snapshotVerifier) treePage(tree snapshotTree) ([]snapshotTree, error) {
@@ -219,11 +259,21 @@ func (v *snapshotVerifier) treePage(tree snapshotTree) ([]snapshotTree, error) {
 		return nil, err
 	}
 	flags, count := order.Uint16(header[8:]), int64(order.Uint16(header[10:]))
-	if flags != snapshotLeaf && flags != snapshotBranch || flags == snapshotBranch && count == 0 {
+	if flags != snapshotLeaf && flags != snapshotBranch || flags == snapshotBranch && count < 2 || tree.min != nil && count == 0 {
 		return nil, fmt.Errorf("invalid snapshot tree page type or count")
 	}
-	if tree.inline != nil && (flags != snapshotLeaf || order.Uint32(header[12:]) != 0) {
+	if tree.inline != nil && (order.Uint64(header[:]) != 0 || flags != snapshotLeaf || order.Uint32(header[12:]) != 0) {
 		return nil, fmt.Errorf("invalid inline snapshot page")
+	}
+	// bbolt rebalances siblings as nodes of the same kind.
+	if flags == snapshotBranch && tree.leafDepth == nil {
+		tree.leafDepth = new(int)
+	}
+	if flags == snapshotLeaf && tree.leafDepth != nil {
+		if *tree.leafDepth != 0 && *tree.leafDepth != tree.depth {
+			return nil, fmt.Errorf("inconsistent snapshot leaf depth")
+		}
+		*tree.leafDepth = tree.depth
 	}
 	// Both branch and leaf elements have a 16-byte header.
 	end := int64(snapshotPageHeader) + count*16
@@ -254,7 +304,11 @@ func (v *snapshotVerifier) treePage(tree snapshotTree) ([]snapshotTree, error) {
 		if _, err := data.ReadAt(key, start); err != nil {
 			return nil, err
 		}
-		if i > 0 && bytes.Compare(previous, key) >= 0 || tree.min != nil && bytes.Compare(key, tree.min) < 0 || tree.max != nil && bytes.Compare(key, tree.max) >= 0 {
+		// bbolt uses a child's first key to update its parent on spill.
+		if i == 0 && tree.min != nil && !bytes.Equal(key, tree.min) {
+			return nil, fmt.Errorf("snapshot branch key differs from its child")
+		}
+		if i > 0 && bytes.Compare(previous, key) >= 0 || tree.max != nil && bytes.Compare(key, tree.max) >= 0 {
 			return nil, fmt.Errorf("snapshot keys are out of order")
 		}
 		previous = key
@@ -262,7 +316,10 @@ func (v *snapshotVerifier) treePage(tree snapshotTree) ([]snapshotTree, error) {
 			if len(children) > 0 {
 				children[len(children)-1].max = key
 			}
-			children = append(children, snapshotTree{id: order.Uint64(element[8:]), min: key, max: tree.max, root: tree.root})
+			children = append(children, snapshotTree{
+				id: order.Uint64(element[8:]), min: key, max: tree.max, root: tree.root,
+				depth: tree.depth + 1, leafDepth: tree.leafDepth,
+			})
 			continue
 		}
 		entryFlags := order.Uint32(element[:])
@@ -282,9 +339,19 @@ func (v *snapshotVerifier) treePage(tree snapshotTree) ([]snapshotTree, error) {
 		}
 		child := snapshotTree{id: order.Uint64(bucket[:])}
 		if child.id == 0 {
+			// bbolt may copy the entire bucket value to align its header.
+			// Its writer inlines at most a quarter page after the header.
+			if valueSize-16 > v.meta.pageSize/4 {
+				return nil, fmt.Errorf("oversized inline snapshot bucket")
+			}
 			child.inline = io.NewSectionReader(data, start+keySize+16, valueSize-16)
+		} else if valueSize != 16 {
+			return nil, fmt.Errorf("invalid external snapshot bucket size")
 		}
 		children = append(children, child)
+	}
+	if tree.inline != nil && end != data.Size() {
+		return nil, fmt.Errorf("invalid inline snapshot page size")
 	}
 	return children, nil
 }

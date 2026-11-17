@@ -104,9 +104,13 @@ func mergeFirewallBucketsFromSnapshot(snapshotPath, statePath string) ([]string,
 		if mkdirErr := os.MkdirAll(statePath, 0700); mkdirErr != nil {
 			return fmt.Errorf("creating target directory: %w", mkdirErr)
 		}
+		target := filepath.Join(statePath, "csm.db")
+		if verifyErr := verifyDatabase(target); verifyErr != nil {
+			return fmt.Errorf("target database: %w", verifyErr)
+		}
 		// bbolt otherwise commits during Open if the file has no persisted
 		// freelist. Defer that write to the import's validated transaction.
-		dst, openErr := bolt.Open(filepath.Join(statePath, "csm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second, NoFreelistSync: true})
+		dst, openErr := bolt.Open(target, 0600, &bolt.Options{Timeout: 5 * time.Second, NoFreelistSync: true})
 		if openErr != nil {
 			return fmt.Errorf("opening target: %w", openErr)
 		}

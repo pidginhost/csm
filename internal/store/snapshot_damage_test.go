@@ -147,26 +147,38 @@ func corruptNestedPage(t *testing.T, path string) {
 }
 
 // A damaged snapshot reaches these readers from an archive being imported
-// or restored, or from a damaged live database being exported. Each must
-// refuse it with an error: no crash, no change to the snapshot or to the
-// merge target, no file left beside it and no lock held.
+// or restored, or from a damaged live database being exported. A firewall
+// import also writes into the live database, which may itself be damaged.
+// Each must refuse the damaged file with an error: no crash, no change to
+// the snapshot or to the merge target, no file left beside it and no lock
+// held.
 func checkDamagedSnapshotReaders(t *testing.T, noFreelistSync bool, damage func(*testing.T, string)) {
 	readers := []struct {
 		name string
-		read func(snapshot, target string) error
+		// target damages the merge target's database instead of the snapshot.
+		target bool
+		read   func(snapshot, target string) error
 	}{
-		{"list buckets", func(snapshot, _ string) error {
+		{"list buckets", false, func(snapshot, _ string) error {
 			_, err := listSnapshotBuckets(snapshot)
 			return err
 		}},
-		{"merge firewall buckets", func(snapshot, target string) error {
+		{"merge firewall buckets", false, func(snapshot, target string) error {
 			_, err := mergeFirewallBucketsFromSnapshot(snapshot, target)
 			return err
 		}},
-		{"disarm firewall rollback", func(snapshot, _ string) error {
+		{"merge into a damaged target", true, func(snapshot, target string) error {
+			_, err := mergeFirewallBucketsFromSnapshot(snapshot, target)
+			return err
+		}},
+		{"read ledger position", false, func(snapshot, _ string) error {
+			_, _, err := readLedgerPosition(snapshot, true)
+			return err
+		}},
+		{"disarm firewall rollback", false, func(snapshot, _ string) error {
 			return DisarmFirewallRollbackSnapshot(snapshot)
 		}},
-		{"disarm browser sessions", func(snapshot, _ string) error {
+		{"disarm browser sessions", false, func(snapshot, _ string) error {
 			return DisarmBrowserSessionsSnapshot(snapshot)
 		}},
 	}
@@ -174,13 +186,17 @@ func checkDamagedSnapshotReaders(t *testing.T, noFreelistSync bool, damage func(
 		t.Run(reader.name, func(t *testing.T) {
 			dir := t.TempDir()
 			snapshot := filepath.Join(dir, "snapshot.db")
-			writeSnapshot(t, snapshot, noFreelistSync)
-			damage(t, snapshot)
+			writeSnapshot(t, snapshot, noFreelistSync && !reader.target)
 			target := filepath.Join(t.TempDir(), "state")
 			if err := os.MkdirAll(target, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			writeSnapshot(t, filepath.Join(target, "csm.db"), false)
+			damaged := filepath.Join(target, "csm.db")
+			writeSnapshot(t, damaged, noFreelistSync && reader.target)
+			if !reader.target {
+				damaged = snapshot
+			}
+			damage(t, damaged)
 			before, beforeTarget := treeOf(t, dir), treeOf(t, target)
 
 			err := func() (err error) {
@@ -200,13 +216,13 @@ func checkDamagedSnapshotReaders(t *testing.T, noFreelistSync bool, damage func(
 			if after := treeOf(t, target); !sameTree(beforeTarget, after) {
 				t.Fatal("refusal changed the merge target")
 			}
-			f, openErr := os.OpenFile(snapshot, os.O_RDWR, 0)
+			f, openErr := os.OpenFile(damaged, os.O_RDWR, 0)
 			if openErr != nil {
 				t.Fatal(openErr)
 			}
 			defer func() { _ = f.Close() }()
 			if lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); lockErr != nil {
-				t.Fatalf("refusal kept a lock on the snapshot: %v", lockErr)
+				t.Fatalf("refusal kept a lock on the damaged file: %v", lockErr)
 			}
 		})
 	}
@@ -399,6 +415,8 @@ func TestSnapshotVerificationLayoutDamage(t *testing.T) {
 		"root value":                       func(b []byte) { order.PutUint32(b[root+16:], 0) },
 		"bucket header":                    func(b []byte) { order.PutUint32(b[root+28:], 8) },
 		"inline header":                    func(b []byte) { order.PutUint32(b[root+28:], 20) },
+		"inline identity":                  func(b []byte) { order.PutUint64(b[value+16:], 1) },
+		"inline trailing data":             func(b []byte) { order.PutUint16(b[value+26:], 0) },
 		"inline type":                      func(b []byte) { order.PutUint16(b[value+24:], 1) },
 		"inline overflow":                  func(b []byte) { order.PutUint32(b[value+28:], 1) },
 		"inline subbucket":                 func(b []byte) { order.PutUint32(b[value+32:], 1) },
@@ -406,6 +424,18 @@ func TestSnapshotVerificationLayoutDamage(t *testing.T) {
 		"freelist type":                    func(b []byte) { order.PutUint16(b[free+8:], 2) },
 		"freelist count":                   func(b []byte) { order.PutUint16(b[free+10:], 65534) },
 		"extended freelist count overflow": func(b []byte) { order.PutUint16(b[free+10:], 65535); order.PutUint64(b[free+16:], ^uint64(0)) },
+		"external bucket with trailing data": func(b []byte) {
+			last := root + 16*int(order.Uint16(b[root+10:]))
+			if size := order.Uint32(b[last+12:]); size != 16 {
+				t.Fatalf("last bucket has %d bytes, want an external bucket header", size)
+			}
+			order.PutUint32(b[last+12:], 17)
+		},
+		"misplaced recovery meta": func(b []byte) {
+			copy(b[1024:1024+80], b[pageSize:pageSize+80])
+			b[16] ^= 0xff
+			b[pageSize+16] ^= 0xff
+		},
 		"inconsistent meta page sizes": func(b []byte) {
 			order.PutUint32(b[pageSize+24:], uint32(pageSize*2))
 			h := fnv.New64a()
@@ -431,6 +461,7 @@ func TestSnapshotVerificationLayoutDamage(t *testing.T) {
 	}{
 		{"zero page size", func(m []byte) { order.PutUint32(m[8:], 0) }},
 		{"oversized page size", func(m []byte) { order.PutUint32(m[8:], ^uint32(0)) }},
+		{"exhausted transaction ID", func(m []byte) { order.PutUint64(m[48:], ^uint64(0)) }},
 		{"zero high water mark", func(m []byte) { order.PutUint64(m[40:], 0) }},
 		{"oversized high water mark", func(m []byte) { order.PutUint64(m[40:], ^uint64(0)) }},
 		{"meta as root", func(m []byte) { order.PutUint64(m[16:], 1) }},
