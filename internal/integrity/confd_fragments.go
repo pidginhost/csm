@@ -168,7 +168,7 @@ func RehashFragments(binaryPath, configPath, confDir string, names []string) err
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
-	cfg, err := config.LoadBytes(data)
+	cfg, err := decodeForSigning(data)
 	if err != nil {
 		return err
 	}

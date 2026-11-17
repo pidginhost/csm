@@ -1610,6 +1610,44 @@ auto_response:
 	}
 }
 
+// AllowUnsetSecretEnv only excuses an unset *_env variable; every other
+// check, including a callback with no secret configured at all, still runs.
+func TestLoadOptionsAllowUnsetSecretEnv(t *testing.T) {
+	t.Setenv("CSM_VERDICT_HMAC", "")
+	opts := LoadOptions{AllowUnsetSecretEnv: true}
+	envOnly := []byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https://panel.example.com/api/csm/verdict
+    hmac_secret_env: CSM_VERDICT_HMAC
+`)
+	if _, err := LoadBytesWithOptions(envOnly, opts); err != nil {
+		t.Fatalf("unset env secret with AllowUnsetSecretEnv: %v", err)
+	}
+	if _, err := LoadBytes(envOnly); err == nil {
+		t.Fatal("default load must still reject an unset env secret")
+	}
+	cfg, err := LoadBytesWithOptions(envOnly, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateVerdictCallbackField(cfg, LoadOptions{}); err == nil {
+		t.Fatal("Validate must still report an unset env secret")
+	}
+
+	for name, body := range map[string]string{
+		"no secret configured": "auto_response:\n  verdict_callback:\n    enabled: true\n    url: https://panel.example.com/api/csm/verdict\n",
+		"bad url":              "auto_response:\n  verdict_callback:\n    enabled: true\n    url: ftp://panel.example.com/\n    hmac_secret_env: CSM_VERDICT_HMAC\n",
+		"unknown key":          "auto_response:\n  verdict_callback:\n    enabled: true\n    bogus: 1\n",
+		"yaml syntax":          "auto_response: [\n",
+	} {
+		if _, err := LoadBytesWithOptions([]byte(body), opts); err == nil {
+			t.Errorf("%s: AllowUnsetSecretEnv must not skip this check", name)
+		}
+	}
+}
+
 func TestVerdictCallback_AllowsExplicitUnsignedOptIn(t *testing.T) {
 	t.Setenv("CSM_VERDICT_HMAC", "")
 	_, err := LoadBytes([]byte(`

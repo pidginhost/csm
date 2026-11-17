@@ -2386,9 +2386,24 @@ func readConfigBytesLimited(r io.Reader) ([]byte, error) {
 	return data, nil
 }
 
+// LoadOptions adjusts validation for callers that load the config without
+// starting the daemon. The zero value is the daemon's fail-closed behaviour.
+type LoadOptions struct {
+	// AllowUnsetSecretEnv accepts a secret named by a *_env key whose
+	// variable is unset. Only for commands that hash or compare the config
+	// files and never use the secrets: the service environment that holds
+	// them is not loaded when a package script runs them.
+	AllowUnsetSecretEnv bool
+}
+
 // LoadBytes decodes a YAML config body and applies all defaults,
 // matching Load. ConfigFile is left empty; the caller sets it.
 func LoadBytes(data []byte) (*Config, error) {
+	return LoadBytesWithOptions(data, LoadOptions{})
+}
+
+// LoadBytesWithOptions is LoadBytes with the validation adjusted by opts.
+func LoadBytesWithOptions(data []byte, opts LoadOptions) (*Config, error) {
 	if len(data) > MaxConfigBytes {
 		return nil, fmt.Errorf("parsing config: input size %d exceeds %d byte cap", len(data), MaxConfigBytes)
 	}
@@ -2432,7 +2447,7 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateVerifiedBotsConfig(cfg); err != nil {
 		return nil, err
 	}
-	if err := validateVerdictCallback(cfg); err != nil {
+	if _, err := validateVerdictCallbackField(cfg, opts); err != nil {
 		return nil, err
 	}
 	if err := validateDirectSMTPEgress(cfg); err != nil {
@@ -2892,12 +2907,7 @@ func isLoopbackHost(host string) bool {
 	return ip.IsLoopback()
 }
 
-func validateVerdictCallback(cfg *Config) error {
-	_, err := validateVerdictCallbackField(cfg)
-	return err
-}
-
-func validateVerdictCallbackField(cfg *Config) (string, error) {
+func validateVerdictCallbackField(cfg *Config, opts LoadOptions) (string, error) {
 	vc := cfg.AutoResponse.VerdictCallback
 	if vc.TimeoutSec != 0 && (vc.TimeoutSec < 1 || vc.TimeoutSec > 30) {
 		return "auto_response.verdict_callback.timeout_sec", fmt.Errorf("auto_response.verdict_callback.timeout_sec must be between 1 and 30")
@@ -2923,6 +2933,7 @@ func validateVerdictCallbackField(cfg *Config) (string, error) {
 		HMACSecret:    vc.HMACSecret,
 		HMACSecretEnv: vc.HMACSecretEnv,
 		AllowUnsigned: vc.AllowUnsigned,
+		AllowUnsetEnv: opts.AllowUnsetSecretEnv,
 	}); err != nil {
 		return verdictCallbackSecretField(vc.HMACSecretEnv), err
 	}
@@ -2947,7 +2958,7 @@ func validateVerdictCallbackSecret(vc verdictCallbackForValidation) error {
 		return nil
 	}
 	if vc.HMACSecretEnv != "" {
-		if strings.TrimSpace(os.Getenv(vc.HMACSecretEnv)) != "" {
+		if vc.AllowUnsetEnv || strings.TrimSpace(os.Getenv(vc.HMACSecretEnv)) != "" {
 			return nil
 		}
 		return fmt.Errorf("auto_response.verdict_callback.enabled=true but env var %q is empty or unset; set the secret, or opt in with allow_unsigned: true", vc.HMACSecretEnv)
@@ -2961,6 +2972,7 @@ type verdictCallbackForValidation struct {
 	HMACSecret    string
 	HMACSecretEnv string
 	AllowUnsigned bool
+	AllowUnsetEnv bool
 }
 
 func verdictCallbackSecretField(hmacSecretEnv string) string {
@@ -3214,6 +3226,11 @@ func Load(path string) (*Config, error) {
 // from confDir on top in lexicographic order. A missing confDir is not an
 // error. Unknown fields in fragments are rejected (KnownFields=true).
 func LoadWithDir(path, confDir string) (*Config, error) {
+	return LoadWithDirOptions(path, confDir, LoadOptions{})
+}
+
+// LoadWithDirOptions is LoadWithDir with the validation adjusted by opts.
+func LoadWithDirOptions(path, confDir string, opts LoadOptions) (*Config, error) {
 	// #nosec G304 -- path is operator-supplied (CLI flag).
 	f, err := os.Open(path)
 	if err != nil {
@@ -3227,7 +3244,7 @@ func LoadWithDir(path, confDir string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
-	cfg, err := loadBytesWithDir(mainData, confDir, path)
+	cfg, err := loadBytesWithDir(mainData, confDir, path, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -3261,12 +3278,12 @@ func MergeBytesWithDir(data []byte, confDir string) ([]byte, error) {
 	return mergeBytesWithDir(data, confDir, "config input")
 }
 
-func loadBytesWithDir(mainData []byte, confDir, source string) (*Config, error) {
+func loadBytesWithDir(mainData []byte, confDir, source string, opts LoadOptions) (*Config, error) {
 	mergedBytes, err := mergeBytesWithDir(mainData, confDir, source)
 	if err != nil {
 		return nil, err
 	}
-	return LoadBytes(mergedBytes)
+	return LoadBytesWithOptions(mergedBytes, opts)
 }
 
 func mergeBytesWithDir(mainData []byte, confDir, source string) ([]byte, error) {
