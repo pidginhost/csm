@@ -328,3 +328,48 @@ func TestOwnerHeldProbeEndsRefusals(t *testing.T) {
 		})
 	}
 }
+
+// A missing engine has no probe to wait for, so its hold still lets one
+// turn select per wait: other work is previewed within a minute, and block
+// work still selects no more than once per wait.
+func TestOwnerMissingEngineStillPreviewsOtherWork(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	opts := executeOptions(f, newFakeBlocks())
+	opts.Blocks = func() BlockEngine { return nil }
+	o := f.start(opts)
+	mono := heldMono(t, o)
+	block, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.60")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if held := executionHeld(t, o); held == "" {
+		t.Fatal("a missing engine did not hold execution")
+	}
+	selections := 0
+	setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		selections++
+		return l.Schedule(lim, answers)
+	})
+	challenge, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.61", admission.KindChallenge)
+	previewed := time.Duration(0)
+	for elapsed := time.Second; elapsed <= 2*maxProbeWait; elapsed += time.Second {
+		mono.advance(time.Second)
+		f.host.advance(time.Second)
+		if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+			t.Fatal(err)
+		}
+		if previewed == 0 && candidate(t, o, challenge).State != admission.StateQueued {
+			previewed = elapsed
+		}
+	}
+	if previewed == 0 || previewed > maxProbeWait {
+		t.Fatalf("challenge previewed after %v, want within %v", previewed, maxProbeWait)
+	}
+	if selections > 10 {
+		t.Errorf("missing engine selected %d times in %v, want one per wait", selections, 2*maxProbeWait)
+	}
+	if c := candidate(t, o, block); c.State != admission.StateQueued || c.Reason != admission.ReasonEngineUnavailable || c.Attempts != 0 {
+		t.Errorf("held block = %+v, want queued as engine_unavailable", c)
+	}
+}

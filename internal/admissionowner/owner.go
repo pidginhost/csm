@@ -1028,11 +1028,19 @@ func (o *Owner) runTurn(selecting bool) error {
 
 // batchGated keeps a turn that cannot start a batch from spending fair
 // turns or postponing the next selection: one before the next batch may
-// start, or while execution is held and its probe is not due. Forecasts
+// start, or while execution is held and its turn is not due. Forecasts
 // and observe previews do not dispatch batches and retain their own
 // cadence.
 func (o *Owner) batchGated() bool {
-	return o.mayExecute() && (monoNow().Before(o.nextBatch) || o.execHold != nil && !o.heldProbeDue())
+	return o.mayExecute() && (monoNow().Before(o.nextBatch) || o.execHold != nil && !o.heldTurnDue())
+}
+
+// heldTurnDue reports whether a held turn may select: when its probe is
+// due, or, for a missing engine, which has no probe, once its wait has
+// passed, so work that needs no engine is still previewed. That wait
+// never wakes an idle owner by itself.
+func (o *Owner) heldTurnDue() bool {
+	return o.heldProbeDue() || errors.Is(o.execHold, errNoEngine) && !monoNow().Before(o.probeAt)
 }
 
 // heldProbeDue reports whether held execution may probe now: at its retry

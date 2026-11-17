@@ -532,7 +532,9 @@ func (o *Owner) ready(engine BlockEngine, checking bool) bool {
 		return false
 	}
 	if engine == nil {
-		if !errors.Is(o.execHold, errNoEngine) {
+		// Holding again once the wait has passed spaces the next selecting
+		// turn of a missing engine, as a failed probe would.
+		if !errors.Is(o.execHold, errNoEngine) || !monoNow().Before(o.probeAt) {
 			o.hold(errNoEngine, false)
 		}
 		return false
