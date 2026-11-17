@@ -184,6 +184,9 @@ func (db *DB) ClearBrowserSessions() error {
 // against live storage would steer audits back to stale targets. It must
 // never be called on the daemon's live database.
 func DisarmBrowserSessionsSnapshot(path string) error {
+	if err := verifySnapshot(path); err != nil {
+		return err
+	}
 	file, err := os.CreateTemp(filepath.Dir(path), ".session-free-*")
 	if err != nil {
 		return err
