@@ -2385,9 +2385,8 @@ func readConfigBytesLimited(r io.Reader) ([]byte, error) {
 // starting the daemon. The zero value is the daemon's fail-closed behaviour.
 type LoadOptions struct {
 	// AllowUnsetSecretEnv accepts a secret named by a *_env key whose
-	// variable is unset. Only for commands that hash or compare the config
-	// files and never use the secrets: the service environment that holds
-	// them is not loaded when a package script runs them.
+	// variable is unset. Use only for file integrity checks or redacted
+	// display, which can run outside the service environment.
 	AllowUnsetSecretEnv bool
 }
 
