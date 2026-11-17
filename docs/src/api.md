@@ -372,7 +372,9 @@ It never applies them; the view is not an enforcement record.
   engine, as with the firewall disabled or in observe mode, `policy` for a
   refused execution policy; their addresses stay held). It is omitted
   otherwise, including while a configured firewall engine has not
-  started. Once the cause is gone, each block still retires only after it
+  started. Policy refusals and recovery update this cause with the
+  execution hold, without waiting for the next ledger sample. Once the
+  cause is gone, each block still retires only after it
   has expired and the firewall shows nothing of it. The owner also reports why
   the last clock reading or its live start failed (`tick_error`), whether
   the clock is degraded, where the ceiling came from (`ceiling_source`:

@@ -1225,7 +1225,9 @@ owner without the firewall engine, or under a refused execution policy,
 retires nothing and keeps each unknown's address held past its expiry:
 `admission.owner.retirement_held_by` names that cause (`engine` or `policy`)
 while unknown outcomes remain, and the doctor row `admission unresolved
-outcomes` names it with its fix instead of a retire time. Once the cause
+outcomes` names it with its fix instead of a retire time. Policy changes
+publish the retirement cause with the execution hold, preserving the
+cached ledger sample and its age. Once the cause
 is gone, each unknown still retires only after its expiry and the engine's
 proof under a valid clock. A configured engine that has not started names
 no cause: retirement retries on its waits and the firewall reports its own

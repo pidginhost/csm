@@ -603,6 +603,10 @@ func (o *Owner) publishExecutionHold() {
 	if cause := o.heldCause(); cause != nil {
 		owner.ExecutionHeld, owner.ExecutionHeldBy = cause.Error(), o.heldBy()
 	}
+	owner.RetirementHeldBy = ""
+	if snapshot.Ledger != nil && snapshot.Ledger.Unresolved.Unknown > 0 {
+		owner.RetirementHeldBy = o.retirementHeldBy()
+	}
 	snapshot.Owner = &owner
 	o.current.Store(&snapshot)
 }

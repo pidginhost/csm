@@ -9,6 +9,45 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
+// Policy changes publish their retirement cause with the execution hold,
+// without waiting for the periodic ledger sample.
+func TestPolicyPublishesRetirementHoldImmediately(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(map[bool]string{false: "empty", true: "unknown"}[unknown], func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			o, r, _ := policyOwner(t, f, blocks, validPolicy(1))
+			if unknown {
+				unknownBlock(t, o, p, f, blocks, "192.0.2.10")
+			}
+			before := o.status()
+			invalid := validPolicy(2)
+			invalid.AskVerdict = nil
+			r.publish(invalid)
+			if err := o.do(o.refreshPolicy); !errors.Is(err, ErrPolicy) {
+				t.Fatalf("invalid policy = %v", err)
+			}
+			want := ""
+			if unknown {
+				want = "policy"
+			}
+			if got := o.Status(); got.Owner.RetirementHeldBy != want || got.Owner.ExecutionHeldBy != "policy" || !got.CheckedAt.Equal(before.CheckedAt) {
+				t.Errorf("refused policy: owner = %+v, sample = %s; want retirement cause %q and unchanged sample time", got.Owner, got.CheckedAt, want)
+			}
+			// Sample the refusal so recovery must clear a published cause.
+			before = o.status()
+			r.publish(validPolicy(3))
+			if err := o.do(o.refreshPolicy); err != nil {
+				t.Fatal(err)
+			}
+			if got := o.Status(); got.Owner.RetirementHeldBy != "" || got.Owner.ExecutionHeldBy != "" || got.Ledger.Unresolved.Unknown != before.Ledger.Unresolved.Unknown || !got.CheckedAt.Equal(before.CheckedAt) {
+				t.Errorf("valid policy: owner = %+v, sample = %s; want no hold and unchanged ledger sample", got.Owner, got.CheckedAt)
+			}
+		})
+	}
+}
+
 // An owner without the firewall engine cannot prove an unknown outcome,
 // so its address stays held past expiry. Status names the engine as the
 // cause; the next owner with an engine retires it on its first turn.
