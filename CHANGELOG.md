@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Malformed database backups now fail validation without crashing or hanging CSM.
 - At the temporary block limit, automatic blocks no longer replace an operator's temporary block, and are refused when only those, or blocks saved before 4.10.0, remain.
 
 ### Added

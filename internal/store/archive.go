@@ -571,63 +571,6 @@ func listSnapshotBuckets(path string) ([]string, error) {
 	return out, nil
 }
 
-// verifySnapshot refuses a damaged snapshot before it is read or changed.
-// bbolt reports a damaged page by panicking, at times on a goroutine of its
-// own where nothing can recover it, and a read-write open panics on a
-// damaged freelist while holding the file lock. Every page is read here
-// first, under a recover, through a read-only handle.
-func verifySnapshot(path string) (err error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	snapshot, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second, ReadOnly: true})
-	if err != nil {
-		return fmt.Errorf("opening bbolt snapshot: %w", err)
-	}
-	defer func() {
-		if closeErr := snapshot.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("closing bbolt snapshot: %w", closeErr)
-		}
-	}()
-	return snapshot.View(func(tx *bolt.Tx) (viewErr error) {
-		// A page past the end of the file faults instead of panicking.
-		if info.Size() < tx.Size() {
-			return fmt.Errorf("bbolt snapshot is damaged: %d bytes, its pages need %d", info.Size(), tx.Size())
-		}
-		// bbolt rebuilds a freelist that was never synced by walking the
-		// pages on its own goroutine; walk them here first.
-		walkErr := func() (walkErr error) {
-			defer func() {
-				if r := recover(); r != nil {
-					walkErr = fmt.Errorf("bbolt snapshot is damaged: %v", r)
-				}
-			}()
-			return tx.ForEach(func(_ []byte, b *bolt.Bucket) error { return walkBucket(b) })
-		}()
-		if walkErr != nil {
-			return walkErr
-		}
-		// Drain every report: the checker reads the mapping until it closes.
-		for checkErr := range tx.Check() {
-			if viewErr == nil {
-				viewErr = fmt.Errorf("bbolt snapshot is damaged: %w", checkErr)
-			}
-		}
-		return viewErr
-	})
-}
-
-// walkBucket visits every key of b and of the buckets nested in it.
-func walkBucket(b *bolt.Bucket) error {
-	return b.ForEach(func(k, v []byte) error {
-		if v == nil {
-			return walkBucket(b.Bucket(k))
-		}
-		return nil
-	})
-}
-
 func writeTarFile(tw *tar.Writer, name string, data []byte, modTime time.Time) error {
 	hdr := &tar.Header{
 		Name:    name,
