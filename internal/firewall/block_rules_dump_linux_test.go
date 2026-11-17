@@ -171,3 +171,54 @@ func useRawBlockRules(t *testing.T, f *batchFixture, edit func(int, int, []netli
 		return nltest.Multipart(append(messages, netlink.Message{Header: netlink.Header{Sequence: req[0].Header.Sequence, PID: req[0].Header.PID}}))
 	}
 }
+
+// A source drop is certified only from exactly the five expressions Apply
+// emits: a renamed expression, an expression after the verdict or a rule
+// without a handle refuses the batch.
+func TestBlockRulesDumpRejectsAlteredExpressionLists(t *testing.T) {
+	rename := func(attr netlink.Attribute, name string) netlink.Attribute {
+		fields, err := netlink.UnmarshalAttributes(attr.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range fields {
+			if fields[i].Type == unix.NFTA_EXPR_NAME {
+				fields[i].Data = []byte(name + "\x00")
+			}
+		}
+		attr.Data = nltest.MustMarshalAttributes(fields)
+		return attr
+	}
+	for name, edit := range map[string]func(int, []netlink.Attribute) []netlink.Attribute{
+		"renamed expression": func(_ int, expressions []netlink.Attribute) []netlink.Attribute {
+			expressions[0] = rename(expressions[0], "xmeta")
+			return expressions
+		},
+		"expression after the verdict": func(_ int, expressions []netlink.Attribute) []netlink.Attribute {
+			data, err := expr.Marshal(unix.NFPROTO_INET, &expr.Counter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return append(expressions, netlink.Attribute{Type: unix.NLA_F_NESTED | unix.NFTA_LIST_ELEM, Data: data})
+		},
+		"no handle": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newBatchFixture(t, FirewallState{})
+			if edit == nil {
+				f.rules[1].Handle = 0
+				useRawBlockRules(t, f, nil)
+			} else {
+				useRawBlockRules(t, f, func(_, rule int, expressions []netlink.Attribute) []netlink.Attribute {
+					if rule == 1 {
+						return edit(rule, expressions)
+					}
+					return expressions
+				})
+			}
+			if results, writes, err := applyOne(t, f); !errors.Is(err, ErrBlockRules) || results != nil || writes != 0 || f.sends != 0 {
+				t.Fatalf("%s: results=%+v err=%v writes=%d sends=%d", name, results, err, writes, f.sends)
+			}
+		})
+	}
+}
