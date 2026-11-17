@@ -221,38 +221,44 @@ func TestOperatorOccupancyUsesOnePopulation(t *testing.T) {
 	}
 }
 
-// Normalization and an unrelated upsert preserve the whole selected row;
-// operator undo restores its lifetime but creates no automatic provenance.
+// Normalization preserves the selected lifetime and any operator origin.
+// Operator undo restores lifetime but creates no automatic provenance.
 func TestLegacyStampSurvivesStateAndUndo(t *testing.T) {
-	conn, _ := nftConnReturningErrsThenOK(t)
-	e := newBlockedSetWireTestEngine(t, conn)
-	now := time.Now()
-	row := BlockedEntry{IP: "192.0.2.90", Reason: "auto-block: test", BlockedAt: now, ExpiresAt: now.Add(time.Hour), Automatic: true}
-	alias := row
-	alias.IP = "::ffff:192.0.2.90"
-	alias.ExpiresAt = now.Add(-time.Hour)
-	alias.Automatic = false
-	state := FirewallState{Blocked: []BlockedEntry{alias, row}}
-	normalizeFirewallStateIPs(&state)
-	if len(state.Blocked) != 1 || !SameBlockedEntry(state.Blocked[0], row) {
-		t.Fatalf("normalization lost the selected row: %+v", state)
-	}
-	upsertBlockedEntryInState(&state, BlockedEntry{IP: "203.0.113.90"})
-	copied := copyFirewallState(state)
-	if got, ok := blockedStateEntry(copied, row.IP); !ok || !SameBlockedEntry(got, row) {
-		t.Fatalf("upsert/copy lost provenance: %+v", copied)
-	}
-	writeRawFirewallState(t, e, state)
-	before, after, err := e.BlockIPForUndo(row.IP, "operator", 2*time.Hour)
-	if err != nil || before == nil || after == nil || !before.Automatic || after.Automatic {
-		t.Fatalf("undo snapshots: %+v %+v %v", before, after, err)
-	}
-	if err = e.RestoreBlockIfUnchanged(row.IP, after, before); err != nil {
-		t.Fatal(err)
-	}
-	restored, ok := blockedStateEntry(readRawFirewallState(t, e), row.IP)
-	if !ok || restored.Automatic || !restored.ExpiresAt.Equal(row.ExpiresAt) {
-		t.Fatalf("undo restored ownership or changed expiry: %+v", restored)
+	for _, automatic := range []bool{false, true} {
+		t.Run(map[bool]string{false: "operator alias", true: "automatic aliases"}[automatic], func(t *testing.T) {
+			conn, _ := nftConnReturningErrsThenOK(t)
+			e := newBlockedSetWireTestEngine(t, conn)
+			now := time.Now()
+			row := BlockedEntry{IP: "192.0.2.90", Reason: "auto-block: test", BlockedAt: now, ExpiresAt: now.Add(time.Hour), Automatic: true}
+			alias := row
+			alias.IP = "::ffff:192.0.2.90"
+			alias.ExpiresAt = now.Add(-time.Hour)
+			alias.Automatic = automatic
+			state := FirewallState{Blocked: []BlockedEntry{alias, row}}
+			normalizeFirewallStateIPs(&state)
+			want := row
+			want.Automatic = automatic
+			if len(state.Blocked) != 1 || !SameBlockedEntry(state.Blocked[0], want) {
+				t.Fatalf("normalization lost ownership or lifetime: %+v", state)
+			}
+			upsertBlockedEntryInState(&state, BlockedEntry{IP: "203.0.113.90"})
+			copied := copyFirewallState(state)
+			if got, ok := blockedStateEntry(copied, row.IP); !ok || !SameBlockedEntry(got, want) {
+				t.Fatalf("upsert/copy lost provenance: %+v", copied)
+			}
+			writeRawFirewallState(t, e, state)
+			before, after, err := e.BlockIPForUndo(row.IP, "operator", 2*time.Hour)
+			if err != nil || before == nil || after == nil || before.Automatic != automatic || after.Automatic {
+				t.Fatalf("undo snapshots: %+v %+v %v", before, after, err)
+			}
+			if err = e.RestoreBlockIfUnchanged(row.IP, after, before); err != nil {
+				t.Fatal(err)
+			}
+			restored, ok := blockedStateEntry(readRawFirewallState(t, e), row.IP)
+			if !ok || restored.Automatic || !restored.ExpiresAt.Equal(row.ExpiresAt) {
+				t.Fatalf("undo restored ownership or changed expiry: %+v", restored)
+			}
+		})
 	}
 }
 

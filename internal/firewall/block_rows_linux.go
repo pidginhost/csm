@@ -139,7 +139,9 @@ func heldRows(st FirewallState, live map[string]bool) FirewallState {
 
 // evictionVictimLocked picks the temporary block a new one replaces at the
 // cap. It leaves out the rows admission actions wrote: no legacy block,
-// automatic or operator, removes a block admission owns.
+// automatic or operator, removes a block admission owns. An automatic block
+// replaces only rows that recorded an automatic origin, so automatic work
+// can never lift an operator's temporary block.
 // Under the durable lifecycle, where no admission action writes rows,
 // only an automatic block or unproven rows leave its action rows out. Among
 // the rows left, a mail spray row goes first, so a spray wave replaces its
@@ -154,7 +156,7 @@ func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automa
 	if e.lifecycle == nil || e.blockActionsUnproven != nil || automatic {
 		var kept []BlockedEntry
 		for _, row := range st.Blocked {
-			if row.ActionID == "" {
+			if row.ActionID == "" && (!automatic || row.Automatic) {
 				kept = append(kept, row)
 			}
 		}

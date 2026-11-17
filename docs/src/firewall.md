@@ -242,6 +242,11 @@ explicitly; operator blocks and operator undo do not acquire that origin
 from their reason text. Older unstamped rows keep unknown origin.
 Automatic admission may replace a block that recorded its origin with a
 higher-priority one; a block of unknown origin is never replaced.
+An automatic block replaces only blocks that recorded an automatic origin:
+at the temporary limit it never replaces an operator's temporary block or a
+block of unknown origin, and is refused when only those remain. An automatic
+alias of an operator block keeps that operator protection and the longer
+lifetime. An operator block may still replace them.
 
 Rows of an address family without a blocked set neither fill the temporary
 limit nor become replacement victims. Turning off IPv6 filtering therefore

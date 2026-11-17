@@ -16,8 +16,8 @@ func TestDurableEvictionUsesCompleteCommittedState(t *testing.T) {
 	for _, expiredAlias := range []bool{false, true} {
 		t.Run(map[bool]string{false: "expired unrelated rows", true: "expired alias"}[expiredAlias], func(t *testing.T) {
 			now := time.Now().Round(0)
-			soon := BlockedEntry{IP: "203.0.113.51", Reason: "soon", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
-			later := BlockedEntry{IP: "203.0.113.52", Reason: "later", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour)}
+			soon := BlockedEntry{IP: "203.0.113.51", Automatic: true, Reason: "soon", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
+			later := BlockedEntry{IP: "203.0.113.52", Automatic: true, Reason: "later", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour)}
 			expired := soon
 			expired.IP, expired.ExpiresAt = "192.0.2.81", now.Add(-time.Minute)
 			victim, kept := soon, []BlockedEntry{expired, later}
@@ -61,7 +61,7 @@ func TestDurableEvictionKeepsExpiredRowsOutOfPolicy(t *testing.T) {
 			if mode == "fallback capacity" {
 				target = "203.0.113.52"
 				cfg.DenyTempIPLimit = 2
-				state.Blocked = append(state.Blocked, BlockedEntry{IP: "203.0.113.51", ExpiresAt: now.Add(time.Hour)})
+				state.Blocked = append(state.Blocked, BlockedEntry{IP: "203.0.113.51", Automatic: true, ExpiresAt: now.Add(time.Hour)})
 			}
 			e, store := batchPlanEngine(t, cfg, state)
 			e.liveBlockCounts = func() (int, int, error) { return 0, 0, errors.New("counts unavailable") }
@@ -84,7 +84,7 @@ func TestDurableEvictionKeepsExpiredRowsOutOfPolicy(t *testing.T) {
 
 func TestDurableEvictionCandidatesAreUniqueAndTimed(t *testing.T) {
 	now := time.Now().Round(0)
-	row := BlockedEntry{IP: "203.0.113.50", ExpiresAt: now.Add(time.Hour)}
+	row := BlockedEntry{IP: "203.0.113.50", Automatic: true, ExpiresAt: now.Add(time.Hour)}
 	for name, other := range map[string]BlockedEntry{
 		"expired alias":   {IP: "::ffff:203.0.113.50", ExpiresAt: now.Add(-time.Hour)},
 		"permanent alias": {IP: "::ffff:203.0.113.50"},
@@ -98,7 +98,7 @@ func TestDurableEvictionCandidatesAreUniqueAndTimed(t *testing.T) {
 		})
 	}
 	e, _ := batchPlanEngine(t, FirewallConfig{}, FirewallState{})
-	for _, r := range []BlockedEntry{{IP: row.IP}, {IP: row.IP, ExpiresAt: now.Add(-time.Hour)}, {IP: row.IP, ExpiresAt: now.Add(time.Hour), Unverified: true}} {
+	for _, r := range []BlockedEntry{{IP: row.IP, Automatic: true}, {IP: row.IP, Automatic: true, ExpiresAt: now.Add(-time.Hour)}, {IP: row.IP, Automatic: true, ExpiresAt: now.Add(time.Hour), Unverified: true}} {
 		if ip, ok := e.evictionVictimLocked(FirewallState{Blocked: []BlockedEntry{r}}, "203.0.113.60", true); ok {
 			t.Fatalf("ineligible victim %s: %#v", ip, r)
 		}
@@ -142,7 +142,7 @@ func TestDurableEvictionHonorsPolicyOverlay(t *testing.T) {
 		t.Run(mark, func(t *testing.T) {
 			now := time.Now().Round(0)
 			held := BlockedEntry{IP: "203.0.113.50", ActionID: "unsettled", ExpiresAt: now.Add(time.Hour)}
-			eligible := BlockedEntry{IP: "203.0.113.51", ExpiresAt: now.Add(2 * time.Hour)}
+			eligible := BlockedEntry{IP: "203.0.113.51", Automatic: true, ExpiresAt: now.Add(2 * time.Hour)}
 			state := FirewallState{Blocked: []BlockedEntry{held, eligible}}
 			e, store := batchPlanEngine(t, FirewallConfig{DenyTempIPLimit: 2}, state)
 			if mark == "unverified" {
@@ -186,7 +186,7 @@ func TestDurableEvictionPlanningReadContract(t *testing.T) {
 		t.Run(map[bool]string{false: "success clears prior error", true: "failure stays visible"}[fail], func(t *testing.T) {
 			now := time.Now().Round(0)
 			held := BlockedEntry{IP: "203.0.113.50", ActionID: "unsettled", ExpiresAt: now.Add(time.Hour)}
-			state := FirewallState{Blocked: []BlockedEntry{held, {IP: "203.0.113.51", ExpiresAt: now.Add(-time.Hour)}}}
+			state := FirewallState{Blocked: []BlockedEntry{held, {IP: "203.0.113.51", Automatic: true, ExpiresAt: now.Add(-time.Hour)}}}
 			e, base := batchPlanEngine(t, FirewallConfig{DenyTempIPLimit: 1}, state)
 			wantState := copyFirewallState(state)
 			cause := errors.New("snapshot unavailable")

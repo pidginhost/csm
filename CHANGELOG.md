@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- At the temporary block limit, automatic blocks no longer replace an operator's temporary block, and are refused when only those, or blocks saved before 4.10.0, remain.
+
 ### Added
 
 - On Stalwart hosts CSM now suspends a hacked mailbox's sign-ins, listed with Release on the Email page. Run `csm stalwart setup` once to enable it.

@@ -1710,7 +1710,10 @@ func normalizeFirewallStateIPs(state *FirewallState) {
 		}
 		entry.IP = key
 		if i, exists := blockedPos[key]; exists {
+			// An automatic alias cannot erase an operator's ownership.
+			automatic := blocked[i].Automatic && entry.Automatic
 			blocked[i] = preferLongerLivedBlock(blocked[i], entry)
+			blocked[i].Automatic = automatic
 			continue
 		}
 		blockedPos[key] = len(blocked)
