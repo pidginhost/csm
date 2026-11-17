@@ -63,6 +63,10 @@ func readLedgerPosition(path string) (live bool, at time.Time, err error) {
 	if !info.Mode().IsRegular() {
 		return false, time.Time{}, fmt.Errorf("ledger database is not a regular file")
 	}
+	// bbolt loops on a page cycle and faults on references past the end.
+	if err = verifyDatabase(path); err != nil {
+		return false, time.Time{}, err
+	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
 	if err != nil {
 		return false, time.Time{}, err

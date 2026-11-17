@@ -578,3 +578,45 @@ func TestLedgerRestoreTruncatedPages(t *testing.T) {
 		t.Fatalf("repaired ledger: live %t, clock %v; want the archive's", live, clock)
 	}
 }
+
+// leakFreePages empties the freelist of the stopped database at path, so
+// its free pages are neither reachable nor free: leaked, as old bbolt
+// releases could leave them.
+func leakFreePages(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, pageSize := binary.NativeEndian, os.Getpagesize()
+	meta := data[16:80]
+	if order.Uint64(data[pageSize+64:]) > order.Uint64(meta[48:]) {
+		meta = data[pageSize+16 : pageSize+80]
+	}
+	free := data[order.Uint64(meta[32:])*uint64(pageSize):]
+	if count := order.Uint16(free[10:]); count == 0 || count == 0xFFFF {
+		t.Fatalf("fixture freelist holds %d pages, want a few", count)
+	}
+	order.PutUint16(free[10:], 0)
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = verifySnapshot(path); err == nil || !strings.Contains(err.Error(), "unreachable unfreed") {
+		t.Fatalf("fixture verification = %v, want leaked pages", err)
+	}
+}
+
+// Leaked pages waste space, but bbolt reads and writes around them. A live
+// database with them still takes a firewall import, and the ledger guard
+// still reads its ledger instead of treating it as unreadable.
+func TestImportOverLeakedTargetPages(t *testing.T) {
+	archive := exportLedger(t, restoreLedger(t, ledgerT0, false, "archive"))
+	target := closeLedger(t, restoreLedger(t, ledgerT0.Add(time.Hour), true, "target"))
+	leakFreePages(t, filepath.Join(target, "csm.db"))
+	if _, err := Import(ImportOptions{SrcPath: archive, StatePath: target, Only: "all", CurrentPlatform: defaultPlatform()}); !errors.Is(err, ErrLedgerBehind) {
+		t.Fatalf("import of an older ledger over leaked pages = %v, want a behind refusal", err)
+	}
+	if _, err := Import(ImportOptions{SrcPath: archive, StatePath: target, Only: "firewall", CurrentPlatform: defaultPlatform()}); err != nil {
+		t.Fatalf("firewall import over leaked pages: %v", err)
+	}
+}

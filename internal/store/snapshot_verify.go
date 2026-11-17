@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -44,6 +45,19 @@ func verifySnapshot(path string) error {
 		return fmt.Errorf("bbolt snapshot is damaged: %w", err)
 	}
 	return nil
+}
+
+var errLeakedPages = errors.New("snapshot has unreachable unfreed pages")
+
+// verifyDatabase checks a stopped live database as verifySnapshot checks a
+// snapshot, but accepts leaked pages: they waste space, and bbolt reads and
+// writes around them. A missing file is a new database.
+func verifyDatabase(path string) error {
+	err := verifySnapshot(path)
+	if os.IsNotExist(err) || errors.Is(err, errLeakedPages) {
+		return nil
+	}
+	return err
 }
 
 type snapshotMeta struct {
@@ -111,7 +125,7 @@ func checkSnapshot(r io.ReaderAt, size int64) error {
 		work = append(work, children...)
 	}
 	if m.freelist != ^uint64(0) && uint64(len(v.used)) != m.pages-2 {
-		return fmt.Errorf("snapshot has unreachable unfreed pages")
+		return errLeakedPages
 	}
 	return nil
 }
