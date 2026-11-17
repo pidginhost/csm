@@ -33,7 +33,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - At the temporary block limit, a new block now replaces a block still in the firewall or is refused, instead of going in above the limit.
 - After a firewall rollback, temporary blocks end at the time shown instead of staying blocked for as long again as the confirmation window was open.
 - `csm doctor` on Stalwart hosts no longer warns about Stalwart delivery, DKIM and reverse DNS log lines CSM reads correctly.
-- Package upgrades, `csm verify` and `csm config show` no longer fail when callback secrets are set only in the service environment.
+- Package upgrades, integrity checks and redacted config displays now work when callback secrets are set only in the service environment.
+- Unredacted config displays require an explicit request and fail if a required callback secret is missing.
 
 ## [4.13.0] - 2026-11-15
 
