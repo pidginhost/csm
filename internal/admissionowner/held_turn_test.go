@@ -452,3 +452,32 @@ func TestOwnerEngineReturnAfterMissingEngineSelection(t *testing.T) {
 		})
 	}
 }
+
+// A held turn with nothing queued leaves no wake behind: until the probe
+// is due, the schedule ticks without running or writing another turn.
+func TestOwnerIdleHeldTurnLeavesNoWake(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	o := f.start(executeOptions(f, newFakeBlocks()))
+	mono := heldMono(t, o)
+	if err := o.do(func() error {
+		o.hold(firewall.ErrBlockBatchState, false)
+		o.probeWait, o.probeAt = 30*time.Second, monoNow().Add(30*time.Second)
+		o.scheduleDue, o.wakeAt = true, time.Time{}
+		o.schedule()
+		return o.scheduleErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writes := f.db.WriteTxID()
+	for range 10 {
+		mono.advance(time.Second)
+		f.host.advance(time.Second)
+		if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := f.db.WriteTxID() - writes; got != 0 {
+		t.Fatalf("an idle held owner committed %d writes before its probe", got)
+	}
+}
