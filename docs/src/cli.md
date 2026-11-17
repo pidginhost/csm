@@ -113,7 +113,7 @@ Restore and `csm store import` refuse an archive whose admission ledger is behin
 
 `csm store import` rejects archives that place `csm.db` among state files; the database belongs only in `bbolt.snapshot`. A baseline import carrying `firewall/state.json` also verifies the snapshot's checksum when the manifest provides one. `--force` does not bypass either format or checksum validation. Baseline imports without firewall state still ignore the unused snapshot.
 
-Backup, export, import and restore validate database snapshots before reading or changing their contents. Invalid page references, cycles and inconsistent free space are refused, including leaked pages. Export validates its frozen copy of the live database; normal concurrent writes remain supported. These commands create consistent backups, not salvage copies of damaged databases.
+Backup, export, import and restore check each database snapshot before reading or changing it and refuse a damaged one, including one with leaked pages. They make consistent backups, not salvage copies of damaged databases.
 
 Backup and restore use the state lock to exclude daemon access. Restore stages all data beside its destination before replacement, so validation failures leave the live installation unchanged. Uninstall is intentionally non-destructive unless `--purge` is supplied.
 

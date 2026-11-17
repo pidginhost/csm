@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Malformed database backups now fail validation without crashing or hanging CSM.
+- Backup, export, import and restore now refuse a damaged or malformed state database instead of crashing or hanging CSM.
 - At the temporary block limit, automatic blocks no longer replace an operator's temporary block, and are refused when only those, or blocks saved before 4.10.0, remain.
 
 ### Added
@@ -34,7 +34,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - After a firewall rollback, temporary blocks end at the time shown instead of staying blocked for as long again as the confirmation window was open.
 - `csm doctor` on Stalwart hosts no longer warns about Stalwart delivery, DKIM and reverse DNS log lines CSM reads correctly.
 - Package upgrades and `csm verify` no longer fail when callback secrets are set only in the service environment.
-- Backing up, exporting, importing or restoring a damaged state database now stops with an error instead of crashing CSM.
 
 ## [4.13.0] - 2026-11-15
 
