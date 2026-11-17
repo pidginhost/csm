@@ -64,12 +64,12 @@ func runConfigSchema() {
 }
 
 func configShow() {
-	cfg := loadConfigLite()
-
 	noRedact := false
 	asJSON := false
-	for _, arg := range os.Args[3:] {
-		switch arg {
+	for i := 3; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--config", "--config-dir":
+			i++ // A path is never a display flag.
 		case "--no-redact":
 			noRedact = true
 		case "--json":
@@ -77,9 +77,11 @@ func configShow() {
 		}
 	}
 
-	displayCfg := cfg
-	if !noRedact {
-		displayCfg = config.Redact(cfg)
+	var displayCfg *config.Config
+	if noRedact {
+		displayCfg = loadConfigLite()
+	} else {
+		displayCfg = config.Redact(loadConfigLiteWith(secretFreeLoadOptions))
 	}
 
 	if asJSON {

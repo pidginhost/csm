@@ -50,7 +50,7 @@ func TestRehashAndVerifyWithoutRuntimeSecretEnv(t *testing.T) {
 	}
 
 	// Full rehash: the same load and signing runRehash performs.
-	cfg, err := tryLoadConfigLiteWith(hashOnlyLoadOptions)
+	cfg, err := tryLoadConfigLiteWith(secretFreeLoadOptions)
 	if err != nil {
 		t.Fatalf("rehash load: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRehashAndVerifyWithoutRuntimeSecretEnv(t *testing.T) {
 
 	// Verify: the same load and check runVerify performs.
 	os.Args = []string{"csm", "verify", "--config", cfgPath, "--config-dir", confDir}
-	signed, err := tryLoadConfigLiteWith(hashOnlyLoadOptions)
+	signed, err := tryLoadConfigLiteWith(secretFreeLoadOptions)
 	if err != nil {
 		t.Fatalf("verify load: %v", err)
 	}

@@ -306,10 +306,11 @@ func loadConfigLite() *config.Config {
 	return loadConfigLiteWith(config.LoadOptions{})
 }
 
-// hashOnlyLoadOptions is for rehash and verify, which only hash or compare the
-// config files. dpkg runs rehash without the service environment, so a secret
-// that lives only there must not fail the package upgrade.
-var hashOnlyLoadOptions = config.LoadOptions{AllowUnsetSecretEnv: true}
+// secretFreeLoadOptions is for commands that never use the runtime secrets:
+// rehash and verify hash or compare the config files, and config show prints
+// it redacted. dpkg and integrations run them without the service environment,
+// so a secret that lives only there must not fail them.
+var secretFreeLoadOptions = config.LoadOptions{AllowUnsetSecretEnv: true}
 
 func loadConfigLiteWith(opts config.LoadOptions) *config.Config {
 	cfg, err := tryLoadConfigLiteWith(opts)
@@ -936,7 +937,7 @@ func runRehash() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	cfg := loadConfigLiteWith(hashOnlyLoadOptions)
+	cfg := loadConfigLiteWith(secretFreeLoadOptions)
 	if names != nil {
 		os.Exit(rehashFragments(binaryPath, cfg.ConfigFile, cfg.ConfigDir, names, os.Stdout, os.Stderr))
 	}
@@ -1105,7 +1106,7 @@ func runValidate() {
 }
 
 func runVerify() {
-	cfg := loadConfigLiteWith(hashOnlyLoadOptions)
+	cfg := loadConfigLiteWith(secretFreeLoadOptions)
 	if err := integrity.Verify(binaryPath, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "INTEGRITY CHECK FAILED: %v\n", err)
 		os.Exit(2)
