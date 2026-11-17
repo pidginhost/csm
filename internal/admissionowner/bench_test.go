@@ -229,3 +229,38 @@ func BenchmarkTurnWithASaturatedPanel(b *testing.B) {
 		})
 	}
 }
+
+// Turns while execution is held and its probe is not due, over a fixed
+// queue of 512 block picks already labelled as waiting for the engine.
+// Each turn revalidates the queue; none selects, asks or runs anything.
+func BenchmarkHeldTurn(b *testing.B) {
+	p := withTestRegistry(b)
+	f := newOwnerFixture(b)
+	blocks := newFakeBlocks()
+	o := f.start(executeOptions(f, blocks))
+	heldMono(b, o)
+	for i := range 512 {
+		queuedAt(b, o, p, f.host, admission.SeverityHigh, fmt.Sprintf("2001:db8::%x", i+1))
+	}
+	if err := o.do(func() error {
+		o.hold(firewall.ErrBlockBatchState, false)
+		o.probeWait, o.probeAt = maxProbeWait, monoNow().Add(maxProbeWait)
+		return nil
+	}); err != nil {
+		b.Fatal(err)
+	}
+	turn(b, o)
+	queued := len(queuedCandidates(b, o))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		turn(b, o)
+	}
+	b.StopTimer()
+	if n := len(queuedCandidates(b, o)); n != queued || n != 512 {
+		b.Fatalf("%d picks queued after the turns, %d before", n, queued)
+	}
+	if checks, applies := blocks.calls(); len(checks) != 0 || len(applies) != 0 || blocks.probes() != 0 {
+		b.Fatalf("held turns reached the engine: checks=%d applies=%d probes=%d", len(checks), len(applies), blocks.probes())
+	}
+}

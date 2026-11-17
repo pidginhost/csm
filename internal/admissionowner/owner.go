@@ -896,14 +896,7 @@ func (o *Owner) drainHeld() (err error) {
 // also picks up policy changes and runs the probes.
 func (o *Owner) schedule() {
 	o.expireVerdicts()
-	probeDue := false
-	if o.executing() && o.policyErr == nil && o.execHold != nil {
-		probeDue = !monoNow().Before(o.probeAt)
-		// A newly published engine need not wait for the old retry deadline.
-		if errors.Is(o.execHold, errNoEngine) {
-			probeDue = o.opts.Blocks() != nil
-		}
-	}
+	probeDue := o.mayExecute() && o.execHold != nil && o.heldProbeDue()
 	// A policy change can resume held work or probes without an arrival,
 	// reload or ledger deadline, including after an idle dry run.
 	policyDue := o.executable() && o.opts.Policy().Epoch > o.seenEpoch
@@ -974,7 +967,11 @@ func (o *Owner) runTurn(selecting bool) error {
 	}
 	switch {
 	case o.batchGated():
-		o.scheduleDue = true
+		// Nothing else wakes the owner at the batch deadline; a held probe
+		// wakes the schedule itself, and held work keeps the ledger's wake.
+		if monoNow().Before(o.nextBatch) {
+			o.scheduleDue = true
+		}
 		if err := o.deferBatchGate(selecting); err != nil {
 			return err
 		}
@@ -1030,10 +1027,22 @@ func (o *Owner) runTurn(selecting bool) error {
 }
 
 // batchGated keeps a turn that cannot start a batch from spending fair
-// turns or postponing the next selection. Forecasts and observe previews
-// do not dispatch batches and retain their own cadence.
+// turns or postponing the next selection: one before the next batch may
+// start, or while execution is held and its probe is not due. Forecasts
+// and observe previews do not dispatch batches and retain their own
+// cadence.
 func (o *Owner) batchGated() bool {
-	return o.mayExecute() && monoNow().Before(o.nextBatch)
+	return o.mayExecute() && (monoNow().Before(o.nextBatch) || o.execHold != nil && !o.heldProbeDue())
+}
+
+// heldProbeDue reports whether held execution may probe now: at its retry
+// deadline, or as soon as a missing engine has been published, without
+// waiting for the old deadline.
+func (o *Owner) heldProbeDue() bool {
+	if errors.Is(o.execHold, errNoEngine) {
+		return o.opts.Blocks() != nil
+	}
+	return !monoNow().Before(o.probeAt)
 }
 
 // deferBatchGate reports an execution outage without selecting work or
