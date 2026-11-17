@@ -98,6 +98,12 @@ func (o *Owner) execute(picks []execPick) error {
 		return nil
 	}
 	engine := o.opts.Blocks()
+	if engine == nil {
+		// The missing-engine wait must advance even when the clock cannot
+		// support execution; otherwise every due turn spends a selection.
+		o.ready(nil, true)
+		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	}
 	// A degraded clock cannot bound a lease: the admission time stays at
 	// its high-water mark while the wall clock is behind it or disagrees
 	// with elapsed time. The engine encodes against its own lease clock.

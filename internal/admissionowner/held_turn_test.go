@@ -2,6 +2,7 @@ package admissionowner
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -333,43 +334,121 @@ func TestOwnerHeldProbeEndsRefusals(t *testing.T) {
 // turn select per wait: other work is previewed within a minute, and block
 // work still selects no more than once per wait.
 func TestOwnerMissingEngineStillPreviewsOtherWork(t *testing.T) {
-	p := withTestRegistry(t)
-	f := newOwnerFixture(t)
-	opts := executeOptions(f, newFakeBlocks())
-	opts.Blocks = func() BlockEngine { return nil }
-	o := f.start(opts)
-	mono := heldMono(t, o)
-	block, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.60")
-	if err := o.do(o.turn); err != nil {
-		t.Fatal(err)
-	}
-	if held := executionHeld(t, o); held == "" {
-		t.Fatal("a missing engine did not hold execution")
-	}
-	selections := 0
-	setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
-		selections++
-		return l.Schedule(lim, answers)
-	})
-	challenge, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.61", admission.KindChallenge)
-	previewed := time.Duration(0)
-	for elapsed := time.Second; elapsed <= 2*maxProbeWait; elapsed += time.Second {
-		mono.advance(time.Second)
-		f.host.advance(time.Second)
-		if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
-			t.Fatal(err)
+	for _, degraded := range []bool{false, true} {
+		name := "healthy_clock"
+		if degraded {
+			name = "degraded_clock"
 		}
-		if previewed == 0 && candidate(t, o, challenge).State != admission.StateQueued {
-			previewed = elapsed
+		t.Run(name, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			opts := executeOptions(f, newFakeBlocks())
+			opts.Blocks = func() BlockEngine { return nil }
+			o := f.start(opts)
+			mono := heldMono(t, o)
+			block, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.60")
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
+			if held := executionHeld(t, o); held == "" {
+				t.Fatal("a missing engine did not hold execution")
+			}
+			var selections []time.Duration
+			start := mono.read()
+			setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+				selections = append(selections, mono.read().Sub(start))
+				return l.Schedule(lim, answers)
+			})
+			challenge, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.61", admission.KindChallenge)
+			if degraded {
+				f.host.set(func(h *fakeHost) { h.wall = h.wall.Add(-time.Hour) })
+			}
+			previewed := time.Duration(0)
+			for elapsed := time.Second; elapsed <= 2*maxProbeWait; elapsed += time.Second {
+				mono.advance(time.Second)
+				f.host.advance(time.Second)
+				if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+					t.Fatal(err)
+				}
+				if previewed == 0 && candidate(t, o, challenge).State != admission.StateQueued {
+					previewed = elapsed
+				}
+			}
+			if previewed == 0 || previewed > maxProbeWait {
+				t.Fatalf("challenge previewed after %v, want within %v", previewed, maxProbeWait)
+			}
+			wantSelections := []time.Duration{time.Second, 3 * time.Second, 7 * time.Second, 15 * time.Second, 31 * time.Second, 63 * time.Second}
+			if !slices.Equal(selections, wantSelections) {
+				t.Errorf("missing engine selected at %v, want %v", selections, wantSelections)
+			}
+			if c := candidate(t, o, challenge); c.State != admission.StateDryRun || c.Attempts != 0 {
+				t.Errorf("challenge = %+v, want an uncharged preview", c)
+			}
+			if c := candidate(t, o, block); c.State != admission.StateQueued || c.Reason != admission.ReasonEngineUnavailable || c.Attempts != 0 {
+				t.Errorf("held block = %+v, want queued as engine_unavailable", c)
+			}
+		})
+	}
+}
+
+// A preview during an engine outage must not delay the returning engine,
+// even when an earlier apply fault still requires a one-member probe.
+func TestOwnerEngineReturnAfterMissingEngineSelection(t *testing.T) {
+	for _, applyHold := range []bool{false, true} {
+		name := "missing"
+		if applyHold {
+			name = "apply"
 		}
-	}
-	if previewed == 0 || previewed > maxProbeWait {
-		t.Fatalf("challenge previewed after %v, want within %v", previewed, maxProbeWait)
-	}
-	if selections > 10 {
-		t.Errorf("missing engine selected %d times in %v, want one per wait", selections, 2*maxProbeWait)
-	}
-	if c := candidate(t, o, block); c.State != admission.StateQueued || c.Reason != admission.ReasonEngineUnavailable || c.Attempts != 0 {
-		t.Errorf("held block = %+v, want queued as engine_unavailable", c)
+		t.Run(name, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			running := false
+			opts := executeOptions(f, blocks)
+			opts.Blocks = func() BlockEngine {
+				if running {
+					return blocks
+				}
+				return nil
+			}
+			o := f.start(opts)
+			mono := heldMono(t, o)
+			for _, ip := range []string{"192.0.2.62", "192.0.2.63"} {
+				queuedAt(t, o, p, f.host, admission.SeverityHigh, ip)
+			}
+			if err := o.do(func() error {
+				if applyHold {
+					o.hold(errors.New("apply unavailable"), true)
+				}
+				return o.turn()
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mono.advance(2 * firstProbeWait)
+			f.host.advance(2 * firstProbeWait)
+			if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+				t.Fatal(err)
+			}
+			mono.advance(time.Nanosecond)
+			f.host.advance(time.Nanosecond)
+			if err := o.do(func() error {
+				running = true
+				o.schedule()
+				return o.scheduleErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			wantMembers, wantProbes := 2, 0
+			if applyHold {
+				wantMembers, wantProbes = 1, 1
+			}
+			checks, applies := blocks.calls()
+			if len(checks) != 1 || len(checks[0]) != 2 || len(applies) != 1 || len(applies[0]) != wantMembers || heldStateProbes(blocks) != wantProbes {
+				t.Fatalf("engine return: checks=%v applies=%v probes=%d, want one batch of %d and %d probes", checks, applies, heldStateProbes(blocks), wantMembers, wantProbes)
+			}
+			if held := executionHeld(t, o); held != "" {
+				t.Fatalf("successful returning batch kept hold: %s", held)
+			}
+		})
 	}
 }

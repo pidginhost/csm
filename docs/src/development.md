@@ -1312,8 +1312,12 @@ waits. Before the next live batch may start, a turn selects nothing and
 leaves the next selection due. While execution is held, a turn before its
 probe is due selects nothing either, so held work keeps its place in the
 rotation; probe turns still select. A missing engine has no probe: its
-hold still selects once per wait, from one second doubling to a minute, so
-work that needs no engine is still previewed. Clock or engine outages still defer waiting
+hold still selects once per wait, from one second doubling to a minute,
+including during a clock outage, so work that needs no engine is still
+previewed. A returning engine selects immediately even after a recent
+missing-engine preview; batch starts still keep their spacing, and an
+earlier apply fault still requires a one-member probe.
+Clock or engine outages still defer waiting
 blocks without spending fair turns or running early probes; work already
 deferred for capacity keeps its reason. Dry-run
 forecasts and previews without an engine keep their own cadence.

@@ -907,10 +907,11 @@ func (o *Owner) schedule() {
 		return
 	}
 	o.scheduleDue, o.wakeAt = false, time.Time{}
-	// An executable owner selects, checks and forecasts once a second at
-	// most, whatever made the turn due. Retirement of earlier
-	// work keeps its own waits.
-	selecting := !o.executable() || !monoNow().Before(o.nextTurn)
+	// An executable owner selects, checks and forecasts once a second.
+	// A missing-engine preview must not delay the returning engine; the
+	// batch gate still bounds batch starts. Retirement keeps its own waits.
+	engineReturned := probeDue && errors.Is(o.execHold, errNoEngine)
+	selecting := engineReturned || !o.executable() || !monoNow().Before(o.nextTurn)
 	err := o.runTurn(selecting)
 	if err != nil {
 		o.scheduleDue = true
