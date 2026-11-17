@@ -55,6 +55,7 @@ func TestBlockIPOutcome_DryRunAtTempCapDoesNotEvict(t *testing.T) {
 	}
 	if err := e.saveBlockedEntry(BlockedEntry{
 		IP:        "192.0.2.10",
+		Automatic: true,
 		Reason:    "existing temp block",
 		BlockedAt: time.Now().Add(-time.Minute),
 		ExpiresAt: time.Now().Add(time.Hour),
@@ -88,6 +89,7 @@ func TestBlockIPOutcome_AllowVerdictAtTempCapDoesNotEvict(t *testing.T) {
 	}
 	if err := e.saveBlockedEntry(BlockedEntry{
 		IP:        "192.0.2.20",
+		Automatic: true,
 		Reason:    "existing temp block",
 		BlockedAt: time.Now().Add(-time.Minute),
 		ExpiresAt: time.Now().Add(time.Hour),

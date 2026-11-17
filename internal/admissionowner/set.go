@@ -32,11 +32,11 @@ func (o *Owner) readSet() error {
 	if err == nil && adm.Admission > 0 {
 		// Admission rows beyond the ledger's own records, as after a lost
 		// ledger, hold slots no record can give up.
-		var holds int
-		if holds, err = o.ledger.EffectHolds(); err != nil {
+		var holds admission.EffectTally
+		if holds, err = o.ledger.EffectTally(); err != nil {
 			return err
 		}
-		if unknown := adm.Admission - holds; unknown > 0 {
+		if unknown := adm.Admission - holds.General - holds.Reserved; unknown > 0 {
 			adm.Unclaimed += unknown
 			// The engine's drain excludes admission rows, so it cannot
 			// bound the remaining time of these additional occupants.

@@ -43,8 +43,8 @@ func capVictim(e *Engine, ip string, automatic bool) (string, error) {
 // one replaces, and it fills no slot when the rows stand in for the
 // kernel's count.
 func TestLegacyCapIgnoresRowsOfAnUnfilteredFamily(t *testing.T) {
-	v6 := BlockedEntry{IP: "2001:db8::31", ExpiresAt: time.Now().Add(time.Minute)}
-	v4 := BlockedEntry{IP: "192.0.2.31", ExpiresAt: time.Now().Add(time.Hour)}
+	v6 := BlockedEntry{IP: "2001:db8::31", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
+	v4 := BlockedEntry{IP: "192.0.2.31", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	for _, automatic := range []bool{false, true} {
 		victim, err := capVictim(capEngine(t, 1, v6, v4), "198.51.100.31", automatic)
 		if err != nil || victim != v4.IP {
@@ -67,7 +67,7 @@ func TestLegacyCapIgnoresRowsOfAnUnfilteredFamily(t *testing.T) {
 func TestLegacyOperatorCapIgnoresRowsOfAnUnfilteredFamily(t *testing.T) {
 	e := capEngine(t, 0,
 		BlockedEntry{IP: "192.0.2.32", ExpiresAt: time.Now().Add(time.Hour), ActionID: "act_cap"},
-		BlockedEntry{IP: "2001:db8::32", ExpiresAt: time.Now().Add(time.Minute)})
+		BlockedEntry{IP: "2001:db8::32", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)})
 	e.liveBlockedDump = func(*nftables.Set) ([]nftables.SetElement, error) { return nil, errors.New("dump failed") }
 	if victim, err := capVictim(e, "198.51.100.32", false); err != nil || victim != "" {
 		t.Fatalf("victim %q, %v; want room below the cap", victim, err)
@@ -76,8 +76,8 @@ func TestLegacyOperatorCapIgnoresRowsOfAnUnfilteredFamily(t *testing.T) {
 
 // A missing IPv4 set must not leave an unusable victim for an IPv6 block.
 func TestLegacyCapSkipsANilIPv4Set(t *testing.T) {
-	v4 := BlockedEntry{IP: "192.0.2.34", ExpiresAt: time.Now().Add(time.Minute)}
-	v6 := BlockedEntry{IP: "2001:db8::34", ExpiresAt: time.Now().Add(time.Hour)}
+	v4 := BlockedEntry{IP: "192.0.2.34", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
+	v6 := BlockedEntry{IP: "2001:db8::34", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	for _, temp := range []int{1, -1} {
 		e := capEngine(t, temp, v4, v6)
 		e.setBlocked = nil
@@ -90,8 +90,8 @@ func TestLegacyCapSkipsANilIPv4Set(t *testing.T) {
 
 // With IPv6 filtered the row keeps its slot and its turn as the victim.
 func TestLegacyCapKeepsRowsOfAFilteredFamily(t *testing.T) {
-	v6 := BlockedEntry{IP: "2001:db8::33", ExpiresAt: time.Now().Add(time.Minute)}
-	v4 := BlockedEntry{IP: "192.0.2.33", ExpiresAt: time.Now().Add(time.Hour)}
+	v6 := BlockedEntry{IP: "2001:db8::33", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
+	v4 := BlockedEntry{IP: "192.0.2.33", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	for _, temp := range []int{1, -1} {
 		e := capEngine(t, temp, v6, v4)
 		e.setBlocked6 = &nftables.Set{Name: "blocked_ips6", KeyType: nftables.TypeIP6Addr}

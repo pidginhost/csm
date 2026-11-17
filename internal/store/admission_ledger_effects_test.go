@@ -589,31 +589,31 @@ func TestAdmissionLedgerEffectStartStaysLazy(t *testing.T) {
 
 // The holds are the slots the ledger's own records take in both
 // partitions: what a set read compares with the firewall's admission rows.
-func TestAdmissionLedgerEffectHolds(t *testing.T) {
+func TestAdmissionLedgerEffectTally(t *testing.T) {
 	f := liveLedgerFixture(t)
-	want := func(what string, n int) {
+	want := func(what string, general, reserved int) {
 		t.Helper()
-		if got, err := f.l.EffectHolds(); err != nil || got != n {
-			t.Fatalf("%s: %d holds, %v; want %d", what, got, err, n)
+		if got, err := f.l.EffectTally(); err != nil || got != (admission.EffectTally{General: general, Reserved: reserved}) {
+			t.Fatalf("%s: %+v, %v; want %d general and %d reserved", what, got, err, general, reserved)
 		}
 	}
-	want("no record", 0)
+	want("no record", 0, 0)
 	_, general, _, err := f.l.Reserve(f.queuedAt("192.0.2.10"), admission.LaneGeneral, f.wall.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want("a general reservation", 1)
+	want("a general reservation", 1, 0)
 	if _, _, _, err = f.l.Reserve(f.directAt("192.0.2.11"), admission.LaneDirect, f.wall.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	want("a reservation in each partition", 2)
+	want("a reservation in each partition", 1, 1)
 	before := f.snapshot()
-	want("a second read", 2)
+	want("a second read", 1, 1)
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("reading the holds changed the ledger")
 	}
 	if _, _, err = f.l.Finish(general.Attempt.ID, admission.DispositionFailed); err != nil {
 		t.Fatal(err)
 	}
-	want("after a failure gave its slot back", 1)
+	want("after a failure gave its slot back", 0, 1)
 }

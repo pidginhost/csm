@@ -19,8 +19,8 @@ func TestDurableEvictionRecordsItsVictim(t *testing.T) {
 	// manifest's member must carry the same one.
 	for _, id := range []string{"evicting", ""} {
 		now := time.Now().Round(0)
-		later := BlockedEntry{IP: "203.0.113.50", Reason: "later", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour)}
-		soonest := BlockedEntry{IP: "203.0.113.51", Reason: "soonest", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(10 * time.Minute)}
+		later := BlockedEntry{IP: "203.0.113.50", Automatic: true, Reason: "later", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour)}
+		soonest := BlockedEntry{IP: "203.0.113.51", Automatic: true, Reason: "soonest", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(10 * time.Minute)}
 		e, s := batchPlanEngine(t, FirewallConfig{DenyTempIPLimit: 2}, FirewallState{Blocked: []BlockedEntry{later, soonest}})
 		req := ActionRequest{ID: id, Target: "203.0.113.52", Reason: "brute force", Actor: "auto", Source: "scan", Automatic: true, TTL: time.Hour}
 		if _, err := e.BlockIPRequest(req, nil); !errors.Is(err, errBatchPlanStop) {
@@ -60,8 +60,8 @@ func TestDurableBlockWithoutEvictionHasNoManifest(t *testing.T) {
 // canonical address, is passed over for the next soonest-expiring row.
 func TestDurableEvictionSkipsVictimsItCannotRecord(t *testing.T) {
 	now := time.Now().Round(0)
-	mapped := BlockedEntry{IP: "::ffff:203.0.113.53", Reason: "legacy spelling", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(5 * time.Minute)}
-	later := BlockedEntry{IP: "203.0.113.50", Reason: "later", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour)}
+	mapped := BlockedEntry{IP: "::ffff:203.0.113.53", Automatic: true, Reason: "legacy spelling", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(5 * time.Minute)}
+	later := BlockedEntry{IP: "203.0.113.50", Automatic: true, Reason: "later", Source: "scan", BlockedAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour)}
 	e, s := batchPlanEngine(t, FirewallConfig{DenyTempIPLimit: 2}, FirewallState{Blocked: []BlockedEntry{mapped, later}})
 	req := ActionRequest{ID: "evicting", Target: "203.0.113.52", Reason: "brute force", Actor: "auto", Source: "scan", Automatic: true, TTL: time.Hour}
 	if _, err := e.BlockIPRequest(req, nil); !errors.Is(err, errBatchPlanStop) || len(s.admitted) != 1 {

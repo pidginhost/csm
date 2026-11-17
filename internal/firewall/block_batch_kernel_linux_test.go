@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/nftables"
+	"github.com/google/nftables/expr"
 )
 
 func newKernelBatchEngine(t *testing.T) *Engine {
@@ -83,6 +84,19 @@ func TestKernelBlockBatchRejectionAppliesNothing(t *testing.T) {
 	e := newKernelBatchEngine(t)
 	name := e.setBlocked6.Name
 	e.setBlocked6.Name = "missing_blocked_set"
+	// The drops still match the renamed set: only the transaction's add
+	// meets the missing set.
+	e.blockRuleDump = func() ([]*nftables.Rule, error) {
+		rules, err := e.conn.GetRules(e.table, e.chainIn)
+		for _, rule := range rules {
+			for _, ex := range rule.Exprs {
+				if lookup, ok := ex.(*expr.Lookup); ok && lookup.SetName == name {
+					lookup.SetName = e.setBlocked6.Name
+				}
+			}
+		}
+		return rules, err
+	}
 	e.liveBlockedDump = func(set *nftables.Set) ([]nftables.SetElement, error) {
 		if set == e.setBlocked6 {
 			return nil, nil
@@ -105,7 +119,7 @@ func TestKernelBlockBatchRejectionAppliesNothing(t *testing.T) {
 		t.Fatalf("a rejected batch left rows %+v", rows)
 	}
 
-	e.setBlocked6.Name, e.liveBlockedDump = name, nil
+	e.setBlocked6.Name, e.liveBlockedDump, e.blockRuleDump = name, nil, nil
 	if results, err := e.ApplyBlockBatch(members); err != nil || effects(results) != "applied/ applied/" {
 		t.Fatalf("retry = %s, %v", effects(results), err)
 	}

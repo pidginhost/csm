@@ -27,6 +27,9 @@ var noticeMessages = map[admission.NoticeKind]string{
 	admission.NoticeAppliedSummary:  admission.AppliedSummaryMessage,
 }
 
+// partialContainmentMessage names a partial-containment record.
+const partialContainmentMessage = "Critical automatic response is partial containment: outbound-only traffic to the address still leaves"
+
 // sender delivers the ledger's due notices, and the notice of a stopped
 // ingress, through the daemon's independent health path. It runs on its
 // own goroutine, since delivery may wait on mail or a webhook, and alone
@@ -396,10 +399,14 @@ func noticeFinding(r admission.NoticeRecord, now time.Time, live bool) alert.Fin
 		}
 		b.WriteString(" examples=" + strings.Join(ids, ","))
 	}
-	if live {
-		return alert.Finding{Check: r.Key.Kind.Check(), Severity: alertSeverity(r.Key.Kind), Message: noticeMessages[r.Key.Kind], Details: b.String(), Timestamp: now}
+	message := noticeMessages[r.Key.Kind]
+	if r.Key.Partial() {
+		message = partialContainmentMessage
 	}
-	return alert.Finding{Check: r.Key.Kind.Check(), Severity: alert.Warning, Message: "Admission preview: " + noticeMessages[r.Key.Kind], Details: b.String(), Timestamp: now}
+	if live {
+		return alert.Finding{Check: r.Key.Kind.Check(), Severity: alertSeverity(r.Key.Kind), Message: message, Details: b.String(), Timestamp: now}
+	}
+	return alert.Finding{Check: r.Key.Kind.Check(), Severity: alert.Warning, Message: "Admission preview: " + message, Details: b.String(), Timestamp: now}
 }
 
 // alertSeverity is the severity a notice of k alerts with.

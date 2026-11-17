@@ -628,7 +628,13 @@ outbox shares; ended history is retired only after its rows are
 acknowledged. Response gaps are recorded in the transaction that causes
 them as coalesced notices, one record per reason, check and action family,
 with a bounded count of examples, a fixed overflow record per kind and a
-fixed Critical summary that no flood can refuse. Records may use only a
+fixed Critical summary that no flood can refuse. An applied block whose
+root is a Critical outbound destination (`c2_connection`) raises a
+Critical partial-containment record, reason `unsupported_containment`
+with outcome `applied`: the input-chain drop stops replies from the
+address, but outbound-only traffic to it still leaves. Its response ran,
+so it is not counted in the Critical summary or the doctor's gap row.
+Records may use only a
 fixed share of the reserve, a key is due for delivery at most once an hour
 and a summary once a minute after acknowledged delivery. While the owner
 previews or forecasts, ledger notices go to findings history only, as
@@ -1014,7 +1020,20 @@ member as pending recovery. An existing-effect refusal, at check or apply
 time, names the block that holds the address: the admission action that
 wrote its row, or `eff_` and a digest of an operator or earlier row's
 identity, with its expiry. The same row gets the same name on every check
-and after a restart. The batch rechecks, writes one
+and after a restart. Set readback proves membership, not enforcement, so a
+batch, a member check and a state probe each read the input chain's rule
+handles before the set snapshot, up to the last source-address drop
+of a filtered blocked set. A missing or altered family guard, source load,
+register flow, lookup or drop verdict refuses them. The check decodes the
+raw expression list, so an expression unknown to the nftables decoder cannot
+disappear from it; other rules contribute their handles without their
+expressions being understood. The batch reads the handles again just
+before its write and refuses when they changed, as after a ruleset reload
+or a rule inserted
+ahead of the drops. That refusal writes and sends nothing and holds
+execution until a probe finds the drops again, without an apply fault.
+The namespace generation is not read: any other nftables user changes it.
+The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves

@@ -35,9 +35,9 @@ func liveDump(e *Engine, unread *nftables.Set, ips ...string) {
 // spray rows as in the rest, and for an operator's block beside admission
 // rows.
 func TestLegacyVictimHoldsALiveElement(t *testing.T) {
-	gone := BlockedEntry{IP: "192.0.2.41", ExpiresAt: time.Now().Add(time.Minute)}
+	gone := BlockedEntry{IP: "192.0.2.41", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
 	spray := BlockedEntry{IP: "192.0.2.42", ExpiresAt: time.Now().Add(2 * time.Minute), Automatic: true, LoginSpray: true}
-	live := BlockedEntry{IP: "192.0.2.43", ExpiresAt: time.Now().Add(time.Hour)}
+	live := BlockedEntry{IP: "192.0.2.43", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	owned := BlockedEntry{IP: "192.0.2.46", ExpiresAt: time.Now().Add(time.Hour), ActionID: "act_owned"}
 	for _, automatic := range []bool{false, true} {
 		e := capEngine(t, 0, gone, spray, live)
@@ -62,8 +62,8 @@ func TestLegacyVictimHoldsALiveElement(t *testing.T) {
 // An IPv4-mapped key in the IPv6 set is not the IPv4 element a saved row
 // would delete. It must not make that row eligible for replacement.
 func TestLegacyVictimRequiresItsOwnFamilyElement(t *testing.T) {
-	gone := BlockedEntry{IP: "192.0.2.53", ExpiresAt: time.Now().Add(time.Minute)}
-	live := BlockedEntry{IP: "2001:db8::53", ExpiresAt: time.Now().Add(time.Hour)}
+	gone := BlockedEntry{IP: "192.0.2.53", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
+	live := BlockedEntry{IP: "2001:db8::53", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	for _, automatic := range []bool{false, true} {
 		for _, hasVictim := range []bool{false, true} {
 			e := capEngine(t, 0, gone, live)
@@ -95,8 +95,8 @@ func TestLegacyVictimRequiresItsOwnFamilyElement(t *testing.T) {
 // Durable planning shares the limit decision but keeps its committed victim.
 func TestLegacyVictimDurablePlanUsesTheLiveRow(t *testing.T) {
 	at := time.Now().Round(0)
-	gone := BlockedEntry{IP: "192.0.2.47", ExpiresAt: at.Add(time.Minute)}
-	live := BlockedEntry{IP: "192.0.2.48", ExpiresAt: at.Add(time.Hour)}
+	gone := BlockedEntry{IP: "192.0.2.47", Automatic: true, ExpiresAt: at.Add(time.Minute)}
+	live := BlockedEntry{IP: "192.0.2.48", Automatic: true, ExpiresAt: at.Add(time.Hour)}
 	e, plans := batchPlanEngine(t, FirewallConfig{DenyTempIPLimit: 1}, FirewallState{Blocked: []BlockedEntry{gone, live}})
 	liveDump(e, nil, live.IP)
 	req := ActionRequest{ID: "live-victim", Target: "198.51.100.47", Reason: "fixture", Actor: "auto", Source: "scan", Automatic: true, TTL: time.Hour}
@@ -115,8 +115,8 @@ func TestLegacyVictimDurablePlanUsesTheLiveRow(t *testing.T) {
 // A partial operator image must not discard rows from the readable family.
 func TestLegacyVictimOperatorNeedsAWholeImage(t *testing.T) {
 	owned := BlockedEntry{IP: "192.0.2.49", ActionID: "act_owned", ExpiresAt: time.Now().Add(time.Hour)}
-	gone := BlockedEntry{IP: "192.0.2.50", ExpiresAt: time.Now().Add(time.Minute)}
-	live := BlockedEntry{IP: "192.0.2.51", ExpiresAt: time.Now().Add(time.Hour)}
+	gone := BlockedEntry{IP: "192.0.2.50", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
+	live := BlockedEntry{IP: "192.0.2.51", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	e := capEngine(t, 0, owned, gone, live)
 	e.cfg.IPv6 = true
 	e.setBlocked6 = &nftables.Set{Name: "blocked_ips6", KeyType: nftables.TypeIP6Addr}
@@ -129,8 +129,8 @@ func TestLegacyVictimOperatorNeedsAWholeImage(t *testing.T) {
 // A count that could not read every set has no image of the kernel. The
 // rows then stand in for it, and the row closest to expiry keeps its turn.
 func TestLegacyVictimNeedsAWholeImage(t *testing.T) {
-	gone := BlockedEntry{IP: "192.0.2.44", ExpiresAt: time.Now().Add(time.Minute)}
-	live := BlockedEntry{IP: "192.0.2.45", ExpiresAt: time.Now().Add(time.Hour)}
+	gone := BlockedEntry{IP: "192.0.2.44", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
+	live := BlockedEntry{IP: "192.0.2.45", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	e := capEngine(t, 0, gone, live)
 	liveDump(e, e.setBlocked, live.IP)
 	if victim, err := capVictim(e, "198.51.100.44", true); err != nil || victim != gone.IP {
@@ -146,7 +146,7 @@ func TestLegacyVictimNeedsAWholeImage(t *testing.T) {
 }
 
 func TestLegacyVictimEmptyImageIsNotAnUnreadImage(t *testing.T) {
-	row := BlockedEntry{IP: "192.0.2.52", ExpiresAt: time.Now().Add(time.Hour)}
+	row := BlockedEntry{IP: "192.0.2.52", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	state := FirewallState{Blocked: []BlockedEntry{row}}
 	e := capEngine(t, 0, row)
 	liveDump(e, nil)
@@ -185,8 +185,8 @@ func TestLegacyVictimEmptyImageIsNotAnUnreadImage(t *testing.T) {
 // not ask for it: one failed dump would hide every element from the
 // decision, and the saved IPv6 row would keep its turn.
 func TestLegacyVictimIgnoresAnIPv6SetLeftBehind(t *testing.T) {
-	stale := BlockedEntry{IP: "2001:db8::47", ExpiresAt: time.Now().Add(time.Minute)}
-	live := BlockedEntry{IP: "192.0.2.47", ExpiresAt: time.Now().Add(time.Hour)}
+	stale := BlockedEntry{IP: "2001:db8::47", Automatic: true, ExpiresAt: time.Now().Add(time.Minute)}
+	live := BlockedEntry{IP: "192.0.2.47", Automatic: true, ExpiresAt: time.Now().Add(time.Hour)}
 	for _, automatic := range []bool{false, true} {
 		e := capEngine(t, 0, stale, live)
 		e.setBlocked6 = &nftables.Set{Name: "blocked_ips6", KeyType: nftables.TypeIP6Addr}

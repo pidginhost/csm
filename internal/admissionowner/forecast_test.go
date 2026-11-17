@@ -991,3 +991,39 @@ func TestOwnerForecastFullPartitionDoesNotAskPanel(t *testing.T) {
 		t.Fatalf("full partition changed forecast: %+v", fc)
 	}
 }
+
+// After a live period each forecast turn reads the slots the ledger's
+// records hold, so the record of a block the live period applied occupies
+// its partition in the model.
+func TestOwnerForecastSeedsTheLedgerRecordsAfterALivePeriod(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.limit = 50
+	o, r, mono := policyOwner(t, f, blocks, validPolicy(1))
+	applied, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	if c := candidate(t, o, applied); c.State != admission.StateVerified {
+		t.Fatalf("live block = %+v", c)
+	}
+	r.publish(dryPolicy(2))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
+	turn(t, o)
+	occ := dryRunState(t, o).Occupancy
+	if occ == nil || occ.General.Used != 2 || occ.Reserved.Used != 0 {
+		t.Fatalf("occupancy after the live period = %+v; want the record and the forecast block in general", occ)
+	}
+	session := forecastOf(t, o).id
+	blocks.set(func(b *fakeBlocks) { b.removed["192.0.2.10"] = true })
+	later(t, o, f, mono)
+	later(t, o, f, mono)
+	if st := ledgerStatus(t, o); st.Effects.General != 0 {
+		t.Fatalf("live record did not end: %+v", st.Effects)
+	}
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
+	turn(t, o)
+	occ = dryRunState(t, o).Occupancy
+	if forecastOf(t, o).id != session || occ == nil || occ.General.Used != 2 || occ.Reserved.Used != 0 {
+		t.Fatalf("second turn kept the ended live record: %+v", occ)
+	}
+}

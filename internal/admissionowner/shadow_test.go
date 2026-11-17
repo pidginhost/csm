@@ -208,15 +208,17 @@ func TestShadowKeepsTheReserve(t *testing.T) {
 // the finite automatic capacity.
 func TestShadowCountsRealAutomaticOccupants(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		adm  firewall.BlockAdmission
+		name    string
+		adm     firewall.BlockAdmission
+		effects admission.EffectTally
 	}{
-		{"imports fill general", firewall.BlockAdmission{Limit: 10, Imported: 8}},
-		{"admission blocks fill general", firewall.BlockAdmission{Limit: 10, Admission: 8}},
-		{"imports and admission blocks fill general", firewall.BlockAdmission{Limit: 10, Imported: 5, Admission: 3}},
-		{"unclaimed entries leave only the reserve", firewall.BlockAdmission{Unclaimed: admission.TemporaryCapacity - 1}},
+		{"imports fill general", firewall.BlockAdmission{Limit: 10, Imported: 8}, admission.EffectTally{}},
+		{"admission blocks their records hold fill general", firewall.BlockAdmission{Limit: 10, Admission: 8}, admission.EffectTally{General: 8}},
+		{"imports and admission blocks fill general", firewall.BlockAdmission{Limit: 10, Imported: 5, Admission: 3}, admission.EffectTally{General: 3}},
+		{"unclaimed entries leave only the reserve", firewall.BlockAdmission{Unclaimed: admission.TemporaryCapacity - 1}, admission.EffectTally{}},
 	} {
 		s := testShadow(t, freshCeiling(t, 2000), nil)
+		s.effects = tc.effects
 		if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, tc.adm); p != admission.PredictSetFull {
 			t.Fatalf("%s: general pick = %s, want set_full", tc.name, p)
 		}
@@ -573,13 +575,14 @@ func TestShadowOverlapUsesRealOwnership(t *testing.T) {
 	}{
 		{"unclaimed", firewall.BlockAdmission{Temporary: 1, Unclaimed: 1}, 0, 0, 0},
 		{"import", firewall.BlockAdmission{Temporary: 1, Imported: 1}, 1, 0, 0},
-		{"admission", firewall.BlockAdmission{Temporary: 1, Admission: 1}, 1, 0, 0},
+		{"admission", firewall.BlockAdmission{Temporary: 1, Admission: 1}, 1, 0, 0}, // its record holds a general slot
 		{"permanent", firewall.BlockAdmission{}, 0, 0, 0},
 		{"unrelated held key", firewall.BlockAdmission{Temporary: 1, Unclaimed: 1}, 0, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testShadow(t, freshCeiling(t, 2000), nil)
 			s.entries["2001:db8::90"] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: admission.PartitionReserved}
+			s.effects = admission.EffectTally{General: tc.adm.Admission}
 			tc.adm.Limit = 10
 			key := "2001:db8::90"
 			if tc.name == "unrelated held key" {

@@ -927,6 +927,9 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 			return false, err
 		}
 		err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)
+		if err == nil {
+			err = q.partial(d, *c, a.Attempt.Candidate, c.Transitions+1)
+		}
 	} else {
 		// A preview is intentional non-enforcement: it raises no gap.
 		err = q.gap(admission.GapOutcome, 0, d, e, a.Attempt.Candidate, *c, c.Transitions+1)

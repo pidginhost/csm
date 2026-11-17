@@ -183,7 +183,8 @@ func GapNotice(event GapEvent, reason Reason, outcome Disposition, tier Tier, li
 // for good or ended unknown has no reason; its outcome takes the reason's
 // place. Check and Effect are empty for an arrival lost before admission,
 // which names no candidate. A keyed kind with neither reason nor outcome
-// is that kind's overflow record; a summary has only its kind.
+// is that kind's overflow record; a summary has only its kind. The one key
+// with both is the partial-containment record (PartialContainmentKey).
 type NoticeKey struct {
 	Kind    NoticeKind
 	Reason  Reason
@@ -204,6 +205,17 @@ func FixedNoticeKeys() []NoticeKey {
 	}
 }
 
+// PartialContainmentKey is the record of verified blocks of a destination
+// that leave outbound-only traffic to it open.
+func PartialContainmentKey(check string, effect Effect) NoticeKey {
+	return NoticeKey{Kind: NoticeWithheld, Reason: ReasonUnsupportedContainment, Outcome: DispositionApplied, Check: check, Effect: effect}
+}
+
+// Partial reports whether k is a partial-containment record.
+func (k NoticeKey) Partial() bool {
+	return k.Kind == NoticeWithheld && k.Reason == ReasonUnsupportedContainment && k.Outcome == DispositionApplied
+}
+
 // Fixed reports whether the record under k is one every ledger keeps.
 func (k NoticeKey) Fixed() bool { return k.Reason == 0 && k.Outcome == 0 }
 
@@ -219,6 +231,7 @@ func (k NoticeKey) validate() error {
 		return nil
 	case !k.Kind.Keyed():
 		return bad("a summary has no reason")
+	case k.Partial():
 	case k.Outcome != 0:
 		if k.Reason != 0 || k.Kind == NoticeCapacity || (k.Outcome != DispositionFailed && k.Outcome != DispositionUnknown) {
 			return bad("notice outcome is not a withheld response")

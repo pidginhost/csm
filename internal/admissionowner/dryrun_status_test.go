@@ -317,7 +317,7 @@ func TestOwnerDryRunStatusAfterARestart(t *testing.T) {
 }
 
 // Status divides the automatic slots as the model does: unclaimed entries
-// shrink the set, real automatic blocks fill the general partition, each
+// shrink the set, the ledger's records fill their partitions, each
 // forecast block not held by a real one fills its own, and the drain of
 // the entries admission never evicts shows in seconds.
 func TestShadowOccupancyStatusDividesTheSlots(t *testing.T) {
@@ -326,6 +326,7 @@ func TestShadowOccupancyStatusDividesTheSlots(t *testing.T) {
 		s.entries[ip] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry, partition: part}
 	}
 	s.adm = &firewall.BlockAdmission{Temporary: 5, Limit: 20, Unclaimed: 3, Imported: 1, Admission: 1, Drain: 90 * time.Minute, ShadowHeld: map[string]bool{"203.0.113.4": true}}
+	s.effects = admission.EffectTally{General: 1}
 	want := health.AdmissionDryRunOccupancy{Actual: 5, ShadowOnly: 3, Predicted: 8, Limit: 20, Capacity: 20, Unclaimed: 3, Imported: 1, DrainSeconds: 5400,
 		General: health.AdmissionDryRunPartition{Size: 13, Used: 4, Free: 9}, Reserved: health.AdmissionDryRunPartition{Size: 4, Used: 1, Free: 3}}
 	if got := s.occupancyStatus(); got == nil || *got != want {

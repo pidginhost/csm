@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,11 @@ type batchFixture struct {
 	sends   int                      // kernel batches sent
 	reply   func([]netlink.Message) ([]netlink.Message, error)
 	onFlush func() // what an acknowledged batch leaves in the kernel
+	// rules is the input chain the rule dump returns; onRuleDump, when set,
+	// runs before the nth dump returns them.
+	rules      []*nftables.Rule
+	ruleDumps  int
+	onRuleDump func(n int)
 }
 
 func newBatchFixture(t testing.TB, state FirewallState) *batchFixture {
@@ -65,6 +71,14 @@ func newBatchFixture(t testing.TB, state FirewallState) *batchFixture {
 			out = append(out, nftables.SetElement{Key: key, Timeout: timeout, Expires: left})
 		}
 		return out, nil
+	}
+	f.rules = inputRules(f.e.setBlocked, f.e.setBlocked6)
+	f.e.blockRuleDump = func() ([]*nftables.Rule, error) {
+		f.ruleDumps++
+		if f.onRuleDump != nil {
+			f.onRuleDump(f.ruleDumps)
+		}
+		return slices.Clone(f.rules), nil
 	}
 	conn, err := nftables.New(nftables.WithTestDial(func(req []netlink.Message) ([]netlink.Message, error) {
 		if len(req) == 0 {
