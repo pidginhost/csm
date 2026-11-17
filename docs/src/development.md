@@ -1024,8 +1024,12 @@ and after a restart. Set readback proves membership, not enforcement, so a
 batch, a member check and a state probe each read the input chain's rule
 handles before the set snapshot, up to the last source-address drop
 of a filtered blocked set. A missing or altered family guard, source load,
-register flow, lookup or drop verdict refuses them. The batch reads the
-handles again just before its write and refuses when they changed, as after a ruleset reload or a rule inserted
+register flow, lookup or drop verdict refuses them. The check decodes the
+raw expression list, so an expression unknown to the nftables decoder cannot
+disappear from it; other rules contribute their handles without their
+expressions being understood. The batch reads the handles again just
+before its write and refuses when they changed, as after a ruleset reload
+or a rule inserted
 ahead of the drops. That refusal writes and sends nothing and holds
 execution until a probe finds the drops again, without an apply fault.
 The namespace generation is not read: any other nftables user changes it.

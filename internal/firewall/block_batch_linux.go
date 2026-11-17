@@ -166,18 +166,6 @@ func (e *Engine) blockRuleHandlesLocked() ([]uint64, error) {
 	return handles[:last+1], nil
 }
 
-func (e *Engine) blockRulesLocked() ([]*nftables.Rule, error) {
-	if e.blockRuleDump != nil {
-		return e.blockRuleDump()
-	}
-	conn, err := newLifecycleConn(e)
-	if err != nil {
-		return nil, err
-	}
-	table := e.setBlocked.Table
-	return conn.GetRules(table, &nftables.Chain{Name: "input", Table: table})
-}
-
 // blockDropSet recognizes the source-address drop emitted by Apply.
 // Lookup transaction IDs are not stable dump fields. The register aliases
 // below name the same bytes; every other semantic field must match.
