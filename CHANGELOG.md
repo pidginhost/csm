@@ -18,6 +18,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Changed
 
 - `csm doctor` on Stalwart hosts now checks Stalwart's settings with CSM's own API key, with no admin login needed.
+- In dry-run mode, the hourly action log no longer predicts that a block would replace another while the firewall holds automatic blocks with an unproven outcome.
 
 ### Fixed
 
