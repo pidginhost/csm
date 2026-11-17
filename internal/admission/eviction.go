@@ -105,11 +105,12 @@ func NewSlotLimits(freeGeneral, freeReserved uint32, victims []EvictionVictim) *
 // Limits is the slot budget of o, the one rule admission and its forecast
 // share: each partition's free slots and size and, once the
 // general partition is full and the set is not overfull, the victims pool
-// returns, less those of an overfull partition. pool is read only then.
+// returns, less those of an overfull partition. pool is read only then,
+// and never for a set that evicts nothing.
 func (o SetOccupancy) Limits(pool func() ([]EvictionVictim, error)) (*SlotLimits, error) {
 	s := o.Slots()
 	var victims []EvictionVictim
-	if s.FreeGeneral == 0 && o.General+o.Reserved <= s.Available {
+	if !o.NoEviction && s.FreeGeneral == 0 && o.General+o.Reserved <= s.Available {
 		var err error
 		if victims, err = pool(); err != nil {
 			return nil, err

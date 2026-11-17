@@ -354,3 +354,17 @@ func TestBlockAdmissionSnapshotFamilyBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// A snapshot says when startup could not prove admission outcomes: the
+// engine then removes no block for a batch.
+func TestBlockAdmissionSnapshotReportsUnprovenActions(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{})
+	got, err := f.e.BlockAdmissionSnapshot(nil, nil)
+	if err != nil || got.Unproven {
+		t.Fatalf("a proven engine = %+v, %v", got, err)
+	}
+	f.e.SetBlockActionsUnproven(errors.New("ledger unavailable"))
+	if got, err = f.e.BlockAdmissionSnapshot(nil, nil); err != nil || !got.Unproven {
+		t.Fatalf("an unproven engine = %+v, %v; want it reported", got, err)
+	}
+}

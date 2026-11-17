@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,100 @@ func TestOwnerRetriesAnEvictedRow(t *testing.T) {
 	}
 }
 
+// A row the engine keeps reporting present is tried twice more at once,
+// then after waits that double up to a minute. A row that leaves ends the
+// wait, and a new eviction is retired at once whatever the wait.
+func TestOwnerBacksOffAStuckEvictedRow(t *testing.T) {
+	o, blocks, victim, _ := evictionOwner(t, firewall.BlockResult{Effect: firewall.BlockApplied, Victim: firewall.VictimRemoved})
+	mono := &fakeMono{now: monoNow()}
+	setOwnerHook(t, o, &monoNow, mono.read)
+	stuck := firewall.BlockAction{Action: fmt.Sprintf("act_%032x", 98), IP: "192.0.2.20"}
+	other := firewall.BlockAction{Action: fmt.Sprintf("act_%032x", 99), IP: "192.0.2.21"}
+	blocks.set(func(b *fakeBlocks) { b.present[stuck.IP], b.present[other.IP] = true, true })
+	if err := o.do(func() error { o.evicted = []firewall.BlockAction{stuck, other}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	pass := func() int {
+		calls := len(blocks.retireCalls())
+		if err := o.do(o.retireEvicted); err != nil {
+			t.Fatal(err)
+		}
+		return len(blocks.retireCalls()) - calls
+	}
+	prompt := func(why string) {
+		t.Helper()
+		for i := range 3 {
+			if n := pass(); n != 1 {
+				t.Fatalf("%s: try %d made %d calls, want it at once", why, i+1, n)
+			}
+		}
+	}
+	prompt("first failures")
+	for wait := 2 * time.Second; wait <= 4*maxProbeWait; wait *= 2 {
+		w := min(wait, maxProbeWait)
+		if n := pass(); n != 0 {
+			t.Fatalf("a stuck row was retried at once after a wait of %v began", w)
+		}
+		mono.advance(w - time.Nanosecond)
+		if n := pass(); n != 0 {
+			t.Fatalf("a stuck row was retried before its wait of %v", w)
+		}
+		mono.advance(time.Nanosecond)
+		if n := pass(); n != 1 {
+			t.Fatalf("a stuck row was not retried after its wait of %v", w)
+		}
+	}
+	blocks.set(func(b *fakeBlocks) { delete(b.present, other.IP) })
+	mono.advance(maxProbeWait)
+	if n := pass(); n != 1 {
+		t.Fatal("the rows were not retried after the longest wait")
+	}
+	prompt("after a row left")
+	if n := pass(); n != 0 {
+		t.Fatal("a stuck row was retried at once after a wait began")
+	}
+	want := firewall.BlockAction{Action: string(victim.Attempt.ID), IP: "192.0.2.10"}
+	mono.advance(batchEvery)
+	turn(t, o)
+	calls := blocks.retireCalls()
+	if last := calls[len(calls)-1]; !slices.Contains(last, want) {
+		t.Fatalf("a new eviction waited behind a stuck row: %v", calls)
+	}
+}
+
+// A new eviction goes ahead of a stuck backlog longer than one batch, so
+// its row is in the very next call.
+func TestOwnerNewEvictionPrecedesAStuckBacklog(t *testing.T) {
+	o, blocks, victim, _ := evictionOwner(t, firewall.BlockResult{Effect: firewall.BlockApplied, Victim: firewall.VictimRemoved})
+	backlog := make([]firewall.BlockAction, firewall.MaxBlockBatchMembers+1)
+	for i := range backlog {
+		backlog[i] = firewall.BlockAction{Action: fmt.Sprintf("act_%032x", 100+i), IP: fmt.Sprintf("2001:db8::%x", 100+i)}
+	}
+	blocks.set(func(b *fakeBlocks) {
+		for _, a := range backlog {
+			b.present[a.IP] = true
+		}
+	})
+	if err := o.do(func() error { o.evicted = append([]firewall.BlockAction(nil), backlog...); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	turn(t, o)
+	want := firewall.BlockAction{Action: string(victim.Attempt.ID), IP: "192.0.2.10"}
+	calls := blocks.retireCalls()
+	last := calls[len(calls)-1]
+	if !slices.Contains(last, want) || len(last) > firewall.MaxBlockBatchMembers {
+		t.Fatalf("a new eviction waited behind a stuck backlog: %d calls, last %v", len(calls), last)
+	}
+	if err := o.do(func() error {
+		if len(o.evicted) != len(backlog) {
+			t.Errorf("queued after the call: %d rows, want the backlog of %d", len(o.evicted), len(backlog))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // With the verdict callback on, a pick the ledger can fund by evicting is
 // asked about even though the set is physically full: room is the
 // ledger's, so the panel's answer is not skipped as set_full.
@@ -132,9 +227,9 @@ func TestOwnerAsksAboutAPickThatEvicts(t *testing.T) {
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	blocks.limit, blocks.temp = 3, 1
-	// The kernel then holds three timed elements, two of them admission
-	// rows: physically full, with the ledger's general slot taken.
-	blocks.afterApply = func(b *fakeBlocks) { b.temp, b.admitted = 3, 2 }
+	// The kernel then holds an operator's block and the admission row of
+	// the ledger's one record: the general slot is taken.
+	blocks.afterApply = func(b *fakeBlocks) { b.temp, b.admitted = 2, 1 }
 	panel := newFakePanel("block")
 	o, _, mono := verdictOwner(t, f, blocks, panel)
 	queuedAt(t, o, p, f.host, admission.SeverityWarning, "192.0.2.10")
@@ -388,5 +483,32 @@ func TestOwnerEvictedCleanupWakesAnIdleTurn(t *testing.T) {
 	}
 	if calls := blocks.retireCalls(); len(calls) != 2 || o.Status().Owner.RetirementError != "" {
 		t.Fatalf("idle cleanup did not recover: %v, %q", calls, o.Status().Owner.RetirementError)
+	}
+}
+
+// While the engine cannot prove admission outcomes it removes no block for
+// a batch. The ledger then plans no eviction: the higher work waits for a
+// slot instead of spending its attempts on a victim the engine spares.
+func TestOwnerPlansNoEvictionWhileTheEngineIsUnproven(t *testing.T) {
+	o, blocks, _, high := evictionOwner(t, firewall.BlockResult{Effect: firewall.BlockApplied, Victim: firewall.VictimRemoved})
+	blocks.set(func(b *fakeBlocks) { b.unproven = true })
+	_, before := blocks.calls()
+	turn(t, o)
+	if c := candidate(t, o, high); c.State != admission.StateQueued || c.Reason != admission.ReasonSetFull || c.Attempts != 0 {
+		t.Fatalf("higher work beside an unproven engine = %+v; want it waiting for a slot", c)
+	}
+	if _, applies := blocks.calls(); len(applies) != len(before) {
+		t.Fatalf("the engine ran %d batches, want none", len(applies)-len(before))
+	}
+	if s := ledgerStatus(t, o); s.Effects.General != 1 || len(blocks.retireCalls()) != 0 {
+		t.Fatalf("the ledger counts %+v after %d retirements; want the victim in its slot", s.Effects, len(blocks.retireCalls()))
+	}
+	// A proven engine gets the eviction it was spared.
+	blocks.set(func(b *fakeBlocks) { b.unproven = false })
+	later := heldMono(t, o)
+	later.advance(time.Hour)
+	turn(t, o)
+	if c := candidate(t, o, high); c.State != admission.StateVerified {
+		t.Fatalf("after the engine is proven = %+v", c)
 	}
 }

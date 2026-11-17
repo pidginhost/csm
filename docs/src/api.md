@@ -417,7 +417,9 @@ turn keeps the last non-admission snapshot unless the owner enters dry run;
 status still refreshes the ledger holds. Entering dry run, including through
 a reload, clears both `set` and `set_error` before the next clock reading or
 forecast is attempted. Engine admission counts are not
-added again, and this view is not a fresh kernel inventory.
+added again when the ledger holds their slots. Any excess counts as
+`unclaimed` and makes `drain_seconds` unknown (-1), since the engine's
+drain estimate excludes admission rows. This view is not a fresh kernel inventory.
 
 `owner.dry_run` is a capacity forecast, not a record of blocks. `active` is
 true while the owner forecasts instead of blocking. `session_id`, `since`

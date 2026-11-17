@@ -585,3 +585,64 @@ func TestOwnerRetirementClearsACarriedFaultOnAGoodRead(t *testing.T) {
 		t.Fatal("an attempt that has not expired was retired")
 	}
 }
+
+// After the expiry a good read clears the carried fault as well, once the
+// engine answers that the element remains; the attempt waits unretired. A
+// failed engine call proves nothing and keeps the fault.
+func TestOwnerRetirementClearsACarriedFaultAfterTheExpiry(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
+	c, a := unknownBlock(t, o, p, f, blocks, "192.0.2.107")
+	var past time.Duration
+	if err := o.do(func() error { past = c.ExpiresAt.Sub(o.now) + time.Second; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	f.host.advance(past)
+	mono.advance(past)
+	blocks.set(func(b *fakeBlocks) { b.present["192.0.2.107"] = true })
+	fault := errors.New("fixture attempt read failure")
+	if err := o.do(func() error {
+		// As a failed read of the attempt leaves the owner.
+		o.reportRetirement(o.retirementResult(a.Attempt.ID, fault))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocks.set(func(b *fakeBlocks) { b.retireErr = errors.New("fixture engine fault") })
+	f.host.advance(2 * time.Second)
+	mono.advance(2 * time.Second)
+	turn(t, o)
+	if err := o.do(func() error {
+		if !o.retireFaults[a.Attempt.ID] || o.retireDelay[a.Attempt.ID] == 0 {
+			t.Errorf("a failed engine call cleared the fault state: %v, %v", o.retireFaults, o.retireDelay)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls := len(blocks.retireCalls())
+	blocks.set(func(b *fakeBlocks) { b.retireErr = nil })
+	f.host.advance(2 * time.Second)
+	mono.advance(2 * time.Second)
+	turn(t, o)
+	if len(blocks.retireCalls()) == calls {
+		t.Fatal("the expired attempt never reached the engine again")
+	}
+	if attemptOf(t, o, c).Retired {
+		t.Fatal("an attempt whose element remains was retired")
+	}
+	if got := o.status().Owner.RetirementError; got != "" {
+		t.Fatalf("retirement error after a good read = %q, want none", got)
+	}
+	if err := o.do(func() error {
+		if o.retireFaults[a.Attempt.ID] || o.retireDelay[a.Attempt.ID] != 0 {
+			t.Errorf("a good read kept the fault state: %v, %v", o.retireFaults, o.retireDelay)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

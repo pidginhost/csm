@@ -483,3 +483,56 @@ func TestOwnerSetWireFields(t *testing.T) {
 		t.Fatalf("failed read fields: %s", raw)
 	}
 }
+
+// Admission rows the firewall holds beyond the ledger's own records are
+// occupants the ledger cannot evict. The turn counts them as unclaimed, so
+// work waits for the room they leave instead of failing at the apply.
+func TestOwnerCountsUnknownAdmissionRowsAsUnclaimed(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	// Four slots, three held by admission rows no record names: the one
+	// left is the reserve.
+	blocks.limit, blocks.temp, blocks.admitted = 4, 3, 3
+	o := f.start(executeOptions(f, blocks))
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != admission.ReasonSetFull || c.Attempts != 0 {
+		t.Fatalf("general work beside unknown admission rows = %+v", c)
+	}
+	if checks, applies := blocks.calls(); len(checks) != 0 || len(applies) != 0 {
+		t.Fatalf("engine calls: %d checks, %d applies", len(checks), len(applies))
+	}
+	want := &health.AdmissionSet{Limit: 4, Capacity: 4, Unclaimed: 3, DrainSeconds: -1,
+		General: health.AdmissionDryRunPartition{}, Reserved: health.AdmissionDryRunPartition{Size: 1, Free: 1}}
+	if set, setErr := ownerSet(t, o); set == nil || *set != *want || setErr != "" {
+		t.Fatalf("set status %+v %q, want %+v", set, setErr, want)
+	}
+}
+
+// A row the ledger's own record names is counted once, by that record.
+func TestOwnerCountsItsOwnAdmissionRowsOnce(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	// Three slots: one reserved, two general.
+	blocks.limit = 3
+	blocks.afterApply = func(b *fakeBlocks) { b.temp, b.admitted = b.temp+1, b.admitted+1 }
+	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
+	first, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	mono.advance(batchEvery)
+	second, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	turn(t, o)
+	for _, id := range []admission.CandidateID{first, second} {
+		if c := candidate(t, o, id); c.State != admission.StateVerified {
+			t.Fatalf("block beside the ledger's own row = %+v", c)
+		}
+	}
+	want := &health.AdmissionSet{Limit: 3, Capacity: 3,
+		General: health.AdmissionDryRunPartition{Size: 2, Used: 2}, Reserved: health.AdmissionDryRunPartition{Size: 1, Free: 1}}
+	if set, _ := ownerSet(t, o); set == nil || *set != *want {
+		t.Fatalf("set status %+v, want %+v", set, want)
+	}
+}

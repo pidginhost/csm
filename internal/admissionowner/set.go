@@ -29,9 +29,25 @@ func (o *Owner) readSet() error {
 		return err
 	}
 	adm, err := engine.BlockAdmissionSnapshot(nil, nil)
+	if err == nil && adm.Admission > 0 {
+		// Admission rows beyond the ledger's own records, as after a lost
+		// ledger, hold slots no record can give up.
+		var holds int
+		if holds, err = o.ledger.EffectHolds(); err != nil {
+			return err
+		}
+		if unknown := adm.Admission - holds; unknown > 0 {
+			adm.Unclaimed += unknown
+			// The engine's drain excludes admission rows, so it cannot
+			// bound the remaining time of these additional occupants.
+			adm.Drain = -time.Second
+		}
+	}
 	if o.setErr = err; err == nil {
 		o.set = &adm
-		o.ledger.SetOccupants(&admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported})
+		// An engine that cannot prove admission outcomes removes no block
+		// for a batch, so the ledger plans none.
+		o.ledger.SetOccupants(&admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: adm.Imported, NoEviction: adm.Unproven})
 		o.ledger.SetImports(importVictims(adm.Imports))
 	}
 	return nil

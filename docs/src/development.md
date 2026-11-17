@@ -387,7 +387,10 @@ Startup drops the state row of an admission-record victim whose eviction
 the ledger verified, and of a block the ledger marked gone, so a restart
 cannot restore an element whose slot the ledger no longer counts. A
 running owner retires the row of a block it marks gone as it retires an
-evicted victim's, so a firewall reload cannot restore it either. Imports have no durable cleanup record: a restart
+evicted victim's, so a firewall reload cannot restore it either. A
+cleanup pass that clears no row is retried twice at once, then after waits
+that double from two seconds to a minute; a row that leaves ends the wait,
+and a new eviction goes ahead of the waiting rows and is tried at once. Imports have no durable cleanup record: a restart
 before retirement restores the import only until its original expiry. Startup readers report an error if the
 effects bucket disagrees with the schema or an effect is a nested bucket;
 they do not treat damaged eviction storage as an absent record.
@@ -634,9 +637,17 @@ notice still reaches alert channels as a Warning saying existing blocking
 is unaffected. While it executes (never in this build, see `liveExecution`),
 a gap is an outage of automatic blocking: notices go to the alert channels
 with their kind's severity and no preview prefix, and the stopped-admission
-notice is Critical. The mode is read at each delivery, including a retried
-stop notice, so a record raised before a mode change is delivered in the new
-mode. Stop retries retain their original timestamp, cause and stop identity. Acknowledgements
+notice is Critical. A ledger notice keeps the mode it was raised in: a
+record with an event from while the owner executed, or from a real attempt's
+outcome, is delivered live after a dry run starts, and one raised only in a
+dry run stays a preview after execution returns. Other records from
+before a restart take the mode the owner starts in. If the startup clock
+fails, later notice mode boundaries use the first valid clock reading;
+restored notices keep the initial startup mode. Deliveries before that
+reading use the saved ledger time to retain the mode of events raised
+during delivery. Live and preview groups back off
+separately, so failing previews never delay a live notice. The stopped-admission notice
+uses the mode at delivery, including a retried one. Stop retries retain their original timestamp, cause and stop identity. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
 acknowledgement cannot consume a later record under a reused key. An audit
 row's acknowledgement carries the row's time as well, so one held past the
@@ -1056,6 +1067,10 @@ reading through Apply so a backward wall-clock step cannot restore an
 unchecked action. Marking preserves those separate rows until cleanup can
 remove only the settled actions. Removing a hold therefore cannot restore
 an unchecked action or erase another block.
+Until a restart proves the saved actions, the engine removes no block for
+a batch and its admission snapshot says so; the owner then plans no
+eviction or rotation, a dry run forecasts none, and higher work waits for
+a free slot.
 The engine's kill-point tests stop a batch around its intent write, kernel
 batch, readback, unknown marking and rejected-state restoration, then start
 the ledger and a new engine over the same state, after a process restart or

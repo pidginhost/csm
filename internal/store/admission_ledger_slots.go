@@ -71,6 +71,19 @@ func (l *AdmissionLedger) HasChargedWork() (bool, error) {
 	return found, err
 }
 
+// EffectHolds is how many set slots the ledger's own records hold, both
+// partitions together.
+func (l *AdmissionLedger) EffectHolds() (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var tally admission.EffectTally
+	err := l.db.bolt.View(func(tx *bolt.Tx) (err error) {
+		tally, err = loadEffectTally(tx)
+		return err
+	})
+	return tally.General + tally.Reserved, err
+}
+
 // slots is the set budget of this transaction: nil without a set, else
 // the free slots the handle's set and the ledger's records leave, with the
 // verified records and imports strictly higher work may evict once the

@@ -2,6 +2,7 @@ package admissionowner
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,7 +40,13 @@ type sender struct {
 	// again. The independent stopped-ingress notice still runs.
 	unacked        []admission.NoticeAck
 	unackedStarted bool
-	delivered      uint64
+	// unackedRead is the admission time the unacknowledged delivery was
+	// read at; ackedRead keeps it per key once acknowledged. Events after
+	// that read were not delivered, though they may predate the
+	// acknowledgement.
+	unackedRead time.Time
+	ackedRead   map[admission.NoticeKey]time.Time
+	delivered   uint64
 	// announced is set once the current stop of the ingress was sent.
 	announced      bool
 	announcedSince time.Time
@@ -50,8 +57,9 @@ type sender struct {
 	// summaryWaiting is set while a dry-run summary waits for delivery.
 	summaryWaiting bool
 	// The independent stop alert must not inherit a ledger delivery's wait,
-	// and its successful delivery must not reset that ledger retry.
-	ledgerRetry retryBackoff
+	// and its successful delivery must not reset that ledger retry. Live
+	// and preview records go to different stores and back off apart.
+	ledgerRetry, previewRetry retryBackoff
 	// ledgerStarted binds the retry delay to the notice stream: clearing
 	// preview records at live start also discards their delivery failures.
 	ledgerStarted bool
@@ -105,21 +113,25 @@ func (s *sender) cycle() {
 		if err := s.o.do(func() error { return ackNoticeSnapshot(s.o.ledger, s.unackedStarted, s.unacked) }); err != nil {
 			return
 		}
-		s.unacked = nil
+		s.noteAcked()
 		s.ledgerPending = 0
 		s.observe()
 	}
 	var l *store.AdmissionLedger
 	var live, started bool
 	var due []admission.NoticeRecord
+	var spans []liveSpan
+	var read time.Time
 	err := s.o.do(func() error {
-		l, live = s.o.ledger, s.o.executing()
+		l, live, read = s.o.ledger, s.o.executing(), s.o.now
 		if l == nil {
 			return nil
 		}
 		if !liveExecution {
 			return nil
 		}
+		s.o.noteMode()
+		spans = slices.Clone(s.o.liveSpans)
 		started = l.LiveStarted()
 		// The payload and its mode belong to the same owner boundary.
 		if live && !started {
@@ -127,6 +139,13 @@ func (s *sender) cycle() {
 		}
 		var readErr error
 		due, readErr = l.PendingNotices()
+		if readErr == nil && len(due) > 0 && read.IsZero() {
+			// Startup can deliver saved notices before its first valid
+			// clock reading. Keep the persisted read boundary as well.
+			var clock admission.Clock
+			clock, readErr = store.ReadAdmissionClock(s.o.opts.DB)
+			read = clock.Now()
+		}
 		return readErr
 	})
 	if err != nil || l == nil {
@@ -139,7 +158,7 @@ func (s *sender) cycle() {
 		return
 	}
 	if started != s.ledgerStarted {
-		s.ledgerRetry = retryBackoff{}
+		s.ledgerRetry, s.previewRetry = retryBackoff{}, retryBackoff{}
 		s.ledgerStarted = started
 	}
 	s.ledgerPending = len(due)
@@ -147,25 +166,57 @@ func (s *sender) cycle() {
 	if len(due) == 0 {
 		return
 	}
+	// Each record goes out in the mode it was raised in: live records
+	// first, then previews. A failed delivery leaves its group and those
+	// after it due.
 	now := time.Now()
-	findings := make([]alert.Finding, len(due))
-	acks := make([]admission.NoticeAck, len(due))
-	for i, r := range due {
-		findings[i] = noticeFinding(r, now, live)
-		acks[i] = admission.NoticeAck{Key: r.Key, First: r.First, Count: r.Count}
+	var acks []admission.NoticeAck
+	for _, preview := range []bool{false, true} {
+		var findings []alert.Finding
+		var group []admission.NoticeAck
+		for _, r := range due {
+			if (liveExecution && raisedLive(r, spans, s.ackedRead[r.Key])) == preview {
+				continue
+			}
+			findings = append(findings, noticeFinding(r, now, !preview))
+			group = append(group, admission.NoticeAck{Key: r.Key, First: r.First, Count: r.Count})
+		}
+		if len(findings) == 0 {
+			continue
+		}
+		retry := &s.ledgerRetry
+		if preview {
+			retry = &s.previewRetry
+		}
+		if !s.deliver(retry, findings, preview) {
+			break
+		}
+		acks = append(acks, group...)
 	}
-	if !s.deliver(&s.ledgerRetry, findings, !live) {
+	if len(acks) == 0 {
 		return
 	}
-	s.delivered += uint64(len(due))
-	s.unacked, s.unackedStarted = acks, started
+	s.delivered += uint64(len(acks))
+	s.unacked, s.unackedStarted, s.unackedRead = acks, started, read
 	s.observe()
 	if err = s.o.do(func() error { return ackNoticeSnapshot(l, started, acks) }); err != nil {
 		return
 	}
-	s.unacked = nil
-	s.ledgerPending = 0
+	s.noteAcked()
+	s.ledgerPending = len(due) - len(acks)
 	s.observe()
+}
+
+// noteAcked ends the unacknowledged delivery, keeping when each of its
+// keys was read.
+func (s *sender) noteAcked() {
+	if s.ackedRead == nil {
+		s.ackedRead = make(map[admission.NoticeKey]time.Time)
+	}
+	for _, a := range s.unacked {
+		s.ackedRead[a.Key] = s.unackedRead
+	}
+	s.unacked = nil
 }
 
 func (s *sender) observe() {
@@ -260,6 +311,58 @@ func (s *sender) deliver(retry *retryBackoff, findings []alert.Finding, preview 
 	}
 	*retry = retryBackoff{}
 	return true
+}
+
+// liveSpan is an admission time interval in which this process executed
+// block picks; a zero until is still open.
+type liveSpan struct{ since, until time.Time }
+
+// noteMode opens or closes the live span at the owner's admission time
+// when executing() changed. Records older than the process take the mode
+// it started in. A span boundary shares its time with the events beside
+// it, so an event at a flip counts as live.
+func (o *Owner) noteMode() {
+	// Keep the initial mode for restored notices. A later policy cannot
+	// bound its span until startup gets its first admission clock reading.
+	if o.modeNoted && o.now.IsZero() {
+		return
+	}
+	open := len(o.liveSpans) > 0 && o.liveSpans[len(o.liveSpans)-1].until.IsZero()
+	switch live := o.executing(); {
+	case live && !open:
+		since := o.now
+		if !o.modeNoted {
+			since = time.Time{}
+		}
+		o.liveSpans = append(o.liveSpans, liveSpan{since: since})
+	case !live && open:
+		o.liveSpans[len(o.liveSpans)-1].until = o.now
+	}
+	o.modeNoted = true
+}
+
+// raisedLive reports whether r is a live notice: its key comes only from a
+// real attempt (an outcome, or the applied summary), or an event it has not
+// delivered may fall in one of spans. Undelivered events are no older than
+// read, the admission time this process read r's last acknowledged
+// delivery at, or without one than that acknowledgement (Sent).
+func raisedLive(r admission.NoticeRecord, spans []liveSpan, read time.Time) bool {
+	if r.Key.Outcome != 0 || r.Key.Kind == admission.NoticeAppliedSummary {
+		return true
+	}
+	from, delivered := r.First, r.Sent
+	if !read.IsZero() {
+		delivered = read
+	}
+	if delivered.After(from) {
+		from = delivered
+	}
+	for _, s := range spans {
+		if !r.Last.Before(s.since) && (s.until.IsZero() || !from.After(s.until)) {
+			return true
+		}
+	}
+	return false
 }
 
 // noticeFinding is the record of one notice: its registered check, and in

@@ -243,6 +243,11 @@ type Owner struct {
 	seenEpoch uint64
 	policyErr error
 	verdicts  verdicts
+	// liveSpans are the admission times this process executed in, for the
+	// mode of its notices (noteMode); modeNoted is set once the first is
+	// known. Spans change only with installed policies, so they stay few.
+	liveSpans []liveSpan
+	modeNoted bool
 	// shadow is the forecast session while a dry-run policy is installed,
 	// and forecastReset why the next session starts.
 	// forecastErr is why forecasting last failed, cleared once a session
@@ -274,9 +279,11 @@ type Owner struct {
 	retireAt   time.Time
 	retireWait time.Duration
 	// evicted names the victims whose eviction the ledger recorded and
-	// whose rows the engine has yet to retire.
-	evicted    []firewall.BlockAction
-	evictedErr error
+	// whose rows the engine has yet to retire. evictedWait spaces passes
+	// that clear none of them.
+	evicted     []firewall.BlockAction
+	evictedErr  error
+	evictedWait retryBackoff
 	// heldAt is the monotonic time of the next held check (observeHeld).
 	heldAt time.Time
 	// replacements counts this process's previews that took the slot of a
@@ -591,6 +598,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 		return reading, fmt.Errorf("reading the admission clock: %w", err)
 	}
 	o.tickErr, o.degraded, o.lastTick, o.now = nil, t.Degraded, reading.Wall, t.Now
+	o.noteMode()
 	// A forecast meters the committed clock as the ledger's ceiling does.
 	// One that cannot starts over at its next turn.
 	if o.shadow != nil && o.shadow.advance(t) != nil {

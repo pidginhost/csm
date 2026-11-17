@@ -473,7 +473,8 @@ func (e *Engine) BlockAdmissionSnapshot(members []BlockMember, shadow []string) 
 		out.Answers[i] = BlockAnswer{Action: m.Action, IP: m.IP, BlockCheck: BlockCheck{Refusal: refusals[i], Existing: snap.existing(m, refusals[i])}}
 	}
 	snap.occupants(&out, e.expiryNow())
-	if e.blockActionsUnproven == nil {
+	out.Unproven = e.blockActionsUnproven != nil
+	if !out.Unproven {
 		// Import proof must age the row and the kernel sample to the same
 		// instant, including time spent checking members and any wall step.
 		at := e.leaseNowLocked()

@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -293,13 +294,18 @@ func victimOutcome(r firewall.BlockResult) admission.VictimOutcome {
 // rows rotate behind the rest; startup is the durable cleanup path for
 // admission victims. An import still enforced (a reload or restart
 // restored its row) is a legacy block again and is forgotten. State faults
-// use the existing execution hold and probe wait.
+// use the existing execution hold and probe wait. A pass that clears no row
+// backs the next one off; a row that leaves or arrives ends the wait.
 func (o *Owner) retireEvicted() (err error) {
 	if len(o.evicted) == 0 || !o.mayRetire() {
 		return nil
 	}
 	if errors.Is(o.execHold, firewall.ErrBlockBatchState) && monoNow().Before(o.probeAt) {
 		o.noteRetirementRetry(o.probeAt)
+		return nil
+	}
+	if !o.evictedWait.due(monoNow()) {
+		o.noteRetirementRetry(o.evictedWait.at)
 		return nil
 	}
 	engine := o.opts.Blocks()
@@ -317,6 +323,11 @@ func (o *Owner) retireEvicted() (err error) {
 				rest = append(rest, a)
 			}
 		}
+		if len(rest) < len(o.evicted) {
+			o.evictedWait = retryBackoff{}
+		} else {
+			o.evictedWait.fail(monoNow(), defaultScheduleEvery, maxProbeWait)
+		}
 		o.evicted = rest
 		if errors.Is(err, firewall.ErrBlockBatchState) {
 			o.hold(err, false)
@@ -328,7 +339,11 @@ func (o *Owner) retireEvicted() (err error) {
 			o.refreshStatus()
 		}
 		if len(o.evicted) > 0 {
-			o.noteRetirementRetry(monoNow().Add(defaultScheduleEvery))
+			at := monoNow().Add(defaultScheduleEvery)
+			if at.Before(o.evictedWait.at) {
+				at = o.evictedWait.at
+			}
+			o.noteRetirementRetry(at)
 		}
 	}()
 	var ids []string
@@ -352,6 +367,14 @@ func (o *Owner) retireEvicted() (err error) {
 		return fmt.Errorf("retiring evicted blocks: %w", err)
 	}
 	return nil
+}
+
+// queueEvicted adds a victim's row for retirement ahead of the rows
+// already waiting, so the next pass tries it at once, whatever wait or
+// backlog the rows before it built.
+func (o *Owner) queueEvicted(a firewall.BlockAction) {
+	o.evicted = slices.Insert(o.evicted, 0, a)
+	o.evictedWait = retryBackoff{}
 }
 
 // memberOf is p's next attempt as a block member, lasting from lease.
@@ -756,7 +779,7 @@ func (o *Owner) finishPending() error {
 		// Only a verified eviction retires the victim's row; after an
 		// unknown outcome the row stays until the victim's expiry.
 		if evicting && !linked && outcome.victim == admission.VictimRemoved && a.State == admission.StateVerified {
-			o.evicted = append(o.evicted, firewall.BlockAction{Action: outcome.member.Victim.Action, IP: outcome.member.Victim.IP})
+			o.queueEvicted(firewall.BlockAction{Action: outcome.member.Victim.Action, IP: outcome.member.Victim.IP})
 		}
 		id := a.Attempt.Candidate
 		if c.State == admission.StateUnknown {

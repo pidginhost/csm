@@ -19,14 +19,39 @@ type noticeSink struct {
 	deliveries [][]alert.Finding
 	previews   []bool
 	err        error
+	// previewErr fails preview deliveries only. during runs once, inside
+	// the next delivery and outside the lock, as the owner keeps working
+	// while a delivery is out.
+	previewErr error
+	during     func()
 }
 
 func (s *noticeSink) deliver(fs []alert.Finding, preview bool) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.deliveries = append(s.deliveries, append([]alert.Finding(nil), fs...))
 	s.previews = append(s.previews, preview)
-	return s.err
+	err, during := s.err, s.during
+	if preview && s.previewErr != nil {
+		err = s.previewErr
+	}
+	s.during = nil
+	s.mu.Unlock()
+	if during != nil {
+		during()
+	}
+	return err
+}
+
+func (s *noticeSink) delivery(i int) ([]alert.Finding, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deliveries[i], s.previews[i]
+}
+
+func (s *noticeSink) setPreview(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.previewErr = err
 }
 
 func (s *noticeSink) lastPreview() bool {

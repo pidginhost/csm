@@ -197,6 +197,9 @@ type BlockAdmission struct {
 	// ShadowHeld names the forecast addresses the sets already hold as a
 	// timed or an untimed element.
 	ShadowHeld map[string]bool
+	// Unproven says startup could not prove admission outcomes: no batch
+	// removes a block for a member until a restart proves them.
+	Unproven bool
 	// Imports lists the imports a member may evict, soonest expiry first,
 	// at most MaxBlockImports; none while startup could not prove
 	// admission outcomes.

@@ -233,11 +233,12 @@ func (s *shadow) covering(ip string, expires time.Time) admission.Prediction {
 // the session replaced, and in their own partitions the forecast blocks
 // the real sets do not already hold as a timed or an untimed element. As
 // in the ledger, every listed import counts even if the count is lower.
-// adm is this turn's snapshot, taken after expire.
+// adm is this turn's snapshot, taken after expire. Beside an engine that
+// cannot prove its saved actions nothing is replaced, as in the ledger.
 func (s *shadow) occupancy(adm firewall.BlockAdmission) admission.SetOccupancy {
 	general, reserved := s.counted(adm)
 	imported := max(adm.Imported, len(adm.Imports)) - s.replacedListed(adm)
-	return admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: imported + adm.Admission + general, Reserved: reserved}
+	return admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: imported + adm.Admission + general, Reserved: reserved, NoEviction: adm.Unproven}
 }
 
 // counted is the forecast blocks of each partition the real sets do not
