@@ -547,7 +547,7 @@ func TestLedgerRestoreTruncatedPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer debug.SetPanicOnFault(debug.SetPanicOnFault(false))
-	live, at, err := readLedgerPosition(damaged)
+	live, at, err := readLedgerPosition(damaged, true)
 	if err == nil || live || !at.IsZero() {
 		t.Fatalf("truncated ledger = (%t, %v, %v), want unreadable", live, at, err)
 	}

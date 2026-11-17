@@ -20,14 +20,14 @@ import (
 // read is not refused either: restoring over it is the repair. An archive
 // ledger it cannot read counts as behind. Neither file needs a ledger.
 func CheckLedgerRestore(archive, target string) error {
-	if live, at, err := readLedgerPosition(target); err == nil && live {
+	if live, at, err := readLedgerPosition(target, true); err == nil && live {
 		return checkArchiveLedger(archive, at)
 	}
 	return nil
 }
 
 func checkArchiveLedger(archive string, targetClock time.Time) error {
-	live, clock, err := readLedgerPosition(archive)
+	live, clock, err := readLedgerPosition(archive, false)
 	switch {
 	case err != nil:
 		return fmt.Errorf("%w: it cannot be read (%v); use --force to restore it anyway", ErrLedgerBehind, err)
@@ -43,7 +43,7 @@ func checkArchiveLedger(archive string, targetClock time.Time) error {
 // readLedgerPosition reads, without a ledger handle, whether the database
 // at path holds a ledger that started live and its admission clock. A
 // missing file or one without a current ledger has not started.
-func readLedgerPosition(path string) (live bool, at time.Time, err error) {
+func readLedgerPosition(path string, allowLeakedPages bool) (live bool, at time.Time, err error) {
 	// bbolt reports a damaged page by panicking. A database that cannot be
 	// read is an answer here, not a crash: restoring over it is the repair.
 	defer func() {
@@ -51,20 +51,13 @@ func readLedgerPosition(path string) (live bool, at time.Time, err error) {
 			live, at, err = false, time.Time{}, fmt.Errorf("reading the ledger database: %v", r)
 		}
 	}()
-	info, err := os.Stat(path)
+	// Check the file type and page structure before opening bbolt. A pipe
+	// blocks before the lock timeout and page cycles never finish.
+	err = verifyStoppedDatabase(path, allowLeakedPages)
 	if os.IsNotExist(err) {
 		return false, time.Time{}, nil
 	}
 	if err != nil {
-		return false, time.Time{}, err
-	}
-	// Opening a pipe can block before bbolt's lock timeout starts. Other
-	// special files cannot hold a database either; leave them repairable.
-	if !info.Mode().IsRegular() {
-		return false, time.Time{}, fmt.Errorf("ledger database is not a regular file")
-	}
-	// bbolt loops on a page cycle and faults on references past the end.
-	if err = verifyDatabase(path); err != nil {
 		return false, time.Time{}, err
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: time.Second})

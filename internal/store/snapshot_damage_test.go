@@ -172,7 +172,7 @@ func checkDamagedSnapshotReaders(t *testing.T, noFreelistSync bool, damage func(
 			return err
 		}},
 		{"read ledger position", false, func(snapshot, _ string) error {
-			_, _, err := readLedgerPosition(snapshot)
+			_, _, err := readLedgerPosition(snapshot, true)
 			return err
 		}},
 		{"disarm firewall rollback", false, func(snapshot, _ string) error {
@@ -415,6 +415,8 @@ func TestSnapshotVerificationLayoutDamage(t *testing.T) {
 		"root value":                       func(b []byte) { order.PutUint32(b[root+16:], 0) },
 		"bucket header":                    func(b []byte) { order.PutUint32(b[root+28:], 8) },
 		"inline header":                    func(b []byte) { order.PutUint32(b[root+28:], 20) },
+		"inline identity":                  func(b []byte) { order.PutUint64(b[value+16:], 1) },
+		"inline trailing data":             func(b []byte) { order.PutUint16(b[value+26:], 0) },
 		"inline type":                      func(b []byte) { order.PutUint16(b[value+24:], 1) },
 		"inline overflow":                  func(b []byte) { order.PutUint32(b[value+28:], 1) },
 		"inline subbucket":                 func(b []byte) { order.PutUint32(b[value+32:], 1) },
@@ -422,6 +424,18 @@ func TestSnapshotVerificationLayoutDamage(t *testing.T) {
 		"freelist type":                    func(b []byte) { order.PutUint16(b[free+8:], 2) },
 		"freelist count":                   func(b []byte) { order.PutUint16(b[free+10:], 65534) },
 		"extended freelist count overflow": func(b []byte) { order.PutUint16(b[free+10:], 65535); order.PutUint64(b[free+16:], ^uint64(0)) },
+		"external bucket with trailing data": func(b []byte) {
+			last := root + 16*int(order.Uint16(b[root+10:]))
+			if size := order.Uint32(b[last+12:]); size != 16 {
+				t.Fatalf("last bucket has %d bytes, want an external bucket header", size)
+			}
+			order.PutUint32(b[last+12:], 17)
+		},
+		"misplaced recovery meta": func(b []byte) {
+			copy(b[1024:1024+80], b[pageSize:pageSize+80])
+			b[16] ^= 0xff
+			b[pageSize+16] ^= 0xff
+		},
 		"inconsistent meta page sizes": func(b []byte) {
 			order.PutUint32(b[pageSize+24:], uint32(pageSize*2))
 			h := fnv.New64a()
@@ -447,6 +461,7 @@ func TestSnapshotVerificationLayoutDamage(t *testing.T) {
 	}{
 		{"zero page size", func(m []byte) { order.PutUint32(m[8:], 0) }},
 		{"oversized page size", func(m []byte) { order.PutUint32(m[8:], ^uint32(0)) }},
+		{"exhausted transaction ID", func(m []byte) { order.PutUint64(m[48:], ^uint64(0)) }},
 		{"zero high water mark", func(m []byte) { order.PutUint64(m[40:], 0) }},
 		{"oversized high water mark", func(m []byte) { order.PutUint64(m[40:], ^uint64(0)) }},
 		{"meta as root", func(m []byte) { order.PutUint64(m[16:], 1) }},
