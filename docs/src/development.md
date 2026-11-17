@@ -1014,7 +1014,16 @@ member as pending recovery. An existing-effect refusal, at check or apply
 time, names the block that holds the address: the admission action that
 wrote its row, or `eff_` and a digest of an operator or earlier row's
 identity, with its expiry. The same row gets the same name on every check
-and after a restart. The batch rechecks, writes one
+and after a restart. Set readback proves membership, not enforcement, so a
+batch, a member check and a state probe each read the input chain's rule
+handles before the set snapshot, up to the last source-address drop
+of a filtered blocked set. A missing or altered family guard, source load,
+register flow, lookup or drop verdict refuses them. The batch reads the
+handles again just before its write and refuses when they changed, as after a ruleset reload or a rule inserted
+ahead of the drops. That refusal writes and sends nothing and holds
+execution until a probe finds the drops again, without an apply fault.
+The namespace generation is not read: any other nftables user changes it.
+The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves

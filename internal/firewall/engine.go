@@ -192,6 +192,9 @@ type Engine struct {
 	// liveBlockedDump, when non-nil, replaces the netlink dump of one
 	// blocked set. Tests inject it to avoid a real nft connection.
 	liveBlockedDump func(set *nftables.Set) ([]nftables.SetElement, error)
+	// blockRuleDump, when non-nil, replaces the netlink dump of the input
+	// chain's rules that block batches check.
+	blockRuleDump func() ([]*nftables.Rule, error)
 
 	// liveBlockCounts, when non-nil, returns the live (perm, temp)
 	// element counts across blocked v4 + v6 sets. Tests inject this

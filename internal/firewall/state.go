@@ -19,6 +19,10 @@ var ErrLongerBlock = errors.New("IP has a longer block; unblock it explicitly be
 // apply-confirmed window can roll the firewall back (design C9).
 var ErrConfirmPending = errors.New("a firewall change awaits confirmation")
 
+// ErrBlockRules refuses admission's block batches while the rules that drop
+// blocked addresses are missing, or changed during a batch.
+var ErrBlockRules = errors.New("the firewall rules that drop blocked addresses are missing or changed")
+
 // ErrAdmissionOwnsBlock refuses an automatic rewrite of a block an
 // admission action wrote: its owner retires it (design C8).
 var ErrAdmissionOwnsBlock = errors.New("an admission action owns the block")

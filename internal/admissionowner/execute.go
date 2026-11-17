@@ -235,7 +235,7 @@ func (o *Owner) execute(picks []execPick) error {
 		// An error means nothing was written or sent.
 		// A confirmation window can begin after the member check. It
 		// needs no apply proof and must preserve any earlier apply fault.
-		applyFault := !errors.Is(err, firewall.ErrBlockBatchState) && !errors.Is(err, firewall.ErrConfirmPending)
+		applyFault := !errors.Is(err, firewall.ErrBlockBatchState) && !errors.Is(err, firewall.ErrConfirmPending) && !errors.Is(err, firewall.ErrBlockRules)
 		o.hold(fmt.Errorf("applying a block batch: %w", err), applyFault)
 		return errors.Join(stopped, o.finishAll(batch, admission.DispositionFailed, admission.VictimSpared, lead))
 	}

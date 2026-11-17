@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -16,7 +17,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/nftables"
+	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
+	"golang.org/x/sys/unix"
 )
 
 func validBlockAction(id string) bool {
@@ -56,6 +59,8 @@ type blockSnapshot struct {
 	live    map[string]blockObservation
 	elapsed time.Time
 	temp    int
+	// rules are the input rule handles a batch checks again before writing.
+	rules []uint64
 }
 
 // proves reports whether row is an enforced block the kernel shows: a
@@ -99,12 +104,114 @@ func (e *Engine) HoldBlockBatches(held bool) {
 }
 
 // blockBatchSnapshotLocked is the snapshot of a call that leads to or makes
-// a firewall change, refused while batches are held.
+// a firewall change, refused while batches are held or while the rules
+// that drop blocked addresses are missing.
 func (e *Engine) blockBatchSnapshotLocked() (blockSnapshot, error) {
 	if e.blockBatchesHeld {
 		return blockSnapshot{}, ErrConfirmPending
 	}
-	return e.blockSnapshotLocked()
+	// Preserve readiness refusals before opening the rule dump socket.
+	if e.blockBatchStateErr != nil {
+		return blockSnapshot{}, e.blockBatchStateErr
+	}
+	if e.lifecycle != nil {
+		return blockSnapshot{}, errDurableBlockRows
+	}
+	if e.setBlocked == nil || (e.liveBlockedDump == nil && e.conn == nil) {
+		return blockSnapshot{}, errors.New("blocked sets unavailable")
+	}
+	rules, err := e.blockRuleHandlesLocked()
+	if err != nil {
+		return blockSnapshot{}, err
+	}
+	snap, err := e.blockSnapshotLocked()
+	if err != nil {
+		return blockSnapshot{}, err
+	}
+	snap.rules = rules
+	return snap, nil
+}
+
+// blockRuleHandlesLocked returns the handles of the input chain's rules in
+// order, up to and including the last drop of a filtered blocked set.
+// Set readback proves membership, not enforcement: a ruleset reloaded, a
+// drop removed or a rule inserted ahead of the drops outside CSM changes
+// these handles. CSM's own rule changes run under e.mu.
+func (e *Engine) blockRuleHandlesLocked() ([]uint64, error) {
+	if e.setBlocked == nil {
+		return nil, fmt.Errorf("%w: blocked sets unavailable", ErrBlockRules)
+	}
+	rules, err := e.blockRulesLocked()
+	if err != nil {
+		return nil, fmt.Errorf("%w: listing the input rules: %v", ErrBlockRules, err)
+	}
+	want := map[string]byte{e.setBlocked.Name: 2}
+	if e.setBlocked6 != nil && e.cfg.IPv6 {
+		want[e.setBlocked6.Name] = 10
+	}
+	last := -1
+	handles := make([]uint64, 0, len(rules))
+	for i, rule := range rules {
+		handles = append(handles, rule.Handle)
+		for name, family := range want {
+			if set, ok := blockDropSet(rule, family); ok && set == name {
+				delete(want, name)
+				last = i
+			}
+		}
+	}
+	if len(want) > 0 {
+		return nil, fmt.Errorf("%w: no rule drops %s", ErrBlockRules, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
+	}
+	return handles[:last+1], nil
+}
+
+func (e *Engine) blockRulesLocked() ([]*nftables.Rule, error) {
+	if e.blockRuleDump != nil {
+		return e.blockRuleDump()
+	}
+	conn, err := newLifecycleConn(e)
+	if err != nil {
+		return nil, err
+	}
+	table := e.setBlocked.Table
+	return conn.GetRules(table, &nftables.Chain{Name: "input", Table: table})
+}
+
+// blockDropSet recognizes the source-address drop emitted by Apply.
+// Lookup transaction IDs are not stable dump fields. The register aliases
+// below name the same bytes; every other semantic field must match.
+func blockDropSet(rule *nftables.Rule, family byte) (string, bool) {
+	if len(rule.Exprs) != 5 {
+		return "", false
+	}
+	meta, ok := rule.Exprs[0].(*expr.Meta)
+	if !ok || meta.SourceRegister || meta.Key != expr.MetaKeyNFPROTO || !blockSourceRegister(meta.Register) {
+		return "", false
+	}
+	cmp, ok := rule.Exprs[1].(*expr.Cmp)
+	if !ok || cmp.Op != expr.CmpOpEq || !blockSourceRegister(cmp.Register) || !slices.Equal(cmp.Data, []byte{family}) {
+		return "", false
+	}
+	offset, length := uint32(12), uint32(4)
+	if family == 10 {
+		offset, length = 8, 16
+	}
+	payload, ok := rule.Exprs[2].(*expr.Payload)
+	if !ok || payload.OperationType != expr.PayloadLoad || !blockSourceRegister(payload.DestRegister) ||
+		payload.Base != expr.PayloadBaseNetworkHeader || payload.Offset != offset || payload.Len != length {
+		return "", false
+	}
+	lookup, ok := rule.Exprs[3].(*expr.Lookup)
+	if !ok || lookup.Invert || lookup.IsDestRegSet || !blockSourceRegister(lookup.SourceRegister) || lookup.SetName == "" {
+		return "", false
+	}
+	verdict, ok := rule.Exprs[4].(*expr.Verdict)
+	return lookup.SetName, ok && verdict.Kind == expr.VerdictDrop
+}
+
+func blockSourceRegister(register uint32) bool {
+	return register == unix.NFT_REG_1 || register == unix.NFT_REG32_00
 }
 
 func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
@@ -718,6 +825,15 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	}
 	if len(run) == 0 {
 		return results, nil
+	}
+	// The last check before the write: the rules that enforce the blocks
+	// are the ones the snapshot read.
+	rules, ruleErr := e.blockRuleHandlesLocked()
+	if ruleErr != nil {
+		return nil, ruleErr
+	}
+	if !slices.Equal(rules, snap.rules) {
+		return nil, fmt.Errorf("%w: the input rules changed during the batch", ErrBlockRules)
 	}
 	if persistErr := e.persistFirewallIntent(snap.prior, next); persistErr != nil {
 		e.suppressFailedBlockActionsLocked(blockActions(members, run))
