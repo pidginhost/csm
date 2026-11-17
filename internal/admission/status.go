@@ -284,6 +284,10 @@ const PreviewUnaffected = "existing blocking is unaffected while admission previ
 // an unavailable ledger, ingress, owner or clock fails.
 const ExecutionAffected = "admission decides automatic blocks"
 
+// UnresolvedOutcomesRow names the doctor row of unknown outcomes; doctor
+// replaces its retire time with the cause when retirement cannot run.
+const UnresolvedOutcomesRow = "admission unresolved outcomes"
+
 // DoctorImpact is how admission rows close and how badly an outage rates:
 // a preview only warns, since legacy blocking enforces; execution
 // fails.
@@ -335,7 +339,7 @@ func DoctorChecks(s *LedgerStatus, in *IngressHealth, now time.Time, executing b
 	rows = append(rows, gap, reserve, outbox)
 	if u := s.Unresolved; u.Unknown > 0 {
 		rows = append(rows, DoctorRow{
-			Name: "admission unresolved outcomes", Status: DoctorWarn,
+			Name: UnresolvedOutcomesRow, Status: DoctorWarn,
 			Message: fmt.Sprintf("%d automatic blocks have an unproven outcome; each holds its address until it has expired and the firewall shows nothing of it; the next can retire at %s", u.Unknown, u.Retires.UTC().Format(time.RFC3339)) + "; " + closing,
 			Fix:     "none needed while the count falls; if it keeps growing, check the firewall rows and the admission execution row",
 		})

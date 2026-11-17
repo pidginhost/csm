@@ -46,6 +46,11 @@ type AdmissionOwner struct {
 	// blocks. Each affected block stays held and is retried; it clears once
 	// none is left faulted.
 	RetirementError string `json:"retirement_error,omitempty"`
+	// RetirementHeldBy names what keeps unknown outcomes from retiring
+	// while the ledger holds some: "engine" for an owner without the
+	// firewall engine, "policy" for a refused execution policy. Their
+	// addresses stay held until retirement can run.
+	RetirementHeldBy string `json:"retirement_held_by,omitempty"`
 	// TickError is why the last clock reading or its live start failed.
 	// Nothing is admitted until both succeed.
 	TickError string `json:"tick_error,omitempty"`

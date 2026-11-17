@@ -110,6 +110,20 @@ func (o *Owner) mayRetire() bool {
 	return o.executable() && o.policyErr == nil && (liveExecution || o.forecasting())
 }
 
+// retirementHeldBy names what keeps earlier unknown outcomes from
+// retiring: "engine" for an owner without the firewall engine, "policy"
+// while a refused execution policy holds it, and nothing when retirement
+// runs.
+func (o *Owner) retirementHeldBy() string {
+	switch {
+	case !o.executable():
+		return "engine"
+	case o.policyErr != nil:
+		return "policy"
+	}
+	return ""
+}
+
 // asksVerdicts reports whether picks ask the installed policy's callback:
 // only a forecast or live execution does.
 func (o *Owner) asksVerdicts() bool {

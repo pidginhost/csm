@@ -98,6 +98,12 @@ func (o *Owner) execute(picks []execPick) error {
 		return nil
 	}
 	engine := o.opts.Blocks()
+	if engine == nil {
+		// The missing-engine wait must advance even when the clock cannot
+		// support execution; otherwise every due turn spends a selection.
+		o.ready(nil, true)
+		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	}
 	// A degraded clock cannot bound a lease: the admission time stays at
 	// its high-water mark while the wall clock is behind it or disagrees
 	// with elapsed time. The engine encodes against its own lease clock.
@@ -532,7 +538,9 @@ func (o *Owner) ready(engine BlockEngine, checking bool) bool {
 		return false
 	}
 	if engine == nil {
-		if !errors.Is(o.execHold, errNoEngine) {
+		// Holding again once the wait has passed spaces the next selecting
+		// turn of a missing engine, as a failed probe would.
+		if !errors.Is(o.execHold, errNoEngine) || !monoNow().Before(o.probeAt) {
 			o.hold(errNoEngine, false)
 		}
 		return false
@@ -602,6 +610,10 @@ func (o *Owner) publishExecutionHold() {
 	owner.ExecutionHeld, owner.ExecutionHeldBy = "", ""
 	if cause := o.heldCause(); cause != nil {
 		owner.ExecutionHeld, owner.ExecutionHeldBy = cause.Error(), o.heldBy()
+	}
+	owner.RetirementHeldBy = ""
+	if snapshot.Ledger != nil && snapshot.Ledger.Unresolved.Unknown > 0 {
+		owner.RetirementHeldBy = o.retirementHeldBy()
 	}
 	snapshot.Owner = &owner
 	o.current.Store(&snapshot)
