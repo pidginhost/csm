@@ -547,6 +547,9 @@ func platformMatches(a, b map[string]string) bool {
 // snapshot file (not the static bucketNames slice; migrations may have
 // removed some, and export sanitization removes others).
 func listSnapshotBuckets(path string) ([]string, error) {
+	if err := verifySnapshot(path); err != nil {
+		return nil, err
+	}
 	snapshot, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second, ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("opening bbolt snapshot: %w", err)

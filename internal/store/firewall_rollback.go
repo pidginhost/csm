@@ -3,7 +3,6 @@ package store
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -78,7 +77,7 @@ func (db *DB) ClearFirewallRollback() error {
 // durable firewall state, but must not make an old tentative configuration
 // write active again on a later daemon start.
 func DisarmFirewallRollbackSnapshot(path string) error {
-	if _, err := os.Stat(path); err != nil {
+	if err := verifySnapshot(path); err != nil {
 		return err
 	}
 	snapshot, err := bolt.Open(path, 0o600, nil)

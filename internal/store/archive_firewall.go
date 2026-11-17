@@ -81,6 +81,9 @@ func validateFirewallImportBuckets(tx *bolt.Tx) error {
 // snapshot lacks is kept. Every other firewall bucket merges key by key,
 // keeping destination-only keys. Returns the bucket names copied.
 func mergeFirewallBucketsFromSnapshot(snapshotPath, statePath string) ([]string, error) {
+	if err := verifySnapshot(snapshotPath); err != nil {
+		return nil, err
+	}
 	src, err := bolt.Open(snapshotPath, 0600, &bolt.Options{Timeout: 5 * time.Second, ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("opening snapshot: %w", err)

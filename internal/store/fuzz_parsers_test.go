@@ -1,8 +1,15 @@
 package store
 
 import (
+	"bytes"
+	"encoding/binary"
+	"hash/fnv"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // Example keys and values come from this build, older builds and the
@@ -23,5 +30,51 @@ func FuzzDryRunExampleRecord(f *testing.F) {
 			t.Fatalf("an unparsed key %q was judged old", key)
 		}
 		_ = dryRunSession(value)
+	})
+}
+
+// Mutate a real snapshot without invalidating the meta checksum first, so
+// fuzzing reaches page references and element bounds as well as metadata.
+func FuzzSnapshotVerification(f *testing.F) {
+	path := filepath.Join(f.TempDir(), "snapshot.db")
+	db, err := bolt.Open(path, 0600, nil)
+	if err != nil {
+		f.Fatal(err)
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		b, createErr := tx.CreateBucket([]byte("data"))
+		if createErr != nil {
+			return createErr
+		}
+		return b.Put([]byte("key"), []byte("value"))
+	})
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		f.Fatal(err)
+	}
+	seed, err := os.ReadFile(path)
+	if err != nil {
+		f.Fatal(err)
+	}
+	if err := checkSnapshot(bytes.NewReader(seed), int64(len(seed))); err != nil {
+		f.Fatal(err)
+	}
+	f.Add(uint32(0), []byte{})
+	f.Add(uint32(32), []byte{255, 255, 255, 255, 255, 255, 255, 255})
+	f.Add(uint32(3*os.Getpagesize()+10), []byte{255, 255})
+	f.Fuzz(func(t *testing.T, offset uint32, replacement []byte) {
+		data := bytes.Clone(seed)
+		copy(data[int(offset)%len(data):], replacement)
+		for _, at := range []int{0, os.Getpagesize()} {
+			h := fnv.New64a()
+			_, _ = h.Write(data[at+16 : at+72])
+			binary.NativeEndian.PutUint64(data[at+72:], h.Sum64())
+		}
+		err := checkSnapshot(bytes.NewReader(data), int64(len(data)))
+		if len(replacement) == 0 && err != nil {
+			t.Fatalf("unchanged snapshot refused: %v", err)
+		}
 	})
 }
