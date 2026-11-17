@@ -713,7 +713,7 @@ func Validate(cfg *Config) []ValidationResult {
 	results = append(results, validateVerifiedBots(cfg)...)
 
 	// --- AutoResponse.VerdictCallback ---
-	if field, err := validateVerdictCallbackField(cfg); err != nil {
+	if field, err := validateVerdictCallbackField(cfg, LoadOptions{}); err != nil {
 		results = append(results, ValidationResult{"error", field, err.Error()})
 	}
 

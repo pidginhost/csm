@@ -303,7 +303,16 @@ func firewallBlockedIPs(statePath string) map[string]bool {
 // that don't need the shared database (scan, check, clean, status, etc.)
 // so they can run while the daemon holds the bbolt lock.
 func loadConfigLite() *config.Config {
-	cfg, err := tryLoadConfigLite()
+	return loadConfigLiteWith(config.LoadOptions{})
+}
+
+// hashOnlyLoadOptions is for rehash and verify, which only hash or compare the
+// config files. dpkg runs rehash without the service environment, so a secret
+// that lives only there must not fail the package upgrade.
+var hashOnlyLoadOptions = config.LoadOptions{AllowUnsetSecretEnv: true}
+
+func loadConfigLiteWith(opts config.LoadOptions) *config.Config {
+	cfg, err := tryLoadConfigLiteWith(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
@@ -312,6 +321,10 @@ func loadConfigLite() *config.Config {
 }
 
 func tryLoadConfigLite() (*config.Config, error) {
+	return tryLoadConfigLiteWith(config.LoadOptions{})
+}
+
+func tryLoadConfigLiteWith(opts config.LoadOptions) (*config.Config, error) {
 	cfgPath, _, pathErr := resolveConfigPathFromArgs(os.Args)
 	if pathErr != nil {
 		return nil, pathErr
@@ -320,7 +333,7 @@ func tryLoadConfigLite() (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return config.LoadWithDir(cfgPath, confDir)
+	return config.LoadWithDirOptions(cfgPath, confDir, opts)
 }
 
 func prepareDaemonState(cfg *config.Config, legacyStateDir string) (bool, *state.LockFile, error) {
@@ -923,7 +936,7 @@ func runRehash() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	cfg := loadConfigLite()
+	cfg := loadConfigLiteWith(hashOnlyLoadOptions)
 	if names != nil {
 		os.Exit(rehashFragments(binaryPath, cfg.ConfigFile, cfg.ConfigDir, names, os.Stdout, os.Stderr))
 	}
@@ -1092,7 +1105,7 @@ func runValidate() {
 }
 
 func runVerify() {
-	cfg := loadConfigLite()
+	cfg := loadConfigLiteWith(hashOnlyLoadOptions)
 	if err := integrity.Verify(binaryPath, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "INTEGRITY CHECK FAILED: %v\n", err)
 		os.Exit(2)

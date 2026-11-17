@@ -34,7 +34,7 @@ func WriteConfigBytesAtomic(path string, data []byte) error {
 // untouched formatting outside the integrity block survive
 // byte-for-byte.
 //
-// Verifies the final bytes decode via config.LoadBytes and match
+// Verifies the final bytes decode as a config and match
 // intendedClone under reflect.DeepEqual (with integrity fields
 // normalised). Mismatch aborts the write.
 //
@@ -87,7 +87,7 @@ func signAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 		return fmt.Errorf("integrity patch drift: bytes outside integrity block changed")
 	}
 
-	decoded, err := config.LoadBytes(patched)
+	decoded, err := decodeForSigning(patched)
 	if err != nil {
 		return fmt.Errorf("verify decode: %w", err)
 	}
@@ -166,7 +166,7 @@ func SignConfigFilePreservingSnapshot(path, confDir, binaryHash string) (*config
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	cfg, err := config.LoadBytes(data)
+	cfg, err := decodeForSigning(data)
 	if err != nil {
 		return nil, err
 	}
@@ -201,4 +201,12 @@ func stripIntegrityBlock(s string) string {
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// decodeForSigning decodes config bytes this package signs or compares.
+// Signing never uses runtime secrets, so a secret named by a *_env key may be
+// unset here (rehash runs from package scripts without the service
+// environment). Callers that act on the config load it fail-closed first.
+func decodeForSigning(data []byte) (*config.Config, error) {
+	return config.LoadBytesWithOptions(data, config.LoadOptions{AllowUnsetSecretEnv: true})
 }
