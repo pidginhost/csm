@@ -443,7 +443,8 @@ a renewal with a new name is a new import. `capacity` is the finite capacity
 automatic admission is modelled within: a positive limit, or 10000 for an
 unlimited set. Until validation rejects negative limits, they use the same
 fallback as zero and retain their configured value in `limit`. `unclaimed` counts the real timed entries it never evicts (operator
-blocks, blocks of unknown origin and two per timed subnet), `imported` the
+blocks, blocks of unknown origin, two per timed subnet and admission
+blocks no ledger record holds), `imported` the
 real verified stamped legacy automatic blocks, and `drain_seconds` estimates how long the last of
 them has left at the snapshot, or -1 when a kernel expiry is unavailable.
 Zero means no remaining known whole seconds. Treat -1 as unknown, not as
@@ -452,7 +453,12 @@ New blocks, renewals and subnet wall-clock
 changes can extend that estimate; it is not an automatic removal deadline. `general` and `reserved` divide the slots the unclaimed
 entries leave, a fifth rounded up reserved for direct or corroborated work,
 each with its `size`, the real and forecast automatic blocks it holds
-(`used`) and its `free` slots, also bounded by total remaining capacity.
+(`used`; after a live period the slots the ledger's records still hold
+count in their own partition, read each turn) and its `free` slots, also
+bounded by total remaining capacity. The drain is unknown while admission
+blocks have no ledger record. Real blocks are never forecast
+replacement victims and their scopes do not share a partition, so a
+forecast scope may be due more than live admission would give it.
 `shares` gives, for `general` and `reserved`, the `scopes` that share the
 partition (those holding its forecast blocks the real sets do not hold and
 those the last turn's picks wait in) and the fewest slots each is due

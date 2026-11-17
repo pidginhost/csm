@@ -75,10 +75,15 @@ func (s *shadow) occupancyStatus() *health.AdmissionDryRunOccupancy {
 	imported := max(adm.Imported, len(adm.Imports))
 	actual := adm.Unclaimed + imported + adm.Admission
 	holding := s.holding(adm)
+	drain := adm.Drain
+	if occ.Unclaimed > adm.Unclaimed {
+		// The engine cannot bound the drain of unowned admission rows.
+		drain = -time.Second
+	}
 	return &health.AdmissionDryRunOccupancy{
 		Actual: actual, ShadowOnly: only, Replaced: replaced, Predicted: actual + only - replaced, Limit: adm.Limit,
 		Unlimited: adm.Limit <= 0, Limited: s.limited(),
-		Capacity: slots.Capacity, Unclaimed: adm.Unclaimed, Imported: imported, DrainSeconds: int64(adm.Drain / time.Second),
+		Capacity: slots.Capacity, Unclaimed: occ.Unclaimed, Imported: imported, DrainSeconds: int64(drain / time.Second),
 		General:  health.AdmissionDryRunPartition{Size: slots.General, Used: occ.General, Free: slots.FreeGeneral},
 		Reserved: health.AdmissionDryRunPartition{Size: slots.Reserved, Used: occ.Reserved, Free: slots.FreeReserved},
 		Shares: health.AdmissionDryRunShares{

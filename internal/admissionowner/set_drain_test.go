@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -25,28 +26,36 @@ func TestOwnerUnclaimedAdmissionDrain(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		admitted  int
-		hold      bool
+		hold      admission.Lane // the lane of the ledger's own record, if any
 		unclaimed int
 		drain     int64
 	}{
-		{"no admission rows", 0, false, 1, 3600},
-		{"unknown row", 1, false, 2, -1},
-		{"owned row", 1, true, 1, 3600},
-		{"owned and unknown rows", 2, true, 2, -1},
-		{"hold without a row", 0, true, 1, 3600},
+		{"no admission rows", 0, 0, 1, 3600},
+		{"unknown row", 1, 0, 2, -1},
+		{"owned row", 1, admission.LaneGeneral, 1, 3600},
+		{"owned reserved row", 1, admission.LaneDirect, 1, 3600},
+		{"owned and unknown rows", 2, admission.LaneGeneral, 2, -1},
+		{"hold without a row", 0, admission.LaneGeneral, 1, 3600},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := withTestRegistry(t)
+			basis := admission.BasisLocal
+			if tc.hold == admission.LaneDirect {
+				basis = admission.BasisCompromise // direct work holds a reserved slot
+			}
+			p := withTestRegistryBasis(t, basis)
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()
 			blocks.limit, blocks.temp, blocks.admitted = 10, tc.admitted+1, tc.admitted
 			opts := executeOptions(f, blocks)
 			opts.Blocks = func() BlockEngine { return drainingSetEngine{BlockEngine: blocks, drain: time.Hour} }
 			o := f.start(opts)
-			if tc.hold {
+			if tc.hold != 0 {
 				id, now := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 				if err := o.do(func() error {
-					_, _, _, err := o.ledger.Reserve(id, admission.LaneGeneral, now.Add(time.Hour))
+					_, _, granted, err := o.ledger.Reserve(id, tc.hold, now.Add(time.Hour))
+					if err == nil && !granted {
+						err = errors.New("reservation not granted")
+					}
 					return err
 				}); err != nil {
 					t.Fatal(err)

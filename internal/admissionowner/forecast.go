@@ -184,6 +184,11 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		o.shadow.adm = nil
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
+	// The records of a live period keep their slots until they end.
+	if o.shadow.effects, err = o.ledger.EffectTally(); err != nil {
+		o.shadow.adm = nil
+		return fmt.Errorf("reading the ledger's set slots: %w", err)
+	}
 	occupancy := adm
 	occupancy.Answers = nil
 	o.shadow.adm = &occupancy

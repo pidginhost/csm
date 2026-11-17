@@ -111,6 +111,8 @@ type shadowChange struct {
 // clock deltas as the ledger, never copied again. Only the owner goroutine
 // uses it. A restart or a new session starts over from the real state.
 type shadow struct {
+	// effects is the slots the ledger's records hold, read each turn.
+	effects admission.EffectTally
 	id      string
 	since   time.Time
 	reset   resetReason
@@ -229,16 +231,19 @@ func (s *shadow) covering(ip string, expires time.Time) admission.Prediction {
 }
 
 // occupancy is the modelled temporary set: the real timed occupants, with
-// real automatic blocks in the general partition, less the listed imports
-// the session replaced, and in their own partitions the forecast blocks
-// the real sets do not already hold as a timed or an untimed element. As
-// in the ledger, every listed import counts even if the count is lower.
-// adm is this turn's snapshot, taken after expire. Beside an engine that
-// cannot prove its saved actions nothing is replaced, as in the ledger.
+// the slots the ledger's records hold in their partitions and admission
+// rows beyond them unclaimed, as the live ledger reads the set; less the
+// listed imports the session replaced; and in their own partitions the
+// forecast blocks the real sets do not already hold as a timed or an
+// untimed element. As in the ledger, every listed import counts even if
+// the count is lower. adm is this turn's snapshot, taken after expire.
+// Beside an engine that cannot prove its saved actions nothing is
+// replaced, as in the ledger.
 func (s *shadow) occupancy(adm firewall.BlockAdmission) admission.SetOccupancy {
 	general, reserved := s.counted(adm)
 	imported := max(adm.Imported, len(adm.Imports)) - s.replacedListed(adm)
-	return admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed, General: imported + adm.Admission + general, Reserved: reserved, NoEviction: adm.Unproven}
+	unknown := max(adm.Admission-s.effects.General-s.effects.Reserved, 0)
+	return admission.SetOccupancy{Limit: adm.Limit, Unclaimed: adm.Unclaimed + unknown, General: imported + s.effects.General + general, Reserved: s.effects.Reserved + reserved, NoEviction: adm.Unproven}
 }
 
 // counted is the forecast blocks of each partition the real sets do not
