@@ -628,7 +628,13 @@ outbox shares; ended history is retired only after its rows are
 acknowledged. Response gaps are recorded in the transaction that causes
 them as coalesced notices, one record per reason, check and action family,
 with a bounded count of examples, a fixed overflow record per kind and a
-fixed Critical summary that no flood can refuse. Records may use only a
+fixed Critical summary that no flood can refuse. An applied block whose
+root is a Critical outbound destination (`c2_connection`) raises a
+Critical partial-containment record, reason `unsupported_containment`
+with outcome `applied`: the input-chain drop stops replies from the
+address, but outbound-only traffic to it still leaves. Its response ran,
+so it is not counted in the Critical summary or the doctor's gap row.
+Records may use only a
 fixed share of the reserve, a key is due for delivery at most once an hour
 and a summary once a minute after acknowledged delivery. While the owner
 previews or forecasts, ledger notices go to findings history only, as

@@ -536,7 +536,8 @@ alone do not keep the warning active. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical
-finding would not have received its response in the last hour. They also
+finding would not have received its response in the last hour; a
+partial-containment notice, whose block ran, does not count. They also
 show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
 lane runs), a legacy hourly count that could not be read, a failed
 inventory read and automatic blocks with an unproven outcome, which hold
@@ -563,7 +564,8 @@ A ledger that cannot start, or admission that stops, raises one Warning
 `auto_response_withheld` alert through the same path as protection queue
 alerts; it follows the notification channel settings but bypasses
 `alerts.max_per_hour`. Ledger notices (withheld responses, exhausted
-capacity and their summaries) describe what the ledger would have done, so
+capacity, partial containment of an outbound destination and their
+summaries) describe what the ledger would have done, so
 they are recorded in findings history as Warnings starting with "Admission
 preview:" and sent to no alert channel; the ledger paces them per notice key
 and summary. A preview is acknowledged only after its history write succeeds.

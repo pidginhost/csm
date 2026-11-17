@@ -24,6 +24,8 @@ func ledgerLookup(check string) (string, admission.Policy, bool) {
 		return check, admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal, Attribution: admission.Attributions(admission.AttributionPeer)}, true
 	case "reputation":
 		return check, admission.Policy{Family: admission.FamilyReputation, Basis: admission.BasisIntel, Attribution: admission.Attributions(admission.AttributionDerived)}, true
+	case "c2_connection":
+		return check, admission.Policy{Family: admission.FamilyNetwork, Basis: admission.BasisCompromise, Attribution: admission.Attributions(admission.AttributionSocketDestination)}, true
 	case "mail_takeover":
 		return check, admission.Policy{Family: admission.FamilyMail, Basis: admission.BasisCompromise, MinSeverity: admission.SeverityCritical,
 			Attribution: admission.Attributions(admission.AttributionPeer)}, true
@@ -33,8 +35,11 @@ func ledgerLookup(check string) (string, admission.Policy, bool) {
 
 // ledgerKind is the kind a fixture producer of check reads its address by.
 func ledgerKind(check string) admission.Attribution {
-	if check == "reputation" {
+	switch check {
+	case "reputation":
 		return admission.AttributionDerived
+	case "c2_connection":
+		return admission.AttributionSocketDestination
 	}
 	return admission.AttributionPeer
 }
@@ -47,6 +52,7 @@ type ledgerFixture struct {
 	reg            *admission.Registry
 	l              *AdmissionLedger
 	ssh, rep, mail *admission.Producer
+	c2             *admission.Producer
 	wall           time.Time
 	since          time.Duration
 	generation     uint32
@@ -54,6 +60,13 @@ type ledgerFixture struct {
 }
 
 func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, *admission.Producer, *admission.Producer) {
+	t.Helper()
+	reg, ssh, rep, mail, _ := ledgerRegistry(t)
+	return reg, ssh, rep, mail
+}
+
+// ledgerRegistry also returns the producer of outbound destinations.
+func ledgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, *admission.Producer, *admission.Producer, *admission.Producer) {
 	t.Helper()
 	reg, err := admission.NewRegistry(ledgerLookup)
 	if err != nil {
@@ -70,6 +83,7 @@ func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, 
 	ssh := register("sshd_log", admission.ObservationLogCursor, "ssh_brute")
 	rep := register("reputation_scan", admission.ObservationScanPass, "reputation")
 	mail := register("mail_log", admission.ObservationLogCursor, "mail_takeover")
+	c2 := register("connection_scan", admission.ObservationScanPass, "c2_connection")
 	// A derived entry wraps roots of the checks its producer lists.
 	if _, regErr := reg.Register(admission.ProducerSpec{ID: "challenge_timeout", Entry: admission.EntryChallengeTimeout, Observation: admission.ObservationEventSeq, Checks: []string{"ssh_brute"}}); regErr != nil {
 		t.Fatal(regErr)
@@ -82,7 +96,7 @@ func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, 
 		}
 	}
 	reg.Seal()
-	return reg, ssh, rep, mail
+	return reg, ssh, rep, mail, c2
 }
 
 func newLedgerFixture(t testing.TB) *ledgerFixture {
@@ -93,7 +107,7 @@ func newLedgerFixture(t testing.TB) *ledgerFixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	f := &ledgerFixture{t: t, db: db, since: time.Hour}
-	f.reg, f.ssh, f.rep, f.mail = newLedgerRegistry(t)
+	f.reg, f.ssh, f.rep, f.mail, f.c2 = ledgerRegistry(t)
 	if f.l, err = OpenAdmissionLedger(db, f.reg); err != nil {
 		t.Fatal(err)
 	}

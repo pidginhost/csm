@@ -56,8 +56,8 @@ func storeNoticeRecord(tx *bolt.Tx, old, r admission.NoticeRecord) error {
 
 // raise records one notice event under key: in its own record, or, when a
 // new key finds no room in the notice share, in its kind's overflow
-// record. A Critical event also counts in the Critical summary. A zero
-// candidate names no example.
+// record. A Critical event also counts in the Critical summary, except a
+// partial containment: its response ran. A zero candidate names no example.
 func (q *queueTx) raise(key admission.NoticeKey, id admission.CandidateID, transitions uint32) error {
 	return q.notify(key, func(r admission.NoticeRecord) (admission.NoticeRecord, error) {
 		return r.Add(q.now, id, transitions)
@@ -99,7 +99,7 @@ func (q *queueTx) notify(key admission.NoticeKey, add func(admission.NoticeRecor
 	if err = storeNoticeRecord(q.tx, r, next); err != nil {
 		return err
 	}
-	if !key.Kind.Critical() {
+	if !key.Kind.Critical() || key.Partial() {
 		return nil
 	}
 	return q.notify(admission.NoticeKey{Kind: admission.NoticeCriticalSummary}, add)
@@ -140,6 +140,25 @@ func noticeCheck(tx *bolt.Tx, c admission.Candidate) (string, error) {
 		}
 	}
 	return check, nil
+}
+
+// partial raises the partial-containment record of applied block work
+// whose root is a Critical destination: the block drops replies from the
+// address, but outbound-only traffic to it still leaves.
+func (q *queueTx) partial(d admission.Disposition, c admission.Candidate, id admission.CandidateID, transitions uint32) error {
+	if d != admission.DispositionApplied {
+		return nil
+	}
+	for _, root := range c.Roots {
+		e, err := loadStoredEvidence(q.tx, root)
+		if err != nil {
+			return corruptRecord(err)
+		}
+		if e.Family().Destination() && e.Severity() == admission.SeverityCritical {
+			return q.raise(admission.PartialContainmentKey(e.Check(), c.Key.Kind.Effect()), id, transitions)
+		}
+	}
+	return nil
 }
 
 // gap raises the notice an event of candidate c raises, if any.
