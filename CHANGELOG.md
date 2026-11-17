@@ -9,6 +9,12 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+## [4.13.1] - 2026-11-18
+
+### Fixed
+
+- Package upgrades, integrity checks and redacted config displays now work when callback secrets are set only in the service environment.
+
 ## [4.13.0] - 2026-11-15
 
 ### Highlights
