@@ -252,6 +252,41 @@ func TestStalwartListNoKeyFile(t *testing.T) {
 	}
 }
 
+func TestStalwartListKeepsRuleOffDuringReads(t *testing.T) {
+	d, _, f, _ := stalwartListDaemon(t, true)
+	f.rule = nil
+	d.stalwartListTick(context.Background(), time.Now())
+	if st := d.stalwart.list.Load(); st == nil || !st.ruleOff {
+		t.Fatalf("state = %+v, want the rule off after the first tick", st)
+	}
+	f.filterHold, f.filterHeld = make(chan struct{}), make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.stalwartListTick(context.Background(), time.Now())
+	}()
+	<-f.filterHeld
+	st := d.stalwart.list.Load()
+	close(f.filterHold)
+	<-done
+	if st == nil || !st.ruleOff || st.m.Weight(netip.MustParseAddr("203.0.113.9")) == 0 {
+		t.Fatalf("state during the next filter read = %+v, want the new map with the rule still off", st)
+	}
+}
+
+func TestStalwartListKeyRemovedForgetsRuleOff(t *testing.T) {
+	d, cfg, f, _ := stalwartListDaemon(t, true)
+	f.rule = nil
+	d.stalwartListTick(context.Background(), time.Now())
+	if err := os.Remove(cfg.Stalwart.APIKeyFile); err != nil {
+		t.Fatal(err)
+	}
+	d.stalwartListTick(context.Background(), time.Now())
+	if st := d.stalwart.list.Load(); st == nil || st.ruleOff {
+		t.Fatalf("state = %+v, want the rule not known off without a key", st)
+	}
+}
+
 func TestStalwartFilterOffFinding(t *testing.T) {
 	for _, tc := range []struct {
 		name           string

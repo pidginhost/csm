@@ -59,7 +59,7 @@ func (d *Daemon) stalwartListTick(ctx context.Context, now time.Time) []alert.Fi
 	st := stalwartListState{m: &m}
 	if s := d.stalwart; s != nil {
 		if previous := s.list.Load(); previous != nil {
-			st.filterOff, st.reloadPending = previous.filterOff, previous.reloadPending
+			st.filterOff, st.ruleOff, st.reloadPending = previous.filterOff, previous.ruleOff, previous.reloadPending
 		}
 	}
 	// Store the map before reading Stalwart so a hung read leaves evidence guarded.
@@ -114,7 +114,7 @@ func stalwartListRead(ctx context.Context, cfg *config.Config, st *stalwartListS
 	// Without a key, setup and doctor report what is missing.
 	if _, err := os.Lstat(cfg.Stalwart.APIKeyFile); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			st.filterOff = false
+			st.filterOff, st.ruleOff = false, false
 			return nil, nil, true
 		}
 		return nil, []alert.Finding{stalwartListFinding(err, now)}, false
