@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,7 +21,7 @@ import (
 	"golang.org/x/term"
 )
 
-const stalwartSetupUsage = "usage: csm stalwart setup [--dry-run] [--password-file PATH] [--url URL] [--account-domain NAME]"
+const stalwartSetupUsage = "usage: csm stalwart setup [--dry-run] [--password-file PATH | --password-stdin] [--url URL] [--account-domain NAME]"
 
 // stalwartSetupDeps is what `csm stalwart setup` reads from the host.
 type stalwartSetupDeps struct {
@@ -32,8 +31,9 @@ type stalwartSetupDeps struct {
 	webUsers   func() []string
 	getenv     func(string) string
 	readFile   func(string) ([]byte, error)
-	// stdin carries the admin login. On a terminal setup asks for it on
-	// prompt and reads the password with readHidden, which does not echo.
+	// stdin gives the password with --password-stdin. On a terminal, setup
+	// asks on prompt for what the environment and flags left out, and reads
+	// the password with readHidden, which does not echo.
 	stdin         io.Reader
 	prompt        io.Writer
 	stdinTerminal func() bool
@@ -81,7 +81,7 @@ func runStalwart() {
 // response account cannot be set up or a write failed, and 2 on a usage,
 // login or host error.
 func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int {
-	var user, password string
+	user, password := deps.getenv("STALWART_USER"), deps.getenv("STALWART_PASSWORD")
 	// keys are the API key in the key file and any key setup creates.
 	var keys []string
 	var output bytes.Buffer
@@ -98,6 +98,7 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	fs.SetOutput(out)
 	dryRun := fs.Bool("dry-run", false, "show what would change and change nothing")
 	passwordFile := fs.String("password-file", "", "read the admin password from the first line of this file")
+	passwordStdin := fs.Bool("password-stdin", false, "read the admin password from the first line of stdin")
 	apiURL := fs.String("url", "", "Stalwart admin API address (default: stalwart.api_url)")
 	accountDomain := fs.String("account-domain", "", "domain for CSM's service account when Stalwart has several")
 	var discard string
@@ -108,6 +109,10 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(out, stalwartSetupUsage)
+		return 2
+	}
+	if *passwordFile != "" && *passwordStdin {
+		fmt.Fprintln(out, "Use --password-file or --password-stdin, not both.")
 		return 2
 	}
 
@@ -138,13 +143,21 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 			return 2
 		}
 	}
-	user, password, err = readStalwartLogin(deps, password)
+	switch {
+	case *passwordStdin:
+		password, err = readStalwartLine(deps.stdin)
+		if user == "" {
+			user = defaultStalwartAdmin
+		}
+	case (user == "" || password == "") && deps.stdinTerminal():
+		user, password, err = promptStalwartLogin(deps, user, password)
+	}
 	if err != nil {
-		fmt.Fprintf(out, "Cannot read the Stalwart admin login from stdin: %v\n", err)
+		fmt.Fprintf(out, "Cannot read the Stalwart admin login: %v\n", err)
 		return 2
 	}
-	if password == "" {
-		fmt.Fprintln(out, "No Stalwart admin password: type it when asked, send it on stdin after the user name, or use --password-file.")
+	if user == "" || password == "" {
+		fmt.Fprintln(out, "Set STALWART_USER to a Stalwart admin, and STALWART_PASSWORD, --password-file or --password-stdin to its password, or run setup on a terminal to be asked.")
 		return 2
 	}
 	// Defense in depth: the client never puts the login in an error, but
@@ -230,48 +243,57 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 	return stalwartSetupExit(plan)
 }
 
-// defaultStalwartAdmin is the user name setup uses when stdin gives none.
+// defaultStalwartAdmin is the user name setup uses when none is given.
 const defaultStalwartAdmin = "admin"
 
-// readStalwartLogin reads the admin user name from stdin, then the password
-// unless the password file gave it. An empty user name means admin. On a
-// terminal it asks for each and does not echo the password; otherwise it
-// reads one line each and prints no prompt.
-func readStalwartLogin(deps stalwartSetupDeps, password string) (string, string, error) {
-	r := bufio.NewReader(deps.stdin)
-	tty := deps.stdinTerminal()
-	if tty {
-		fmt.Fprintf(deps.prompt, "Stalwart admin user [%s]: ", defaultStalwartAdmin)
-	}
-	user, err := readStalwartLine(r)
-	if err != nil {
-		return "", "", err
-	}
-	user = strings.TrimSpace(user)
+// promptStalwartLogin asks on a terminal for the user name and password the
+// environment and flags left out. Enter means admin; the password is not
+// echoed.
+func promptStalwartLogin(deps stalwartSetupDeps, user, password string) (string, string, error) {
 	if user == "" {
-		user = defaultStalwartAdmin
+		fmt.Fprintf(deps.prompt, "Stalwart admin user [%s]: ", defaultStalwartAdmin)
+		line, err := readStalwartLine(deps.stdin)
+		if err != nil {
+			return "", "", err
+		}
+		if user = strings.TrimSpace(line); user == "" {
+			user = defaultStalwartAdmin
+		}
 	}
-	if password != "" {
-		return user, password, nil
+	if password == "" {
+		_, _ = fmt.Fprint(deps.prompt, "Stalwart admin password: ")
+		secret, err := deps.readHidden()
+		fmt.Fprintln(deps.prompt)
+		if err != nil {
+			return "", "", err
+		}
+		password = string(secret)
 	}
-	if !tty {
-		password, err = readStalwartLine(r)
-		return user, password, err
-	}
-	fmt.Fprint(deps.prompt, "Stalwart admin password: ")
-	secret, err := deps.readHidden()
-	fmt.Fprintln(deps.prompt)
-	return user, string(secret), err
+	return user, password, nil
 }
 
-// readStalwartLine reads one line without its line ending. End of input is
-// an empty line, not an error.
-func readStalwartLine(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+// readStalwartLine reads one line without its line ending. It reads a byte
+// at a time so a password pasted after the user name stays for readHidden
+// instead of sitting in a buffer. End of input ends the line.
+func readStalwartLine(r io.Reader) (string, error) {
+	var line []byte
+	b := make([]byte, 1)
+	for {
+		n, err := r.Read(b)
+		if n == 1 {
+			if b[0] == '\n' {
+				break
+			}
+			line = append(line, b[0])
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return strings.TrimRight(string(line), "\r"), nil
 }
 
 // stalwartKeyAccount reads CSM's key file and asks Stalwart which account the

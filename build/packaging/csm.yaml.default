@@ -287,7 +287,7 @@ stalwart:
   log_dir: /var/log/stalwart
   log_prefix: stalwart.log
   ports: []
-  api_url: http://127.0.0.1:8080   # admin API for csm stalwart setup; setup asks for the login on stdin
+  api_url: http://127.0.0.1:8080   # admin API for csm stalwart setup; the login comes from the environment
   api_key_file: /etc/csm/stalwart-api.key   # API key CSM acts on Stalwart with; root-owned, no group or other access
 
 # Detection knobs. Each subsection controls a separate detector.

@@ -9,12 +9,9 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
-### Changed
-
-- `csm stalwart setup` asks for the Stalwart admin login on stdin; the user name defaults to `admin` and the password is not echoed. It no longer reads `STALWART_USER` and `STALWART_PASSWORD`, which other local processes could see; `--password-file` still works.
-
 ### Added
 
+- `csm stalwart setup` asks for a missing admin login on a terminal without echoing the password, and `--password-stdin` takes the password from stdin.
 - Admission status now lists which automatic IP block sources the host's settings let it run.
 
 ### Changed

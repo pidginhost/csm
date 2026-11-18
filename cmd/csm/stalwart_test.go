@@ -216,14 +216,16 @@ func (f *setupFakeAPI) prepare(done bool) {
 }
 
 type setupHarness struct {
-	deps    stalwartSetupDeps
-	api     *setupFakeAPI
-	env     map[string]string
-	stdin   string
-	gotURL  string
-	gotUser string
-	gotPass string
-	cfg     *config.Config
+	deps   stalwartSetupDeps
+	api    *setupFakeAPI
+	env    map[string]string
+	gotURL string
+	// stdin is what setup can read; stdinRead counts the reads it made.
+	stdin     *strings.Reader
+	stdinRead int
+	gotUser   string
+	gotPass   string
+	cfg       *config.Config
 
 	// keyAccount and keyErr answer the key probe; gotKey is the key it got.
 	keyAccount string
@@ -246,9 +248,8 @@ func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
 func newSetupHarness(t *testing.T) *setupHarness {
 	t.Helper()
 	h := &setupHarness{
-		api:   &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, spam: stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5}},
-		env:   map[string]string{"STALWART_USER": "admin", "STALWART_PASSWORD": setupTestPassword},
-		stdin: "admin\n" + setupTestPassword + "\n",
+		api: &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, spam: stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5}},
+		env: map[string]string{"STALWART_USER": "admin", "STALWART_PASSWORD": setupTestPassword},
 	}
 	cfg := &config.Config{}
 	cfg.AutoResponse.BlockExpiry = "12h"
@@ -263,7 +264,7 @@ func newSetupHarness(t *testing.T) *setupHarness {
 		readFile:      os.ReadFile,
 		prompt:        io.Discard,
 		stdinTerminal: func() bool { return false },
-		readHidden:    func() ([]byte, error) { return nil, errors.New("not a terminal") },
+		readHidden:    func() ([]byte, error) { return nil, errors.New("no terminal") },
 		checkListener: func(string) error { return nil },
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			h.gotURL, h.gotUser, h.gotPass = url, user, password
@@ -280,7 +281,13 @@ func newSetupHarness(t *testing.T) *setupHarness {
 
 func (h *setupHarness) run(args ...string) (int, string) {
 	var out bytes.Buffer
-	h.deps.stdin = strings.NewReader(h.stdin)
+	if h.stdin == nil {
+		h.stdin = strings.NewReader("")
+	}
+	h.deps.stdin = readerFunc(func(p []byte) (int, error) {
+		h.stdinRead++
+		return h.stdin.Read(p)
+	})
 	code := runStalwartSetup(args, h.deps, &out)
 	return code, out.String()
 }
@@ -299,41 +306,109 @@ func TestStalwartSetupRefusesNonStalwartHost(t *testing.T) {
 
 func TestStalwartSetupNeedsLogin(t *testing.T) {
 	h := newSetupHarness(t)
-	h.stdin = ""
+	h.env = map[string]string{}
 	code, out := h.run()
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}
-	for _, want := range []string{"stdin", "--password-file"} {
+	for _, want := range []string{"STALWART_USER", "STALWART_PASSWORD", "--password-file", "--password-stdin"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q does not name %s", out, want)
 		}
 	}
-	if h.gotUser != "" {
-		t.Fatal("the API was contacted without a password")
+	if h.stdinRead != 0 {
+		t.Fatal("setup read stdin without a terminal or --password-stdin")
 	}
 }
 
-func TestStalwartSetupIgnoresLoginEnvironment(t *testing.T) {
-	h := newSetupHarness(t)
-	h.stdin = ""
-	if code, _ := h.run(); code != 2 || h.gotUser != "" {
-		t.Fatalf("code %d, user %q: setup took the login from the environment", code, h.gotUser)
-	}
-}
+type readerFunc func([]byte) (int, error)
 
-func TestStalwartSetupReadsLoginFromStdin(t *testing.T) {
-	for name, tc := range map[string]struct{ stdin, user, pass string }{
-		"named user":   {"root-admin\n" + setupTestPassword + "\n", "root-admin", setupTestPassword},
-		"default user": {"\n" + setupTestPassword + "\n", "admin", setupTestPassword},
-		"crlf no eol":  {"  ops \r\n" + setupTestPassword, "ops", setupTestPassword},
-		"keeps spaces": {"admin\n pw with spaces \n", "admin", " pw with spaces "},
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+func TestStalwartSetupGivenLoginNeverReadsStdin(t *testing.T) {
+	file := t.TempDir() + "/pw"
+	if err := os.WriteFile(file, []byte(setupTestPassword+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		env  map[string]string
+		args []string
+	}{
+		"environment":            {map[string]string{"STALWART_USER": "ops", "STALWART_PASSWORD": setupTestPassword}, nil},
+		"user and password file": {map[string]string{"STALWART_USER": "ops"}, []string{"--password-file", file}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newSetupHarness(t)
 			h.api.userRole = true
-			h.stdin = tc.stdin
-			if code, out := h.run("--dry-run"); code != 0 {
+			h.env = tc.env
+			h.stdin = strings.NewReader("other\nother\n")
+			h.deps.stdinTerminal = func() bool { return true }
+			if code, out := h.run(append([]string{"--dry-run"}, tc.args...)...); code != 0 {
+				t.Fatalf("code %d, out %q", code, out)
+			}
+			if h.gotUser != "ops" || h.gotPass != setupTestPassword || h.stdinRead != 0 {
+				t.Fatalf("login %q/%q after %d stdin reads", h.gotUser, h.gotPass, h.stdinRead)
+			}
+		})
+	}
+}
+
+func TestStalwartSetupPromptsOnTerminal(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env             map[string]string
+		stdin, user     string
+		userAsked, rest string
+	}{
+		"default user":  {map[string]string{}, "\n", "admin", "user [admin]: ", ""},
+		"typed user":    {map[string]string{}, " ops \r\n", "ops", "user [admin]: ", ""},
+		"paste stays":   {map[string]string{}, "ops\nleft\n", "ops", "user [admin]: ", "left\n"},
+		"user from env": {map[string]string{"STALWART_USER": "ops"}, "", "ops", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newSetupHarness(t)
+			h.api.userRole = true
+			h.env = tc.env
+			h.stdin = strings.NewReader(tc.stdin)
+			var prompt bytes.Buffer
+			h.deps.prompt = &prompt
+			h.deps.stdinTerminal = func() bool { return true }
+			h.deps.readHidden = func() ([]byte, error) { return []byte(setupTestPassword), nil }
+			code, out := h.run("--dry-run")
+			if code != 0 {
+				t.Fatalf("code %d, out %q", code, out)
+			}
+			if h.gotUser != tc.user || h.gotPass != setupTestPassword {
+				t.Fatalf("login %q/%q, want %q", h.gotUser, h.gotPass, tc.user)
+			}
+			if got := strings.Contains(prompt.String(), "user ["); got != (tc.userAsked != "") {
+				t.Fatalf("prompt %q: user asked = %v", prompt.String(), got)
+			}
+			if !strings.Contains(prompt.String(), "password: ") || strings.Contains(prompt.String(), setupTestPassword) {
+				t.Fatalf("prompt %q", prompt.String())
+			}
+			if rest, _ := io.ReadAll(h.stdin); string(rest) != tc.rest {
+				t.Fatalf("setup consumed past the user line; left %q, want %q", rest, tc.rest)
+			}
+		})
+	}
+}
+
+func TestStalwartSetupPasswordStdin(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env               map[string]string
+		stdin, user, pass string
+	}{
+		"default user":   {map[string]string{}, setupTestPassword + "\n", "admin", setupTestPassword},
+		"user from env":  {map[string]string{"STALWART_USER": "ops"}, setupTestPassword, "ops", setupTestPassword},
+		"flag beats env": {map[string]string{"STALWART_PASSWORD": "env-pw"}, setupTestPassword + "\r\n", "admin", setupTestPassword},
+		"keeps spaces":   {map[string]string{}, " pw with spaces \n", "admin", " pw with spaces "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newSetupHarness(t)
+			h.api.userRole = true
+			h.env = tc.env
+			h.stdin = strings.NewReader(tc.stdin)
+			if code, out := h.run("--dry-run", "--password-stdin"); code != 0 {
 				t.Fatalf("code %d, out %q", code, out)
 			}
 			if h.gotUser != tc.user || h.gotPass != tc.pass {
@@ -341,55 +416,26 @@ func TestStalwartSetupReadsLoginFromStdin(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestStalwartSetupPromptsOnTerminal(t *testing.T) {
 	h := newSetupHarness(t)
-	h.api.userRole = true
-	h.stdin = "\n"
-	var prompt bytes.Buffer
-	h.deps.prompt = &prompt
-	h.deps.stdinTerminal = func() bool { return true }
-	h.deps.readHidden = func() ([]byte, error) { return []byte(setupTestPassword), nil }
-	code, out := h.run("--dry-run")
-	if code != 0 {
-		t.Fatalf("code %d, out %q", code, out)
-	}
-	if h.gotUser != "admin" || h.gotPass != setupTestPassword {
-		t.Fatalf("login %q/%q", h.gotUser, h.gotPass)
-	}
-	for _, want := range []string{"user [admin]: ", "password: "} {
-		if !strings.Contains(prompt.String(), want) {
-			t.Fatalf("prompt %q lacks %q", prompt.String(), want)
-		}
-	}
-	if strings.Contains(prompt.String(), setupTestPassword) || strings.Contains(out, "[admin]") {
-		t.Fatalf("prompt %q / out %q", prompt.String(), out)
-	}
-}
-
-func TestStalwartSetupPasswordFileReadsOnlyUser(t *testing.T) {
-	file := t.TempDir() + "/pw"
-	if err := os.WriteFile(file, []byte(setupTestPassword+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h := newSetupHarness(t)
-	h.api.userRole = true
-	h.stdin = ""
-	h.deps.readHidden = func() ([]byte, error) { t.Fatal("asked for a password the file gave"); return nil, nil }
-	if code, out := h.run("--dry-run", "--password-file", file); code != 0 {
-		t.Fatalf("code %d, out %q", code, out)
-	}
-	if h.gotUser != "admin" || h.gotPass != setupTestPassword {
-		t.Fatalf("login %q/%q", h.gotUser, h.gotPass)
-	}
-	empty := t.TempDir() + "/empty"
-	if err := os.WriteFile(empty, []byte("\n"), 0o600); err != nil {
-		t.Fatal(err)
+	h.env = map[string]string{}
+	if code, _ := h.run("--password-stdin"); code != 2 || h.gotUser != "" {
+		t.Fatalf("empty stdin: code %d, user %q", code, h.gotUser)
 	}
 	h = newSetupHarness(t)
-	if code, _ := h.run("--password-file", empty); code != 2 || h.gotUser != "" {
-		t.Fatalf("empty password file: code %d, user %q", code, h.gotUser)
+	if code, out := h.run("--password-stdin", "--password-file", "/nonexistent"); code != 2 || h.gotUser != "" || !strings.Contains(out, "not both") {
+		t.Fatalf("both flags: code %d, out %q", code, out)
+	}
+}
+
+func TestStalwartSetupRefusesEmptyPasswordFile(t *testing.T) {
+	file := t.TempDir() + "/empty"
+	if err := os.WriteFile(file, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := newSetupHarness(t)
+	code, out := h.run("--password-file", file)
+	if code != 2 || h.gotUser != "" || !strings.Contains(out, "empty first line") {
+		t.Fatalf("code %d, out %q", code, out)
 	}
 }
 
@@ -407,7 +453,7 @@ func TestStalwartSetupNeverPrintsPassword(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newSetupHarness(t)
-			h.stdin = "admin\n"
+			h.env = map[string]string{"STALWART_USER": "admin"}
 			mutate(h)
 			_, out := h.run("--password-file", file)
 			if h.gotPass != setupTestPassword {
@@ -541,7 +587,7 @@ func TestStalwartSetupRedactsPlanAndLogin(t *testing.T) {
 			h := newSetupHarness(t)
 			h.api.http.ClientIPSource = setupTestPassword
 			if mode == "login" {
-				h.stdin = setupTestPassword + "\n" + setupTestPassword + "\n"
+				h.env["STALWART_USER"] = setupTestPassword
 				h.api.readErr = stalwartapi.ErrUnauthorized
 			}
 			args := []string{}
