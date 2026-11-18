@@ -13,7 +13,6 @@ import (
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
-	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -94,8 +93,7 @@ func (b stalwartMailBackend) suspend(c mailboxCompromise) (store.MailboxSuspensi
 		return store.MailboxSuspension{}, errMailAlreadyRestricted
 	}
 	err = client.DisableSignIn(ctx, acct)
-	var me *stalwartapi.MethodError
-	if errors.As(err, &me) && me.Type == "forbidden" {
+	if stalwartMethodForbidden(err) {
 		// Stalwart refuses a key that lacks one of the account's own
 		// permissions, as with a custom admin role.
 		err = fmt.Errorf("the CSM key is not allowed to change %s; change its password in Stalwart", c.Subject)

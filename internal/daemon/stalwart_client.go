@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -45,4 +46,11 @@ var stalwartClient = func(cfg *config.Config) (stalwartAPI, error) {
 func stalwartKeyPresent(cfg *config.Config) bool {
 	_, err := os.Lstat(cfg.Stalwart.APIKeyFile)
 	return err == nil
+}
+
+// stalwartMethodForbidden reports a forbidden JMAP method error, which is how
+// Stalwart refuses a key that lacks a permission.
+func stalwartMethodForbidden(err error) bool {
+	var me *stalwartapi.MethodError
+	return errors.As(err, &me) && me.Type == "forbidden"
 }

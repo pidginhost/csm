@@ -171,15 +171,49 @@ func TestStalwartListReloadsAfterPartialWrite(t *testing.T) {
 	}
 }
 
+// A key with the old role is refused by HTTP status or, as Stalwart does
+// for a missing permission, by a forbidden method error.
 func TestStalwartListForbiddenFinding(t *testing.T) {
-	d, _, f, _ := stalwartListDaemon(t, true)
-	f.keysErr = fmt.Errorf("stalwart /jmap: %w", stalwartapi.ErrForbidden)
-	findings := d.stalwartListTick(context.Background(), time.Now())
-	if len(findings) != 1 || findings[0].Check != stalwartCheckAddressList || !strings.Contains(findings[0].Message, "run csm stalwart setup") {
-		t.Fatalf("findings = %+v, want one %s asking to run setup", findings, stalwartCheckAddressList)
+	for _, tc := range []struct {
+		name             string
+		keysErr, ruleErr error
+	}{
+		{"http keys", fmt.Errorf("stalwart /jmap: %w", stalwartapi.ErrForbidden), nil},
+		{"method keys", &stalwartapi.MethodError{Method: "x:MemoryLookupKey/query", Type: "forbidden"}, nil},
+		{"method rule", nil, &stalwartapi.MethodError{Method: "x:SpamRule/query", Type: "forbidden"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, f, _ := stalwartListDaemon(t, true)
+			f.keysErr, f.ruleErr = tc.keysErr, tc.ruleErr
+			findings := d.stalwartListTick(context.Background(), time.Now())
+			if len(findings) != 1 || findings[0].Check != stalwartCheckAddressList || !strings.Contains(findings[0].Message, "run csm stalwart setup") {
+				t.Fatalf("findings = %+v, want one %s asking to run setup", findings, stalwartCheckAddressList)
+			}
+			if len(f.keyCreates) != 0 || len(f.keyDeletes) != 0 || f.lookupReloads != 0 {
+				t.Fatalf("creates=%v deletes=%v reloads=%d, want no writes", f.keyCreates, f.keyDeletes, f.lookupReloads)
+			}
+			if st := d.stalwart.list.Load(); st == nil || st.ruleOff || st.m.Weight(netip.MustParseAddr("203.0.113.9")) == 0 {
+				t.Fatalf("state = %+v, want the built map with the rule not known off", st)
+			}
+		})
 	}
-	if len(f.keyCreates) != 0 || len(f.keyDeletes) != 0 || f.lookupReloads != 0 {
-		t.Fatalf("creates=%v deletes=%v reloads=%d, want no writes", f.keyCreates, f.keyDeletes, f.lookupReloads)
+}
+
+// The built map guards evidence while Stalwart has not answered yet.
+func TestStalwartListStoresMapBeforeReads(t *testing.T) {
+	d, _, f, _ := stalwartListDaemon(t, true)
+	f.filterHold, f.filterHeld = make(chan struct{}), make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.stalwartListTick(context.Background(), time.Now())
+	}()
+	<-f.filterHeld
+	st := d.stalwart.list.Load()
+	close(f.filterHold)
+	<-done
+	if st == nil || st.ruleOff || st.filterOff || st.m.Weight(netip.MustParseAddr("203.0.113.9")) == 0 {
+		t.Fatalf("state during the filter read = %+v, want the built map with nothing known off", st)
 	}
 }
 

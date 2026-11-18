@@ -63,15 +63,22 @@ type fakeStalwart struct {
 	spamOff, stageOff bool
 	rule              *stalwartapi.SpamRule
 	keys              map[string][]stalwartapi.LookupKey
-	keysErr           error
-	createErr         error
-	keyCreates        map[string][]string
-	keyDeletes        []string
-	lookupReloads     int
-	nextKeyID         int
+	keysErr, ruleErr  error
+	// filterHold, when set, keeps SpamSettings waiting until it is closed;
+	// filterHeld is signalled as the read starts.
+	filterHold, filterHeld chan struct{}
+	createErr              error
+	keyCreates             map[string][]string
+	keyDeletes             []string
+	lookupReloads          int
+	nextKeyID              int
 }
 
 func (f *fakeStalwart) SpamSettings(context.Context) (stalwartapi.SpamSettings, error) {
+	if f.filterHeld != nil {
+		f.filterHeld <- struct{}{}
+		<-f.filterHold
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return stalwartapi.SpamSettings{Enabled: !f.spamOff}, nil
@@ -86,6 +93,9 @@ func (f *fakeStalwart) SpamFilterStageOff(context.Context) (bool, error) {
 func (f *fakeStalwart) SpamRule(_ context.Context, name string) (stalwartapi.SpamRule, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.ruleErr != nil {
+		return stalwartapi.SpamRule{}, false, f.ruleErr
+	}
 	if f.rule == nil || name != "CSM_IP" {
 		return stalwartapi.SpamRule{}, false, nil
 	}

@@ -56,11 +56,11 @@ func (d *Daemon) startStalwartAddressList() {
 func (d *Daemon) stalwartListTick(ctx context.Context, now time.Time) []alert.Finding {
 	cfg := d.currentCfg()
 	m := ipmap.Build(ipmapSources(now, d.antispamInfraIPs(cfg)))
+	// Store the map before reading Stalwart so a hung read leaves evidence guarded.
+	d.storeStalwartList(&stalwartListState{m: &m})
 	st := &stalwartListState{m: &m}
 	api, findings := stalwartListRead(ctx, cfg, st, now)
-	if s := d.stalwart; s != nil {
-		s.list.Store(st)
-	}
+	d.storeStalwartList(st)
 	// Observe mode reads but leaves Stalwart's lookup lists as they are.
 	if api != nil && !cfg.ObserveMode() {
 		want := m.StalwartKeys()
@@ -80,10 +80,16 @@ func (d *Daemon) stalwartListTick(ctx context.Context, now time.Time) []alert.Fi
 	return findings
 }
 
+func (d *Daemon) storeStalwartList(st *stalwartListState) {
+	if s := d.stalwart; s != nil {
+		s.list.Store(st)
+	}
+}
+
 // stalwartListRead fills st from Stalwart. It returns the client only when
 // the rule was read, so the keys can be synced.
 func stalwartListRead(ctx context.Context, cfg *config.Config, st *stalwartListState, now time.Time) (stalwartAPI, []alert.Finding) {
-	// Without a key setup and doctor report what is missing.
+	// Without a key, setup and doctor report what is missing.
 	if !stalwartKeyPresent(cfg) {
 		return nil, nil
 	}
@@ -121,7 +127,7 @@ func stalwartFilterOff(ctx context.Context, api stalwartAPI) bool {
 
 func stalwartListFinding(err error, now time.Time) alert.Finding {
 	msg := "CSM cannot keep its address list in Stalwart up to date"
-	if errors.Is(err, stalwartapi.ErrForbidden) {
+	if errors.Is(err, stalwartapi.ErrForbidden) || stalwartMethodForbidden(err) {
 		msg = "Stalwart refused CSM's key access to the address list; run csm stalwart setup"
 	}
 	return alert.Finding{
@@ -177,7 +183,9 @@ func syncStalwartKeys(ctx context.Context, api stalwartAPI, want map[string][]st
 	if !changed {
 		return false, err
 	}
-	csmlog.Info("stalwart address list updated", "added", added, "removed", removed)
+	if added+removed > 0 {
+		csmlog.Info("stalwart address list updated", "added", added, "removed", removed)
+	}
 	// Reload even after a failed write so the loaded list matches the stored keys.
 	var reloadErr error
 	for range 2 {
