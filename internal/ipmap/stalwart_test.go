@@ -2,7 +2,7 @@ package ipmap
 
 import (
 	"slices"
-	"strings"
+	"strconv"
 	"testing"
 )
 
@@ -111,20 +111,23 @@ func TestStalwartKeysNestedStronger(t *testing.T) {
 
 func TestStalwartKeysWidestExpansion(t *testing.T) {
 	m := Build(Sources{Entries: map[string][]string{
-		Drop.Name: {"203.0.0.0/9", "2001:db8:0:8::/61"},
+		Drop.Name:    {"198.18.0.0/17", "2001:db8:0:8::/61"},
+		Blocked.Name: {"192.0.2.0/25"},
 	}})
 	keys := m.StalwartKeys()
-	v4 := keys["csm-ip-drop"]
-	if len(v4) != 128 {
-		t.Fatalf("/9 gave %d keys, want 128", len(v4))
+	globs := map[string]bool{}
+	for n := range 128 {
+		globs["198.18."+strconv.Itoa(n)+".*"] = true
 	}
-	for i, k := range v4 {
-		if !strings.HasPrefix(k, "203.") || !strings.HasSuffix(k, ".*") || strings.Count(k, ".") != 2 {
-			t.Fatalf("/9 key %d = %q, want 203.b.*", i, k)
-		}
+	if v4 := keys["csm-ip-drop"]; len(v4) != 128 || !allIn(v4, globs) {
+		t.Errorf("/17 gave %d keys, want 198.18.N.* for N 0..127: %v", len(v4), v4)
 	}
-	if v4[0] != "203.0.*" || !slices.Contains(v4, "203.127.*") || slices.Contains(v4, "203.128.*") {
-		t.Errorf("/9 keys do not cover 203.0 to 203.127: first %q", v4[0])
+	exact := map[string]bool{}
+	for n := range 128 {
+		exact["192.0.2."+strconv.Itoa(n)] = true
+	}
+	if v4 := keys["csm-ip-blocked"]; len(v4) != 128 || !allIn(v4, exact) {
+		t.Errorf("/25 gave %d keys, want 192.0.2.0 to 192.0.2.127 with no glob: %v", len(v4), v4)
 	}
 	v6 := keys["csm-ip6-drop"]
 	if len(v6) != 8 {
@@ -133,4 +136,16 @@ func TestStalwartKeysWidestExpansion(t *testing.T) {
 	if v6[0] != "*.8.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2" || v6[7] != "*.f.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2" {
 		t.Errorf("/61 keys = %v", v6)
 	}
+}
+
+// allIn reports whether every key is in want, each at most once.
+func allIn(keys []string, want map[string]bool) bool {
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if !want[k] || seen[k] {
+			return false
+		}
+		seen[k] = true
+	}
+	return true
 }
