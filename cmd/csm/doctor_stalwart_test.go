@@ -616,11 +616,18 @@ func TestStalwartAddressListCheckMatched(t *testing.T) {
 	}
 }
 
+// The daemon restores the list only on its next run after setup, so the fix
+// must send the operator back to doctor and to the daemon's finding first.
+const stalwartAddressListFix = "the CSM daemon writes the list within 10 minutes of csm stalwart setup, so run csm doctor again after that; if it still warns, check the daemon's stalwart_address_list finding and run csm stalwart setup only when that finding says to"
+
 func TestStalwartAddressListCheckMissing(t *testing.T) {
 	for _, tags := range [][]string{nil, {"CSM_IP_CANARY_X", "CSM_IP_DROP", "RDNS_NONE"}} {
 		c := stalwartAddressListCheck(stalwartapi.SpamProbeResult{Tags: tags})
 		if c.Name != "stalwart address list match" || c.Status != "warn" {
 			t.Fatalf("tags %q: check = %+v, want warn", tags, c)
+		}
+		if c.Fix != stalwartAddressListFix {
+			t.Fatalf("tags %q: fix = %q, want %q", tags, c.Fix, stalwartAddressListFix)
 		}
 		for _, want := range []string{"CSM daemon", "stalwart_address_list", "csm stalwart setup"} {
 			if !strings.Contains(c.Fix, want) {

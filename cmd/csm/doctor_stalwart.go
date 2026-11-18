@@ -425,7 +425,7 @@ func stalwartAddressListCheck(res stalwartapi.SpamProbeResult) DoctorCheck {
 	}
 	return DoctorCheck{Name: "stalwart address list match", Status: "warn",
 		Message: "Stalwart did not match CSM's test sender to CSM's address list, so listed senders get no extra spam score",
-		Fix:     "check the CSM daemon's stalwart_address_list finding, then run csm stalwart setup"}
+		Fix:     "the CSM daemon writes the list within 10 minutes of csm stalwart setup, so run csm doctor again after that; if it still warns, check the daemon's stalwart_address_list finding and run csm stalwart setup only when that finding says to"}
 }
 
 // stalwartDiagnosticText escapes terminal controls and bounds server text.
