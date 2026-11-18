@@ -570,7 +570,7 @@ The finding is `email_compromised_account`. Four signals raise it:
 
 Each bar adapts to the mailbox's own prior maximum with a fixed minimum, so a shared office mailbox or a travelling owner is judged against their own habit rather than a global number. A country listed in `suppressions.trusted_countries` is never treated as new. A mailbox needs established prior activity before a new country counts. A newly seen country remains relevant if unusual sending develops later in the same UTC day. Repeated findings are suppressed during a cooldown, while escalation from High to Critical remains possible.
 
-Webmail hands its mail to Exim over loopback, so a loopback send is placed in the country of the mailbox's webmail login from the last two hours. Without a recent webmail login it has no country.
+CSM uses the time in the Exim record to place a loopback send. It uses the country of the mailbox's most recent webmail login only if that login preceded the send and was recent enough to locate it. An unlocated login clears the previous location.
 
 Recipient fan-out counts distinct envelope recipients of individually addressed messages; bulk announcements do not contribute. Quoted addresses remain single recipients. Records with ambiguous recipient metadata do not contribute recipient evidence, but verified source evidence still counts.
 
@@ -584,13 +584,13 @@ A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, ea
 
 The signs cover logins from new countries, forged sender domains, bulk recipients, external redirects, and outbound reputation deferrals. Two new countries seen close together carry more weight. A redirect created soon after a foreign login also carries more weight.
 
-A login from a new country is an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
+A login from a new country is an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail, IMAP and POP3 logins share the same history and use the login time in the log. Sessions opened by the panel or a reseller do not locate the mailbox owner. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
 
 A mail filter or Sieve script that sends a mailbox's mail to an outside address keeps its own `email_filter_exfil` finding and is also a sign, dated by the script's file time. The incident finding names the script and its target; CSM leaves the script in place as evidence, so remove it after review.
 
-When large providers refuse or defer this server's mail because of an address's reputation, the address is an `email_outbound_reputation` finding at most once a day, naming the authenticated mailbox that sent most of the refused mail. That mailbox gets the sign. The address alone never sends an alert.
+When large providers refuse or defer this server's mail because of an address's reputation, the address is an `email_outbound_reputation` finding at most once a day, naming the authenticated mailbox that sent most of the refused mail. A tie or incomplete counts leave the finding at address level. If another mailbox leads a later burst, its ledger records that evidence even after the daily notice.
 
-A mailing is an `email_bulk_recipients` finding the first time the ledger records it. An authenticated send whose envelope sender is a domain the login's hosting account does not own is an `email_forged_sender` finding the first time the ledger records that domain. The account's own domains, aliases and subdomains never count.
+A mailing is an `email_bulk_recipients` finding the first time the ledger records it. An authenticated send whose envelope sender is a domain the login's hosting account does not own is an `email_forged_sender` finding the first time the ledger records that domain. A subdomain follows its closest mapped parent, including aliases and subdomains delegated to another hosting account.
 
 Each kind of sign counts once, however often it repeats. Mailboxes in `email_protection.high_volume_senders` send mailings by design, so forged sender domains and bulk recipients do not count for them. Signs expire a week after their last sighting. The ledger groups older details when many distinct values appear.
 

@@ -32,6 +32,12 @@ func mailFilterEvidence(cfg *config.Config, findings []alert.Finding) []alert.Fi
 		var since time.Time
 		if info, err := os.Lstat(f.FilePath); err == nil {
 			since = info.ModTime()
+			// An active link can predate the rule written through it.
+			if info.Mode()&os.ModeSymlink != 0 {
+				if target, err := os.Stat(f.FilePath); err == nil {
+					since = maxTime(since, target.ModTime())
+				}
+			}
 		}
 		out = append(out, observeMailboxSignal(cfg, f.Mailbox, mailboxSignal{
 			kind: signalRedirect, key: dest, at: at, since: since,

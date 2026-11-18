@@ -446,6 +446,7 @@ func finishMailboxRelease(db *store.DB, rec store.MailboxSuspension, actor strin
 	if err := db.MarkMailboxSuspensionReleased(rec.ID, now, actor); err != nil {
 		return time.Time{}, err
 	}
+	bulkRecipientWindows.Delete(store.MailboxEvidenceKey(rec.Subject))
 	if !strings.Contains(rec.Subject, "@") && strings.Contains(rec.Subject, ".") {
 		// The spam-outbreak governor held this domain; restart its dedup
 		// window so the same blast does not hold it again at once.

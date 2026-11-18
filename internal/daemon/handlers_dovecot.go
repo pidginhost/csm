@@ -46,91 +46,71 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 	if user == "" || ip == "" {
 		return nil
 	}
-	return observeMailboxLoginGeo(cfg, user, ip, false)
+	return observeMailboxLoginGeo(cfg, user, ip, customerLoginTime(line, time.Now()), false)
 }
 
 // webmailLogin reads a webmail login from a session_log line. A session a
-// panel opened through the API is not a login the user made.
-func webmailLogin(line string) (user, ip string, ok bool) {
+// reseller opened or the panel created through the API does not locate
+// the mailbox owner.
+func webmailLogin(line string) (user, ip string, at time.Time, ok bool) {
 	r, ok := checks.ParseSessionRecord(line)
-	if !ok || r.Service != "webmaild" || r.Event != "NEW" || r.CreatedByAPI() {
-		return "", "", false
+	if !ok || r.Service != "webmaild" || r.Event != "NEW" || r.CreatedByAPI() || r.Attr("possessed") == "1" {
+		return "", "", time.Time{}, false
 	}
 	addr, ok := r.ClientAddr()
 	if !ok {
-		return "", "", false
+		return "", "", time.Time{}, false
 	}
-	return r.Account, addr.String(), true
+	return r.Account, addr.String(), r.At, true
 }
 
 // observeMailboxLoginGeo records a mailbox login's country. A country new
 // for the mailbox is compromise evidence and a summary-class
 // email_suspicious_geo finding. A webmail login is also kept as the
 // mailbox's last one, so the loopback sends webmail makes can be placed.
-func observeMailboxLoginGeo(cfg *config.Config, user, ip string, webmail bool) []alert.Finding {
-	// Skip private/loopback IPs
-	if isPrivateOrLoopback(ip) {
+func observeMailboxLoginGeo(cfg *config.Config, user, ip string, at time.Time, webmail bool) []alert.Finding {
+	db := store.Global()
+	if db == nil {
 		return nil
 	}
-
-	// Skip infra IPs
-	if isInfraIPDaemon(ip, cfg.InfraIPs) {
-		return nil
+	var info geoip.Info
+	if !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
+		info = geoLookup(ip)
 	}
-
-	info := geoLookup(ip)
 	country := info.Country
-	if country == "" {
+	if country == "" && !webmail {
 		return nil
 	}
-
-	// A trusted country suppresses the alert, not the login: the logins from
-	// home are what carry a mailbox past the login floor and teach its
-	// baseline. Returning before the history update left every mailbox whose
-	// owner lives in a trusted country stuck at zero logins, so its first
-	// foreign login was recorded as a known country and never alerted.
+	now := time.Now()
+	if at.After(now) {
+		at = now
+	}
+	if at.IsZero() {
+		at, country = now, ""
+	}
 	trusted := countryTrusted(country, cfg.Suppressions.TrustedCountries)
-
-	// Load history from bbolt
-	boltDB := store.Global()
-	if boltDB == nil {
+	var novel bool
+	result, err := db.UpdateGeoLogin(user, now, geoAlertCooldownH*time.Hour, func(h *store.GeoHistory) bool {
+		if country != "" {
+			h.Countries = pruneOldCountries(h.Countries, at.Unix(), geoHistoryMaxAge)
+			seenAt, known := h.Countries[country]
+			h.Countries[country] = max(seenAt, at.Unix())
+			h.LoginCount++
+			novel = !trusted && !known && h.LoginCount >= geoMinLoginCount
+		}
+		// A newer unlocated session invalidates the last webmail origin.
+		if webmail && (h.Webmail == nil || !at.Before(h.Webmail.At)) {
+			h.Webmail = &store.WebmailLogin{IP: ip, Country: country, At: at, New: novel}
+		}
+		return novel
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: failed to record geo login for %s: %v\n", ts(), user, err)
 		return nil
 	}
-
-	at := time.Now()
-	now := at.Unix()
-
-	history, _ := boltDB.GetGeoHistory(user)
-	if history.Countries == nil {
-		history.Countries = make(map[string]int64)
-	}
-
-	// Prune old country entries
-	history.Countries = pruneOldCountries(history.Countries, now, geoHistoryMaxAge)
-
-	// Increment login count
-	history.LoginCount++
-
-	// Check if this is a new country
-	_, countryKnown := history.Countries[country]
-	isNewCountry := !trusted && !countryKnown && history.LoginCount >= geoMinLoginCount
-
-	// Update country timestamp
-	history.Countries[country] = now
-	if webmail {
-		history.Webmail = &store.WebmailLogin{IP: ip, Country: country, At: at, New: isNewCountry}
-	}
-
-	// Persist updated history
-	if err := boltDB.SetGeoHistory(user, history); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Warning: failed to save geo history for %s: %v\n",
-			time.Now().Format("2006-01-02 15:04:05"), user, err)
-	}
-
-	if !isNewCountry {
+	if !novel {
 		return nil
 	}
-
 	countryName := info.CountryName
 	if countryName == "" {
 		countryName = country
@@ -139,26 +119,14 @@ func observeMailboxLoginGeo(cfg *config.Config, user, ip string, webmail bool) [
 	if webmail {
 		via = "webmail"
 	}
-
-	// The ledger sees every new country; only the finding has a cooldown.
 	findings := observeMailboxSignal(cfg, user, mailboxSignal{
 		kind: signalNewCountry, key: country, at: at,
 		detail: fmt.Sprintf("%s login from %s (%s)", via, countryName, ip),
 	})
-
-	// Rate limit: max 1 alert per account per 24h
-	alertKey := "email:geo_alert:" + user
-	lastAlertStr := boltDB.GetMetaString(alertKey)
-	if lastAlertStr != "" {
-		if lastAlert, err := time.Parse(time.RFC3339, lastAlertStr); err == nil {
-			if time.Since(lastAlert) < time.Duration(geoAlertCooldownH)*time.Hour {
-				return findings
-			}
-		}
+	if !result.Notify {
+		return findings
 	}
-
-	// Record alert time
-	_ = boltDB.SetMetaString(alertKey, time.Now().Format(time.RFC3339))
+	history := result.History
 
 	// Build "previously seen" country list
 	var knownCountries []string
@@ -185,7 +153,7 @@ func observeMailboxLoginGeo(cfg *config.Config, user, ip string, webmail bool) [
 		Mailbox:   mailbox,
 		Domain:    domain,
 		TenantID:  tenant,
-		Timestamp: time.Now(),
+		Timestamp: now,
 	})
 }
 

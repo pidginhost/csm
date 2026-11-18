@@ -871,11 +871,12 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 	// so the new source is inventoried instead of waiting a full audit interval.
 	// Explicit account scans also bypass the host-wide throttle; they write only
 	// their per-file hashes and never establish either shared baseline below.
-	if !ForceAll && AccountFromContext(ctx) == "" && db.GetMetaString("email:mailsieve_last_refresh") != "" {
+	sieveRefresh := db.GetMetaString("email:mailsieve_last_refresh")
+	if !ForceAll && AccountFromContext(ctx) == "" && sieveRefresh != "" {
 		if last := db.GetMetaString("email:mailfilter_last_refresh"); last != "" {
 			if ts, err := time.Parse(time.RFC3339, last); err == nil {
 				interval := time.Duration(cfg.EmailProtection.PasswordCheckIntervalMin) * time.Minute
-				if time.Since(ts) < interval && !sieveChangedSince(ctx, db.GetMetaString("email:mailsieve_last_refresh")) {
+				if time.Since(ts) < interval && !sieveChangedSince(ctx, sieveRefresh) {
 					return nil
 				}
 			}
@@ -885,6 +886,8 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 		return nil
 	}
 
+	// Edits made after a script is read must be visible on the next tick.
+	scanStarted := time.Now()
 	localDomains := loadLocalDomains()
 
 	var files []string
@@ -946,8 +949,8 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 	// complete would make the next full scan treat every other account's
 	// existing filters as newly created.
 	baselineExists := db.GetMetaString("email:mailfilter_last_refresh") != ""
-	if AccountFromContext(ctx) == "" && (sieveComplete || db.GetMetaString("email:mailsieve_last_refresh") != "") {
-		_ = db.SetMetaString("email:mailsieve_last_refresh", time.Now().Format(time.RFC3339))
+	if AccountFromContext(ctx) == "" && sieveComplete {
+		_ = db.SetMetaString("email:mailsieve_last_refresh", scanStarted.Format(time.RFC3339Nano))
 	}
 	if AccountFromContext(ctx) == "" && (baselineComplete || baselineExists) {
 		_ = db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339))
@@ -976,8 +979,15 @@ func sieveChangedSince(ctx context.Context, last string) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		if info, err := osFS.Lstat(path); err == nil && info.ModTime().After(since) {
+		info, err := osFS.Lstat(path)
+		if err != nil || info.ModTime().After(since) {
 			return true
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := osFS.Stat(path)
+			if err == nil && target.ModTime().After(since) {
+				return true
+			}
 		}
 	}
 	return false

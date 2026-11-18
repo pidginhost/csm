@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -21,14 +22,14 @@ func replayMailboxIncident(t *testing.T, d *Daemon, exfil alert.Finding, round i
 	var out []alert.Finding
 	for _, mailbox := range []string{"a@victim.example", "b@victim.example", "c@victim.example"} {
 		for range geoMinLoginCount {
-			out = append(out, parseDovecotLogLine(dovecotLoginLine(mailbox, "203.0.113.5"), cfg)...)
+			out = append(out, parseDovecotLogLine(geoDovecotLine(time.Now().Add(-time.Hour), "203.0.113.5", mailbox), cfg)...)
 		}
 	}
 	out = append(out, mailFilterEvidence(cfg, []alert.Finding{exfil})...)
-	out = append(out, d.cpanelSessionLogHandler(sessionNewLine("webmaild", "198.51.100.7", "a@victim.example"), cfg)...)
+	out = append(out, d.cpanelSessionLogHandler(geoSessionLine(time.Now().Add(-time.Minute), "198.51.100.7", "a@victim.example"), cfg)...)
 	for i := range 12 {
 		id := fmt.Sprintf("1uR%d%02d-000AAA-1A", round, i)
-		line := "2026-11-18 10:00:00 " + id + " <= billing@unrelated.example H=(localhost) [::1]:4000 P=esmtpa A=dovecot_login:a@victim.example S=1200 id=x@unrelated.example T=\"Invoice\" for " +
+		line := time.Now().Format(time.DateTime) + " " + id + " <= billing@unrelated.example H=(localhost) [" + netip.IPv6Loopback().String() + "]:4000 P=esmtpa A=dovecot_login:a@victim.example S=1200 id=x@unrelated.example T=\"Invoice\" for " +
 			strings.Join(recipientList(fmt.Sprintf("r%d-%d-", round, i), 100), " ")
 		out = append(out, parseEximLogLine(line, cfg)...)
 		out = append(out, parseEximLogLine(s775Line(id, "198.51.100.20"), cfg)...)

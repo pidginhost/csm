@@ -392,3 +392,20 @@ func TestParseOutcomeMarksReputation(t *testing.T) {
 		t.Error("a failure counted as a deferral")
 	}
 }
+
+func TestReputationUsesProviderReply(t *testing.T) {
+	for _, tc := range []struct {
+		name, line, ip string
+		reputation     bool
+	}{
+		{"envelope address", strings.Replace(outlookS775, "real@victim.example", "192.0.2.7@victim.example", 1), "198.51.100.20", true},
+		{"envelope keyword", strings.Replace(strings.Replace(outlookS775, "real@victim.example", "blocked@victim.example", 1), "temporarily rate limited due to IP reputation", "unable to deliver", 1), "198.51.100.20", false},
+		{"IPv6 refusal", strings.Replace(outlookS775, "198.51.100.20", "2001:db8::20", 1), "2001:db8::20", true},
+		{"provider lookup URL", strings.Replace(outlookS775, "[198.51.100.20]", "https://lookup.example/ip/198.51.100.20", 1), "198.51.100.20", true},
+	} {
+		d, ok := ParseOutcome(tc.line)
+		if !ok || d.OutboundIP != tc.ip || d.Reputation != tc.reputation {
+			t.Errorf("%s: address %q, reputation %t", tc.name, d.OutboundIP, d.Reputation)
+		}
+	}
+}

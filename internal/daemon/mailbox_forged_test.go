@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 )
@@ -11,9 +12,9 @@ import (
 // sendAsLine is an authenticated Exim arrival by login with envelope sender
 // from.
 func sendAsLine(login, from, ip string) string {
-	return "2026-01-10 12:00:00 1abc-0000-AB <= " + from +
+	return time.Now().Format(time.DateTime) + " 1abc-0000-AB <= " + from +
 		" H=(helo.example) [" + ip + "]:4000 P=esmtpsa X=TLS1.3:TLS_AES_256_GCM_SHA384:256" +
-		" A=dovecot_plain:" + login + ` S=1200 id=x@example.com T="Invoice" for a@friend.example`
+		" A=dovecot_plain:" + login + ` S=1200 id=x@victim.example T="Invoice" for a@friend.example`
 }
 
 func withDomainOwners(t *testing.T, owners map[string]string) {
@@ -103,5 +104,43 @@ func TestRotatingForgedDomainsReportBounded(t *testing.T) {
 	}
 	if reports != mailboxSignalKeysPerKind {
 		t.Fatalf("reports = %d, want %d", reports, mailboxSignalKeysPerKind)
+	}
+}
+
+func TestForgedSenderUsesClosestDomainOwner(t *testing.T) {
+	_, _ = evidenceCase(t)
+	cfg := dryRunConfig()
+	withDomainOwners(t, map[string]string{"victim.example": "owner", "alias.example": "owner", "other.victim.example": "other"})
+	for _, tc := range []struct {
+		domain string
+		forged bool
+	}{
+		{"news.alias.example", false}, {"news.other.victim.example", true},
+	} {
+		got := findingsOf(observeForgedSender(cfg, "user@victim.example", "info@"+tc.domain, time.Now()), "email_forged_sender")
+		if (len(got) == 1) != tc.forged {
+			t.Errorf("sender %s: findings = %+v", tc.domain, got)
+		}
+	}
+}
+
+func TestAuthenticatedEvidenceDoesNotNeedClientAddress(t *testing.T) {
+	db, _ := evidenceCase(t)
+	resetBulkRecipientState()
+	resetReputationState()
+	withDomainOwners(t, map[string]string{"victim.example": "owner"})
+	const mailbox = "user@victim.example"
+	line := time.Now().Format(time.DateTime) + " 1abc-0000-AB <= sales@outside.example P=esmtpa A=dovecot_login:" + mailbox + " S=1200 for " + strings.Join(recipientList("r", 60), " ")
+	findings := parseEximLogLine(line, dryRunConfig())
+	for _, check := range []string{"email_forged_sender", "email_bulk_recipients"} {
+		if len(findingsOf(findings, check)) != 1 {
+			t.Errorf("%s missing: %+v", check, findings)
+		}
+	}
+	if login, ok := authSends.sender("1abc-0000-AB"); !ok || login != mailbox {
+		t.Errorf("message attributed to %q", login)
+	}
+	if h, ok := db.GetGeoHistory(mailbox); ok {
+		t.Errorf("unlocated send added a login: %+v", h)
 	}
 }

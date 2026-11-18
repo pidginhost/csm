@@ -15,6 +15,21 @@ import (
 // lower-cased address.
 const mailboxEvidenceBucket = "mail:evidence"
 
+// MailboxEvidenceKey folds ASCII case in mailbox addresses. Unicode folding could
+// identify an unrelated login as an ASCII mailbox.
+func MailboxEvidenceKey(account string) string {
+	if !strings.Contains(account, "@") {
+		return account
+	}
+	b := []byte(account)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 // MailboxSignal is one kind of compromise evidence seen for a mailbox. Key
 // tells repeats of the same evidence (one country, one redirect target)
 // apart from new evidence of that kind.
@@ -48,7 +63,7 @@ func (e MailboxEvidence) empty() bool {
 // unreadable row is an error and fn never runs: damaged evidence must not
 // be replaced by a fresh ledger that forgets an open incident.
 func (db *DB) UpdateMailboxEvidence(mailbox string, fn func(*MailboxEvidence)) (MailboxEvidence, error) {
-	key := []byte(strings.ToLower(mailbox))
+	key := []byte(MailboxEvidenceKey(mailbox))
 	var e MailboxEvidence
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(mailboxEvidenceBucket))
@@ -78,7 +93,7 @@ func (db *DB) UpdateMailboxEvidence(mailbox string, fn func(*MailboxEvidence)) (
 func (db *DB) GetMailboxEvidence(mailbox string) (MailboxEvidence, error) {
 	var e MailboxEvidence
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket([]byte(mailboxEvidenceBucket)).Get([]byte(strings.ToLower(mailbox)))
+		v := tx.Bucket([]byte(mailboxEvidenceBucket)).Get([]byte(MailboxEvidenceKey(mailbox)))
 		if v == nil {
 			return nil
 		}

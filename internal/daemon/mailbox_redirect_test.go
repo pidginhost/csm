@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"golang.org/x/sys/unix"
 )
 
 func exfilFinding(t *testing.T, mtime time.Time) alert.Finding {
@@ -74,5 +75,25 @@ func TestMailFilterRedirectNeedsMailbox(t *testing.T) {
 	mailFilterEvidence(eximAutoHoldConfig(), []alert.Finding{f})
 	if s, ok := ledgerSignal(t, db, "real@victim.example", signalRedirect, "x@freemail.example"); ok {
 		t.Fatalf("domain-wide filter recorded %+v", s)
+	}
+}
+
+func TestMailFilterRedirectDatesEditsThroughActiveLink(t *testing.T) {
+	db, _ := evidenceCase(t)
+	edited := time.Now().Add(-time.Hour).Truncate(time.Second)
+	f := exfilFinding(t, edited)
+	link := filepath.Join(filepath.Dir(f.FilePath), ".dovecot.sieve")
+	if err := os.Symlink(f.FilePath, link); err != nil {
+		t.Fatal(err)
+	}
+	activated := unix.NsecToTimespec(edited.Add(-time.Hour).UnixNano())
+	if err := unix.UtimesNanoAt(unix.AT_FDCWD, link, []unix.Timespec{activated, activated}, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		t.Fatal(err)
+	}
+	f.FilePath = link
+	mailFilterEvidence(eximAutoHoldConfig(), []alert.Finding{f})
+	s, ok := ledgerSignal(t, db, f.Mailbox, signalRedirect, "x@freemail.example")
+	if !ok || !s.First.Equal(edited) {
+		t.Fatalf("redirect first seen at %s, want script edit at %s", s.First, edited)
 	}
 }

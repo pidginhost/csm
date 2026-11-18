@@ -19,7 +19,7 @@ func resetSenderProfileState() { senderWindows = sync.Map{} }
 
 // senderSendLine is an authenticated Exim arrival for user from ip to rcpts.
 func senderSendLine(user, ip string, rcpts ...string) string {
-	return "2026-01-10 12:00:00 1abc-0000-AB <= " + user +
+	return time.Now().Format(time.DateTime) + " 1abc-0000-AB <= " + user +
 		" H=(helo.example) [" + ip + "]:4000 P=esmtpsa X=TLS1.3:TLS_AES_256_GCM_SHA384:256" +
 		" A=dovecot_login:" + user + ` S=1200 id=x@example.com T="Regular mail" for ` + strings.Join(rcpts, " ")
 }
@@ -56,7 +56,7 @@ func compromiseFindings(findings []alert.Finding) []alert.Finding {
 
 func sendAt(t *testing.T, cfg *config.Config, at time.Time, user, ip string, rcpts ...string) []alert.Finding {
 	t.Helper()
-	return compromiseFindings(parseSenderProfileFinding(senderSendLine(user, ip, rcpts...), cfg, at))
+	return compromiseFindings(senderProfileObserve(cfg, user, ip, rcpts, at))
 }
 
 func manyRecipients(n int) []string {

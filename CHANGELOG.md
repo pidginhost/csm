@@ -16,7 +16,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A new Sieve redirect is now found within the hour instead of at the next daily audit, and counts as compromise evidence for its mailbox.
 - An authenticated send as a domain the mailbox's hosting account does not own now counts as compromise evidence.
 - An authenticated message to many recipients, or many recipients within an hour, now counts as compromise evidence for the mailbox.
-- Mail sent through webmail now carries its login's country, and sends from a country the mailbox never logged in from count as compromise evidence.
+- Mail sent through webmail can now be traced to a recent login, and sends from a new country count as compromise evidence.
 
 ### Added
 

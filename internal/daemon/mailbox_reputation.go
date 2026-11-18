@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -43,12 +44,18 @@ func (m *authSendMap) note(id, login string) {
 		m.byID = make(map[string]string)
 		m.ring = make([]string, authSendsMax)
 	}
+	// A replay of the arrival must not leave two eviction slots for one ID.
+	if _, present := m.byID[id]; present {
+		return
+	}
 	if old := m.ring[m.next]; old != "" {
 		delete(m.byID, old)
 	}
+	// The parsed ID can share storage with the entire Exim log line.
+	id = strings.Clone(id)
 	m.ring[m.next] = id
 	m.next = (m.next + 1) % authSendsMax
-	m.byID[id] = login
+	m.byID[id] = strings.Clone(login)
 }
 
 func (m *authSendMap) sender(id string) (string, bool) {
@@ -76,8 +83,11 @@ type reputationEvent struct {
 }
 
 type reputationAddress struct {
-	events   []reputationEvent
-	reported string // UTC day of the last report
+	displaced time.Time // latest refusal omitted at the event cap
+	credited  time.Time
+	latest    time.Time
+	events    []reputationEvent
+	reported  string // UTC day of the last report
 }
 
 // reputationTracker keeps the last hour of reputation deferrals per
@@ -95,9 +105,15 @@ func (r *reputationTracker) reset() {
 	r.mu.Unlock()
 }
 
-// add records one deferral and returns the hour's count and its top sender
-// when the address crosses the threshold for the first time today.
-func (r *reputationTracker) add(ip, login string, now time.Time) (count int, top string, topCount int, fire bool) {
+type reputationReport struct {
+	count, topCount   int
+	top               string
+	lastRefusal       time.Time
+	summary, evidence bool
+	incomplete        bool
+}
+
+func (r *reputationTracker) add(ip, login string, at, now time.Time) reputationReport {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.byIP == nil {
@@ -108,39 +124,73 @@ func (r *reputationTracker) add(ip, login string, now time.Time) (count int, top
 	if a == nil {
 		if len(r.byIP) >= reputationAddressesMax {
 			for key, old := range r.byIP {
-				if len(old.events) == 0 || old.events[len(old.events)-1].at.Before(cutoff) {
+				if len(old.events) == 0 || old.latest.Before(cutoff) {
 					delete(r.byIP, key)
 				}
 			}
 			if len(r.byIP) >= reputationAddressesMax {
-				return 0, "", 0, false
+				return reputationReport{}
 			}
 		}
 		a = &reputationAddress{}
 		r.byIP[ip] = a
 	}
+	a.latest = maxTime(a.latest, at)
 	a.events = slices.DeleteFunc(a.events, func(e reputationEvent) bool { return e.at.Before(cutoff) })
 	if len(a.events) == reputationEventsMax {
+		a.displaced = maxTime(a.displaced, a.events[0].at)
 		a.events = a.events[1:]
 	}
-	a.events = append(a.events, reputationEvent{at: now, login: login})
-	day := now.UTC().Format("2006-01-02")
-	if len(a.events) < reputationDeferralsPerHour || a.reported == day {
-		return len(a.events), "", 0, false
+	a.events = append(a.events, reputationEvent{at: at, login: login})
+	day := now.UTC().Format(time.DateOnly)
+	report := reputationReport{count: len(a.events)}
+	due := !a.credited.After(cutoff)
+	if report.count < reputationDeferralsPerHour || (a.reported == day && (!due || login == "")) {
+		return report
 	}
-	a.reported = day
+	if a.reported != day {
+		report.summary = true
+		if db := store.Global(); db != nil {
+			claimed, err := db.ClaimReputationReport(ip, day)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] Warning: saving outbound reputation report: %v\n", ts(), err)
+				return reputationReport{}
+			}
+			report.summary = claimed
+		}
+		a.reported = day
+	}
+	// While a displaced refusal belongs to this hour, the retained count
+	// is a lower bound and the apparent top sender may be wrong.
+	if !a.displaced.Before(cutoff) {
+		report.incomplete = true
+		return report
+	}
+	// A daily address notice and evidence for an hour's top sender have
+	// independent lifetimes. A different mailbox can lead a later window.
 	counts := map[string]int{}
 	for _, e := range a.events {
 		if e.login != "" {
 			counts[e.login]++
 		}
 	}
-	for _, login := range sortedKeys(counts) {
-		if counts[login] > topCount {
-			top, topCount = login, counts[login]
+	for login, n := range counts {
+		switch {
+		case n > report.topCount:
+			report.top, report.topCount = login, n
+		case n == report.topCount:
+			report.top = ""
 		}
 	}
-	return len(a.events), top, topCount, true
+	if due && report.top != "" {
+		for _, e := range a.events {
+			if e.login == report.top {
+				report.lastRefusal = maxTime(report.lastRefusal, e.at)
+			}
+		}
+		a.credited, report.evidence = now, true
+	}
+	return report
 }
 
 // observeReputationOutcome reads a delivery deferral or failure. When
@@ -155,46 +205,38 @@ func observeReputationOutcome(cfg *config.Config, line string, now time.Time) []
 	if !ok || !d.Reputation || d.OutboundIP == "" {
 		return nil
 	}
-	login, _ := authSends.sender(d.MessageID)
-	count, top, topCount, fire := reputationWindows.add(d.OutboundIP, login, now)
-	if !fire || !persistReputationReport(d.OutboundIP, now) {
+	if d.Time.Before(now.Add(-time.Hour)) || d.Time.After(now) {
 		return nil
 	}
-	message := fmt.Sprintf("Outbound address %s: %d reputation deferrals or refusals within an hour", d.OutboundIP, count)
-	if top != "" {
-		message += fmt.Sprintf("; top authenticated sender %s (%d)", top, topCount)
+	login, _ := authSends.sender(d.MessageID)
+	r := reputationWindows.add(d.OutboundIP, login, d.Time, now)
+	var findings []alert.Finding
+	if r.summary {
+		count := fmt.Sprint(r.count)
+		if r.incomplete {
+			count = "at least " + count
+		}
+		message := fmt.Sprintf("Outbound address %s: %s reputation deferrals or refusals within an hour", d.OutboundIP, count)
+		if r.top != "" {
+			message += fmt.Sprintf("; top authenticated sender %s (%d)", r.top, r.topCount)
+		}
+		mailbox, domain, _ := splitMailAccount(r.top)
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "email_outbound_reputation",
+			Message:   message,
+			Details:   "Last refusal: " + d.Text,
+			Mailbox:   mailbox,
+			Domain:    domain,
+			Timestamp: now,
+		})
+		stampMailAccountOwner(findings, r.top)
 	}
-	summary := []alert.Finding{{
-		Severity:  alert.Warning,
-		Check:     "email_outbound_reputation",
-		Message:   message,
-		Details:   "Last refusal: " + d.Text,
-		Timestamp: now,
-	}}
-	if top == "" {
-		return summary
+	if r.evidence {
+		findings = append(findings, observeMailboxSignal(cfg, r.top, mailboxSignal{
+			kind: signalReputation, key: d.OutboundIP, at: r.lastRefusal,
+			detail: fmt.Sprintf("sent %d of %d mails refused for the reputation of %s within an hour", r.topCount, r.count, d.OutboundIP),
+		})...)
 	}
-	summary[0].Mailbox, summary[0].Domain, _ = splitMailAccount(top)
-	stampMailAccountOwner(summary, top)
-	// The address is reported daily even while its evidence is still held.
-	return append(summary, observeMailboxSignal(cfg, top, mailboxSignal{
-		kind: signalReputation, key: d.OutboundIP, at: now,
-		detail: fmt.Sprintf("sent %d of %d mails refused for the reputation of %s within an hour", topCount, count, d.OutboundIP),
-	})...)
-}
-
-// persistReputationReport claims today's report for an address, so a
-// restart does not report it again.
-func persistReputationReport(ip string, now time.Time) bool {
-	db := store.Global()
-	if db == nil {
-		return true
-	}
-	key := "email:reputation_report:" + ip
-	day := now.UTC().Format("2006-01-02")
-	if db.GetMetaString(key) == day {
-		return false
-	}
-	_ = db.SetMetaString(key, day)
-	return true
+	return findings
 }

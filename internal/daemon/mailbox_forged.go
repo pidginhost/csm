@@ -23,11 +23,11 @@ func observeForgedSender(cfg *config.Config, user, sender string, now time.Time)
 		return nil
 	}
 	senderDomain := strings.ToLower(sender[at+1:])
-	if senderDomain == "" || senderDomain == loginDomain || strings.HasSuffix(senderDomain, "."+loginDomain) {
+	if senderDomain == "" || senderDomain == loginDomain {
 		return nil
 	}
 	owner := checks.MailOwner(loginDomain)
-	if owner == "" || checks.MailOwner(senderDomain) == owner {
+	if owner == "" || senderDomainOwner(senderDomain) == owner {
 		return nil
 	}
 	sender = truncateDaemon(sender, 200)
@@ -43,4 +43,16 @@ func observeForgedSender(cfg *config.Config, user, sender string, now time.Time)
 	}}
 	stampMailAccountOwner(summary, user)
 	return observeMailboxSignal(cfg, user, mailboxSignal{kind: signalForgedSender, key: senderDomain, at: now, detail: "sent as " + sender, summary: summary[0]})
+}
+
+// A subdomain inherits the closest locally mapped parent. A delegated child
+// can belong to a different hosting account.
+func senderDomainOwner(domain string) string {
+	for domain != "" {
+		if owner := checks.MailOwner(domain); owner != "" {
+			return owner
+		}
+		_, domain, _ = strings.Cut(domain, ".")
+	}
+	return ""
 }

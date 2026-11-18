@@ -1060,3 +1060,21 @@ func TestMailFilterDestination(t *testing.T) {
 		t.Fatalf("destination without one = %q", got)
 	}
 }
+
+func TestSieveThrottleChecksActiveLinkTarget(t *testing.T) {
+	fs, _ := sieveThrottleCase(t, -24*time.Hour)
+	active := "/home/acmeacct/mail/acmeacct.example/alice/.dovecot.sieve"
+	fs.glob = func(pattern string) ([]string, error) {
+		if filepath.Base(pattern) == ".dovecot.sieve" {
+			return []string{active}, nil
+		}
+		return nil, nil
+	}
+	fs.lstat = func(string) (os.FileInfo, error) {
+		return &fakeFileInfoMtime{name: ".dovecot.sieve", mode: os.ModeSymlink, mtime: time.Now().Add(-24 * time.Hour)}, nil
+	}
+	fs.stat = mtimesByPath(map[string]time.Time{active: time.Now()})
+	if !sieveChangedSince(context.Background(), time.Now().Add(-time.Hour).Format(time.RFC3339)) {
+		t.Fatal("changed active Sieve target missed")
+	}
+}

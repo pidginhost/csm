@@ -2,13 +2,14 @@ package daemon
 
 import (
 	"fmt"
-	"slices"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 const (
@@ -21,42 +22,33 @@ const (
 // recipientMinutes counts a mailbox's recipients per minute over the last
 // hour in fixed space, however many messages it sends.
 type recipientMinutes struct {
-	mu     sync.Mutex
-	minute [60]int64
-	count  [60]int
-	last   time.Time
+	clearedAt time.Time
+	minute    [60]int64
+	count     [60]int
+	last      time.Time
 }
 
 // bulkRecipientWindows holds the recipient hour per authenticated mailbox.
 var bulkRecipientWindows sync.Map // map[string]*recipientMinutes
 
-func lockRecipientMinutes(user string) *recipientMinutes {
-	for {
-		val, _ := bulkRecipientWindows.LoadOrStore(user, &recipientMinutes{})
-		w := val.(*recipientMinutes)
-		w.mu.Lock()
-		// Re-check under the lock so eviction cannot delete the entry
-		// between the load and the update.
-		if current, ok := bulkRecipientWindows.Load(user); ok && current == val {
-			return w
-		}
-		w.mu.Unlock()
+// add counts n recipients in the rolling hour ending at the latest send.
+// Buffered log reads can deliver records out of order.
+func (w *recipientMinutes) add(at time.Time, n int) int {
+	w.last = maxTime(w.last, at)
+	cutoff := w.last.Unix()/60 - 60
+	minute := at.Unix() / 60
+	if minute <= cutoff {
+		return 0
 	}
-}
-
-// add counts n recipients at now and returns the hour's total.
-func (w *recipientMinutes) add(now time.Time, n int) int {
-	m := now.Unix() / 60
-	i := m % 60
-	if w.minute[i] != m {
-		w.minute[i], w.count[i] = m, 0
+	i := at.UTC().Minute()
+	if w.minute[i] != minute {
+		w.minute[i], w.count[i] = minute, 0
 	}
 	w.count[i] += n
-	w.last = maxTime(w.last, now)
 	total := 0
-	for j, at := range w.minute {
-		if at > m-60 && at <= m {
-			total += w.count[j]
+	for i, seen := range w.minute {
+		if seen > cutoff {
+			total += w.count[i]
 		}
 	}
 	return total
@@ -65,39 +57,63 @@ func (w *recipientMinutes) add(now time.Time, n int) int {
 func evictBulkRecipientWindows(now time.Time) {
 	cutoff := now.Add(-time.Hour)
 	bulkRecipientWindows.Range(func(key, val any) bool {
-		w := val.(*recipientMinutes)
-		w.mu.Lock()
-		if w.last.Before(cutoff) {
+		unlock := lockMailResponse(evidenceAddressLock(activeMailBackend.name(), key.(string)))
+		if val.(*recipientMinutes).last.Before(cutoff) {
 			bulkRecipientWindows.CompareAndDelete(key, val)
 		}
-		w.mu.Unlock()
+		unlock()
 		return true
 	})
+}
+
+// Release discards the window while holding the address lock. Reload its
+// durable cutoff on first use so buffered arrivals cannot rebuild the hour.
+func countMailboxRecipients(mailbox string, at time.Time, n int) (int, time.Time) {
+	unlock := lockMailResponse(evidenceAddressLock(activeMailBackend.name(), mailbox))
+	defer unlock()
+	val, found := bulkRecipientWindows.Load(mailbox)
+	var w *recipientMinutes
+	if found {
+		w = val.(*recipientMinutes)
+	} else {
+		w = &recipientMinutes{}
+		if db := store.Global(); db != nil {
+			e, err := db.GetMailboxEvidence(mailbox)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] Warning: reading mailbox release cutoff for %s: %v\n", ts(), mailbox, err)
+				return 0, at
+			}
+			w.clearedAt = e.ClearedAt
+		}
+		bulkRecipientWindows.Store(mailbox, w)
+	}
+	if !at.After(w.clearedAt) {
+		return 0, at
+	}
+	total := w.add(at, n)
+	return total, w.last
 }
 
 // observeBulkRecipients records an authenticated mailing as compromise
 // evidence: one message to many recipients, or many recipients within an
 // hour. Mailboxes in high_volume_senders send mailings by design.
 func observeBulkRecipients(cfg *config.Config, user string, recipients []string, now time.Time) []alert.Finding {
-	var distinct []string
-	for _, r := range recipients {
-		if r = strings.ToLower(r); !slices.Contains(distinct, r) {
-			distinct = append(distinct, r)
-		}
-	}
-	n := len(distinct)
-	if n == 0 || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+	if len(recipients) == 0 || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
 		return nil
 	}
-	w := lockRecipientMinutes(user)
-	hour := w.add(now, n)
-	w.mu.Unlock()
+	distinct := make(map[string]struct{}, len(recipients))
+	for _, r := range recipients {
+		distinct[strings.ToLower(r)] = struct{}{}
+	}
+	n := len(distinct)
+	hour, hourEnd := countMailboxRecipients(store.MailboxEvidenceKey(user), now, n)
 
 	var detail string
 	switch {
 	case n >= bulkRecipientsPerMessage:
 		detail = fmt.Sprintf("one message to %d recipients", n)
 	case hour >= bulkRecipientsPerHour:
+		now = hourEnd
 		detail = fmt.Sprintf("%d recipients within an hour", hour)
 	default:
 		return nil

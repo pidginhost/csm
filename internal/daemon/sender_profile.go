@@ -150,15 +150,30 @@ func recentSenderIPs(events []senderEvent, n int) []string {
 	return ips
 }
 
-// parseSenderProfileFinding evaluates one authenticated Exim arrival against
-// the sender's own history. It returns at most one email_compromised_account
-// finding and never acts on its own; the caller responds to Critical ones.
-func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (findings []alert.Finding) {
+// observeEximSend resolves the origin once for both the profile and the
+// ledger. Each ledger observation runs after the profile releases its lock.
+func observeEximSend(line string, cfg *config.Config, now time.Time) []alert.Finding {
 	user, ip, ok := authenticatedSend(line)
 	if !ok {
 		return nil
 	}
-	return senderProfileObserve(cfg, user, ip, eximlog.Recipients(line), now)
+	at, _ := eximlog.LineTime(line, now.Location()) // authenticatedSend validated the arrival prefix
+	country, login := sendCountry(cfg, user, ip, at)
+	recipients := eximlog.Recipients(line)
+	var findings []alert.Finding
+	if ip != "" && !isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+		findings = senderProfileAtCountry(cfg, user, ip, country, recipients, now)
+		for _, f := range findings {
+			if f.Severity == alert.Critical {
+				respondToMailboxCompromise(cfg, user, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
+			}
+		}
+	}
+	findings = append(findings, observeSendCountry(cfg, user, ip, country, login, at)...)
+	findings = append(findings, observeBulkRecipients(cfg, user, recipients, at)...)
+	id, sender, _ := eximlog.Arrival(line)
+	authSends.note(id, store.MailboxEvidenceKey(user))
+	return append(findings, observeForgedSender(cfg, user, sender, at)...)
 }
 
 // authenticatedSend reads the login and client address of an authenticated
@@ -172,9 +187,6 @@ func authenticatedSend(line string) (user, ip string, ok bool) {
 		return "", "", false
 	}
 	ip = eximlog.ClientIP(line)
-	if ip == "" {
-		return "", "", false
-	}
 	if parsed := net.ParseIP(ip); parsed != nil {
 		ip = parsed.String()
 	}
@@ -198,7 +210,7 @@ func sendCountry(cfg *config.Config, user, ip string, now time.Time) (string, *s
 			return "", nil
 		}
 		h, _ := db.GetGeoHistory(user)
-		if h.Webmail == nil || now.Sub(h.Webmail.At).Abs() > webmailSendWindow {
+		if h.Webmail == nil || now.Before(h.Webmail.At) || now.Sub(h.Webmail.At) > webmailSendWindow {
 			return "", nil
 		}
 		return h.Webmail.Country, h.Webmail
@@ -212,8 +224,7 @@ func sendCountry(cfg *config.Config, user, ip string, now time.Time) (string, *s
 // observeSendCountry records an authenticated send from a country new for
 // the mailbox as compromise evidence. A direct send is judged against the
 // mailbox's login history; a webmail send inherits its login's verdict.
-func observeSendCountry(cfg *config.Config, user, ip string, now time.Time) []alert.Finding {
-	country, webmail := sendCountry(cfg, user, ip, now)
+func observeSendCountry(cfg *config.Config, user, ip, country string, webmail *store.WebmailLogin, now time.Time) []alert.Finding {
 	if country == "" || countryTrusted(country, cfg.Suppressions.TrustedCountries) {
 		return nil
 	}
@@ -229,8 +240,8 @@ func observeSendCountry(cfg *config.Config, user, ip string, now time.Time) []al
 			return nil
 		}
 		h, _ := db.GetGeoHistory(user)
-		_, known := pruneOldCountries(h.Countries, now.Unix(), geoHistoryMaxAge)[country]
-		if known || h.LoginCount < geoMinLoginCount {
+		seen, known := h.Countries[country]
+		if (known && seen >= now.Unix()-geoHistoryMaxAge) || h.LoginCount < geoMinLoginCount {
 			return nil
 		}
 		detail = fmt.Sprintf("authenticated send from %s (%s)", country, ip)
@@ -262,6 +273,10 @@ func senderProfileObserve(cfg *config.Config, user, ip string, recipients []stri
 		return nil
 	}
 	country, _ := sendCountry(cfg, user, ip, now)
+	return senderProfileAtCountry(cfg, user, ip, country, recipients, now)
+}
+
+func senderProfileAtCountry(cfg *config.Config, user, ip, country string, recipients []string, now time.Time) (findings []alert.Finding) {
 	db := store.Global()
 
 	// Registered before the unlock defer so owner I/O runs after it.

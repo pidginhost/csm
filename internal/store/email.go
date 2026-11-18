@@ -1,7 +1,7 @@
 package store
 
 import (
-	"encoding/json"
+	"bytes"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -28,12 +28,7 @@ type WebmailLogin struct {
 // SetGeoHistory stores geo login history for a mailbox in the email:geo bucket.
 func (db *DB) SetGeoHistory(mailbox string, h GeoHistory) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("email:geo"))
-		val, err := json.Marshal(h)
-		if err != nil {
-			return err
-		}
-		return b.Put([]byte(mailbox), val)
+		return db.putGeoHistory(tx.Bucket([]byte("email:geo")), MailboxEvidenceKey(mailbox), h)
 	})
 }
 
@@ -44,16 +39,9 @@ func (db *DB) GetGeoHistory(mailbox string) (GeoHistory, bool) {
 	var found bool
 
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("email:geo"))
-		v := b.Get([]byte(mailbox))
-		if v == nil {
-			return nil
-		}
-		if json.Unmarshal(v, &h) != nil {
-			return nil //nolint:nilerr // skip corrupt entry
-		}
-		found = true
-		return nil
+		var err error
+		h, found, err = db.readGeoHistory(tx.Bucket([]byte("email:geo")), MailboxEvidenceKey(mailbox))
+		return err
 	})
 
 	return h, found
@@ -149,4 +137,41 @@ func (db *DB) SetMetaString(key, val string) error {
 		b := tx.Bucket([]byte("meta"))
 		return b.Put([]byte(key), []byte(val))
 	})
+}
+
+// ClaimReputationReport reserves one daily notice per outbound address.
+// Remote replies supply the keys, so discard yesterday's keys on rollover.
+func (db *DB) ClaimReputationReport(ip, day string) (bool, error) {
+	const prefix = "email:reputation_report:"
+	key := []byte(prefix + ip)
+	claimed := false
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("meta"))
+		marker := []byte("email:reputation_report_day")
+		if last := string(b.Get(marker)); last > day {
+			return nil
+		} else if last != day {
+			var stale [][]byte
+			c := b.Cursor()
+			for k, v := c.Seek([]byte(prefix)); bytes.HasPrefix(k, []byte(prefix)); k, v = c.Next() {
+				if string(v) < day {
+					stale = append(stale, bytes.Clone(k))
+				}
+			}
+			for _, k := range stale {
+				if err := b.Delete(k); err != nil {
+					return err
+				}
+			}
+			if err := b.Put(marker, []byte(day)); err != nil {
+				return err
+			}
+		}
+		if string(b.Get(key)) >= day {
+			return nil
+		}
+		claimed = true
+		return b.Put(key, []byte(day))
+	})
+	return claimed && err == nil, err
 }

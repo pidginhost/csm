@@ -143,7 +143,7 @@ func pruneMailboxEvidence(db *store.DB, now time.Time) error {
 // ledger reaches the compromise score it also suspends the mailbox and
 // returns the one incident finding.
 func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (out []alert.Finding) {
-	mailbox = strings.ToLower(mailbox)
+	mailbox = store.MailboxEvidenceKey(mailbox)
 	if len(mailbox) > maxSprayMailboxBytes || !strings.Contains(mailbox, "@") {
 		return nil
 	}
@@ -344,7 +344,7 @@ func (r evidenceResponse) currentEvidence(db *store.DB, mailbox string) (store.M
 			return e, err
 		}
 		for _, row := range rows {
-			if row.Backend == "stalwart" && strings.EqualFold(row.Subject, mailbox) && row.ReleasedAt != nil {
+			if row.Backend == "stalwart" && store.MailboxEvidenceKey(row.Subject) == mailbox && row.ReleasedAt != nil {
 				released = maxTime(released, *row.ReleasedAt)
 			}
 		}

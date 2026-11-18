@@ -123,12 +123,15 @@ func parseOutcome(line string, p eximlog.Prefix, rest, marker string) (Deferral,
 		d.Provider = inventory.ClassifyAddress(recipient)
 	}
 
-	d.SMTPCode = firstSMTPCode(errText)
+	// Exim includes the submitted SMTP command before the provider reply.
+	// Sender and recipient text cannot identify a blocked address.
+	reply := smtpReply(errText)
+	d.SMTPCode = firstSMTPCode(reply)
 	if canExtractOutboundIP {
-		d.OutboundIP = firstIPv4(errText)
+		d.OutboundIP = firstIP(reply)
 	}
-	d.ReasonCode = classifyReason(errText)
-	switch keywordReason(errText) {
+	d.ReasonCode = classifyReason(reply)
+	switch keywordReason(reply) {
 	case "rate_limit", "spamhaus", "blocked":
 		d.Reputation = true
 	}
@@ -211,11 +214,42 @@ func smtpCodeIsAddressFragment(s string, start, end int) bool {
 	return false
 }
 
-// firstIPv4 returns the first syntactically valid IPv4 address in s, or "".
-func firstIPv4(s string) string {
-	for _, cand := range ipv4Re.FindAllString(s, -1) {
-		if ip := net.ParseIP(cand); ip != nil && ip.To4() != nil {
-			return cand
+// smtpReply removes the SMTP command Exim prints before the remote text.
+func smtpReply(text string) string {
+	if !strings.HasPrefix(text, "SMTP error from remote mail server ") {
+		return text
+	}
+	// A colon and space within a quoted local part belongs to the command.
+	quoted := false
+	for i := 0; i+1 < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '"':
+			quoted = !quoted
+		case ':':
+			if !quoted && text[i+1] == ' ' {
+				return text[i+2:]
+			}
+		}
+	}
+	return ""
+}
+
+func firstIP(s string) string {
+	for token := range strings.FieldsFuncSeq(s, func(r rune) bool {
+		return strings.ContainsRune(" \t\r\n[](){},;=<>", r)
+	}) {
+		if ip := net.ParseIP(strings.TrimSuffix(token, ".")); ip != nil {
+			return ip.String()
+		}
+		// Some providers embed the IPv4 address in a lookup URL or append a port.
+		if strings.Contains(token, ".") {
+			for _, candidate := range ipv4Re.FindAllString(token, -1) {
+				if ip := net.ParseIP(candidate); ip != nil {
+					return ip.String()
+				}
+			}
 		}
 	}
 	return ""

@@ -239,8 +239,8 @@ func (d *Daemon) cpanelSessionLogHandler(line string, cfg *config.Config) []aler
 		d.knownCustomers.Note(ip, kind, account, customerLoginTime(line, time.Now()), serviceLog)
 	}
 	findings := parseSessionLogLine(line, cfg)
-	if user, ip, ok := webmailLogin(line); ok {
-		findings = append(findings, observeMailboxLoginGeo(cfg, user, ip, true)...)
+	if user, ip, at, ok := webmailLogin(line); ok {
+		findings = append(findings, observeMailboxLoginGeo(cfg, user, ip, at, true)...)
 	}
 	return findings
 }

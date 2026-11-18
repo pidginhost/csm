@@ -780,23 +780,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// 11. Authenticated sender profile: country diversity, source address
 	// churn and recipient fan-out judged against the mailbox's own history.
-	for _, f := range parseSenderProfileFinding(line, cfg, time.Now()) {
-		if f.Severity == alert.Critical {
-			respondToMailboxCompromise(cfg, extractAuthUser(line), "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
-		}
-		findings = append(findings, f)
-	}
-	// Sent from a country the mailbox never logged in from, as a mailing,
-	// or as a domain the login's account does not own. Evaluated outside the profile, whose state lock the ledger's
-	// response must not run under.
-	if user, ip, ok := authenticatedSend(line); ok {
-		findings = append(findings, observeSendCountry(cfg, user, ip, time.Now())...)
-		findings = append(findings, observeBulkRecipients(cfg, user, eximlog.Recipients(line), time.Now())...)
-		if id, sender, ok := eximlog.Arrival(line); ok {
-			authSends.note(id, user)
-			findings = append(findings, observeForgedSender(cfg, user, sender, time.Now())...)
-		}
-	}
+	findings = append(findings, observeEximSend(line, cfg, time.Now())...)
 	findings = append(findings, observeReputationOutcome(cfg, line, time.Now())...)
 
 	if eng := PHPRelayEvaluator(); eng != nil {

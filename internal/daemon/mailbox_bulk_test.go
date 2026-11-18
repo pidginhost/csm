@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 func resetBulkRecipientState() { bulkRecipientWindows = sync.Map{} }
@@ -94,5 +95,82 @@ func TestHighVolumeSenderIsNotBulk(t *testing.T) {
 	observeBulkRecipients(cfg, "real@victim.example", recipientList("a", 100), time.Now())
 	if s, ok := ledgerSignal(t, db, "real@victim.example", signalBulkRecipients, ""); ok {
 		t.Fatalf("exempt sender counted as bulk: %+v", s)
+	}
+}
+
+func TestBulkHourSharesMailboxCase(t *testing.T) {
+	_, _ = evidenceCase(t)
+	resetBulkRecipientState()
+	at := time.Now()
+	for i := range 5 {
+		user := []string{"real@victim.example", "Real@Victim.example"}[i%2]
+		got := observeBulkRecipients(dryRunConfig(), user, recipientList("r", 40), at)
+		if (len(got) == 1) != (i == 4) {
+			t.Fatalf("send %d: findings = %+v", i, got)
+		}
+	}
+}
+
+func TestBulkAndForgedSendHonorRecordedTime(t *testing.T) {
+	db, _ := evidenceCase(t)
+	withDomainOwners(t, map[string]string{"victim.example": "owner"})
+	resetBulkRecipientState()
+	line := sendAsLine("user@victim.example", "info@outside.example", "192.0.2.1")
+	line = time.Now().Add(-2*mailboxEvidenceTTL).Format(time.DateTime) + line[len(time.DateTime):] + " " + strings.Join(recipientList("r", 60), " ")
+	parseEximLogLine(line, dryRunConfig())
+	e, err := db.GetMailboxEvidence("user@victim.example")
+	if err != nil || len(e.Signals) != 0 {
+		t.Fatalf("expired mail recorded %+v, %v", e, err)
+	}
+}
+
+func TestBulkHourIncludesOutOfOrderSends(t *testing.T) {
+	db, _ := evidenceCase(t)
+	resetBulkRecipientState()
+	cfg := dryRunConfig()
+	at := time.Now().Add(-time.Minute)
+	const mailbox = "real@victim.example"
+	for i := range 5 {
+		got := observeBulkRecipients(cfg, mailbox, recipientList("r", 40), at.Add(-time.Duration(i)*time.Minute))
+		if (len(got) == 1) != (i == 4) {
+			t.Fatalf("send %d: findings = %+v", i, got)
+		}
+	}
+	s, ok := ledgerSignal(t, db, mailbox, signalBulkRecipients, "")
+	if !ok || !s.Last.Equal(at) {
+		t.Fatalf("bulk evidence time = %v, want %v", s.Last, at)
+	}
+}
+
+func TestBulkWindowHonorsMailboxRelease(t *testing.T) {
+	db, _ := evidenceCase(t)
+	resetBulkRecipientState()
+	cfg := dryRunConfig()
+	const mailbox = "real@victim.example"
+	before := time.Now().Add(-time.Minute)
+	for range 4 {
+		observeBulkRecipients(cfg, mailbox, recipientList("r", 40), before)
+	}
+	row := store.MailboxSuspension{ID: store.MailboxSuspensionID(activeMailBackend.name(), mailbox), Backend: activeMailBackend.name(), Subject: mailbox}
+	if err := db.PutMailboxSuspension(row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := finishMailboxRelease(db, row, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	for _, restart := range []bool{false, true} {
+		if restart {
+			resetBulkRecipientState()
+		}
+		for range 4 {
+			observeBulkRecipients(cfg, mailbox, recipientList("r", 40), before)
+		}
+		got := observeBulkRecipients(cfg, mailbox, recipientList("r", 40), time.Now())
+		if len(got) != 0 {
+			t.Fatalf("pre-release recipients counted after release (restart=%t): %+v", restart, got)
+		}
+		if s, ok := ledgerSignal(t, db, mailbox, signalBulkRecipients, ""); ok {
+			t.Fatalf("pre-release recipients left evidence: %+v", s)
+		}
 	}
 }
