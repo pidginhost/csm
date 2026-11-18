@@ -1,7 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -16,12 +19,14 @@ const mailboxEvidenceBucket = "mail:evidence"
 // tells repeats of the same evidence (one country, one redirect target)
 // apart from new evidence of that kind.
 type MailboxSignal struct {
-	Kind   string    `json:"kind"`
-	Key    string    `json:"key,omitempty"`
-	First  time.Time `json:"first"`
-	Last   time.Time `json:"last"`
-	Count  int       `json:"count"`
-	Detail string    `json:"detail"`
+	LastDatedRedirect time.Time `json:"last_dated_redirect,omitzero"`
+	Overflow          bool      `json:"overflow,omitempty"`
+	Kind              string    `json:"kind"`
+	Key               string    `json:"key,omitempty"`
+	First             time.Time `json:"first"`
+	Last              time.Time `json:"last"`
+	Count             int       `json:"count"`
+	Detail            string    `json:"detail"`
 }
 
 // MailboxEvidence is a mailbox's compromise ledger. ReportedAt marks the
@@ -30,11 +35,12 @@ type MailboxSignal struct {
 type MailboxEvidence struct {
 	Signals        []MailboxSignal `json:"signals,omitempty"`
 	LastNewCountry time.Time       `json:"last_new_country,omitzero"`
+	ClearedAt      time.Time       `json:"cleared_at,omitzero"`
 	ReportedAt     *time.Time      `json:"reported_at,omitempty"`
 }
 
 func (e MailboxEvidence) empty() bool {
-	return len(e.Signals) == 0 && e.LastNewCountry.IsZero() && e.ReportedAt == nil
+	return len(e.Signals) == 0 && e.LastNewCountry.IsZero() && e.ReportedAt == nil && e.ClearedAt.IsZero()
 }
 
 // UpdateMailboxEvidence applies fn to a mailbox's ledger in one write
@@ -67,11 +73,18 @@ func (db *DB) UpdateMailboxEvidence(mailbox string, fn func(*MailboxEvidence)) (
 	return e, nil
 }
 
-// DeleteMailboxEvidence forgets a mailbox's ledger.
-func (db *DB) DeleteMailboxEvidence(mailbox string) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(mailboxEvidenceBucket)).Delete([]byte(strings.ToLower(mailbox)))
+// GetMailboxEvidence reads the current ledger after a waiter obtains the
+// response lock. Release may have cleared the evidence while it waited.
+func (db *DB) GetMailboxEvidence(mailbox string) (MailboxEvidence, error) {
+	var e MailboxEvidence
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket([]byte(mailboxEvidenceBucket)).Get([]byte(strings.ToLower(mailbox)))
+		if v == nil {
+			return nil
+		}
+		return json.Unmarshal(v, &e)
 	})
+	return e, err
 }
 
 // PruneMailboxEvidence applies fn to every ledger and removes the ones it
@@ -79,7 +92,8 @@ func (db *DB) DeleteMailboxEvidence(mailbox string) error {
 // The walk only collects; bbolt leaves a cursor undefined once its bucket
 // is written.
 func (db *DB) PruneMailboxEvidence(fn func(mailbox string, e *MailboxEvidence)) error {
-	return db.bolt.Update(func(tx *bolt.Tx) error {
+	var damaged error
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(mailboxEvidenceBucket))
 		var expired [][]byte
 		rewritten := map[string][]byte{}
@@ -87,7 +101,10 @@ func (db *DB) PruneMailboxEvidence(fn func(mailbox string, e *MailboxEvidence)) 
 		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
 			var e MailboxEvidence
 			if err := json.Unmarshal(v, &e); err != nil {
-				return err
+				if damaged == nil {
+					damaged = fmt.Errorf("mailbox evidence for %q: %w", k, err)
+				}
+				continue
 			}
 			fn(string(k), &e)
 			if e.empty() {
@@ -98,7 +115,9 @@ func (db *DB) PruneMailboxEvidence(fn func(mailbox string, e *MailboxEvidence)) 
 			if err != nil {
 				return err
 			}
-			rewritten[string(k)] = val
+			if !bytes.Equal(v, val) {
+				rewritten[string(k)] = val
+			}
 		}
 		for _, k := range expired {
 			if err := b.Delete(k); err != nil {
@@ -112,4 +131,5 @@ func (db *DB) PruneMailboxEvidence(fn func(mailbox string, e *MailboxEvidence)) 
 		}
 		return nil
 	})
+	return errors.Join(err, damaged)
 }

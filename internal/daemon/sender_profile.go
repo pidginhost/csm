@@ -198,7 +198,7 @@ func sendCountry(cfg *config.Config, user, ip string, now time.Time) (string, *s
 			return "", nil
 		}
 		h, _ := db.GetGeoHistory(user)
-		if h.Webmail == nil || absDuration(now.Sub(h.Webmail.At)) > webmailSendWindow {
+		if h.Webmail == nil || now.Sub(h.Webmail.At).Abs() > webmailSendWindow {
 			return "", nil
 		}
 		return h.Webmail.Country, h.Webmail

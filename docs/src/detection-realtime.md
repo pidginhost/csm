@@ -580,23 +580,17 @@ Source addresses are never blocked for this finding: they rotate per message and
 
 ## Mailbox Compromise Evidence
 
-A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, each of which an honest owner also produces now and then. CSM keeps a ledger of these signs per mailbox. Each sign is recorded in the audit log, history and the daily summary, and is not mailed on its own.
+A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, each of which an honest owner also produces now and then. CSM keeps a ledger of these signs per mailbox. Each sign is reported once in the audit log, history and the daily summary, and is not mailed on its own.
 
-| Sign | Points |
-|------|--------|
-| A webmail, IMAP, POP3 or authenticated SMTP login from a country new for the mailbox | 2, and 2 more for a second new country within a day |
-| An authenticated message sent as a domain the login's hosting account does not own | 3 |
-| One authenticated message to 50 or more recipients, or 200 recipients within an hour | 2 |
-| A Sieve script or forwarder that redirects all mail to an outside address | 2, and 1 more when it appeared within 30 days of a login from a new country |
-| Reputation deferrals from large providers on the address the mailbox sends from, while it is that address's top sender | 1 |
+The signs cover logins from new countries, forged sender domains, bulk recipients, external redirects, and outbound reputation deferrals. Two new countries seen close together carry more weight. A redirect created soon after a foreign login also carries more weight.
 
-A login from a new country is also an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
+A login from a new country is an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
 
-A mailing is an `email_bulk_recipients` finding the first time the ledger records it. Mailboxes in `email_protection.high_volume_senders` send mailings by design and are not judged by it.
+A mailing is an `email_bulk_recipients` finding the first time the ledger records it.
 
-Each kind of sign counts once, however often it repeats. Signs expire a week after they were last seen.
+Each kind of sign counts once, however often it repeats. Mailboxes in `email_protection.high_volume_senders` send mailings by design, so forged sender domains and bulk recipients do not count for them. Signs expire a week after their last sighting. The ledger groups older details when many distinct values appear.
 
-When a mailbox reaches 4 points, CSM suspends its logins and outgoing mail and raises one Critical `email_mailbox_compromise` finding. The finding lists each sign with its time and says how to release the mailbox: the Email page, Suspended tab. The suspension follows `auto_response.enabled` and dry-run; with either off the finding says the mailbox would have been suspended. Further signs for the same mailbox add to the ledger without a second finding. A new finding needs the earlier signs to expire or a release; release forgets the evidence.
+When the evidence adds up, CSM suspends the mailbox and raises one Critical `email_mailbox_compromise` finding. It lists the evidence and the restrictions applied. Release restrictions applied by CSM on the Email page, Suspended tab. With automatic response disabled or dry-run enabled, the finding says CSM would suspend the mailbox. Further signs update the same incident. Release discards its evidence, including delayed observations from before release.
 
 ## Mail Auth Brute-Force Tracker
 

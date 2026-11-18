@@ -131,6 +131,17 @@ func (db *DB) MarkMailboxSuspensionReleased(id string, at time.Time, by string) 
 		if err := json.Unmarshal(v, &s); err != nil {
 			return err
 		}
+		// Save the release cutoff with the new state. Buffered evidence cannot
+		// start another incident, including when the backend is unavailable.
+		if strings.Contains(s.Subject, "@") {
+			marker, err := json.Marshal(MailboxEvidence{ClearedAt: at})
+			if err != nil {
+				return err
+			}
+			if err := tx.Bucket([]byte(mailboxEvidenceBucket)).Put([]byte(strings.ToLower(s.Subject)), marker); err != nil {
+				return err
+			}
+		}
 		s.ReleasedAt, s.ReleasedBy = &at, by
 		payload, err := json.Marshal(s)
 		if err != nil {
