@@ -36,7 +36,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | Check | Description |
 |-------|-------------|
 | `outbound_connections` | Root-level outbound to non-infra IPs (C2, backdoor ports) |
-| `user_outbound` | Per-user outbound connections to unusual ports. This check skips connections from the `knot` account to TCP port 853 for DNS zone transfers over TLS. |
+| `user_outbound` | Per-user outbound connections (non-standard ports) |
 | `bad_asn_outbound` | Outbound connection whose destination resolves (via GeoLite2-ASN) to a bad or unexpected autonomous system. Config `detection.bad_asn_outbound`: `blocked_asns` (always bad) and/or `allowed_asns` (allowlist mode -- anything outside is bad). Classified for every process including root (the periodic connection scan); non-root connections are also flagged in real time by the live BPF tracker. Off by default; the third leg of the `host_takeover` incident chain |
 | `dns_connections` | DNS exfiltration and suspicious queries |
 | `firewall` | Firewall status and rule integrity |
