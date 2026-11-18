@@ -158,10 +158,13 @@ The package uses FHS paths for config, state, drop-ins, and shipped profiles. Up
 | Drop-in fragments | `/etc/csm/conf.d/*.yaml` |
 | State directory | `/var/lib/csm/state/` |
 | Shipped profiles | `/usr/lib/csm/profiles/` |
+| Shipped config template | `/usr/lib/csm/csm.yaml.default` |
 | Audit log | `/var/log/csm/audit.jsonl` |
 | Binary | `/opt/csm/csm` |
 | Quarantine | `/opt/csm/quarantine/` |
 | YARA / signature rules | `/opt/csm/rules/` |
+
+On Debian and Ubuntu, removing the package keeps the main config. Purging the package removes the main config and its package-created compatibility link. If the main config is a symlink, purge leaves its target in place.
 
 The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions for the FHS directories. `/var/lib/csm` is mode 0711, searchable but not listable, so Exim can reach the email forward guard files below it; `/var/lib/csm/state/` stays 0700. On upgrade, the package copies a real legacy main config into `/etc/csm/csm.yaml` when needed and points `/opt/csm/csm.yaml` at it. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS state path. See [Upgrading - FHS migration](upgrading.md#fhs-migration-state-config-drop-ins-and-profiles) for the manual-binary-swap case.
 

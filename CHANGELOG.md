@@ -16,12 +16,15 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- On a host without PHP, the Web UI hides the PHP settings and the Performance page's PHP cards; PHP running in a container counts.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
 
 ### Fixed
 
 - Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
 - Knot DNS servers no longer raise connection alerts for their own zone transfers.
+- Debian and Ubuntu package upgrades no longer stop to ask whether to replace the CSM configuration file.
+- Package upgrades stop with a clear error when the main configuration file is missing.
 
 ## [4.14.0] - 2026-11-18
 
