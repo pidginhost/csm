@@ -638,15 +638,17 @@
     // buildTable makes a list's table. The table restores the search it
     // saved last; the box can hold a newer one, from the address or typed
     // before a refresh rebuilt the rows, and that one wins.
-    function buildTable(opts) {
+    function buildTable(opts, state, page) {
         var box = document.getElementById(opts.searchId);
-        var typed = box ? box.value : '';
+        var typed = box.value;
         var table = new CSM.Table(opts);
-        if (box) {
-            box.value = typed;
-            table.searchText = typed.toLowerCase();
-            table.applyFilters();
-        }
+        state = state || tableState(table);
+        box.value = typed;
+        table.searchText = typed.toLowerCase();
+        if (page !== undefined) state.page = page;
+        // A rebuild can cancel the input debounce before it resets the page.
+        if (table.searchText !== state.search) state.page = 1;
+        restoreTableState(table, state);
         return table;
     }
 
@@ -777,6 +779,7 @@
                 if (seq !== _rejectsSeq) return;
                 _rejectsSig = '';
                 resetRejectsTable();
+                renderRejectsNote(range, 0, 0);
                 CSM.loadError(tbody, loadRejects, { title: 'Failed to load rejects', error: err });
             });
     }
@@ -834,8 +837,9 @@
         items.forEach(function(r) {
             var row = node('tr');
             row.setAttribute('data-reject-key', JSON.stringify(r));
+            row.setAttribute('data-search', [r.sender, r.recipient, r.ip, r.detail].join('\n'));
             var at = rejectCell('Time', CSM.fmtDate(r.at), 'text-nowrap');
-            at.setAttribute('data-sort', String(r.at || ''));
+            at.setAttribute('data-timestamp', r.at || '');
             row.appendChild(at);
             var reason = rejectCell('Reason');
             reason.replaceChildren(node('span', 'badge ' + (Object.prototype.hasOwnProperty.call(REJECT_BADGES, r.class) ? REJECT_BADGES[r.class] : 'bg-secondary-lt'),
@@ -864,14 +868,13 @@
             tableId: 'email-rejects-table',
             perPage: 25,
             searchId: 'email-rejects-search',
+            searchAttr: 'data-search',
             sortable: true,
             stateKey: 'csm-email-rejects',
             mobileRowCard: true,
             countTargetId: 'email-rejects-count',
             emptyState: { icon: 'filter-off', title: 'No rejects match', reason: 'Try another reason or search.' }
-        });
-        if (state) state.page = page;
-        restoreTableState(rejectsTable, state);
+        }, state, page);
         if (focused !== null) {
             tbody.querySelectorAll('tr').forEach(function(row) {
                 var link = row.querySelector('a');
@@ -885,7 +888,7 @@
     function tableState(table) {
         if (!table) return null;
         var active = document.activeElement;
-        return { page: table.currentPage, perPage: table.perPage, column: table.sortColumn, asc: table.sortAsc,
+        return { page: table.currentPage, perPage: table.perPage, column: table.sortColumn, asc: table.sortAsc, search: table.searchText,
             control: active && table.controlsEl && table.controlsEl.contains(active) ? active.textContent : null };
     }
 
@@ -1136,13 +1139,13 @@
             perPage: 25,
             persistPerPage: false,
             searchId: 'email-sending-search',
+            searchAttr: 'data-search',
             sortable: true,
             stateKey: 'csm-email-senders',
             mobileRowCard: true,
             countTargetId: 'email-sending-count',
             emptyState: { icon: 'filter-off', title: 'No account matches', reason: 'Try another search.' }
-        });
-        restoreTableState(sendersTable, state);
+        }, state);
         if (focused !== null) {
             var links = tbody.querySelectorAll('[data-findings-account]');
             for (var i = 0; i < links.length; i++) {
@@ -1161,6 +1164,7 @@
     // come from the server, so all of it is text.
     function senderRow(a, total, flags) {
         var tr = node('tr');
+        tr.setAttribute('data-search', a.account);
         tr.appendChild(rejectCell('Account', a.account, 'csm-break-word'));
         var messages = queueCell('Messages', 'text-end text-nowrap');
         messages.setAttribute('data-sort', String(a.messages));
@@ -2223,6 +2227,7 @@
         rows.forEach(function(r) {
             var tr = node('tr');
             tr.setAttribute('data-suspension-id', r.id);
+            tr.setAttribute('data-search', [r.subject, r.account, r.check, r.reason].join('\n'));
             var who = rejectCell('Mailbox or account', r.subject);
             if (r.account) who.appendChild(node('div', 'text-muted small', 'cPanel account ' + r.account));
             tr.appendChild(who);
@@ -2257,13 +2262,13 @@
             tableId: 'email-suspended-table',
             perPage: 25,
             searchId: 'email-suspended-search',
+            searchAttr: 'data-search',
             sortable: false,
             stateKey: 'csm-email-suspended',
             mobileRowCard: true,
             countTargetId: 'email-suspended-count',
             emptyState: { icon: 'filter-off', title: 'No suspension matches', reason: 'Try another search.' }
-        });
-        restoreTableState(suspendedTable, state);
+        }, state);
     }
 
     // releaseSuspended asks first, then lifts what CSM applied. A refused

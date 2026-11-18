@@ -180,10 +180,13 @@ Held mail custom ranges include only items held during the selected days;
 the summary also identifies held items outside that range. The other ranges
 have no end, so a server clock ahead of the browser cannot hide mail just
 held.
-Rejects, Sending accounts and Suspended use the Held mail layout: a toolbar
-with the filter, a search box and the count, then 25 rows a page. The search
-stays in the page address and across refreshes. Rejects lists up to the
-newest 200 rejects of the range and says when the list stops there.
+Rejects, Sending accounts and Suspended use the Held mail layout, with a
+search box, a row count and 25 rows per page. Search
+rejects by sender, recipient, IP or detail, sending accounts by name, and
+suspensions by mailbox, owner account or reason. The address keeps the search.
+A new search starts on the first page. A refresh keeps the current page
+while the search and filters stay the same. Rejects lists up to the newest
+200 rejects in the range and says when the list reaches that limit.
 
 The visible History tab refreshes with its current filters and page size.
 Editors wait for an ongoing save or load before accepting another refresh;
