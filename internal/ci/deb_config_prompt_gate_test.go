@@ -276,9 +276,9 @@ func TestInterruptedConfigSeedCanRetry(t *testing.T) {
 	if err := os.WriteFile(tree.template, []byte("hostname: fresh\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	realInstall, err := exec.LookPath("install")
-	if err != nil {
-		t.Fatal(err)
+	realInstall, lookErr := exec.LookPath("install")
+	if lookErr != nil {
+		t.Fatal(lookErr)
 	}
 	bin := t.TempDir()
 	const failCopy = `#!/bin/bash
@@ -310,11 +310,11 @@ exit 1
 	if err != nil || string(got) != "hostname: kept\n" {
 		t.Fatal("setup overwrote the operator config")
 	}
-	if err := os.Remove(tree.preferred); err != nil {
+	if err = os.Remove(tree.preferred); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", path)
-	if err := tree.run(t, "postinstall", "configure"); err != nil {
+	if err = tree.run(t, "postinstall", "configure"); err != nil {
 		t.Fatal(err)
 	}
 	got, err = os.ReadFile(tree.preferred)
