@@ -533,7 +533,7 @@ func addressListStep(ctx context.Context, api API) (s Step, on bool, err error) 
 		for _, sym := range ipmap.Symbols() {
 			strongest = max(strongest, sym.Tenths())
 		}
-		s.Detail = fmt.Sprintf("create rule %s: Stalwart adds up to %s to the spam score of senders on CSM's address list, so more of their mail goes to Junk; switch the rule off in Stalwart to stop",
+		s.Detail = fmt.Sprintf("create rule %s: Stalwart adds up to %s to the spam score of senders on CSM's address list, so more of their mail goes to Junk, or is rejected or discarded at the scores set in Stalwart; switch the rule off in Stalwart to stop",
 			AddressListRule, strconv.FormatFloat(float64(strongest)/10, 'f', -1, 64))
 	case len(missing) > 0 || reset:
 		var parts []string

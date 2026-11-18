@@ -1224,7 +1224,7 @@ var addressListWrites = []string{
 
 const addressListDone = "rule CSM_IP adds CSM_IP_DROP 4, CSM_IP_BLOCKED 3, CSM_IP_MAIL_AUTH 3, CSM_IP_SPAM 3, CSM_IP_BLOCKLISTDE 2, CSM_IP_CINS 2, CSM_IP_CANARY 0 to senders on CSM's address list"
 
-const addressListCreate = "create rule CSM_IP: Stalwart adds up to 4 to the spam score of senders on CSM's address list, so more of their mail goes to Junk; switch the rule off in Stalwart to stop"
+const addressListCreate = "create rule CSM_IP: Stalwart adds up to 4 to the spam score of senders on CSM's address list, so more of their mail goes to Junk, or is rejected or discarded at the scores set in Stalwart; switch the rule off in Stalwart to stop"
 const addressListOff = "rule CSM_IP is switched off in Stalwart, so CSM's address list adds no score"
 
 func TestAddressListArms(t *testing.T) {
