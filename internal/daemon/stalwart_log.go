@@ -37,6 +37,8 @@ type stalwartState struct {
 	hourly   stalwartHealth
 	excused  excusedBans
 	verdicts *stalwartVerdicts
+	// list is the last address list tick's state, nil before the first.
+	list atomic.Pointer[stalwartListState]
 }
 
 func newStalwartState(ports stalwartlog.Ports, start time.Time) *stalwartState {

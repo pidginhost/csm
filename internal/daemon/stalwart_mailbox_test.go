@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -55,6 +56,86 @@ type fakeStalwart struct {
 	held                  chan string
 	holdEnd               error
 	inFlight, maxInFlight int
+
+	// The address list: spamOff and stageOff switch the filter off, rule is
+	// the CSM rule or nil when missing, and keys holds each namespace.
+	// keyCreates, keyDeletes and lookupReloads record the writes.
+	spamOff, stageOff bool
+	rule              *stalwartapi.SpamRule
+	keys              map[string][]stalwartapi.LookupKey
+	keysErr           error
+	createErr         error
+	keyCreates        map[string][]string
+	keyDeletes        []string
+	lookupReloads     int
+	nextKeyID         int
+}
+
+func (f *fakeStalwart) SpamSettings(context.Context) (stalwartapi.SpamSettings, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return stalwartapi.SpamSettings{Enabled: !f.spamOff}, nil
+}
+
+func (f *fakeStalwart) SpamFilterStageOff(context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stageOff, nil
+}
+
+func (f *fakeStalwart) SpamRule(_ context.Context, name string) (stalwartapi.SpamRule, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rule == nil || name != "CSM_IP" {
+		return stalwartapi.SpamRule{}, false, nil
+	}
+	return *f.rule, true, nil
+}
+
+func (f *fakeStalwart) LookupKeys(_ context.Context, ns string) ([]stalwartapi.LookupKey, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.keysErr != nil {
+		return nil, f.keysErr
+	}
+	return append([]stalwartapi.LookupKey(nil), f.keys[ns]...), nil
+}
+
+func (f *fakeStalwart) CreateLookupKeys(_ context.Context, ns string, keys []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return f.createErr
+	}
+	if f.keyCreates == nil {
+		f.keyCreates = map[string][]string{}
+	}
+	if f.keys == nil {
+		f.keys = map[string][]stalwartapi.LookupKey{}
+	}
+	f.keyCreates[ns] = append(f.keyCreates[ns], keys...)
+	for _, k := range keys {
+		f.nextKeyID++
+		f.keys[ns] = append(f.keys[ns], stalwartapi.LookupKey{ID: fmt.Sprintf("n%d", f.nextKeyID), Key: k, Glob: strings.Contains(k, "*")})
+	}
+	return nil
+}
+
+func (f *fakeStalwart) DeleteLookupKeys(_ context.Context, ids []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keyDeletes = append(f.keyDeletes, ids...)
+	for ns, keys := range f.keys {
+		f.keys[ns] = slices.DeleteFunc(keys, func(k stalwartapi.LookupKey) bool { return slices.Contains(ids, k.ID) })
+	}
+	return nil
+}
+
+func (f *fakeStalwart) ReloadLookupStores(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lookupReloads++
+	return nil
 }
 
 func (f *fakeStalwart) bound(ctx context.Context) {

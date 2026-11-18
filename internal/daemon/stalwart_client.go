@@ -17,6 +17,13 @@ type stalwartAPI interface {
 	BlockedIPs(ctx context.Context, address string) ([]stalwartapi.BlockedIP, error)
 	DeleteBlockedIPs(ctx context.Context, ids []string) error
 	ReloadBlockedIPs(ctx context.Context) error
+	SpamSettings(ctx context.Context) (stalwartapi.SpamSettings, error)
+	SpamFilterStageOff(ctx context.Context) (bool, error)
+	SpamRule(ctx context.Context, name string) (stalwartapi.SpamRule, bool, error)
+	LookupKeys(ctx context.Context, namespace string) ([]stalwartapi.LookupKey, error)
+	CreateLookupKeys(ctx context.Context, namespace string, keys []string) error
+	DeleteLookupKeys(ctx context.Context, ids []string) error
+	ReloadLookupStores(ctx context.Context) error
 }
 
 // newStalwartKeyClient is a var so tests can see what the client is built
