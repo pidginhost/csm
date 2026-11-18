@@ -11,8 +11,12 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
-- `csm stalwart setup` asks for a missing admin login on a terminal without echoing the password, and `--password-stdin` takes the password from stdin.
+- Stalwart setup accepts piped passwords on request and asks for missing credentials on a terminal.
 - Admission status now lists which automatic IP block sources the host's settings let it run.
+
+### Security
+
+- Stalwart setup hides passwords entered on a terminal and cancels the login when the operator interrupts the prompt.
 
 ### Changed
 

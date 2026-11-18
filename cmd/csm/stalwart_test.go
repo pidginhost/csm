@@ -264,7 +264,7 @@ func newSetupHarness(t *testing.T) *setupHarness {
 		readFile:      os.ReadFile,
 		prompt:        io.Discard,
 		stdinTerminal: func() bool { return false },
-		readHidden:    func() ([]byte, error) { return nil, errors.New("no terminal") },
+		withoutEcho:   func(func(io.Reader) error) error { return errors.New("no terminal") },
 		checkListener: func(string) error { return nil },
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			h.gotURL, h.gotUser, h.gotPass = url, user, password
@@ -325,6 +325,43 @@ type readerFunc func([]byte) (int, error)
 
 func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
 
+func TestStalwartSetupOpenPipeWithoutPasswordStdin(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	// A regression must fail the test even if it treats a read timeout as a
+	// missing login, which has the same exit code as the expected refusal.
+	if err := r.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, user, password string
+		wantCode             int
+	}{
+		{"neither", "", "", 2},
+		{"user only", "ops", "", 2},
+		{"password only", "", setupTestPassword, 2},
+		{"complete", "ops", setupTestPassword, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSetupHarness(t)
+			h.api.userRole = true
+			h.env["STALWART_USER"], h.env["STALWART_PASSWORD"] = tc.user, tc.password
+			h.deps.stdin = readerFunc(func(p []byte) (int, error) {
+				t.Error("setup read the open pipe without --password-stdin")
+				return r.Read(p)
+			})
+			code := runStalwartSetup([]string{"--dry-run"}, h.deps, io.Discard)
+			if code != tc.wantCode || (h.gotUser != "") != (tc.wantCode == 0) {
+				t.Fatalf("setup exit %d, API contacted %t", code, h.gotUser != "")
+			}
+		})
+	}
+}
+
 func TestStalwartSetupGivenLoginNeverReadsStdin(t *testing.T) {
 	file := t.TempDir() + "/pw"
 	if err := os.WriteFile(file, []byte(setupTestPassword+"\n"), 0o600); err != nil {
@@ -336,6 +373,7 @@ func TestStalwartSetupGivenLoginNeverReadsStdin(t *testing.T) {
 	}{
 		"environment":            {map[string]string{"STALWART_USER": "ops", "STALWART_PASSWORD": setupTestPassword}, nil},
 		"user and password file": {map[string]string{"STALWART_USER": "ops"}, []string{"--password-file", file}},
+		"file overrides env":     {map[string]string{"STALWART_USER": "ops", "STALWART_PASSWORD": "unused"}, []string{"--password-file", file}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newSetupHarness(t)
@@ -347,7 +385,7 @@ func TestStalwartSetupGivenLoginNeverReadsStdin(t *testing.T) {
 				t.Fatalf("code %d, out %q", code, out)
 			}
 			if h.gotUser != "ops" || h.gotPass != setupTestPassword || h.stdinRead != 0 {
-				t.Fatalf("login %q/%q after %d stdin reads", h.gotUser, h.gotPass, h.stdinRead)
+				t.Fatalf("unexpected login or stdin access (%d reads)", h.stdinRead)
 			}
 		})
 	}
@@ -359,10 +397,10 @@ func TestStalwartSetupPromptsOnTerminal(t *testing.T) {
 		stdin, user     string
 		userAsked, rest string
 	}{
-		"default user":  {map[string]string{}, "\n", "admin", "user [admin]: ", ""},
-		"typed user":    {map[string]string{}, " ops \r\n", "ops", "user [admin]: ", ""},
-		"paste stays":   {map[string]string{}, "ops\nleft\n", "ops", "user [admin]: ", "left\n"},
-		"user from env": {map[string]string{"STALWART_USER": "ops"}, "", "ops", "", ""},
+		"default user":  {map[string]string{}, "\n" + setupTestPassword + "\n", "admin", "user [admin]: ", ""},
+		"typed user":    {map[string]string{}, " ops \r\n" + setupTestPassword + "\n", "ops", "user [admin]: ", ""},
+		"paste stays":   {map[string]string{}, "ops\n" + setupTestPassword + "\nleft\n", "ops", "user [admin]: ", "left\n"},
+		"user from env": {map[string]string{"STALWART_USER": "ops"}, setupTestPassword + "\n", "ops", "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newSetupHarness(t)
@@ -372,22 +410,26 @@ func TestStalwartSetupPromptsOnTerminal(t *testing.T) {
 			var prompt bytes.Buffer
 			h.deps.prompt = &prompt
 			h.deps.stdinTerminal = func() bool { return true }
-			h.deps.readHidden = func() ([]byte, error) { return []byte(setupTestPassword), nil }
+			var hiddenReads int
+			h.deps.withoutEcho = func(ask func(io.Reader) error) error {
+				hiddenReads++
+				return ask(h.stdin)
+			}
 			code, out := h.run("--dry-run")
 			if code != 0 {
 				t.Fatalf("code %d, out %q", code, out)
 			}
 			if h.gotUser != tc.user || h.gotPass != setupTestPassword {
-				t.Fatalf("login %q/%q, want %q", h.gotUser, h.gotPass, tc.user)
+				t.Fatal("API received the wrong login")
 			}
 			if got := strings.Contains(prompt.String(), "user ["); got != (tc.userAsked != "") {
 				t.Fatalf("prompt %q: user asked = %v", prompt.String(), got)
 			}
-			if !strings.Contains(prompt.String(), "password: ") || strings.Contains(prompt.String(), setupTestPassword) {
-				t.Fatalf("prompt %q", prompt.String())
+			if hiddenReads != 1 || !strings.Contains(prompt.String(), "password: ") || strings.Contains(prompt.String(), setupTestPassword) {
+				t.Fatal("password prompt did not use exactly one hidden read")
 			}
 			if rest, _ := io.ReadAll(h.stdin); string(rest) != tc.rest {
-				t.Fatalf("setup consumed past the user line; left %q, want %q", rest, tc.rest)
+				t.Fatalf("setup consumed past the password line; left %q, want %q", rest, tc.rest)
 			}
 		})
 	}
@@ -402,6 +444,8 @@ func TestStalwartSetupPasswordStdin(t *testing.T) {
 		"user from env":  {map[string]string{"STALWART_USER": "ops"}, setupTestPassword, "ops", setupTestPassword},
 		"flag beats env": {map[string]string{"STALWART_PASSWORD": "env-pw"}, setupTestPassword + "\r\n", "admin", setupTestPassword},
 		"keeps spaces":   {map[string]string{}, " pw with spaces \n", "admin", " pw with spaces "},
+		"CR before CRLF": {nil, setupTestPassword + "\r\r\n", "admin", setupTestPassword + "\r"},
+		"CR before EOF":  {nil, setupTestPassword + "\r", "admin", setupTestPassword + "\r"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newSetupHarness(t)
@@ -412,7 +456,7 @@ func TestStalwartSetupPasswordStdin(t *testing.T) {
 				t.Fatalf("code %d, out %q", code, out)
 			}
 			if h.gotUser != tc.user || h.gotPass != tc.pass {
-				t.Fatalf("login %q/%q, want %q/%q", h.gotUser, h.gotPass, tc.user, tc.pass)
+				t.Fatal("API received the wrong login")
 			}
 		})
 	}
@@ -424,6 +468,37 @@ func TestStalwartSetupPasswordStdin(t *testing.T) {
 	h = newSetupHarness(t)
 	if code, out := h.run("--password-stdin", "--password-file", "/nonexistent"); code != 2 || h.gotUser != "" || !strings.Contains(out, "not both") {
 		t.Fatalf("both flags: code %d, out %q", code, out)
+	}
+}
+
+func TestStalwartSetupPasswordStdinOnTerminal(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.userRole = true
+	h.env = nil
+	h.deps.stdinTerminal = func() bool { return true }
+	h.deps.withoutEcho = func(ask func(io.Reader) error) error { return ask(strings.NewReader(setupTestPassword + "\n")) }
+	if code, _ := h.run("--dry-run", "--password-stdin"); code != 0 || h.gotUser != "admin" || h.gotPass != setupTestPassword || h.stdinRead != 0 {
+		t.Fatal("terminal password did not use the hidden reader")
+	}
+}
+
+func TestStalwartSetupUsernamePromptEOF(t *testing.T) {
+	h := newSetupHarness(t)
+	h.env = map[string]string{"STALWART_PASSWORD": setupTestPassword}
+	h.deps.stdinTerminal = func() bool { return true }
+	if code, _ := h.run(); code != 2 || h.gotUser != "" || len(h.api.writes) != 0 {
+		t.Fatal("setup proceeded after EOF at the user prompt")
+	}
+}
+
+func TestStalwartSetupUsernameOnlyPrompt(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.userRole = true
+	h.env = map[string]string{"STALWART_PASSWORD": setupTestPassword}
+	h.stdin = strings.NewReader("ops\nunused\n")
+	h.deps.stdinTerminal = func() bool { return true }
+	if code, _ := h.run("--dry-run"); code != 0 || h.gotUser != "ops" || h.gotPass != setupTestPassword || h.stdin.Len() != len("unused\n") {
+		t.Fatal("setup did not use the supplied password after prompting for the user")
 	}
 }
 

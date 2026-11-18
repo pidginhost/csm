@@ -33,11 +33,11 @@ type stalwartSetupDeps struct {
 	readFile   func(string) ([]byte, error)
 	// stdin gives the password with --password-stdin. On a terminal, setup
 	// asks on prompt for what the environment and flags left out, and reads
-	// the password with readHidden, which does not echo.
+	// both lines without echo when the password is missing.
 	stdin         io.Reader
 	prompt        io.Writer
 	stdinTerminal func() bool
-	readHidden    func() ([]byte, error)
+	withoutEcho   func(func(io.Reader) error) error
 	// checkListener refuses an API address another local user may be
 	// listening on.
 	checkListener func(url string) error
@@ -57,7 +57,7 @@ func defaultStalwartSetupDeps() stalwartSetupDeps {
 		stdin:         os.Stdin,
 		prompt:        os.Stderr,
 		stdinTerminal: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
-		readHidden:    func() ([]byte, error) { return term.ReadPassword(int(os.Stdin.Fd())) },
+		withoutEcho:   withStalwartTerminal,
 		checkListener: stalwartapi.CheckListener,
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			return stalwartapi.NewWithPeerCheck(url, user, password, stalwartapi.CheckPeer)
@@ -143,14 +143,19 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 			return 2
 		}
 	}
-	switch {
-	case *passwordStdin:
-		password, err = readStalwartLine(deps.stdin)
+	if *passwordStdin {
+		password = ""
 		if user == "" {
 			user = defaultStalwartAdmin
 		}
-	case (user == "" || password == "") && deps.stdinTerminal():
-		user, password, err = promptStalwartLogin(deps, user, password)
+	}
+	if user == "" || password == "" {
+		switch {
+		case deps.stdinTerminal():
+			user, password, err = promptStalwartLogin(deps, user, password)
+		case *passwordStdin:
+			password, err = readStalwartLine(deps.stdin)
+		}
 	}
 	if err != nil {
 		fmt.Fprintf(out, "Cannot read the Stalwart admin login: %v\n", err)
@@ -250,31 +255,46 @@ const defaultStalwartAdmin = "admin"
 // environment and flags left out. Enter means admin; the password is not
 // echoed.
 func promptStalwartLogin(deps stalwartSetupDeps, user, password string) (string, string, error) {
-	if user == "" {
-		fmt.Fprintf(deps.prompt, "Stalwart admin user [%s]: ", defaultStalwartAdmin)
-		line, err := readStalwartLine(deps.stdin)
-		if err != nil {
-			return "", "", err
+	ask := func(input io.Reader) error {
+		if user == "" {
+			if _, err := fmt.Fprintf(deps.prompt, "Stalwart admin user [%s]: ", defaultStalwartAdmin); err != nil {
+				return err
+			}
+			line, err := readStalwartLine(input)
+			if password == "" {
+				fmt.Fprintln(deps.prompt)
+			}
+			if err != nil {
+				return err
+			}
+			if user = strings.TrimSpace(line); user == "" {
+				user = defaultStalwartAdmin
+			}
 		}
-		if user = strings.TrimSpace(line); user == "" {
-			user = defaultStalwartAdmin
+		if password == "" {
+			if _, err := fmt.Fprint(deps.prompt, "Stalwart admin password: "); err != nil {
+				return err
+			}
+			line, err := readStalwartLine(input)
+			fmt.Fprintln(deps.prompt)
+			password = line
+			return err
 		}
+		return nil
 	}
+	var err error
 	if password == "" {
-		_, _ = fmt.Fprint(deps.prompt, "Stalwart admin password: ")
-		secret, err := deps.readHidden()
-		fmt.Fprintln(deps.prompt)
-		if err != nil {
-			return "", "", err
-		}
-		password = string(secret)
+		// A two-line paste at the user prompt can already contain the password.
+		err = deps.withoutEcho(ask)
+	} else {
+		err = ask(deps.stdin)
 	}
-	return user, password, nil
+	return user, password, err
 }
 
 // readStalwartLine reads one line without its line ending. It reads a byte
-// at a time so a password pasted after the user name stays for readHidden
-// instead of sitting in a buffer. End of input ends the line.
+// at a time so a pipe keeps everything after the newline for its next reader.
+// EOF terminates a nonempty final line.
 func readStalwartLine(r io.Reader) (string, error) {
 	var line []byte
 	b := make([]byte, 1)
@@ -282,18 +302,17 @@ func readStalwartLine(r io.Reader) (string, error) {
 		n, err := r.Read(b)
 		if n == 1 {
 			if b[0] == '\n' {
-				break
+				return strings.TrimSuffix(string(line), "\r"), nil
 			}
 			line = append(line, b[0])
 		}
-		if errors.Is(err, io.EOF) {
-			break
+		if errors.Is(err, io.EOF) && len(line) != 0 {
+			return string(line), nil
 		}
 		if err != nil {
 			return "", err
 		}
 	}
-	return strings.TrimRight(string(line), "\r"), nil
 }
 
 // stalwartKeyAccount reads CSM's key file and asks Stalwart which account the
