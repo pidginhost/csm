@@ -19,6 +19,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - On Stalwart hosts CSM now suspends a hacked mailbox's sign-ins, listed with Release on the Email page. Run `csm stalwart setup` once to enable it.
 - Unblocking an address in CSM on a Stalwart host now also lifts Stalwart's own automatic ban of it, once `csm stalwart setup` has run.
 - `csm stalwart setup` now creates the Stalwart API key CSM uses to suspend mailboxes and lift bans, stored in a root-only file.
+- On Stalwart hosts, setup adds a spam rule that scores senders on CSM's address list; run setup again after upgrading, and switch the rule off in Stalwart to stop it.
 
 ### Changed
 

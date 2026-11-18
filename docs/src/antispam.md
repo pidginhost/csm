@@ -1061,7 +1061,10 @@ its own scores decide what happens to each message. `csm stalwart setup`
 makes Stalwart log the mail its filter rejects or discards and reports
 whether the filter is on and at which scores it acts; `csm doctor` checks
 the same and whether the filter's DNS blocklists answer. Neither switches
-the filter or changes its scores. See
+the filter or changes its scores. Setup also adds a spam rule that adds up
+to 4 to the spam score of senders on CSM's address list, so more of their
+mail goes to Junk. It is the one setup step that changes what happens to
+mail; switch the rule `CSM_IP` off in Stalwart to stop it. See
 [Preparing Stalwart](detection-realtime.md#preparing-stalwart).
 
 ### Filter verdicts
@@ -1099,9 +1102,8 @@ The [spam evidence budget](#spam-evidence-budget) applies here too.
 
 ### Not done on Stalwart
 
-CSM does not change Stalwart's scores or rules, set up its DNS blocklists or
-check outgoing mail. Stalwart does not yet read CSM's own address list; that
-is planned.
+Apart from the rule for its address list, CSM does not change Stalwart's
+scores or rules, set up its DNS blocklists or check outgoing mail.
 
 ## rspamd admin interface
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/stalwartapi"
 )
 
@@ -70,7 +71,7 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Inspect: %v", err)
 	}
-	want := []State{Done, Skipped, Done, Done, Done, Done, Done, Done, Done}
+	want := []State{Done, Skipped, Done, Done, Done, Done, Done, Done, Done, Done}
 	if len(p.Steps) != len(want) {
 		t.Fatalf("second Inspect has %d steps, want %d", len(p.Steps), len(want))
 	}
@@ -79,6 +80,13 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 		if s.State != want[i] {
 			t.Errorf("%s = %s, want %s", s.Name, s.State, want[i])
 		}
+	}
+
+	if !p.AddressListOn {
+		t.Error("second Inspect reads the address list rule as off")
+	}
+	if rule, found, ruleErr := api.SpamRule(ctx, AddressListRule); ruleErr != nil || !found || rule.Type != "Any" || !rule.Enabled {
+		t.Errorf("SpamRule(%s) = %+v, %v, %v; want an enabled Any rule", AddressListRule, rule, found, ruleErr)
 	}
 
 	// Docker's proxy holds the published port, which the production peer
@@ -228,8 +236,8 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 		for _, s := range kp.Steps {
 			t.Logf("%s: %s: %s", s.Name, s.State, s.Detail)
 		}
-		if got := stepStates(kp, "response role", "response account"); got != "done done" {
-			t.Errorf("response role and account through the key = %s, want done done", got)
+		if got := stepStates(kp, "response role", "response account", "address list"); got != "done done done" {
+			t.Errorf("response role, account and address list through the key = %s, want done done done", got)
 		}
 		// Inspect turns a refused spam filter read into a warning, so those
 		// reads are checked on their own.
@@ -238,6 +246,28 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 		}
 		if _, err := key.SpamFilterStageOff(ctx); err != nil {
 			t.Errorf("SpamFilterStageOff through the key: %v", err)
+		}
+	})
+
+	// The daemon's part, done here through CSM's key: the canary key in
+	// CSM's namespace, then a reload, makes Stalwart match the canary sender.
+	t.Run("address list", func(t *testing.T) {
+		ns := ipmap.StalwartNamespace(ipmap.Canary, false)
+		if err := key.CreateLookupKeys(ctx, ns, []string{ipmap.CanaryAddr}); err != nil {
+			t.Fatalf("CreateLookupKeys through the key: %v", err)
+		}
+		if err := key.ReloadLookupStores(ctx); err != nil {
+			t.Fatalf("ReloadLookupStores through the key: %v", err)
+		}
+		probe := stalwartapi.BlocklistProbe
+		probe.RemoteIP = ipmap.CanaryAddr
+		res, err := key.ClassifySpam(ctx, probe)
+		if err != nil {
+			t.Fatalf("ClassifySpam through the key: %v", err)
+		}
+		t.Logf("canary probe: score %v, result %s, tags %q", res.Score, res.Result, res.Tags)
+		if !slices.Contains(res.Tags, ipmap.Canary.Name) {
+			t.Errorf("canary probe tags = %q, want %s", res.Tags, ipmap.Canary.Name)
 		}
 	})
 

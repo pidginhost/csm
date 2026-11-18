@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/stalwartapi"
 )
 
@@ -28,6 +29,9 @@ type fakeAPI struct {
 	failOn     string
 	reloadErr  error
 	calls      []string
+
+	rules map[string]stalwartapi.SpamRule
+	tags  map[string]stalwartapi.SpamTag
 
 	roles     []stalwartapi.Role
 	domains   []stalwartapi.Domain
@@ -110,6 +114,62 @@ func (f *fakeAPI) ReloadSettings(context.Context) ([]string, error) {
 	return []string{"w: reloaded"}, f.reloadErr
 }
 
+func (f *fakeAPI) SpamRule(_ context.Context, name string) (stalwartapi.SpamRule, bool, error) {
+	if err := f.read("SpamRule"); err != nil {
+		return stalwartapi.SpamRule{}, false, err
+	}
+	r, ok := f.rules[name]
+	return r, ok, nil
+}
+func (f *fakeAPI) CreateSpamRule(_ context.Context, name string, r stalwartapi.SpamRule) error {
+	if err := f.write("CreateSpamRule(" + name + ")"); err != nil {
+		return err
+	}
+	if f.rules == nil {
+		f.rules = map[string]stalwartapi.SpamRule{}
+	}
+	f.rules[name] = stalwartapi.SpamRule{ID: "rule-" + name, Type: "Any", Enabled: true, Arms: r.Arms, Else: r.Else}
+	return nil
+}
+func (f *fakeAPI) SetSpamRuleCondition(_ context.Context, id string, arms []stalwartapi.RuleArm, elseExpr string) error {
+	if err := f.write("SetSpamRuleCondition(" + id + ")"); err != nil {
+		return err
+	}
+	for name, r := range f.rules {
+		if r.ID == id {
+			r.Arms, r.Else = arms, elseExpr
+			f.rules[name] = r
+		}
+	}
+	return nil
+}
+func (f *fakeAPI) SpamTag(_ context.Context, tag string) (stalwartapi.SpamTag, bool, error) {
+	if err := f.read("SpamTag"); err != nil {
+		return stalwartapi.SpamTag{}, false, err
+	}
+	t, ok := f.tags[tag]
+	return t, ok, nil
+}
+func (f *fakeAPI) CreateSpamTag(_ context.Context, tag string, score float64) error {
+	if err := f.write(fmt.Sprintf("CreateSpamTag(%s,%v)", tag, score)); err != nil {
+		return err
+	}
+	if f.tags == nil {
+		f.tags = map[string]stalwartapi.SpamTag{}
+	}
+	f.tags[tag] = stalwartapi.SpamTag{ID: "tag-" + tag, Type: "Score", Tag: tag, Score: score}
+	return nil
+}
+
+// addressList gives f CSM's rule, switched on, and its tags at CSM's scores.
+func addressList(f *fakeAPI) {
+	f.rules = map[string]stalwartapi.SpamRule{AddressListRule: {ID: "rule1", Type: "Any", Enabled: true, Arms: AddressListArms(), Else: "false"}}
+	f.tags = map[string]stalwartapi.SpamTag{}
+	for i, s := range ipmap.Symbols() {
+		f.tags[s.Name] = stalwartapi.SpamTag{ID: fmt.Sprint("tag", i), Type: "Score", Tag: s.Name, Score: float64(s.Tenths()) / 10}
+	}
+}
+
 func listener(name, proto string, binds ...string) stalwartapi.Listener {
 	l := stalwartapi.Listener{ID: name, Name: name, Protocol: proto}
 	for _, b := range binds {
@@ -139,13 +199,15 @@ func freshAPI() *fakeAPI {
 
 func configuredAPI() *fakeAPI {
 	day := dur(24 * time.Hour)
-	return &fakeAPI{
+	f := &fakeAPI{
 		levels:    []stalwartapi.TracingLevel{{ID: "t1", Event: "auth.failed", Level: "info"}, {ID: "t2", Event: "spam.classify", Level: "info"}},
 		http:      stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1},
 		bans:      stalwartapi.BanPeriods{Auth: day, Abuse: day, Scan: day},
 		listeners: fieldListeners(),
 		spam:      stockSpam,
 	}
+	addressList(f)
+	return f
 }
 
 func fieldInputs() Inputs {
@@ -163,7 +225,7 @@ func inspect(t *testing.T, api *fakeAPI, in Inputs) Plan {
 		names[i] = s.Name
 	}
 	want := []string{"failed-login logging", "webmail client addresses", "ban expiry", "proxy protocol listeners", "spam verdict logging", "spam filter",
-		"response role", "response account", "response key"}
+		"address list", "response role", "response account", "response key"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("steps = %q, want %q", names, want)
 	}
@@ -190,7 +252,7 @@ func applyCalls(t *testing.T, api *fakeAPI, p Plan) []string {
 func TestPlanFreshStalwart(t *testing.T) {
 	api := freshAPI()
 	p := inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Change, Change, Change, Done, Change, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Change, Change, Change, Done, Change, Done, Change, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("states = %v, want %v", got, want)
 	}
 	api.calls = nil
@@ -203,8 +265,8 @@ func TestPlanFreshStalwart(t *testing.T) {
 		"SetHTTPSettings(xForwardedFor,1)",
 		"SetBanPeriods(24h0m0s)",
 		"SetTracingLevel(,spam.classify,info)",
-		"ReloadSettings",
 	}
+	want = append(append(want, addressListWrites...), "ReloadSettings")
 	if !reflect.DeepEqual(api.calls, want) {
 		t.Fatalf("calls = %q, want %q", api.calls, want)
 	}
@@ -216,7 +278,7 @@ func TestPlanFreshStalwart(t *testing.T) {
 func TestPlanAlreadyConfiguredAppliesNothing(t *testing.T) {
 	api := configuredAPI()
 	p := inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps)
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
@@ -564,8 +626,8 @@ func TestPlanSpamReadFailureWarnsAndAllowsSetup(t *testing.T) {
 				"SetHTTPSettings(xForwardedFor,1)",
 				"SetBanPeriods(24h0m0s)",
 				"SetTracingLevel(,spam.classify,info)",
-				"ReloadSettings",
 			}
+			want = append(append(want, addressListWrites...), "ReloadSettings")
 			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, want) {
 				t.Fatalf("writes = %q, want %q", calls, want)
 			}
@@ -596,11 +658,11 @@ func TestPlanSpamReadUnauthorizedStopsSetup(t *testing.T) {
 func TestPlanSecondSetupWritesNothing(t *testing.T) {
 	api := freshAPI()
 	p := inspect(t, api, fieldInputs())
-	if calls := applyCalls(t, api, p); len(calls) != 5 {
-		t.Fatalf("first setup calls = %q, want four writes and a reload", calls)
+	if calls := applyCalls(t, api, p); len(calls) != 4+len(addressListWrites)+1 {
+		t.Fatalf("first setup calls = %q, want four writes, the address list and a reload", calls)
 	}
 	p = inspect(t, api, fieldInputs())
-	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Done, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("second setup states = %v, want %v", got, want)
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
@@ -738,13 +800,13 @@ func responseInputs(api *fakeAPI, keyAccount string, writeErr error) Inputs {
 	return in
 }
 
-func responseStates(p Plan) []State { return states(p)[6:] }
+func responseStates(p Plan) []State { return states(p)[7:] }
 
 func TestPlanCreatesRoleAccountAndKey(t *testing.T) {
 	api := responseAPI()
 	p := inspect(t, api, responseInputs(api, "", nil))
-	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Change, Change, Change}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+	if got, want := states(p), []State{Done, Done, Done, Done, Done, Done, Done, Change, Change, Change}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 	}
 	calls := applyCalls(t, api, p)
 	want := []string{
@@ -773,7 +835,7 @@ func TestPlanKeepsWorkingKey(t *testing.T) {
 	api := preparedAPI()
 	p := inspect(t, api, responseInputs(api, "a1", nil))
 	if got, want := responseStates(p), []State{Done, Done, Done}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
 		t.Fatalf("Apply made calls %q", calls)
@@ -786,7 +848,7 @@ func TestPlanReplacesForeignOrMissingKey(t *testing.T) {
 			api := twoKeyAPI()
 			p := inspect(t, api, responseInputs(api, keyAccount, nil))
 			if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
-				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 			}
 			want := []string{"CreateAPIKey(a1,CSM,127.0.0.1 ::1)", "WriteKey(test-key-1)", "APIKeys", "DeleteAPIKeys(a1,old1,old2)"}
 			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, want) {
@@ -835,7 +897,7 @@ func TestKeyStepKeepsNewKeyWhenOldKeysStay(t *testing.T) {
 	api.failOn = ""
 	p = inspect(t, api, responseInputs(api, "a1", nil))
 	if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("rerun states = %v, want %v (%+v)", got, want, p.Steps[6:])
+		t.Fatalf("rerun states = %v, want %v (%+v)", got, want, p.Steps[7:])
 	}
 	applyCalls(t, api, p)
 	if want := []stalwartapi.APIKey{{ID: "id2", Description: "CSM"}}; !reflect.DeepEqual(api.keys["a1"], want) {
@@ -849,9 +911,9 @@ func TestPlanReplacesKeyWhenAccountHasExtraKeys(t *testing.T) {
 	api := twoKeyAPI()
 	p := inspect(t, api, responseInputs(api, "a1", nil))
 	if got, want := responseStates(p), []State{Done, Done, Change}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 	}
-	if s := p.Steps[8]; !strings.Contains(s.Detail, "extra") {
+	if s := p.Steps[9]; !strings.Contains(s.Detail, "extra") {
 		t.Fatalf("key step = %+v, want the extra keys named", s)
 	}
 	want := []string{"CreateAPIKey(a1,CSM,127.0.0.1 ::1)", "WriteKey(test-key-1)", "APIKeys", "DeleteAPIKeys(a1,old1,old2)"}
@@ -864,7 +926,7 @@ func TestPlanReplacesKeyWhenAccountHasExtraKeys(t *testing.T) {
 
 	api = preparedAPI()
 	api.keys["a1"] = nil
-	if s := inspect(t, api, responseInputs(api, "a1", nil)).Steps[8]; s.State != Change {
+	if s := inspect(t, api, responseInputs(api, "a1", nil)).Steps[9]; s.State != Change {
 		t.Fatalf("no keys listed: key step = %+v, want Change", s)
 	}
 }
@@ -881,10 +943,10 @@ func TestPlanUpdatesRoleMissingPermission(t *testing.T) {
 			mutate(&api.roles[1])
 			p := inspect(t, api, responseInputs(api, "a1", nil))
 			if got, want := responseStates(p), []State{Change, Done, Done}; !reflect.DeepEqual(got, want) {
-				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+				t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 			}
 			// The save replaces the role, so the step must not promise to add.
-			if d := p.Steps[6].Detail; !strings.Contains(d, "; reset it to CSM's permissions and the User role") {
+			if d := p.Steps[7].Detail; !strings.Contains(d, "; reset it to CSM's permissions and the User role") {
 				t.Fatalf("role step detail = %q, want it to say the role is reset", d)
 			}
 			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SaveRole(r1," + ResponseRole + ")"}) {
@@ -902,7 +964,7 @@ func TestPlanResetsAccountRole(t *testing.T) {
 	api.acctRoles["a1"] = []string{"r1", "u"}
 	p := inspect(t, api, responseInputs(api, "a1", nil))
 	if got, want := responseStates(p), []State{Done, Change, Done}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 	}
 	if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SetAccountRole(a1,r1)"}) {
 		t.Fatalf("calls = %q", calls)
@@ -917,10 +979,10 @@ func TestPlanNeedsDomainChoice(t *testing.T) {
 	}
 	api := twoDomains()
 	p := inspect(t, api, responseInputs(api, "", nil))
-	if s := p.Steps[7]; s.State != Skipped || !strings.Contains(s.Detail, "--account-domain") {
+	if s := p.Steps[8]; s.State != Skipped || !strings.Contains(s.Detail, "--account-domain") {
 		t.Fatalf("account step = %+v, want Skipped naming --account-domain", s)
 	}
-	if s := p.Steps[8]; s.State != Skipped {
+	if s := p.Steps[9]; s.State != Skipped {
 		t.Fatalf("key step = %+v, want Skipped", s)
 	}
 
@@ -930,7 +992,7 @@ func TestPlanNeedsDomainChoice(t *testing.T) {
 		in.AccountDomain = domain
 		p = inspect(t, api, in)
 		if got, want := responseStates(p), []State{Change, Change, Change}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("%s: states = %v, want %v (%+v)", domain, got, want, p.Steps[6:])
+			t.Fatalf("%s: states = %v, want %v (%+v)", domain, got, want, p.Steps[7:])
 		}
 		if calls := applyCalls(t, api, p); !slices.Contains(calls, "CreateAccount(csm-response,d2,id1)") {
 			t.Fatalf("%s: calls = %q, want the account created in example.net", domain, calls)
@@ -945,7 +1007,7 @@ func TestPlanNeedsDomainChoice(t *testing.T) {
 		in := responseInputs(api, "", nil)
 		in.AccountDomain = domain
 		p = inspect(t, api, in)
-		if s := p.Steps[7]; s.State != Skipped || !strings.Contains(s.Detail, "no domain named") {
+		if s := p.Steps[8]; s.State != Skipped || !strings.Contains(s.Detail, "no domain named") {
 			t.Fatalf("%q: account step = %+v, want Skipped saying there is no such domain", domain, s)
 		}
 		if calls := applyCalls(t, api, p); slices.ContainsFunc(calls, func(c string) bool { return strings.HasPrefix(c, "CreateAccount") }) {
@@ -958,12 +1020,12 @@ func TestPlanWarnsOnDuplicateResponseAccount(t *testing.T) {
 	api := preparedAPI()
 	api.accounts = append(api.accounts, stalwartapi.Account{ID: "a2", Name: ResponseAccount, Email: "csm-response@example.net"})
 	p := inspect(t, api, responseInputs(api, "a1", nil))
-	s := p.Steps[7]
+	s := p.Steps[8]
 	if s.State != Warn || !strings.Contains(s.Detail, "csm-response@example.org") || !strings.Contains(s.Detail, "csm-response@example.net") {
 		t.Fatalf("account step = %+v, want Warn naming both accounts", s)
 	}
-	if p.Steps[8].State != Skipped {
-		t.Fatalf("key step = %+v, want Skipped", p.Steps[8])
+	if p.Steps[9].State != Skipped {
+		t.Fatalf("key step = %+v, want Skipped", p.Steps[9])
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
 		t.Fatalf("Apply made calls %q", calls)
@@ -975,7 +1037,7 @@ func TestPlanSkipsKeyStepsForRemoteAPI(t *testing.T) {
 	in := responseInputs(api, "", nil)
 	in.LocalAPI = false
 	p := inspect(t, api, in)
-	for _, s := range p.Steps[6:] {
+	for _, s := range p.Steps[7:] {
 		if s.State != Skipped || !strings.Contains(s.Detail, "not on this host") {
 			t.Fatalf("step = %+v, want Skipped saying the API is not on this host", s)
 		}
@@ -990,10 +1052,10 @@ func TestPlanWarnsWithoutUserRole(t *testing.T) {
 	api.roles = nil
 	p := inspect(t, api, responseInputs(api, "", nil))
 	if got, want := responseStates(p), []State{Warn, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 	}
-	if !strings.Contains(p.Steps[6].Detail, `"User"`) {
-		t.Fatalf("role step = %+v, want the User role named", p.Steps[6])
+	if !strings.Contains(p.Steps[7].Detail, `"User"`) {
+		t.Fatalf("role step = %+v, want the User role named", p.Steps[7])
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
 		t.Fatalf("Apply made calls %q", calls)
@@ -1025,10 +1087,10 @@ func foreignAccountPlan(t *testing.T, api *fakeAPI, want string) {
 	t.Helper()
 	before := responseState(api)
 	p := inspect(t, api, responseInputs(api, "", nil))
-	if s := p.Steps[7]; s.State != Warn || !strings.Contains(s.Detail, want) {
+	if s := p.Steps[8]; s.State != Warn || !strings.Contains(s.Detail, want) {
 		t.Fatalf("account step = %+v, want Warn saying %q", s, want)
 	}
-	if s := p.Steps[8]; s.State != Skipped {
+	if s := p.Steps[9]; s.State != Skipped {
 		t.Fatalf("key step = %+v, want Skipped", s)
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
@@ -1072,7 +1134,7 @@ func TestPlanAdoptsEmptyAccount(t *testing.T) {
 	api.keys["a1"] = nil
 	p := inspect(t, api, responseInputs(api, "", nil))
 	if got, want := responseStates(p), []State{Done, Change, Change}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[6:])
+		t.Fatalf("states = %v, want %v (%+v)", got, want, p.Steps[7:])
 	}
 	if calls := applyCalls(t, api, p); len(calls) == 0 || calls[0] != "SetAccountRole(a1,r1)" {
 		t.Fatalf("calls = %q, want the role set first", calls)
@@ -1090,7 +1152,7 @@ func TestPlanWarnsOnUnknownCredentialKind(t *testing.T) {
 			api := preparedAPI()
 			api.creds = map[string][]string{"a1": creds}
 			foreignAccountPlan(t, api, "sign-in credential CSM does not know")
-			if d := inspect(t, api, responseInputs(api, "", nil)).Steps[7].Detail; strings.Contains(d, "\x1b") {
+			if d := inspect(t, api, responseInputs(api, "", nil)).Steps[8].Detail; strings.Contains(d, "\x1b") {
 				t.Fatalf("detail %q prints a raw credential kind", d)
 			}
 		})
@@ -1132,7 +1194,7 @@ func TestResponseRoleClearsPermissionDenials(t *testing.T) {
 		}
 	}
 	p := inspect(t, api, responseInputs(api, "a1", nil))
-	if p.Steps[6].State != Change {
+	if p.Steps[7].State != Change {
 		t.Fatal("role denying sign-in was treated as ready")
 	}
 	if _, err := p.Apply(context.Background(), api); err != nil {
@@ -1149,5 +1211,197 @@ func TestResponseRoleClearsPermissionDenials(t *testing.T) {
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
 		t.Fatal("rerun changed the repaired response role")
+	}
+}
+
+// addressListWrites are the writes that create CSM's tags, at CSM's scores,
+// then its rule.
+var addressListWrites = []string{
+	"CreateSpamTag(CSM_IP_DROP,4)", "CreateSpamTag(CSM_IP_BLOCKED,3)", "CreateSpamTag(CSM_IP_MAIL_AUTH,3)", "CreateSpamTag(CSM_IP_SPAM,3)",
+	"CreateSpamTag(CSM_IP_BLOCKLISTDE,2)", "CreateSpamTag(CSM_IP_CINS,2)", "CreateSpamTag(CSM_IP_CANARY,0)",
+	"CreateSpamRule(CSM_IP)",
+}
+
+const addressListDone = "rule CSM_IP adds CSM_IP_DROP 4, CSM_IP_BLOCKED 3, CSM_IP_MAIL_AUTH 3, CSM_IP_SPAM 3, CSM_IP_BLOCKLISTDE 2, CSM_IP_CINS 2, CSM_IP_CANARY 0 to senders on CSM's address list"
+
+func TestAddressListArms(t *testing.T) {
+	arms := AddressListArms()
+	symbols := ipmap.Symbols()
+	if len(arms) != 7 || len(symbols) != 7 {
+		t.Fatalf("%d arms for %d symbols, want 7", len(arms), len(symbols))
+	}
+	want := stalwartapi.RuleArm{
+		If:   "key_exists('csm-ip-drop', remote_ip) || (is_ipv6_addr(remote_ip) && key_exists('csm-ip6-drop', ip_reverse_name(remote_ip)))",
+		Then: "'CSM_IP_DROP'",
+	}
+	if arms[0] != want {
+		t.Fatalf("arm 0 = %+v, want %+v", arms[0], want)
+	}
+	for i, s := range symbols {
+		v4 := "key_exists('" + ipmap.StalwartNamespace(s, false) + "', remote_ip)"
+		v6 := "key_exists('" + ipmap.StalwartNamespace(s, true) + "', ip_reverse_name(remote_ip))"
+		if arms[i].Then != "'"+s.Name+"'" || !strings.Contains(arms[i].If, v4) || !strings.Contains(arms[i].If, v6) {
+			t.Errorf("arm %d = %+v, want %s from its two namespaces", i, arms[i], s.Name)
+		}
+	}
+}
+
+func TestAddressListStepCreates(t *testing.T) {
+	api := configuredAPI()
+	api.rules, api.tags = nil, nil
+	p := inspect(t, api, fieldInputs())
+	s := stepNamed(t, p, "address list")
+	if s.State != Change || p.AddressListOn {
+		t.Fatalf("step = %+v, on %v; want Change and the list off", s, p.AddressListOn)
+	}
+	for _, want := range []string{"up to 4", "Junk", "switch the rule off in Stalwart"} {
+		if !strings.Contains(s.Detail, want) {
+			t.Errorf("detail %q does not say %q", s.Detail, want)
+		}
+	}
+	if calls, want := applyCalls(t, api, p), append(slices.Clone(addressListWrites), "ReloadSettings"); !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+	want := stalwartapi.SpamRule{ID: "rule-CSM_IP", Type: "Any", Enabled: true, Arms: AddressListArms(), Else: "false"}
+	if got := api.rules[AddressListRule]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rule = %+v, want %+v", got, want)
+	}
+
+	p = inspect(t, api, fieldInputs())
+	if s := stepNamed(t, p, "address list"); s.State != Done || s.Detail != addressListDone || !p.AddressListOn {
+		t.Fatalf("second run: step = %+v, on %v; want Done with every tag and the list on", s, p.AddressListOn)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("second run made calls %q", calls)
+	}
+}
+
+// The rule's own switch is the operator's: setup never turns it back on and
+// never rewrites a rule that is off.
+func TestAddressListStepOffIsDone(t *testing.T) {
+	api := configuredAPI()
+	r := api.rules[AddressListRule]
+	r.Enabled, r.Arms = false, r.Arms[:2]
+	api.rules[AddressListRule] = r
+	delete(api.tags, "CSM_IP_CINS")
+	p := inspect(t, api, fieldInputs())
+	if s := stepNamed(t, p, "address list"); s.State != Done || !strings.Contains(s.Detail, "switched off") || p.AddressListOn {
+		t.Fatalf("step = %+v, on %v; want Done saying it is switched off, and the list off", s, p.AddressListOn)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+}
+
+func TestAddressListStepResetsCondition(t *testing.T) {
+	for name, mutate := range map[string]func(*stalwartapi.SpamRule){
+		"arms":     func(r *stalwartapi.SpamRule) { r.Arms[3].If = "true" },
+		"arm gone": func(r *stalwartapi.SpamRule) { r.Arms = r.Arms[:6] },
+		"else":     func(r *stalwartapi.SpamRule) { r.Else = "'CSM_IP_DROP'" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := configuredAPI()
+			r := api.rules[AddressListRule]
+			r.Arms = slices.Clone(r.Arms)
+			mutate(&r)
+			api.rules[AddressListRule] = r
+			p := inspect(t, api, fieldInputs())
+			if s := stepNamed(t, p, "address list"); s.State != Change || !p.AddressListOn {
+				t.Fatalf("step = %+v, on %v; want Change and the list on", s, p.AddressListOn)
+			}
+			if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"SetSpamRuleCondition(rule1)", "ReloadSettings"}) {
+				t.Fatalf("calls = %q, want only the condition reset and a reload", calls)
+			}
+			want := stalwartapi.SpamRule{ID: "rule1", Type: "Any", Enabled: true, Arms: AddressListArms(), Else: "false"}
+			if got := api.rules[AddressListRule]; !reflect.DeepEqual(got, want) {
+				t.Fatalf("rule = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// Scores are Stalwart's knobs: setup creates a missing tag and leaves an
+// existing one as it is.
+func TestAddressListStepKeepsOperatorTags(t *testing.T) {
+	api := configuredAPI()
+	drop := api.tags["CSM_IP_DROP"]
+	drop.Score = 1
+	api.tags["CSM_IP_DROP"] = drop
+	p := inspect(t, api, fieldInputs())
+	want := strings.Replace(addressListDone, "CSM_IP_DROP 4", "CSM_IP_DROP 1", 1)
+	if s := stepNamed(t, p, "address list"); s.State != Done || s.Detail != want {
+		t.Fatalf("step = %+v, want Done %q", s, want)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+
+	delete(api.tags, "CSM_IP_SPAM")
+	p = inspect(t, api, fieldInputs())
+	if s := stepNamed(t, p, "address list"); s.State != Change || !strings.Contains(s.Detail, "CSM_IP_SPAM") {
+		t.Fatalf("missing tag: step = %+v, want Change naming CSM_IP_SPAM", s)
+	}
+	if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"CreateSpamTag(CSM_IP_SPAM,3)", "ReloadSettings"}) {
+		t.Fatalf("missing tag: calls = %q, want only that tag created", calls)
+	}
+	if got := api.tags["CSM_IP_DROP"]; got != drop {
+		t.Fatalf("operator tag = %+v, want %+v", got, drop)
+	}
+}
+
+func TestAddressListStepForeignType(t *testing.T) {
+	api := configuredAPI()
+	r := api.rules[AddressListRule]
+	r.Type = "Ip"
+	api.rules[AddressListRule] = r
+	p := inspect(t, api, fieldInputs())
+	if s := stepNamed(t, p, "address list"); s.State != Warn || s.apply != nil || p.AddressListOn {
+		t.Fatalf("step = %+v, on %v; want a read-only Warn and the list off", s, p.AddressListOn)
+	}
+	if calls := applyCalls(t, api, p); len(calls) != 0 {
+		t.Fatalf("Apply made calls %q", calls)
+	}
+}
+
+// A key from before the address list may not read rules or tags: the step
+// warns and setup still plans everything else.
+func TestAddressListStepForbiddenIsWarn(t *testing.T) {
+	for _, method := range []string{"SpamRule", "SpamTag"} {
+		t.Run(method, func(t *testing.T) {
+			api := freshAPI()
+			api.readErrors = map[string]error{method: fmt.Errorf("x:%s/query: %w", method, stalwartapi.ErrForbidden)}
+			p := inspect(t, api, fieldInputs())
+			if got, want := states(p), []State{Change, Change, Change, Done, Change, Done, Warn, Skipped, Skipped, Skipped}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("states = %v, want %v", got, want)
+			}
+			s := stepNamed(t, p, "address list")
+			if s.Detail != "Cannot read Stalwart's spam rules; run csm stalwart setup with an admin login" || s.apply != nil {
+				t.Fatalf("step = %+v, want the static read-only warning", s)
+			}
+		})
+	}
+}
+
+func TestAddressListStepUnauthorizedStopsSetup(t *testing.T) {
+	for _, method := range []string{"SpamRule", "SpamTag"} {
+		t.Run(method, func(t *testing.T) {
+			api := configuredAPI()
+			api.readErrors = map[string]error{method: fmt.Errorf("login: %w", stalwartapi.ErrUnauthorized)}
+			p, err := Inspect(context.Background(), api, fieldInputs())
+			if !errors.Is(err, stalwartapi.ErrUnauthorized) || len(p.Steps) != 0 {
+				t.Fatalf("Inspect = %d steps, %v; want the login error and no plan", len(p.Steps), err)
+			}
+		})
+	}
+}
+
+func TestResponsePermissionsIncludeAddressList(t *testing.T) {
+	for _, p := range []string{
+		"sysMemoryLookupKeyGet", "sysMemoryLookupKeyQuery", "sysMemoryLookupKeyCreate", "sysMemoryLookupKeyDestroy",
+		"actionReloadLookupStores", "sysSpamRuleGet", "sysSpamRuleQuery", "sysSpamTagGet", "sysSpamTagQuery",
+	} {
+		if !slices.Contains(ResponsePermissions, p) {
+			t.Errorf("ResponsePermissions lacks %s", p)
+		}
 	}
 }

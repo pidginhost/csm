@@ -272,8 +272,8 @@ func TestStalwartDoctorSpamReadFailureKeepsOtherSteps(t *testing.T) {
 					t.Fatal("doctor exposed the password")
 				}
 			}
-			if len(checks) != 10 || len(h.api.writes) != 0 {
-				t.Fatalf("got %d checks, writes %q; want all ten checks and no writes", len(checks), h.api.writes)
+			if len(checks) != 11 || len(h.api.writes) != 0 {
+				t.Fatalf("got %d checks, writes %q; want all eleven checks and no writes", len(checks), h.api.writes)
 			}
 			if c := stalwartCheckNamed(t, checks, "stalwart spam filter"); c.Status != "warn" || c.Fix != "" || !strings.Contains(c.Message, "Cannot read") {
 				t.Fatalf("spam filter check = %+v", c)
@@ -429,9 +429,9 @@ func TestDoctorFallsBackToAdminLogin(t *testing.T) {
 	if h.gotKey != "" || h.gotUser != "admin" || h.gotPass != setupTestPassword {
 		t.Fatalf("key sent %v, admin login %q; want the admin login only", h.gotKey != "", h.gotUser)
 	}
-	// Six settings steps, three response steps, the blocklists and the key.
-	if len(checks) != 11 {
-		t.Fatalf("got %d checks, want 11: %+v", len(checks), checks)
+	// Seven settings steps, three response steps, the blocklists and the key.
+	if len(checks) != 12 {
+		t.Fatalf("got %d checks, want 12: %+v", len(checks), checks)
 	}
 	if c := checks[0]; c.Name != "stalwart API key" || c.Status != "warn" || c.Fix != "run csm stalwart setup" {
 		t.Fatalf("first check = %+v, want the key warning", c)
