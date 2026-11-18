@@ -27,7 +27,6 @@ var safeRemotePorts = map[uint16]bool{
 var safeUsers = map[string]bool{
 	"imunify360-webshield": true,
 	"named":                true,
-	"knot":                 true, // Knot DNS zone transfers, often over TLS on 853
 	"mysql":                true,
 	"memcached":            true,
 	"icinga":               true,
@@ -80,7 +79,8 @@ func EvaluateConnection(
 	if isInfraIP(dstIP.String(), cfg.InfraIPs) {
 		return alert.Finding{}, false
 	}
-	if safeUsers[user] {
+	// Knot uses DNS over TLS for zone transfers.
+	if safeUsers[user] || (user == "knot" && dstPort == 853) {
 		return alert.Finding{}, false
 	}
 
