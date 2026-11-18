@@ -1,13 +1,15 @@
 package webui
 
 import (
+	"context"
+	"errors"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // apiHardening returns the last stored audit report (GET).
@@ -62,22 +64,21 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 // apiHardeningApply applies the automatic fixes for one section of the
 // hardening report, then re-runs the audit so the page shows the result
 // (POST only). Body: {"category": "ssh", "names": ["ssh_use_dns"]}; an
-// empty names list applies every fixable check in the section.
+// empty names list applies every fixable check in the section. The fixes
+// run in a root worker outside the daemon's sandbox, which leaves the files
+// they change read-only.
 func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var req struct {
-		Category string   `json:"category"`
-		Names    []string `json:"names"`
-	}
+	var req checks.HardeningApplyRequest
 	if err := decodeJSONBodyLimited(w, r, 1<<14, &req); err != nil {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if !slices.Contains(checks.HardeningCategories, req.Category) {
-		writeJSONError(w, "unknown hardening category", http.StatusBadRequest)
+	if err := req.Validate(); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -91,35 +92,33 @@ func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 	_ = rc.SetWriteDeadline(time.Now().Add(longRequestTimeout))
 
 	cfg := s.liveCfg()
-	fixes, err := checks.ApplyHardening(cfg, req.Category, req.Names)
-	if err != nil {
-		writeJSONError(w, err.Error(), http.StatusBadRequest)
+	apply := s.hardeningApply
+	if apply == nil {
+		apply = checks.RunHardeningApplyWorker
+	}
+	// A closed browser tab must not stop a worker half-way through.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), checks.HardeningApplyWorkerTimeout+time.Minute)
+	defer cancel()
+	fixes, err := apply(ctx, cfg.ConfigFile, req)
+	if errors.Is(err, systemdrun.ErrUnavailable) {
+		s.auditLog(r, "hardening_apply", req.Category, "not started: "+err.Error())
+		writeJSONError(w, "Applying fixes needs systemd-run, so nothing was changed: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	var appliedNames, failedNames []string
-	for _, f := range fixes {
-		switch f.Status {
-		case "applied":
-			appliedNames = append(appliedNames, f.Name)
-		case "failed":
-			failedNames = append(failedNames, f.Name)
-		}
-	}
-	if len(appliedNames) > 0 || len(failedNames) > 0 {
-		details := "applied: " + strings.Join(appliedNames, ", ")
-		if len(failedNames) > 0 {
-			details += "; failed: " + strings.Join(failedNames, ", ")
-		}
-		s.auditLog(r, "hardening_apply", req.Category, details)
-	}
+	s.auditLog(r, "hardening_apply", req.Category, hardeningApplyDetails(fixes, err))
 
-	// Recheck: the page shows the state after the change, not before.
+	// Recheck: the page shows the state after the change, not before. A
+	// failed worker may have changed some files, so it rechecks too.
 	report := checks.RunHardeningAudit(cfg)
 	if db := store.Global(); db != nil {
-		if err := db.SaveHardeningReport(report); err != nil {
-			writeJSONError(w, "fixes applied but failed to save the recheck: "+err.Error(), http.StatusInternalServerError)
+		if saveErr := db.SaveHardeningReport(report); saveErr != nil {
+			writeJSONError(w, "fixes applied but failed to save the recheck: "+saveErr.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+	if err != nil {
+		writeJSONError(w, "Applying fixes failed: "+err.Error()+". The audit was re-run.", http.StatusInternalServerError)
+		return
 	}
 	if fixes == nil {
 		fixes = []checks.HardeningFixResult{}
@@ -129,6 +128,27 @@ func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 		Applied []checks.HardeningFixResult `json:"applied"`
 		*store.AuditReport
 	}{true, fixes, report})
+}
+
+// hardeningApplyDetails is the audit log line for one apply.
+func hardeningApplyDetails(fixes []checks.HardeningFixResult, err error) string {
+	var appliedNames, failedNames []string
+	for _, f := range fixes {
+		switch f.Status {
+		case "applied":
+			appliedNames = append(appliedNames, f.Name)
+		case "failed":
+			failedNames = append(failedNames, f.Name)
+		}
+	}
+	details := "applied: " + strings.Join(appliedNames, ", ")
+	if len(failedNames) > 0 {
+		details += "; failed: " + strings.Join(failedNames, ", ")
+	}
+	if err != nil {
+		details += "; error: " + err.Error()
+	}
+	return details
 }
 
 // handleHardening renders the hardening audit page.

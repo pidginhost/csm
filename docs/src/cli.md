@@ -135,13 +135,13 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 | `csm harden --copy-fail` | Apply the CVE-2026-31431 (Copy Fail) modprobe mitigation: blacklist `algif_aead` + `af_alg`, unload them. Refuses on built-in-AF_ALG kernels. |
 | `csm harden --copy-fail-seccomp` | Apply the CVE-2026-31431 seccomp mitigation: write systemd `RestrictAddressFamilies=~AF_ALG` drop-ins for LiteSpeed, Apache/Nginx, every PHP-FPM pool, cron, and mail units. The right path on built-in-AF_ALG kernels (typical cPanel/CloudLinux 8). |
 
-The web UI's Server Hardening page can also apply fixes one section at a time. A failing check that has a safe, mechanical fix shows an **Auto-fix** checkbox. **Apply selected fixes** changes only the checked items, then re-runs the audit. The fixes:
+The web UI's Server Hardening page can also apply fixes one section at a time. A failing check that has a safe, mechanical fix shows an **Auto-fix** checkbox. **Apply selected fixes** changes only the checked items, then re-runs the audit. The fixes run as root through `systemd-run`, outside CSM's service sandbox; without `systemd-run` nothing is changed. The fixes:
 
 - SSH `MaxAuthTries 4`, `X11Forwarding no` and `UseDNS no` go into a CSM block at the top of `sshd_config`. The file is checked with `sshd -t` before sshd reloads, and restored if the check fails. The previous file is kept as `sshd_config.csm-bak`.
 - Kernel settings are set with `sysctl -w` and saved to `/etc/sysctl.d/99-zz-csm-hardening.conf`.
-- `/tmp`, `/var/tmp` and `/etc/shadow` permissions are corrected.
+- `/tmp` and `/var/tmp` become `1777` owned by root. `/etc/shadow` becomes `0600`, or `0640` when a shadow group owns it.
 - WHM tweak settings are changed through `whmapi1 set_tweaksetting`, with 200 for max emails per hour. Compilers are restricted to root, and cPanel updates are set to daily.
-- PHP `expose_php`, `enable_dl`, upload progress and fatal error backtraces are turned off in `zz-csm-hardening.ini` in each build's scan directory, then PHP-FPM restarts.
+- PHP `expose_php`, `enable_dl`, upload progress and fatal error backtraces are turned off in `zz-csm-hardening.ini` in each build's scan directory, and in every SAPI's `conf.d` on Debian and Ubuntu. PHP-FPM restarts, Apache reloads when mod_php was changed, and LiteSpeed is asked to restart its PHP processes.
 
 SSH port, password and root login settings, `disable_functions`, `allow_url_fopen`, and the mail, web server and firewall checks stay manual.
 

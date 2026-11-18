@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -32,7 +33,10 @@ var (
 	hardeningCompilersScript = "/scripts/compilers"
 	hardeningShadowPath      = "/etc/shadow"
 	hardeningPHPFPMRestart   = "/scripts/restartsrv_apache_php_fpm"
-	hardeningTmpDirs         = map[string]string{
+	// LiteSpeed restarts its detached lsphp processes when this file appears.
+	hardeningLSWSCtrl           = "/usr/local/lsws/bin/lswsctrl"
+	hardeningLSPHPRestartMarker = "/usr/local/lsws/admin/tmp/.lsphp_restart.txt"
+	hardeningTmpDirs            = map[string]string{
 		"os_tmp_permissions":     "/tmp",
 		"os_var_tmp_permissions": "/var/tmp",
 	}
@@ -120,6 +124,50 @@ func phpInstallScanDir(inst phpInstall) (string, bool) {
 	return inst.scanDir, true
 }
 
+var debianPHPVersionDir = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+
+// phpInstallScanDirs returns every scan directory the drop-in goes in. A
+// Debian-style build has one conf.d per SAPI under php/<version>/, and php -i
+// reports only the CLI one, so the drop-in goes in each SAPI's conf.d or
+// PHP-FPM and mod_php keep the old value while the audit passes.
+func phpInstallScanDirs(inst phpInstall) []string {
+	dir, ok := phpInstallScanDir(inst)
+	if !ok {
+		return nil
+	}
+	if filepath.Base(dir) != "conf.d" {
+		return []string{dir}
+	}
+	verDir := filepath.Dir(filepath.Dir(dir))
+	if !debianPHPVersionDir.MatchString(filepath.Base(verDir)) || filepath.Base(filepath.Dir(verDir)) != "php" {
+		return []string{dir}
+	}
+	entries, err := os.ReadDir(verDir)
+	if err != nil {
+		return []string{dir}
+	}
+	var dirs []string
+	for _, e := range entries {
+		confd := filepath.Join(verDir, e.Name(), "conf.d")
+		if info, err := os.Lstat(confd); err == nil && info.IsDir() {
+			dirs = append(dirs, confd)
+		}
+	}
+	if !slices.Contains(dirs, dir) {
+		dirs = append(dirs, dir)
+	}
+	slices.Sort(dirs)
+	return dirs
+}
+
+func phpDropInPaths(dirs []string) []string {
+	paths := make([]string, len(dirs))
+	for i, d := range dirs {
+		paths[i] = filepath.Join(d, hardeningPHPIniName)
+	}
+	return paths
+}
+
 func findPHPInstall(installs []phpInstall, suffix string) (phpInstall, bool) {
 	for _, inst := range installs {
 		if inst.shortID == suffix {
@@ -146,7 +194,7 @@ func autoFixDescription(r store.AuditResult, installs []phpInstall) string {
 	}
 	switch r.Name {
 	case "os_shadow_permissions":
-		return fmt.Sprintf("Runs chmod 0600 on %s.", hardeningShadowPath)
+		return fmt.Sprintf("Sets %s to mode 0600, or 0640 when a shadow group owns it.", hardeningShadowPath)
 	case "cp_compilers":
 		return "Restricts compilers to root (" + hardeningCompilersScript + " off, or chmod 0750 " + hardeningCompilerPath + ")."
 	case "cp_updates":
@@ -157,11 +205,11 @@ func autoFixDescription(r store.AuditResult, installs []phpInstall) string {
 		if !found {
 			return ""
 		}
-		dir, ok := phpInstallScanDir(inst)
-		if !ok {
+		dirs := phpInstallScanDirs(inst)
+		if len(dirs) == 0 {
 			return ""
 		}
-		return fmt.Sprintf("Writes %s = Off to %s and restarts PHP-FPM.", key, filepath.Join(dir, hardeningPHPIniName))
+		return fmt.Sprintf("Writes %s = Off to %s and restarts PHP.", key, strings.Join(phpDropInPaths(dirs), ", "))
 	}
 	return ""
 }
@@ -258,9 +306,18 @@ func skipped(r store.AuditResult, msg string) HardeningFixResult {
 }
 
 func hardeningRun(name string, args ...string) ([]byte, error) {
+	return hardeningRunWith(cmdExec.RunContext, name, args...)
+}
+
+// hardeningRunStdout is hardeningRun for commands whose stdout is parsed.
+func hardeningRunStdout(name string, args ...string) ([]byte, error) {
+	return hardeningRunWith(cmdExec.RunContextStdout, name, args...)
+}
+
+func hardeningRunWith(run func(context.Context, string, ...string) ([]byte, error), name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hardeningApplyTimeout)
 	defer cancel()
-	out, err := cmdExec.RunContext(ctx, name, args...)
+	out, err := run(ctx, name, args...)
 	if ctx.Err() == context.DeadlineExceeded {
 		return out, fmt.Errorf("%s timed out", name)
 	}
@@ -296,10 +353,11 @@ func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 	}
 	switch r.Name {
 	case "os_shadow_permissions":
-		if err := chmodRegular(hardeningShadowPath, 0o600); err != nil {
+		mode, err := fixShadow(hardeningShadowPath)
+		if err != nil {
 			return failed(r, err)
 		}
-		return applied(r, hardeningShadowPath+" is now 0600.")
+		return applied(r, fmt.Sprintf("%s is now %04o.", hardeningShadowPath, mode))
 	case "cp_compilers":
 		msg, err := restrictCompilers()
 		if err != nil {
@@ -318,7 +376,7 @@ func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 // --- cPanel ---
 
 func setWHMTweak(key, value string) error {
-	out, err := hardeningRun("whmapi1", "--output=json", "set_tweaksetting", "key="+key, "value="+value)
+	out, err := hardeningRunStdout("whmapi1", "--output=json", "set_tweaksetting", "key="+key, "value="+value)
 	if err != nil {
 		return err
 	}
@@ -402,6 +460,39 @@ func chmodRegular(path string, mode os.FileMode) error {
 	return setModeByFD(path, mode, false, false)
 }
 
+// shadowFixMode is the mode /etc/shadow gets: 0600, or 0640 when a
+// non-root group owns it, which is how Debian lets unix_chkpwd read it.
+func shadowFixMode(gid uint32) os.FileMode {
+	if gid != 0 {
+		return 0o640
+	}
+	return 0o600
+}
+
+// fixShadow sets the shadow file's mode through a descriptor opened without
+// following a final symlink, keeping the shadow group's read access.
+func fixShadow(path string) (os.FileMode, error) {
+	// #nosec G304 -- fixed system path chosen by the fixer table.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("%s is not a regular file", path)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("%s: no owner information", path)
+	}
+	mode := shadowFixMode(st.Gid)
+	return mode, f.Chmod(mode)
+}
+
 // setModeByFD opens path without following a final symlink and changes the
 // mode (and, with chownRoot, the owner) through the descriptor, so the
 // object checked is the one changed.
@@ -461,10 +552,9 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 	return out
 }
 
+// persistSysctl writes the drop-in. /etc/sysctl.d exists on every systemd
+// host, so a missing directory is an error rather than something to create.
 func persistSysctl(kvs []keyValue) error {
-	if err := os.MkdirAll(filepath.Dir(hardeningSysctlConfPath), 0o755); err != nil {
-		return err
-	}
 	var lines []string
 	// #nosec G304 -- CSM-owned sysctl drop-in.
 	if data, err := os.ReadFile(hardeningSysctlConfPath); err == nil {
@@ -641,15 +731,14 @@ func splitSSHDKeyword(line string) (string, string, bool) {
 
 // --- PHP ---
 
-// applyPHPFixes writes one drop-in per PHP build and restarts PHP-FPM once.
+// applyPHPFixes writes the drop-ins, one per scan directory, then restarts
+// PHP once. A check is applied only when every directory of its build took
+// the drop-in.
 func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []HardeningFixResult {
-	type plan struct {
-		dir   string
-		keys  []string
-		items []store.AuditResult
-	}
-	plans := map[string]*plan{}
-	var order []string
+	keysByDir := map[string][]string{}
+	var dirOrder []string
+	dirsByItem := map[string][]string{}
+	var planned []store.AuditResult
 	var out []HardeningFixResult
 	for _, r := range items {
 		key, suffix, ok := phpFixFor(r.Name)
@@ -658,45 +747,48 @@ func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []Hardening
 			continue
 		}
 		inst, found := findPHPInstall(installs, suffix)
-		dir, usable := phpInstallScanDir(inst)
-		if !found || !usable {
+		dirs := phpInstallScanDirs(inst)
+		if !found || len(dirs) == 0 {
 			out = append(out, skipped(r, "No PHP scan directory to write a drop-in to; apply it manually."))
 			continue
 		}
-		p := plans[dir]
-		if p == nil {
-			p = &plan{dir: dir}
-			plans[dir] = p
-			order = append(order, dir)
+		for _, d := range dirs {
+			if _, seen := keysByDir[d]; !seen {
+				dirOrder = append(dirOrder, d)
+			}
+			keysByDir[d] = append(keysByDir[d], key)
 		}
-		p.keys = append(p.keys, key)
-		p.items = append(p.items, r)
+		dirsByItem[r.Name] = dirs
+		planned = append(planned, r)
 	}
 
-	var written []store.AuditResult
-	for _, dir := range order {
-		p := plans[dir]
-		path := filepath.Join(dir, hardeningPHPIniName)
-		if err := writePHPDropIn(path, p.keys); err != nil {
-			for _, r := range p.items {
-				out = append(out, failed(r, err))
-			}
+	dirErr := map[string]error{}
+	var written []string
+	for _, d := range dirOrder {
+		if err := writePHPDropIn(filepath.Join(d, hardeningPHPIniName), keysByDir[d]); err != nil {
+			dirErr[d] = err
 			continue
 		}
-		written = append(written, p.items...)
+		written = append(written, d)
 	}
-	if len(written) == 0 {
-		return out
+	restart := ""
+	if len(written) > 0 {
+		restart = " " + reloadPHP(written)
 	}
-	restart := "PHP-FPM restarted."
-	if err := restartPHPFPM(); err != nil {
-		restart = "Restart PHP-FPM manually to load it (" + err.Error() + ")."
-	}
-	for _, r := range written {
-		key, suffix, _ := phpFixFor(r.Name)
-		inst, _ := findPHPInstall(installs, suffix)
-		path := filepath.Join(inst.scanDir, hardeningPHPIniName)
-		out = append(out, applied(r, fmt.Sprintf("%s = Off written to %s. %s", key, path, restart)))
+	for _, r := range planned {
+		key, _, _ := phpFixFor(r.Name)
+		dirs := dirsByItem[r.Name]
+		var errs []error
+		for _, d := range dirs {
+			if err := dirErr[d]; err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", d, err))
+			}
+		}
+		if len(errs) > 0 {
+			out = append(out, failed(r, errors.Join(errs...)))
+			continue
+		}
+		out = append(out, applied(r, fmt.Sprintf("%s = Off written to %s.%s", key, strings.Join(phpDropInPaths(dirs), ", "), restart)))
 	}
 	return out
 }
@@ -738,11 +830,53 @@ func writePHPDropIn(path string, keys []string) error {
 	return atomicio.AtomicWrite(path, 0o644, []byte(b.String()))
 }
 
-func restartPHPFPM() error {
+func restartPHPFPM() (string, error) {
 	if info, err := os.Stat(hardeningPHPFPMRestart); err == nil && info.Mode().IsRegular() {
-		_, err := hardeningRun(hardeningPHPFPMRestart)
+		if _, err := hardeningRun(hardeningPHPFPMRestart); err != nil {
+			return "", err
+		}
+		return "PHP-FPM restarted.", nil
+	}
+	if _, err := hardeningRun("systemctl", "try-reload-or-restart", "php*-fpm.service"); err != nil {
+		return "", err
+	}
+	return "Running PHP-FPM services restarted.", nil
+}
+
+// reloadPHP makes running PHP load the new drop-ins: PHP-FPM, Apache when a
+// mod_php directory was written, and LiteSpeed's detached lsphp processes.
+// It reports what it did; a failure names what to restart by hand.
+func reloadPHP(dirs []string) string {
+	var notes []string
+	if msg, err := restartPHPFPM(); err != nil {
+		notes = append(notes, "Restart PHP-FPM manually ("+err.Error()+").")
+	} else {
+		notes = append(notes, msg)
+	}
+	if slices.ContainsFunc(dirs, func(d string) bool { return filepath.Base(filepath.Dir(d)) == "apache2" }) {
+		if _, err := hardeningRun("systemctl", "try-reload-or-restart", "apache2.service"); err != nil {
+			notes = append(notes, "Reload Apache manually ("+err.Error()+").")
+		} else {
+			notes = append(notes, "Apache reloaded.")
+		}
+	}
+	if info, err := os.Stat(hardeningLSWSCtrl); err == nil && info.Mode().IsRegular() {
+		if err := touchNoFollow(hardeningLSPHPRestartMarker); err != nil {
+			notes = append(notes, "Restart LiteSpeed PHP manually ("+err.Error()+").")
+		} else {
+			notes = append(notes, "LiteSpeed PHP restart requested.")
+		}
+	}
+	return strings.Join(notes, " ")
+}
+
+// touchNoFollow creates path if needed without following a symlink in its
+// place, so a planted link cannot point the write elsewhere.
+func touchNoFollow(path string) error {
+	// #nosec G304 -- fixed LiteSpeed path chosen by the fixer.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
 		return err
 	}
-	_, err := hardeningRun("systemctl", "try-reload-or-restart", "php*-fpm.service")
-	return err
+	return f.Close()
 }

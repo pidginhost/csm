@@ -12,7 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Added
 
 - Admission status now lists which automatic IP block sources the host's settings let it run.
-- The Server Hardening page can apply safe fixes one section at a time, then re-runs the audit. Each fixable check has a checkbox, and the SSH fixes are checked with `sshd -t` before sshd reloads.
+- The Server Hardening page can apply safe fixes one section at a time, with a checkbox per fix, then re-runs the audit.
 
 ### Changed
 

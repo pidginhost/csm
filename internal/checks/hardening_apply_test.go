@@ -1,10 +1,13 @@
 package checks
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/store"
@@ -101,7 +104,12 @@ func TestSetKeyValueFile(t *testing.T) {
 }
 
 func TestApplySysctlFixesPersistsOnlyAcceptedKeys(t *testing.T) {
-	hardeningSysctlConfPath = filepath.Join(t.TempDir(), "sysctl.d", "99-zz-csm-hardening.conf")
+	// /etc/sysctl.d exists on every systemd host; the fixer never creates it.
+	sysctlDir := filepath.Join(t.TempDir(), "sysctl.d")
+	if err := os.Mkdir(sysctlDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hardeningSysctlConfPath = filepath.Join(sysctlDir, "99-zz-csm-hardening.conf")
 	t.Cleanup(func() { hardeningSysctlConfPath = "/etc/sysctl.d/99-zz-csm-hardening.conf" })
 	var calls []string
 	withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
@@ -257,5 +265,222 @@ func TestChmodRegularRefusesSymlink(t *testing.T) {
 	}
 	if info, _ := os.Stat(target); info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v", info.Mode().Perm())
+	}
+}
+
+func TestPersistSysctlDoesNotCreateTheDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "sysctl.d")
+	hardeningSysctlConfPath = filepath.Join(missing, "99-zz-csm-hardening.conf")
+	t.Cleanup(func() { hardeningSysctlConfPath = "/etc/sysctl.d/99-zz-csm-hardening.conf" })
+	if err := persistSysctl([]keyValue{{"kernel.randomize_va_space", "2"}}); err == nil {
+		t.Fatal("persisted into a directory that does not exist")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("the fixer created %s: %v", missing, err)
+	}
+}
+
+// Debian and Ubuntu let the shadow group read /etc/shadow (unix_chkpwd is
+// setgid shadow); taking that away breaks password checks by non-root
+// programs. Both 0600 and 0640 pass the audit.
+func TestShadowFixModeKeepsShadowGroupRead(t *testing.T) {
+	if got := shadowFixMode(0); got != 0o600 {
+		t.Errorf("root group: %04o, want 0600", got)
+	}
+	if got := shadowFixMode(42); got != 0o640 {
+		t.Errorf("shadow group: %04o, want 0640", got)
+	}
+}
+
+func TestFixShadowPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shadow")
+	if err := os.WriteFile(path, []byte("root:*:1::::::\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := hardeningShadowPath
+	hardeningShadowPath = path
+	t.Cleanup(func() { hardeningShadowPath = old })
+	out := applyHardeningSingle(store.AuditResult{Name: "os_shadow_permissions"})
+	if out.Status != "applied" {
+		t.Fatalf("result = %+v", out)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := shadowFixMode(info.Sys().(*syscall.Stat_t).Gid)
+	if info.Mode().Perm() != want {
+		t.Fatalf("mode = %04o, want %04o", info.Mode().Perm(), want)
+	}
+}
+
+// debianPHPTree builds <root>/php/8.2/<sapi>/conf.d for each SAPI.
+func debianPHPTree(t *testing.T, sapis ...string) (string, []string) {
+	t.Helper()
+	ver := filepath.Join(t.TempDir(), "php", "8.2")
+	var dirs []string
+	for _, s := range sapis {
+		d := filepath.Join(ver, s, "conf.d")
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dirs = append(dirs, d)
+	}
+	// A SAPI directory without conf.d gets nothing.
+	if err := os.MkdirAll(filepath.Join(ver, "mods-available"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(dirs)
+	return ver, dirs
+}
+
+// php -i reports the CLI scan directory, but on Debian PHP-FPM and mod_php
+// read their own; a drop-in in the CLI one alone passes the audit and leaves
+// the web server unchanged.
+func TestPHPInstallScanDirsCoverEveryDebianSAPI(t *testing.T) {
+	ver, dirs := debianPHPTree(t, "cli", "fpm", "apache2")
+	got := phpInstallScanDirs(phpInstall{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")})
+	if !slices.Equal(got, dirs) {
+		t.Fatalf("dirs = %v, want %v", got, dirs)
+	}
+	ea := filepath.Join(t.TempDir(), "ea-php82", "root", "etc", "php.d")
+	if got := phpInstallScanDirs(phpInstall{shortID: "82", scanDir: ea}); !slices.Equal(got, []string{ea}) {
+		t.Fatalf("EA4 dirs = %v", got)
+	}
+	if got := phpInstallScanDirs(phpInstall{shortID: "81"}); got != nil {
+		t.Fatalf("no scan dir: %v", got)
+	}
+}
+
+func TestApplyPHPFixesWritesEverySAPIAndReloadsIt(t *testing.T) {
+	ver, dirs := debianPHPTree(t, "cli", "fpm", "apache2")
+	hardeningPHPFPMRestart = filepath.Join(t.TempDir(), "missing-restart-script")
+	t.Cleanup(func() { hardeningPHPFPMRestart = "/scripts/restartsrv_apache_php_fpm" })
+	var calls []string
+	withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}})
+	installs := []phpInstall{{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")}}
+	out := applyPHPFixes([]store.AuditResult{{Name: "php_expose_82"}}, installs)
+	if len(out) != 1 || out[0].Status != "applied" {
+		t.Fatalf("results = %+v", out)
+	}
+	for _, d := range dirs {
+		data, err := os.ReadFile(filepath.Join(d, hardeningPHPIniName))
+		if err != nil || !strings.Contains(string(data), "expose_php = Off") {
+			t.Fatalf("%s: %q %v", d, data, err)
+		}
+		if !strings.Contains(out[0].Message, d) {
+			t.Errorf("message does not name %s: %q", d, out[0].Message)
+		}
+	}
+	for _, want := range []string{"systemctl try-reload-or-restart php*-fpm.service", "systemctl try-reload-or-restart apache2.service"} {
+		if !slices.Contains(calls, want) {
+			t.Errorf("calls = %v, missing %q", calls, want)
+		}
+	}
+}
+
+func TestApplyPHPFixesReloadsNoWebServerWithoutModPHP(t *testing.T) {
+	dir := t.TempDir()
+	hardeningPHPFPMRestart = filepath.Join(dir, "missing-restart-script")
+	t.Cleanup(func() { hardeningPHPFPMRestart = "/scripts/restartsrv_apache_php_fpm" })
+	var calls []string
+	withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}})
+	applyPHPFixes([]store.AuditResult{{Name: "php_expose_82"}}, []phpInstall{{shortID: "82", scanDir: dir}})
+	for _, c := range calls {
+		if strings.Contains(c, "apache2") || strings.Contains(c, "httpd") {
+			t.Errorf("reloaded a web server: %v", calls)
+		}
+	}
+}
+
+// LiteSpeed keeps detached lsphp processes running; they load a new drop-in
+// only when LiteSpeed is told to restart them.
+func TestApplyPHPFixesRestartsLiteSpeedPHP(t *testing.T) {
+	dir := t.TempDir()
+	lsws := t.TempDir()
+	ctrl := filepath.Join(lsws, "lswsctrl")
+	if err := os.WriteFile(ctrl, nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(lsws, ".lsphp_restart.txt")
+	oldCtrl, oldMarker, oldFPM := hardeningLSWSCtrl, hardeningLSPHPRestartMarker, hardeningPHPFPMRestart
+	hardeningLSWSCtrl, hardeningLSPHPRestartMarker = ctrl, marker
+	hardeningPHPFPMRestart = filepath.Join(dir, "missing-restart-script")
+	t.Cleanup(func() {
+		hardeningLSWSCtrl, hardeningLSPHPRestartMarker, hardeningPHPFPMRestart = oldCtrl, oldMarker, oldFPM
+	})
+	withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) { return nil, nil }})
+	out := applyPHPFixes([]store.AuditResult{{Name: "php_expose_82"}}, []phpInstall{{shortID: "82", scanDir: dir}})
+	if out[0].Status != "applied" || !strings.Contains(out[0].Message, "LiteSpeed") {
+		t.Fatalf("result = %+v", out[0])
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("LiteSpeed PHP restart not requested: %v", err)
+	}
+}
+
+func TestApplyPHPFixesWithoutLiteSpeedLeavesNoMarker(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), ".lsphp_restart.txt")
+	oldCtrl, oldMarker, oldFPM := hardeningLSWSCtrl, hardeningLSPHPRestartMarker, hardeningPHPFPMRestart
+	hardeningLSWSCtrl, hardeningLSPHPRestartMarker = filepath.Join(dir, "no-lswsctrl"), marker
+	hardeningPHPFPMRestart = filepath.Join(dir, "missing-restart-script")
+	t.Cleanup(func() {
+		hardeningLSWSCtrl, hardeningLSPHPRestartMarker, hardeningPHPFPMRestart = oldCtrl, oldMarker, oldFPM
+	})
+	withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) { return nil, nil }})
+	applyPHPFixes([]store.AuditResult{{Name: "php_expose_82"}}, []phpInstall{{shortID: "82", scanDir: dir}})
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("marker written without LiteSpeed: %v", err)
+	}
+}
+
+// whmapi1 can print warnings on stderr; only stdout is the JSON reply.
+func TestSetWHMTweakReadsStdoutOnly(t *testing.T) {
+	reply := `{"metadata":{"result":1,"reason":"OK"}}`
+	withMockCmd(t, &mockCmd{
+		runContext: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("Warning: locale not set\n" + reply), nil
+		},
+		runContextStdout: func(context.Context, string, ...string) ([]byte, error) {
+			return []byte(reply), nil
+		},
+	})
+	if err := setWHMTweak("skipboxtrapper", "1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAutoFixDescriptionNamesEverySAPI(t *testing.T) {
+	ver, dirs := debianPHPTree(t, "cli", "fpm")
+	d := autoFixDescription(store.AuditResult{Name: "php_expose_82"}, []phpInstall{{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")}})
+	for _, dir := range dirs {
+		if !strings.Contains(d, filepath.Join(dir, hardeningPHPIniName)) {
+			t.Errorf("description %q does not name %s", d, dir)
+		}
+	}
+}
+
+func TestLiteSpeedMarkerRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	link := filepath.Join(dir, ".lsphp_restart.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := touchNoFollow(link); err == nil {
+		t.Fatal("followed a symlink")
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("symlink target was created: %v", err)
 	}
 }

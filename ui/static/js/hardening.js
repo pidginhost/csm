@@ -297,6 +297,10 @@
                         btn.appendChild(document.createTextNode('\u00a0Apply selected fixes'));
                     }
                     CSM.toast((err && err.message) || 'Applying fixes failed', 'error');
+                    // A failed worker may have changed some files; the server
+                    // re-ran the audit, so show that report.
+                    lastApply = {};
+                    loadReport();
                 });
         }, function() {});
     }

@@ -119,6 +119,9 @@ type Server struct {
 	mailStats          atomic.Pointer[mailstats.Counter]
 	forwarderSource    inventory.Source
 	forwarderRemover   *inventory.CPanelRemover // nil off cPanel
+	// hardeningApply runs hardening fixes; nil is the root worker outside
+	// the sandbox. Tests replace it.
+	hardeningApply     func(context.Context, string, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error)
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
 	queueFlusher       intel.QueueFlusher

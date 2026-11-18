@@ -124,6 +124,7 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"operate.restore_backup", "cmd/csm/restore.go: stage and replace config, drop-ins and state", "", "", []Privilege{Root}, []string{"/etc/csm", "/var/lib/csm", "/opt/csm", "/tmp"}},
 		{"integrate.challenge_snippet", "integration/webserver/installer.go: Install and Remove reload the web server", "mode", "observe", []Privilege{Root}, []string{"service:web server reload"}},
 		{"operate.manual_remediation", "checks/remediate.go: ApplyFix can kill and quarantine, or truncate a user crontab", "", "", []Privilege{CapKill, Root}, []string{"/home", "/tmp", "/var/tmp", "/dev/shm", "/var/spool/cron", "/var/spool/exim/input", "/var/spool/exim4/input"}},
+		{"operate.apply_hardening", "checks/hardening_apply.go: ApplyHardening runs in the hardening-apply-worker transient unit", "", "", []Privilege{Root}, []string{"/etc/ssh/sshd_config", "/etc/sysctl.d", "kernel:sysctl values", "/etc/shadow", "cpanel:tweak settings"}},
 		{"operate.delete_forwarder", "mailfwd/inventory/remove.go: CPanelRemover.Remove calls uapi Email delete_forwarder as the domain owner", "", "", []Privilege{Root}, []string{"cpanel:mail forwarders"}},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
@@ -604,6 +605,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"operate.delete_forwarder":      RiskDestructive,
 	"operate.export_archives":       RiskDestructive,
 	"operate.harden_host":           RiskDestructive,
+	"operate.apply_hardening":       RiskDestructive,
 	"operate.install_service":       RiskDestructive,
 	"operate.stalwart_setup":        RiskReversible,
 	"operate.manual_firewall":       RiskContain,
@@ -702,6 +704,7 @@ var reviewedRecoveryGaps = map[string]string{
 	"operate.delete_forwarder":      "The web UI audit log names the deleted destination and its account; nothing re-creates the forwarder.",
 	"operate.export_archives":       "Export can replace an existing operator-selected archive; removing the new archive does not restore overwritten bytes.",
 	"operate.harden_host":           "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+	"operate.apply_hardening":       "sshd_config keeps a .csm-bak copy and is restored when sshd -t rejects the change; sysctl, permission, WHM tweak, cPanel update and PHP drop-in changes are undone by hand.",
 	"operate.install_service":       "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"operate.stalwart_setup":        "Setup prints the previous values; undoing a change is done by hand in Stalwart's admin interface.",
 	"operate.manual_remediation":    "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
