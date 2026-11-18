@@ -375,7 +375,11 @@ It never applies them; the view is not an enforcement record.
   started. Policy refusals and recovery update this cause with the
   execution hold, without waiting for the next ledger sample. Once the
   cause is gone, each block still retires only after it
-  has expired and the firewall shows nothing of it. The owner also reports why
+  has expired and the firewall shows nothing of it. While the owner has the
+  firewall engine, `block_entries` names the entries whose automatic IP
+  blocks the live configuration lets admission run on this host (`scan`,
+  `challenge_timeout`, `incident`, `incident_spray`, `central`); the
+  comparison gate expects each to be seen. The owner also reports why
   the last clock reading or its live start failed (`tick_error`), whether
   the clock is degraded, where the ceiling came from (`ceiling_source`:
   `default`, `configured` or `clamped`), the legacy hourly count imported at

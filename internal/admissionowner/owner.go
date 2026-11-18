@@ -1484,6 +1484,11 @@ func (o *Owner) refreshStatus() {
 	}
 	if o.executable() {
 		s.Owner.Verdict, s.Owner.DryRun = o.verdictStatus(), o.dryRunStatus()
+		if entries := o.policy.BlockEntries; entries != nil {
+			for _, e := range entries() {
+				s.Owner.BlockEntries = append(s.Owner.BlockEntries, e.String())
+			}
+		}
 	}
 	s.Owner.PreviewReplacements, s.Owner.PreviewReplacementsLastHour = o.replacements, o.replacementsHour.total(monoNow())
 	s.Owner.PreviewRotations, s.Owner.PreviewRotationsLastHour = o.rotations, o.rotationsHour.total(monoNow())

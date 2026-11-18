@@ -46,6 +46,10 @@ type AdmissionOwner struct {
 	// blocks. Each affected block stays held and is retried; it clears once
 	// none is left faulted.
 	RetirementError string `json:"retirement_error,omitempty"`
+	// BlockEntries names the entries whose automatic IP blocks the live
+	// configuration lets admission run on this host, while the owner has
+	// the firewall engine. The comparison gate expects each to be seen.
+	BlockEntries []string `json:"block_entries,omitempty"`
 	// RetirementHeldBy names what keeps unknown outcomes from retiring
 	// while the ledger holds some: "engine" for an owner without the
 	// firewall engine, "policy" for a refused execution policy. Their
@@ -339,6 +343,7 @@ func (in *AdmissionStatus) Clone() *AdmissionStatus {
 			owner.Set = &set
 		}
 		owner.DryRun = in.Owner.DryRun.clone()
+		owner.BlockEntries = slices.Clone(in.Owner.BlockEntries)
 		out.Owner = &owner
 	}
 	return &out
