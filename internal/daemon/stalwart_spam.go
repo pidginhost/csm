@@ -205,7 +205,7 @@ func (d *Daemon) recordStalwartVerdict(ip netip.Addr, spam bool, at time.Time, c
 	}
 	// A verdict CSM's own list caused would keep the sender on that list.
 	if s := d.stalwart; s != nil {
-		if st := s.list.Load(); st != nil && (st.filterOff || !st.ruleOff && st.m.Weight(ip) > 0) {
+		if st := s.list.Load(); st != nil && (st.filterOff || (!st.ruleOff && st.m.Weight(ip) > 0)) {
 			return
 		}
 	}

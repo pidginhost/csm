@@ -499,6 +499,17 @@ func TestStalwartGuardSkipsListedSender(t *testing.T) {
 	if spam, _, _ := spamOf(adb, "198.51.100.41"); spam != 1 {
 		t.Fatalf("unlisted sender spam verdicts = %d, want 1", spam)
 	}
+
+	// Ham only adds to an existing record, so seed one to see it skipped.
+	adb.RecordMailVerdict("198.51.100.40", true, stalwartTestStart.Add(-time.Hour))
+	feedStalwart(d, stalwartQueuedLine(25, "198.51.100.40", 1003), stalwartIngestLine(stalwartTestStart, false, 1003, "user1@example.org"))
+	sweepAfterHold(d, cfg)
+	if got := stalwartCounts(d); got != (stalwartFilterCounts{delivered: 1, junk: 2}) {
+		t.Fatalf("counts = %+v, want one delivered and two junk", got)
+	}
+	if spam, ham, _ := spamOf(adb, "198.51.100.40"); spam != 1 || ham != 0 {
+		t.Fatalf("listed sender spam %d ham %d, want only the seeded spam verdict", spam, ham)
+	}
 }
 
 func TestStalwartGuardIPv4MappedSender(t *testing.T) {
