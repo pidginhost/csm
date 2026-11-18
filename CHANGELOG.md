@@ -12,6 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Debian and Ubuntu package upgrades no longer stop to ask whether to replace the CSM configuration file.
+- Package upgrades stop when the operator configuration is missing, and Debian and Ubuntu package purges remove the main configuration.
 
 ## [4.14.0] - 2026-11-18
 

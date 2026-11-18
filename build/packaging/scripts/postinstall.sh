@@ -69,7 +69,26 @@ link_legacy_config() {
     ln -s "$PREFERRED_CONFIG" "$LEGACY_CONFIG"
 }
 
+seed_main_config() (
+    # Publish only a complete template. A failed copy must be safe to retry,
+    # and a config placed by the operator during the copy must win.
+    dir=$(dirname "$PREFERRED_CONFIG")
+    stage=$(mktemp -d "$dir/.csm-install.XXXXXX")
+    tmp="$stage/${PREFERRED_CONFIG##*/}"
+    trap 'rm -f -- "$tmp"; rmdir -- "$stage"' EXIT
+    install -m 0600 "$DEFAULT_CONFIG" "$tmp"
+    ln "$tmp" "$dir/"
+)
+
 migrate_main_config() {
+    if { [ -e "$PREFERRED_CONFIG" ] || [ -L "$PREFERRED_CONFIG" ]; } && [ ! -f "$PREFERRED_CONFIG" ]; then
+        echo "ERROR: $PREFERRED_CONFIG must point to a regular file. Check the config path and retry." >&2
+        return 1
+    fi
+    if [ -e "$LEGACY_CONFIG" ] && [ ! -f "$LEGACY_CONFIG" ]; then
+        echo "ERROR: $LEGACY_CONFIG must point to a regular file. Check the legacy path and retry." >&2
+        return 1
+    fi
     if [ -e "$LEGACY_CONFIG" ] && [ ! -L "$LEGACY_CONFIG" ]; then
         if [ ! -e "$PREFERRED_CONFIG" ]; then
             copy_config_preserve "$LEGACY_CONFIG" "$PREFERRED_CONFIG"
@@ -83,13 +102,24 @@ migrate_main_config() {
         fi
     fi
 
-    # The deb ships only the template; the rpm already installed the config.
-    [ -e "$PREFERRED_CONFIG" ] || install -m 0600 "$DEFAULT_CONFIG" "$PREFERRED_CONFIG"
+    if [ ! -e "$PREFERRED_CONFIG" ]; then
+        # dpkg supplies the previous configured version even if the local
+        # install marker is gone. Preserve an operator's deletion on upgrade.
+        if [ "${1:-}" != configure ] || [ -n "${2:-}" ] || [ "$IS_UPGRADE" = 1 ]; then
+            echo "ERROR: $PREFERRED_CONFIG is missing. Restore the config before retrying." >&2
+            return 1
+        fi
+        if [ -L "$LEGACY_CONFIG" ] && [ "$(readlink "$LEGACY_CONFIG")" != "$PREFERRED_CONFIG" ]; then
+            echo "ERROR: $LEGACY_CONFIG is an operator symlink. Supply $PREFERRED_CONFIG before retrying." >&2
+            return 1
+        fi
+        seed_main_config
+    fi
 
     link_legacy_config
 }
 
-migrate_main_config
+migrate_main_config "$@"
 
 # Snapshot whether the active config is still the shipped placeholder
 # BEFORE any substitutions below mutate the SET_*_HERE markers. The

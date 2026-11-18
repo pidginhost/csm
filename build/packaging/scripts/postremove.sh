@@ -160,5 +160,17 @@ rm -f /opt/csm/state/.pkg-installed 2>/dev/null || true
 rm -f /var/lib/csm/.pkg-installed 2>/dev/null || true
 rm -rf /var/run/csm 2>/dev/null || true
 
-echo "CSM removed. Config preserved at /etc/csm/csm.yaml (remove manually if desired)."
+PREFERRED_CONFIG="/etc/csm/csm.yaml"
+LEGACY_CONFIG="/opt/csm/csm.yaml"
+if [ "${1:-}" = purge ]; then
+    # dpkg cannot purge a file created by postinstall. Unlink only the
+    # active config and the compatibility link the package created.
+    rm -f -- "$PREFERRED_CONFIG" || exit 1
+    if [ -L "$LEGACY_CONFIG" ] && [ "$(readlink "$LEGACY_CONFIG")" = "$PREFERRED_CONFIG" ]; then
+        rm -f -- "$LEGACY_CONFIG" || exit 1
+    fi
+    echo "CSM removed. Main config purged."
+else
+    echo "CSM removed. Check /etc/csm for retained configuration."
+fi
 echo "State data preserved at /var/lib/csm/state/ (remove manually if desired)."

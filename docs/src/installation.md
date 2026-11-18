@@ -164,6 +164,8 @@ The package uses FHS paths for config, state, drop-ins, and shipped profiles. Up
 | Quarantine | `/opt/csm/quarantine/` |
 | YARA / signature rules | `/opt/csm/rules/` |
 
+On Debian and Ubuntu, removing the package keeps the main config. Purging the package removes the main config and its package-created compatibility link. If the main config is a symlink, purge leaves its target in place.
+
 The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions for the FHS directories. `/var/lib/csm` is mode 0711, searchable but not listable, so Exim can reach the email forward guard files below it; `/var/lib/csm/state/` stays 0700. On upgrade, the package copies a real legacy main config into `/etc/csm/csm.yaml` when needed and points `/opt/csm/csm.yaml` at it. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS state path. See [Upgrading - FHS migration](upgrading.md#fhs-migration-state-config-drop-ins-and-profiles) for the manual-binary-swap case.
 
 The binary installer and package scripts also keep the shared state root searchable, including on systemd 239, which does not reset an existing state directory's mode. Applying the forward guard repairs legacy parent permissions without making private directories listable and rejects symlinks in those parents. Install and `csm rehash` likewise refuse a symlinked `/var/lib/csm`; relocate state with `state_path` instead. Lookup refreshes maintain search access to the lookup directory inside the daemon sandbox; full guard application runs outside it.
