@@ -54,10 +54,12 @@ func TestDoctorFailsAdmissionOutagesWhileExecuting(t *testing.T) {
 // grace is bounded: an owner still without a turn two minutes after the
 // daemon started fails as a settled one does.
 func TestDoctorWarnsAdmissionOutagesUntilTheFirstTurn(t *testing.T) {
-	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	// The grace runs on the wall clock, and the Critical gap is one this
+	// daemon recorded: after its start, within the hour.
+	at := time.Now().UTC()
 	ledger := &admission.LedgerStatus{Storage: admission.StorageStatus{RecoveryRoom: admission.RecoveryReserveBytes}}
 	ledger.Ceiling.Limit = 2000
-	ledger.Notices.LastCriticalGap = at.Add(-time.Minute)
+	ledger.Notices.LastCriticalGap = at.Add(-30 * time.Second)
 	snap := admissionSnapshot(&health.AdmissionStatus{
 		CheckedAt: at, Ledger: ledger, Ingress: &admission.IngressHealth{StoppedSince: at.Add(-time.Minute)},
 		Owner: &health.AdmissionOwner{
@@ -70,6 +72,7 @@ func TestDoctorWarnsAdmissionOutagesUntilTheFirstTurn(t *testing.T) {
 		"admission owner", "admission clock", "admission turns", "admission execution", "admission ledger damage",
 		"admission ingress", "admission response gaps",
 	}
+	snap.StartedAt = at.Add(-time.Minute)
 	late := *snap
 	late.StartedAt = time.Now().Add(-admissionSettleGrace - time.Second)
 	stale := doctorReportForSnapshot(t, &late)

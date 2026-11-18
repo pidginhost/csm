@@ -495,3 +495,28 @@ func TestAdmissionSummariesRequireAnHourBoundary(t *testing.T) {
 		t.Error("verified a summary outside its hour boundary")
 	}
 }
+
+// A summary keeps the daemon run that counted it, so compare can judge
+// runs apart; no other row may carry one.
+func TestAdmissionSummaryKeepsItsRun(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	r := summaryRow(actionlog.Result("queued"), "")
+	r.Epoch = 7
+	out, err := a.Action(r)
+	if err != nil || out.Epoch != 7 || a.VerifyAction(out) != nil {
+		t.Fatalf("summary run -> %+v %v", out, err)
+	}
+	step := admissionRow("block_ip", "ip:203.0.113.9", actionlog.Result("observe"))
+	step.Epoch = 7
+	if _, err = a.Action(step); err == nil {
+		t.Fatal("an audit row carried a run")
+	}
+	legacy, err := a.Action(fullRecord())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Epoch = 7
+	if a.VerifyAction(legacy) == nil {
+		t.Fatal("verifier accepted a run on an action")
+	}
+}

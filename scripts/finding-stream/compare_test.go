@@ -97,8 +97,9 @@ func TestCompareReportsTheR11Criteria(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `admission comparison
-coverage: summary-hour span is nominal; counts are lower bounds; boundary hours may be partial; verify collector coverage, idle or missing hours and clean-stop completion
-window: 2026-09-08T10:00:00Z to 2026-09-08T14:00:00Z, 4h0m0s: FAIL (needs 168h0m0s)
+coverage: the window starts at the first summary, whose hour may be partial; counts are lower bounds; verify collector coverage, idle or missing hours and clean-stop completion
+run unmarked
+window: 2026-09-08T11:00:00Z to 2026-09-08T14:00:00Z, 3h0m0s: FAIL (needs 48h0m0s)
 legacy automatic actions: 8
   matched by an admission step: 1
   matched by a coalesced admission: 2
@@ -110,21 +111,27 @@ legacy automatic actions: 8
     no finding id central_intel 2026-09-08T10:50:00Z
 invalid refusals: 2: FAIL
 queue overflow refusals: 1: FAIL
+gate: FAIL: summaries name no run
 read elsewhere: Critical deferrals and queue evictions (csm status, admission outcomes), handoff p99 (csm_admission_handoff_seconds), corruption/damage (csm status and doctor), collection and clean-stop coverage (collector inventory)
+verdict: FAIL: no status file
 `
 	if out.String() != want {
 		t.Fatalf("report:\n%s\nwant:\n%s", out.String(), want)
 	}
 }
 
+// A clean run of a week passes even with a check short of its floor,
+// which the gate then names as unproven.
 func TestComparePassesACleanWeek(t *testing.T) {
 	findings := []alert.AuditEvent{{V: 1, Timestamp: compareTS, FindingID: "fid-11111111111111111111111111111111", Severity: "HIGH", Check: "pam_bruteforce"}}
+	first, last := summary(0, "pam_bruteforce", "observe", "", 1), summary(7*24*time.Hour, "pam_bruteforce", "queued", "", 1)
+	first.Epoch, last.Epoch = 1, 1
 	actions := []anonAction{
 		legacyBlock("fid-11111111111111111111111111111111", 5*time.Minute, "scan"), admissionStep("fid-11111111111111111111111111111111", 5*time.Minute+time.Second),
-		summary(time.Hour, "pam_bruteforce", "observe", "", 1), summary(7*24*time.Hour, "pam_bruteforce", "queued", "", 1),
+		first, last,
 	}
 	var out bytes.Buffer
-	if err := run(compareInputs(t, findings, actions), &out); err != nil {
+	if err := run(append(compareInputs(t, findings, actions), "--status", statusFile(t, 1, "scan")), &out); err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
@@ -132,7 +139,7 @@ func TestComparePassesACleanWeek(t *testing.T) {
 			t.Errorf("clean week fails: %s", line)
 		}
 	}
-	if !strings.Contains(out.String(), "168h0m0s: pass") {
+	if !strings.Contains(out.String(), "168h0m0s: pass") || !strings.Contains(out.String(), "gate: pass; unproven: scan pam_bruteforce\n") {
 		t.Fatalf("report:\n%s", out.String())
 	}
 }
@@ -315,7 +322,7 @@ func TestCompareJoinedAdmissionRun(t *testing.T) {
 	if err := run([]string{"compare", "--findings", fo, "--actions", ao}, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"168h0m0s: pass", "legacy automatic actions: 2", "matched by an admission step: 1", "matched by a coalesced admission: 1", "unexplained: 0: pass", "invalid refusals: 0: pass"} {
+	for _, want := range []string{"167h0m0s: pass", "legacy automatic actions: 2", "matched by an admission step: 1", "matched by a coalesced admission: 1", "unexplained: 0: pass", "invalid refusals: 0: pass"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q:\n%s", want, out.String())
 		}

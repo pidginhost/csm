@@ -79,7 +79,8 @@ func EvaluateConnection(
 	if isInfraIP(dstIP.String(), cfg.InfraIPs) {
 		return alert.Finding{}, false
 	}
-	if safeUsers[user] {
+	// Knot uses DNS over TLS for zone transfers.
+	if safeUsers[user] || (user == "knot" && dstPort == 853) {
 		return alert.Finding{}, false
 	}
 

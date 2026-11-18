@@ -296,8 +296,9 @@ func TestOwnerDryRunStatusAfterLeavingDryRun(t *testing.T) {
 	}
 }
 
-// A restart makes the comparison incomplete, since the
-// last process's counts and examples may be lost; a first start does not.
+// A restart alone leaves the comparison complete: each run's summaries
+// name their run, so the comparison judges runs apart. Only lost records
+// make it incomplete.
 func TestOwnerDryRunStatusAfterARestart(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -311,7 +312,7 @@ func TestOwnerDryRunStatusAfterARestart(t *testing.T) {
 	}
 	o.Stop()
 	o = f.start(opts)
-	if d := dryRunState(t, o); !d.ComparisonIncomplete {
+	if d := dryRunState(t, o); d.ComparisonIncomplete {
 		t.Fatalf("a restart = %+v", d)
 	}
 }

@@ -20,8 +20,11 @@ func admissionDoctorChecks(a *health.AdmissionStatus, started time.Time) []Docto
 	checks := make([]DoctorCheck, 0, len(rows))
 	for _, r := range rows {
 		c := DoctorCheck{Name: r.Name, Status: r.Status, Message: r.Message, Fix: r.Fix}
-		if r.Name == admission.UnresolvedOutcomesRow {
+		switch r.Name {
+		case admission.UnresolvedOutcomesRow:
 			c = retirementHeldCheck(c, a)
+		case admission.ResponseGapsRow:
+			c = gapBeforeStartCheck(c, a, started)
 		}
 		checks = append(checks, c)
 	}
@@ -45,6 +48,21 @@ func retirementHeldCheck(c DoctorCheck, a *health.AdmissionStatus) DoctorCheck {
 		c.Message = fmt.Sprintf("%d automatic blocks have an unproven outcome and stay unresolved while the execution policy is refused; their addresses stay held; %s", n, closing)
 		c.Fix = "correct the setting the admission execution row names; each block then retires once it has expired and the firewall shows nothing of it"
 	}
+	return c
+}
+
+// gapBeforeStartCheck warns instead of failing for a Critical gap recorded
+// before this daemon started. A flood of the hourly ceiling can withhold a
+// Critical; failing on it would fail the check that follows every deploy
+// or restart for an hour and roll the host back. A gap the running daemon
+// records still fails, and so does every gap when the start follows the
+// check: the clock stepped back, so the times cannot place the gap.
+func gapBeforeStartCheck(c DoctorCheck, a *health.AdmissionStatus, started time.Time) DoctorCheck {
+	if c.Status != "fail" || a.Ledger == nil || started.After(a.CheckedAt) || !a.Ledger.Notices.LastCriticalGap.Before(started) {
+		return c
+	}
+	c.Status = "warn"
+	c.Message += "; it was recorded before the daemon started at " + started.UTC().Format(time.RFC3339)
 	return c
 }
 

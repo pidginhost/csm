@@ -40,10 +40,8 @@ type dryRunOutput struct {
 	// writes and maintenance steps; summariesLost counts summaries a stop
 	// discarded or a full count could not carry.
 	examplesLost, recordErrors, summariesLost uint64
-	// last is the session status shows once none runs; restarted is set
-	// when an earlier process opened the ledger.
-	last      sessionInfo
-	restarted bool
+	// last is the session status shows once none runs.
+	last sessionInfo
 }
 
 // sessionInfo identifies a forecast session for status.
