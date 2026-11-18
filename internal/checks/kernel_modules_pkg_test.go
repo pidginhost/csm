@@ -158,3 +158,23 @@ func TestCheckKernelModulesMetadataRefreshStaysHigh(t *testing.T) {
 		t.Fatalf("want one High finding, got %+v", findings)
 	}
 }
+
+func TestCheckKernelModulesOnlyUpgradeModulesAreDemoted(t *testing.T) {
+	// Unprivileged users can autoload most modules and can see when an
+	// upgrade runs, so only the modules upgrades are known to load demote.
+	for mod, want := range map[string]alert.Severity{
+		"af_alg":     alert.Warning,
+		"algif_hash": alert.Warning,
+		"algif_aead": alert.High,
+		"veth":       alert.High,
+		"nf_tables":  alert.High,
+		"rootkit":    alert.High,
+	} {
+		t.Run(mod, func(t *testing.T) {
+			findings := kmodScenario(t, mod, 10*time.Minute, time.Second)
+			if len(findings) != 1 || findings[0].Severity != want {
+				t.Fatalf("want one %v finding, got %+v", want, findings)
+			}
+		})
+	}
+}

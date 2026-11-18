@@ -22,7 +22,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
 - Knot DNS servers no longer raise connection alerts for their own zone transfers.
 - chrony no longer raises connection alerts when it reaches Network Time Security servers.
-- Kernel modules loaded during a package upgrade now raise a warning instead of a HIGH incident.
+- A package upgrade that loads the kernel's crypto socket modules now raises a warning instead of a HIGH incident.
 
 ## [4.14.0] - 2026-11-18
 

@@ -59,7 +59,7 @@ func CheckKernelModules(ctx context.Context, _ *config.Config, store *state.Stor
 				Message:  fmt.Sprintf("New kernel module loaded after baseline: %s", mod),
 				Details:  "This module was not present when CSM baseline was set. Verify it is legitimate.",
 			}
-			if pkgActive && !kmodNeverDemote[mod] {
+			if pkgActive && kmodUpgradeModules[mod] {
 				f.Severity = alert.Warning
 				f.Details += " [demoted: package manager active since the previous module scan]"
 			}
@@ -93,11 +93,13 @@ var kmodPkgTransactionFiles = []string{
 	"/var/log/apt/history.log",
 }
 
-// kmodNeverDemote lists modules whose load stays High even inside a package
-// transaction. algif_aead is the CVE-2026-31431 ("Copy Fail") entry point;
-// no package scriptlet has a reason to load it.
-var kmodNeverDemote = map[string]bool{
-	"algif_aead": true,
+// kmodUpgradeModules lists the modules package scriptlets load on demand
+// that may demote during a transaction. Unprivileged users can autoload
+// most modules and can watch the package logs, so every other module,
+// algif_aead (the Copy Fail entry point) included, stays High.
+var kmodUpgradeModules = map[string]bool{
+	"af_alg":     true,
+	"algif_hash": true,
 }
 
 // kmodPkgCutoff returns the start of the interval in which a newly listed

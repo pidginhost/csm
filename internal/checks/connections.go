@@ -39,6 +39,8 @@ const ntsKEPort = 4460
 
 // safeUserPorts admits one destination port per system service account,
 // narrower than safeUsers: the account stays reported on every other port.
+// Entries apply to system UIDs only, since a hosting account can take the
+// same name.
 // Ubuntu's default chrony.conf uses NTS pools (ntp.ubuntu.com), so every
 // chronyd restart (package upgrade, reboot) opened a TCP connection to
 // 4460 that was reported as a compromised account phoning home.
@@ -97,7 +99,7 @@ func EvaluateConnection(
 	if safeUsers[user] {
 		return alert.Finding{}, false
 	}
-	if safeUserPorts[user][dstPort] {
+	if uid < 1000 && safeUserPorts[user][dstPort] {
 		return alert.Finding{}, false
 	}
 
