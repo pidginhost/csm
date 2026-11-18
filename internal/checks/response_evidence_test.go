@@ -89,7 +89,7 @@ var notAddressEvidence = map[string]string{
 	"email_auth_failure_realtime":   "one raw mailbox failure; thresholded checks carry the evidence",
 	"email_php_form_relay_observed": "observe mode report; aims no response",
 	"email_php_relay_abuse":         "visitor of a sending script, not necessarily the abuser",
-	"email_suspicious_geo":          "mailbox owner login from a new country",
+	"email_suspicious_geo":          "mailbox login or authenticated send from a new country",
 	"ftp_login":                     "authenticated customer login",
 	"ftp_login_after_bruteforce":    "no response policy; candidate for a reviewed compromise decision",
 	"mail_account_spray":            "most recent of many sources of a per-mailbox summary",
@@ -380,8 +380,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding.
-	if len(producers) != 75 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 75 producers", len(producers))
+	if len(producers) != 76 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 76 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {
