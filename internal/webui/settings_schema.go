@@ -369,7 +369,7 @@ var settingsSections = []SettingsSection{
 		ID:       "php_shield",
 		Title:    "PHP Shield",
 		YAMLPath: "php_shield",
-		Feature:  "php",
+		Feature:  "phpShield",
 		Icon:     "brand-php",
 		Group:    SectionGroupDetection,
 		Restart:  true,

@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/phpshield"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -21,7 +22,7 @@ func cpanelMailBackend(info platform.Info) bool { return info.IsCPanel() }
 // named features the Web UI renders. Templates, the settings schema and the
 // page scripts all read these names instead of testing the platform
 // themselves.
-func uiFeatures(info platform.Info, mta platform.MTAKind, php bool) map[string]bool {
+func uiFeatures(info platform.Info, mta platform.MTAKind, php phpPresence) map[string]bool {
 	cp := cpanelMailBackend(info)
 	return map[string]bool{
 		"cpanel":          info.IsCPanel(),
@@ -34,7 +35,8 @@ func uiFeatures(info platform.Info, mta platform.MTAKind, php bool) map[string]b
 		"emailAV":         cp,
 		"cphulk":          info.IsCPanel(),
 		"stalwartFilter":  mta == platform.MTAStalwart,
-		"php":             php,
+		"php":             php.php,
+		"phpShield":       php.shield,
 	}
 }
 
@@ -50,14 +52,24 @@ var hostPlatform = func() (platform.Info, platform.MTAKind) {
 	return platform.Detect(), platform.DetectMTA()
 }
 
-// hostPHP reports whether a PHP interpreter is installed. PHP can be
-// installed after CSM starts, so it is re-checked with the platform.
-var hostPHP = platform.DetectPHP
+// phpPresence says whether this host runs PHP and whether PHP Shield can
+// reach it.
+type phpPresence struct{ php, shield bool }
+
+// hostPHP finds PHP on the host, or else PHP running in a container. PHP can
+// be installed after CSM starts, so it is re-checked with the platform.
+var hostPHP = func() phpPresence {
+	if platform.DetectPHP() {
+		return phpPresence{php: true, shield: true}
+	}
+	running, shielded := scanPHPProcesses("/proc", phpshield.ScriptPath)
+	return phpPresence{php: running, shield: shielded}
+}
 
 type featureState struct {
 	// detectPlatform, detectPHP and featureNow are nil outside tests.
 	detectPlatform func() (platform.Info, platform.MTAKind)
-	detectPHP      func() bool
+	detectPHP      func() phpPresence
 	featureNow     func() time.Time
 	featureMu      sync.Mutex
 	featureCache   featureSnapshot
@@ -88,7 +100,7 @@ func (s *Server) platformSnapshot() featureSnapshot {
 	} else {
 		info, mta = hostPlatform()
 	}
-	var php bool
+	var php phpPresence
 	if s.detectPHP != nil {
 		php = s.detectPHP()
 	} else {

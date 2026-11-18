@@ -141,7 +141,9 @@ cPanel and webmail login, and known API token settings need cPanel and are not
 shown elsewhere. On a host with no PHP interpreter, the PHP Shield, WordPress,
 WP-Cron, XML-RPC and PHP process settings and the Performance page's PHP
 cards are hidden; PHP installed after CSM starts shows them within five
-minutes. Hidden settings keep the values they have in `csm.yaml`.
+minutes. PHP-FPM or lsphp running in a container counts as PHP; the PHP Shield
+settings then show only when that container has the shield script mounted at
+its usual path. Hidden settings keep the values they have in `csm.yaml`.
 The Suspended tab shows on cPanel and Stalwart hosts. On a Stalwart host it
 lists the mailboxes whose sign-ins CSM stopped, and Release allows them again.
 On a Stalwart host the first three Email Security cards show the mail

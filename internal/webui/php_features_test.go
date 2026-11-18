@@ -46,7 +46,7 @@ func TestPHPSettingsHiddenWithoutPHP(t *testing.T) {
 	if _, ok := filterSettingsSection(shield, map[string]bool{}); ok {
 		t.Error("php_shield shown without PHP")
 	}
-	if _, ok := filterSettingsSection(shield, map[string]bool{"php": true}); !ok {
+	if _, ok := filterSettingsSection(shield, map[string]bool{"php": true, "phpShield": true}); !ok {
 		t.Error("php_shield hidden with PHP")
 	}
 }
