@@ -78,6 +78,7 @@ func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 		Applied:        d.consumeAppliedBlocks,
 		Deliver:        d.deliverAdmissionNotices,
 		Blocks:         blocks,
+		EngineStarting: func() bool { return !d.firewallStarted.Load() },
 		// A dry-run summary is a preview: history only.
 		DeliverSummary: func(ctx context.Context, f alert.Finding) error {
 			if err := ctx.Err(); err != nil {

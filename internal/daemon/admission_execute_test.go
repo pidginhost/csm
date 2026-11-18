@@ -42,3 +42,27 @@ func TestDaemonOwnerExecutesUnderALivePolicy(t *testing.T) {
 		})
 	}
 }
+
+// The owner starts before the firewall: until the firewall's first start
+// has ended, either way, a missing engine is still starting.
+func TestDaemonAdmissionWaitsForTheFirewallStart(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	cfg := publishTestConfig(t, "")
+	cfg.StatePath = dir
+	d := New(cfg, st, nil, "")
+	opts := d.admissionOptions(nil)
+	if opts.EngineStarting == nil || !opts.EngineStarting() {
+		t.Fatal("before the firewall start the engine is not reported as starting")
+	}
+	d.startFirewallUsing(firewallStartupOps{})
+	if opts.EngineStarting() {
+		t.Fatal("after the firewall start the engine is still reported as starting")
+	}
+}

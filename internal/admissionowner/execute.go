@@ -103,6 +103,9 @@ func (o *Owner) execute(picks []execPick) error {
 		// The missing-engine wait must advance even when the clock cannot
 		// support execution; otherwise every due turn spends a selection.
 		o.ready(nil, true)
+		if o.engineStarting() {
+			return nil
+		}
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
 	// A degraded clock cannot bound a lease: the admission time stays at

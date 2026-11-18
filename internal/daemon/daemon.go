@@ -95,6 +95,9 @@ type Daemon struct {
 	// blockEngine is fwEngine published for the admission owner, which
 	// starts before the firewall and reads it on its own goroutine.
 	blockEngine atomic.Pointer[firewall.Engine]
+	// firewallStarted is set once the firewall's first start has ended,
+	// with or without an engine.
+	firewallStarted atomic.Bool
 	// fwActions retains the durable-action boundary even after failed startup,
 	// so pending actions remain recoverable while the firewall is unmanaged.
 	fwActions      firewallActionBoundary
