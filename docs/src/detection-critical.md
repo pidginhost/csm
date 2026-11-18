@@ -15,7 +15,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `php_processes` | PHP process execution, working dirs, environment variables |
 | `shadow_changes` | /etc/shadow modification outside maintenance windows |
 | `uid0_accounts` | Unauthorized root (UID 0) accounts |
-| `kernel_modules` | Kernel module loading (post-baseline) |
+| `kernel_modules` | Kernel module loading (post-baseline). High. `af_alg` and `algif_hash`, which upgrades load on demand, are a Warning when a package was installed or updated since the previous scan; every other module, `algif_aead` (Copy Fail) included, stays High |
 | `af_alg_socket_use` | AF_ALG socket use that may indicate Copy Fail exploit activity |
 | `af_alg_enforcement` | AF_ALG hardening policy drift and correction status |
 
@@ -36,7 +36,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | Check | Description |
 |-------|-------------|
 | `outbound_connections` | Root-level outbound to non-infra IPs (C2, backdoor ports) |
-| `user_outbound` | Per-user outbound connections (non-standard ports) |
+| `user_outbound` | Per-user outbound connections (non-standard ports). System accounts for Knot DNS (TCP 853) and chrony or ntpsec (NTS key exchange, TCP 4460) are exempt on that port only; hosting accounts with those names are still reported |
 | `bad_asn_outbound` | Outbound connection whose destination resolves (via GeoLite2-ASN) to a bad or unexpected autonomous system. Config `detection.bad_asn_outbound`: `blocked_asns` (always bad) and/or `allowed_asns` (allowlist mode -- anything outside is bad). Classified for every process including root (the periodic connection scan); non-root connections are also flagged in real time by the live BPF tracker. Off by default; the third leg of the `host_takeover` incident chain |
 | `dns_connections` | DNS exfiltration and suspicious queries |
 | `firewall` | Firewall status and rule integrity |

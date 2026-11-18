@@ -263,7 +263,7 @@ Commands:
   phprelay ...  PHP mail relay guard controls (status, ignore-script, unignore, dry-run, thaw)
   report enroll Generate an abuse-reporting node key pair
   virtual-patch Deny HTTP access to confirmed web-exposed files (--apply; needs manual/auto mode)
-  stalwart setup  Prepare Stalwart for CSM (--dry-run; admin login from STALWART_USER and STALWART_PASSWORD or --password-file)
+  stalwart setup  Prepare Stalwart for CSM (--dry-run; admin login from STALWART_USER and STALWART_PASSWORD, --password-file or --password-stdin, else asked on a terminal)
   version       Version info + build hash
   capabilities  Print this build's feature tokens, one per line (--json for an array; no daemon or config needed)
 
