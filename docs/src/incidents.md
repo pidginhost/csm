@@ -753,6 +753,7 @@ Attribution gaps:
 | `email_filter_exfil` | security event |  |  |
 | `email_filter_forwarder` | security event |  |  |
 | `email_filter_pipe` | security event |  |  |
+| `email_forged_sender` | security event |  |  |
 | `email_mail_filters` | ignored | self-health |  |
 | `email_mailbox_compromise` | security event |  |  |
 | `email_mailbox_response` | ignored | response |  |

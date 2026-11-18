@@ -586,7 +586,7 @@ The signs cover logins from new countries, forged sender domains, bulk recipient
 
 A login from a new country is an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
 
-A mailing is an `email_bulk_recipients` finding the first time the ledger records it.
+A mailing is an `email_bulk_recipients` finding the first time the ledger records it. An authenticated send whose envelope sender is a domain the login's hosting account does not own is an `email_forged_sender` finding the first time the ledger records that domain. The account's own domains, aliases and subdomains never count.
 
 Each kind of sign counts once, however often it repeats. Mailboxes in `email_protection.high_volume_senders` send mailings by design, so forged sender domains and bulk recipients do not count for them. Signs expire a week after their last sighting. The ledger groups older details when many distinct values appear.
 

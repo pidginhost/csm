@@ -343,6 +343,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_compromised_account", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockAlways, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: attributedByPeer}},
 	{Name: "email_credential_leak", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_dkim_failure", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
+	// One sign among several; email_mailbox_compromise reports them together.
+	{Name: "email_forged_sender", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Summary: true},
 	{Name: "email_filter_blackhole", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_filter_exfil", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_filter_forwarder", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},

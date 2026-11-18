@@ -80,6 +80,7 @@ var attributionEvidence = map[string]string{
 	"email_suspicious_geo":       "TestDovecotGeoFindingCarriesTenant",
 	"email_mailbox_compromise":   "TestMailboxCompromiseFindingCarriesTenant",
 	"email_bulk_recipients":      "TestBulkMessageIsEvidence",
+	"email_forged_sender":        "TestForgedSenderIsEvidence",
 
 	"email_php_form_relay_script": "TestPHPFormRelayScriptStampsOwner",
 

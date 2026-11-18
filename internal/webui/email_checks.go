@@ -16,6 +16,7 @@ type emailCheck struct {
 var emailChecks = []emailCheck{
 	{"email_compromised_account", "compromised_account"},
 	{"email_credential_leak", "compromised_account"},
+	{"email_forged_sender", "compromised_account"},
 	{"email_weak_password", "compromised_account"},
 	{"mail_account_compromised", "compromised_account"},
 	{"email_mailbox_compromise", "compromised_account"},

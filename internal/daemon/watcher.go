@@ -786,12 +786,15 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 		findings = append(findings, f)
 	}
-	// Sent from a country the mailbox never logged in from, or as a
-	// mailing. Evaluated outside the profile, whose state lock the ledger's
+	// Sent from a country the mailbox never logged in from, as a mailing,
+	// or as a domain the login's account does not own. Evaluated outside the profile, whose state lock the ledger's
 	// response must not run under.
 	if user, ip, ok := authenticatedSend(line); ok {
 		findings = append(findings, observeSendCountry(cfg, user, ip, time.Now())...)
 		findings = append(findings, observeBulkRecipients(cfg, user, eximlog.Recipients(line), time.Now())...)
+		if _, sender, ok := eximlog.Arrival(line); ok {
+			findings = append(findings, observeForgedSender(cfg, user, sender, time.Now())...)
+		}
 	}
 
 	if eng := PHPRelayEvaluator(); eng != nil {

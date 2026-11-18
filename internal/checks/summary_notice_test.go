@@ -20,7 +20,7 @@ import (
 func TestSummaryRegistryChecks(t *testing.T) {
 	want := []string{
 		"auto_block", "challenge_route",
-		"email_bulk_recipients",
+		"email_bulk_recipients", "email_forged_sender",
 		"email_php_form_relay_observed", "email_php_relay_action_dry_run", "email_php_relay_rate_limit_hit",
 		"email_suspicious_geo",
 		"mail_bruteforce_suspected",
@@ -28,6 +28,7 @@ func TestSummaryRegistryChecks(t *testing.T) {
 	// Each evidence check names the check that reports the combined response.
 	evidenceFor := map[string]string{
 		"email_bulk_recipients": "email_mailbox_compromise",
+		"email_forged_sender":   "email_mailbox_compromise",
 		"email_suspicious_geo":  "email_mailbox_compromise",
 	}
 	var got []string

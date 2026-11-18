@@ -209,6 +209,7 @@ func isMailboxTakeoverCheck(check string) bool {
 		"email_cloud_relay_abuse",
 		"email_compromised_account",
 		"email_credential_leak",
+		"email_forged_sender",
 		"email_mailbox_compromise",
 		"email_rate_critical",
 		"email_rate_warning",
