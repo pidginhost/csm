@@ -217,10 +217,18 @@ preview did with its finding. Older unstamped finding rows still supply
 their identifiers and checks for joins:
 
 ```bash
-/tmp/finding-stream compare --findings host-a/findings.jsonl.gz --actions host-a/actions.jsonl.gz
+/tmp/finding-stream compare --findings host-a/findings.jsonl.gz --actions host-a/actions.jsonl.gz --status host-a/status.json
 ```
 
-The window runs from the first to the last hourly admission summary. A block
+`--status` takes the host's `csm status --json` output, taken at the end of
+the run being judged; compare reads only the ledger's ingress `generation`,
+which names that run, and the admission owner's `block_entries` from it.
+Each hourly summary names the daemon run that counted it (`epoch`), and
+compare reports each run apart, since a restart loses the hour in progress.
+Summaries recorded before they named their run are reported as one unmarked
+run. A run's window spans its first to its last hourly admission summary;
+the hour the first one counts may have begun before the run, so it is not
+counted. A block
 is matched by one observed attempt for the same finding, response kind and
 typed target within an hour; a scan block retried from the pending queue may
 land later, until its retry ages out two hours after it was queued. Spray
@@ -244,9 +252,17 @@ and output errors never repeat file paths or host data.
 Summary matches are aggregate lower bounds, not proof about one finding. Anything else is listed
 as unexplained. The report also totals Invalid and queue overflow refusals,
 and names what only `csm status` and the metrics show: Critical deferrals,
-queue evictions and the handoff latency. The stream criteria pass when the window spans at
-least seven days, nothing is unexplained and both totals are zero; the
-operator must also verify the named status and metric criteria. Shape
+queue evictions and the handoff latency.
+
+Each run ends with its gate; only the run the status names is judged. It
+passes once its window spans at least 48 hours, nothing is unexplained, both
+totals are zero, and three blocks are matched for every entry the status
+lists and for every scan check that blocked. An entry short of three, or
+listed but never blocking, holds the gate until the run spans seven days;
+the gate then passes and names it unproven. An unmarked run, or a comparison
+without `--status`, never passes. The report ends with the verdict on the
+status's run: an earlier run that passed does not pass it.
+The operator must also verify the named status and metric criteria. Shape
 validation cannot authenticate a prior run: compare accepts outputs only
 from the joined run that already passed its identity verifier. The report
 describes one host's responses; keep it private. Summary retention discards
