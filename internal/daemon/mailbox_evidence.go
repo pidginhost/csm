@@ -46,12 +46,15 @@ const (
 
 // mailboxSignal is one sign of compromise. since, when set, is when the
 // evidence began, earlier than its observation: a redirect's file time.
+// summary, when set, is the summary-class finding that reports the sign
+// the first time the ledger holds it.
 type mailboxSignal struct {
-	kind   string
-	key    string
-	at     time.Time
-	since  time.Time
-	detail string
+	kind    string
+	key     string
+	at      time.Time
+	since   time.Time
+	detail  string
+	summary alert.Finding
 }
 
 // mailboxEvidenceScore weighs each kind of sign once, whatever its repeats.
@@ -123,10 +126,10 @@ func pruneMailboxEvidence(db *store.DB, now time.Time) error {
 	return db.PruneMailboxEvidence(func(_ string, e *store.MailboxEvidence) { expireMailboxEvidence(e, now) })
 }
 
-// observeMailboxSignal adds a sign to the mailbox's ledger. The first time
-// the ledger reaches the compromise score it suspends the mailbox and
-// returns the one incident finding; otherwise it returns nothing, and the
-// sign is reported by its own summary-class finding.
+// observeMailboxSignal adds a sign to the mailbox's ledger and returns its
+// summary finding when the sign is new to the ledger. The first time the
+// ledger reaches the compromise score it also suspends the mailbox and
+// returns the one incident finding.
 func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) []alert.Finding {
 	mailbox = strings.ToLower(mailbox)
 	if !strings.Contains(mailbox, "@") {
@@ -140,7 +143,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) [
 	if !s.since.IsZero() && s.since.Before(first) {
 		first = s.since
 	}
-	report := false
+	report, fresh := false, false
 	score := 0
 	// The claim on the report is made in the same transaction as the score,
 	// so concurrent signs report one incident.
@@ -155,6 +158,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) [
 			i = latestOfKind(e.Signals, s.kind)
 		}
 		if i < 0 {
+			fresh = true
 			e.Signals = append(e.Signals, store.MailboxSignal{Kind: s.kind, Key: s.key, First: first, Last: s.at, Count: 1, Detail: truncateDaemon(s.detail, 300)})
 		} else {
 			old := &e.Signals[i]
@@ -176,10 +180,14 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) [
 		fmt.Fprintf(os.Stderr, "[%s] Warning: mailbox evidence for %s: %v\n", ts(), mailbox, err)
 		return nil
 	}
-	if !report {
-		return nil
+	var out []alert.Finding
+	if fresh && s.summary.Check != "" {
+		out = append(out, s.summary)
 	}
-	return []alert.Finding{respondToMailboxEvidence(cfg, mailbox, e, score)}
+	if report {
+		out = append(out, respondToMailboxEvidence(cfg, mailbox, e, score))
+	}
+	return out
 }
 
 func kindKeys(signals []store.MailboxSignal, kind string) int {

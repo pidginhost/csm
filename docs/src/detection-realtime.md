@@ -592,6 +592,8 @@ A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, ea
 
 A login from a new country is also an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country.
 
+A mailing is an `email_bulk_recipients` finding the first time the ledger records it. Mailboxes in `email_protection.high_volume_senders` send mailings by design and are not judged by it.
+
 Each kind of sign counts once, however often it repeats. Signs expire a week after they were last seen.
 
 When a mailbox reaches 4 points, CSM suspends its logins and outgoing mail and raises one Critical `email_mailbox_compromise` finding. The finding lists each sign with its time and says how to release the mailbox: the Email page, Suspended tab. The suspension follows `auto_response.enabled` and dry-run; with either off the finding says the mailbox would have been suspended. Further signs for the same mailbox add to the ledger without a second finding. A new finding needs the earlier signs to expire or a release; release forgets the evidence.

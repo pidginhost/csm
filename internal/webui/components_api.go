@@ -80,6 +80,7 @@ var componentCheckOrigin = map[string]string{
 	"email_av_quarantine_error":                  "email_av_spool",
 	"email_av_source_backlog":                    "email_av_spool",
 	"email_av_timeout":                           "email_av_spool",
+	"email_bulk_recipients":                      "maillog",
 	"email_compromised_account":                  "maillog",
 	"email_credential_leak":                      "maillog",
 	"email_mailbox_compromise":                   "maillog",

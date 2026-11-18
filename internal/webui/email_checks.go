@@ -24,6 +24,7 @@ var emailChecks = []emailCheck{
 	{"email_suspicious_forwarder", "compromised_account"},
 
 	{"email_spam_outbreak", "spam_outbreak"},
+	{"email_bulk_recipients", "spam_outbreak"},
 	{"email_rate_critical", "spam_outbreak"},
 	{"email_rate_warning", "spam_outbreak"},
 	{"email_php_relay_abuse", "spam_outbreak"},

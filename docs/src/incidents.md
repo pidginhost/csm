@@ -743,6 +743,7 @@ Attribution gaps:
 | `email_av_scanner_panic` | ignored | self-health |  |
 | `email_av_source_backlog` | ignored | self-health |  |
 | `email_av_timeout` | ignored | self-health |  |
+| `email_bulk_recipients` | security event |  |  |
 | `email_cloud_relay_abuse` | security event |  |  |
 | `email_compromised_account` | security event |  |  |
 | `email_credential_leak` | security event |  |  |

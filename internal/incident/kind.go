@@ -205,7 +205,8 @@ func isHostIntegrityCheck(check string) bool {
 
 func isMailboxTakeoverCheck(check string) bool {
 	switch check {
-	case "email_cloud_relay_abuse",
+	case "email_bulk_recipients",
+		"email_cloud_relay_abuse",
 		"email_compromised_account",
 		"email_credential_leak",
 		"email_mailbox_compromise",

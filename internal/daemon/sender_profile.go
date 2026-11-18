@@ -531,6 +531,7 @@ func evictSenderWindows(now time.Time) {
 		w.mu.Unlock()
 		return true
 	})
+	evictBulkRecipientWindows(now)
 	pruneSenderHistory(now)
 }
 

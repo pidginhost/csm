@@ -338,6 +338,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_av_quarantine_error", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_av_scan_error", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_av_timeout", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	// One sign among several; email_mailbox_compromise reports them together.
+	{Name: "email_bulk_recipients", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Summary: true},
 	{Name: "email_compromised_account", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockAlways, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Attribution: attributedByPeer}},
 	{Name: "email_credential_leak", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_dkim_failure", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
