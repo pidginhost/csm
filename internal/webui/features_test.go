@@ -12,7 +12,7 @@ import (
 
 var cpanelUIFeatures = []string{"cpanel", "mail", "mailQueue", "mailHeld", "mailForwarders", "mailDeferrals", "mailSuspensions", "emailAV", "cphulk"}
 
-var allUIFeatures = append(slices.Clone(cpanelUIFeatures), "stalwartFilter")
+var allUIFeatures = append(slices.Clone(cpanelUIFeatures), "stalwartFilter", "php")
 
 // Servers in this package's tests see a cPanel host unless a test calls
 // setTestPlatform: every page, tab and setting is present, and no test asks
@@ -21,6 +21,16 @@ func init() {
 	hostPlatform = func() (platform.Info, platform.MTAKind) {
 		return platform.Info{Panel: platform.PanelCPanel}, platform.MTAExim
 	}
+	hostPHP = func() bool { return true }
+}
+
+// setTestPHP makes s see PHP installed or not.
+func setTestPHP(s *Server, installed bool) {
+	s.detectPHP = func() bool { return installed }
+	s.featureMu.Lock()
+	s.featureCache = featureSnapshot{}
+	s.featureRefreshing = false
+	s.featureMu.Unlock()
 }
 
 // setTestPlatform makes s see the given panel and mail server.
@@ -51,7 +61,7 @@ func TestUIFeaturesByPlatform(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := uiFeatures(platform.Info{Panel: c.panel}, c.mta)
+			got := uiFeatures(platform.Info{Panel: c.panel}, c.mta, false)
 			if len(got) != len(allUIFeatures) {
 				t.Fatalf("got %d flags %v, want %d", len(got), got, len(allUIFeatures))
 			}
@@ -68,16 +78,27 @@ func TestUIFeaturesByPlatform(t *testing.T) {
 	}
 }
 
+func TestUIFeaturesPHPFollowsDetection(t *testing.T) {
+	for _, panel := range []platform.Panel{platform.PanelCPanel, platform.PanelNone} {
+		if !uiFeatures(platform.Info{Panel: panel}, platform.MTAUnknown, true)["php"] {
+			t.Errorf("%q with PHP: php flag off", panel)
+		}
+		if uiFeatures(platform.Info{Panel: panel}, platform.MTAUnknown, false)["php"] {
+			t.Errorf("%q without PHP: php flag on", panel)
+		}
+	}
+}
+
 // CSM suspends Stalwart mailboxes through its API, on any panel but cPanel,
 // which keeps its own backend.
 func TestUIFeaturesStalwartSuspensions(t *testing.T) {
 	for _, panel := range []platform.Panel{platform.PanelNone, platform.PanelPlesk, platform.PanelDA} {
-		if !uiFeatures(platform.Info{Panel: panel}, platform.MTAStalwart)["mailSuspensions"] {
+		if !uiFeatures(platform.Info{Panel: panel}, platform.MTAStalwart, false)["mailSuspensions"] {
 			t.Errorf("%q with Stalwart: no Suspended tab", panel)
 		}
 	}
 	for _, mta := range []platform.MTAKind{platform.MTAPostfix, platform.MTAExim, platform.MTAUnknown} {
-		if uiFeatures(platform.Info{Panel: platform.PanelNone}, mta)["mailSuspensions"] {
+		if uiFeatures(platform.Info{Panel: platform.PanelNone}, mta, false)["mailSuspensions"] {
 			t.Errorf("%q without cPanel: Suspended tab shown", mta)
 		}
 	}

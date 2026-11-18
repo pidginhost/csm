@@ -19,11 +19,11 @@ var cpanelOnlySettingsFields = map[string][]string{
 func TestFilterSettingsSectionDropsGatedFields(t *testing.T) {
 	for id, gated := range cpanelOnlySettingsFields {
 		full, _ := LookupSettingsSection(id)
-		on, ok := filterSettingsSection(full, map[string]bool{"cpanel": true})
+		on, ok := filterSettingsSection(full, map[string]bool{"cpanel": true, "php": true})
 		if !ok || len(on.Fields) != len(full.Fields) {
 			t.Fatalf("%s on cPanel: ok=%v fields=%d, want all %d", id, ok, len(on.Fields), len(full.Fields))
 		}
-		off, ok := filterSettingsSection(full, map[string]bool{})
+		off, ok := filterSettingsSection(full, map[string]bool{"php": true})
 		if !ok {
 			t.Fatalf("%s dropped off cPanel", id)
 		}

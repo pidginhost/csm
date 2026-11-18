@@ -46,6 +46,7 @@
                 </div>
             </div>
         </div>
+        {{if feature "php"}}
         <div class="col-6 col-lg">
             <div class="card">
                 <div class="card-body">
@@ -54,6 +55,7 @@
                 </div>
             </div>
         </div>
+        {{end}}
         <div class="col-6 col-lg">
             <div class="card">
                 <div class="card-body">
@@ -74,6 +76,7 @@
 
     <!-- Second Row -->
     <div class="row row-deck row-cards mb-3">
+        {{if feature "php"}}
         <!-- Left: Top PHP Consumers -->
         <div class="col-lg-5">
             <div class="card">
@@ -96,8 +99,9 @@
                 </div>
             </div>
         </div>
+        {{end}}
         <!-- Right: Performance Findings -->
-        <div class="col-lg-7">
+        <div class="{{if feature "php"}}col-lg-7{{else}}col-12{{end}}">
             <div class="card">
                 <div class="card-header">
                     <h2 class="card-title"><i class="ti ti-activity"></i>&nbsp;Performance Findings</h2>
