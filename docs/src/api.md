@@ -362,7 +362,10 @@ the view is not an enforcement record.
   Ingress drops checkpointed before this accounting change are not added
   retroactively to lifetime counters. On an upgraded host, retained outcome
   windows can therefore exceed the corresponding lifetime totals. A restart
-  does not fill that historical gap.
+  does not fill that historical gap. Once the ledger has started live, a
+  preview ends as a dry run does: the outcome windows and the candidate's
+  state show it as `dry_run`, while the hourly comparison counts it as
+  `observe`.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
 - `owner` says whether admission runs automatic blocks (`executing`),

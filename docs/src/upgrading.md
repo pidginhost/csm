@@ -148,3 +148,65 @@ csm firewall status            # check that "Recently Blocked" picks up new entr
 ```
 
 Manual `csm firewall ...` operations bypass dry-run and always apply.
+
+## Admission applies automatic IP blocks
+
+From this release, a host with `auto_response.dry_run: false`, the firewall
+on and outside observe mode applies automatic IP blocks through admission,
+within its hourly ceiling and the free slots of the temporary set. A host
+that already runs with `dry_run: false` does so from the first start of the
+new build. To check the admission comparison first, set `dry_run: true`
+before the upgrade, compare a dry-run window as described in
+[finding streams](finding-streams.md#comparing-the-admission-preview), and
+set `dry_run: false` once it passes.
+
+To stop admission applying blocks without changing the binary, set
+`auto_response.dry_run: true` and run `systemctl reload csm`. Dry run stops
+every automatic IP block, legacy ones included; blocks already applied stay
+until they expire. To return automatic blocking to the legacy path, roll
+back the binary instead.
+
+The supported rollback target is the pre-flip 4.14.0 release. Older builds
+cannot safely read all admission records; some also reject newer config
+keys. Removing config keys does not make those versions safe rollback
+targets. Keep the database and firewall state, including action identifiers
+and absolute expiries. Do not restore an older state snapshot to bypass a
+format check.
+
+Before upgrading, retain a verified 4.14.0 package or release artifact and
+its matching assets; also retain the new artifact for recovery. The upgrade
+helper deletes its previous-binary copy after a successful upgrade. Resolve
+the active config and state locations, including drop-ins, and keep a
+restricted backup.
+
+For a rollback:
+
+1. Set `auto_response.dry_run: true` in the effective configuration, reload,
+   and confirm `csm status --json` reports `auto_response_dry_run: true`.
+   A drop-in may override the main config. Confirm admission has stopped
+   executing before proceeding; a failed reload is not a successful stop.
+2. Note the installed version, the `csm doctor` result and the current
+   timed blocks, then stop `csm.service` and confirm it is inactive.
+   Keep a consistent backup of the stopped database and firewall state.
+3. Install the retained 4.14.0 package with the package manager, allowing
+   the downgrade. The standalone helper installs only the latest release:
+   on a standalone host, put the retained 4.14.0 binary and its assets in
+   place and run `csm rehash` before starting. Do not substitute a locally
+   compiled binary.
+4. Start the service if the installer did not, verify the running version,
+   sustained service health and `csm doctor`, and compare remaining timed
+   blocks and expiries with the saved inventory. Keep dry run enabled until
+   these checks pass. Version 4.14.0 only previews admission; with dry run
+   off, the legacy path applies automatic blocks.
+5. To resume legacy automatic blocking, set `auto_response.dry_run: false`,
+   reload and verify the effective status. Leaving it true continues to
+   suppress automatic blocking. Existing blocks retain their expiry; this
+   procedure does not flush them or promise to restore already expired
+   blocks.
+
+If installation or health checks fail, keep dry run enabled and restore the
+retained verified new release and its matching assets through the same
+workflow. Rehash if required, start and repeat the health and block checks.
+Keep current state in place; recover a damaged state backup only through
+the documented backup/restore procedure. Do not re-enable automatic blocks
+on a failed health check.

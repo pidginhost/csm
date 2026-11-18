@@ -178,7 +178,12 @@ so summaries of two runs never share one.
 
 Refused previews and submissions displaced from the memory queue count as
 `refused` with their reason, including every report merged into a displaced
-submission. Summaries continue while the ledger or its clock is unavailable,
+submission. While the owner executes, a block it runs shows only in its
+attempt rows above: the summaries count a live block pick only when the
+ledger refuses it at its recheck or reservation. A batch the firewall
+engine refuses while applying it, and a pick the panel verdict callback
+allows, add no `refused` row; the first shows in its attempt's outcome, the
+second in the log and in the `verdict` counters of status. Summaries continue while the ledger or its clock is unavailable,
 and stopping flushes completed decisions even if the final drain fails.
 Their hour never precedes the latest recorded admission hour, including
 clock readings from an incomplete startup.
