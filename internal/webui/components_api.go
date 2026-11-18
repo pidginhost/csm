@@ -82,6 +82,7 @@ var componentCheckOrigin = map[string]string{
 	"email_av_timeout":                           "email_av_spool",
 	"email_compromised_account":                  "maillog",
 	"email_credential_leak":                      "maillog",
+	"email_mailbox_compromise":                   "maillog",
 	"email_dkim_failure":                         "maillog",
 	"email_malware":                              "email_av_spool",
 	"email_php_form_relay":                       "phprelay",

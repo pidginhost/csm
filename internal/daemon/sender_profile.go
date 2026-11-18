@@ -493,6 +493,11 @@ func pruneSenderHistory(now time.Time) {
 			now.Format("2006-01-02 15:04:05"), err)
 		return
 	}
+	if err := pruneMailboxEvidence(db, now); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: failed to expire mailbox evidence: %v\n",
+			now.Format("2006-01-02 15:04:05"), err)
+		return
+	}
 	senderHistoryPrune.db, senderHistoryPrune.day = db, today
 }
 

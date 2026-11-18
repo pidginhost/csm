@@ -369,8 +369,8 @@ func listMailboxSuspensions() ([]mailboxSuspensionStatus, error) {
 }
 
 // releaseMailboxSuspension lifts a suspension CSM made, at an operator's
-// request, and forgets the sending evidence behind it so sends from before
-// the release cannot suspend the mailbox again.
+// request, and forgets the evidence behind it so signs from before the
+// release cannot suspend the mailbox again.
 func releaseMailboxSuspension(id, actor string) error {
 	unlock := lockMailResponse(id)
 	defer unlock()
@@ -402,6 +402,11 @@ func releaseMailboxSuspension(id, actor string) error {
 func finishMailboxRelease(db *store.DB, rec store.MailboxSuspension, now time.Time, actor string) error {
 	if err := forgetSenderEvidence(rec.Subject, now); err != nil {
 		return err
+	}
+	if strings.Contains(rec.Subject, "@") {
+		if err := db.DeleteMailboxEvidence(rec.Subject); err != nil {
+			return err
+		}
 	}
 	forgetCloudRelayEvidence(rec.Subject)
 	if err := db.MarkMailboxSuspensionReleased(rec.ID, now, actor); err != nil {

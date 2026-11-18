@@ -923,6 +923,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"email_phishing_content":         "Email Phishing",
 			"email_malware":                  "Email Malware",
 			"email_compromised_account":      "Compromised Account",
+			"email_mailbox_compromise":       "Mailbox Compromise",
 			"email_cloud_relay_abuse":        "Cloud-Relay Credential Abuse",
 			"email_spam_outbreak":            "Spam Outbreak",
 			"email_defer_fail_governor":      "Defer/Fail Governor",

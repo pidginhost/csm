@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
+- Signs of a stolen mailbox now add up per mailbox: CSM suspends it once they do and sends one alert listing the evidence, rather than one per sign.
 - Admission status now lists which automatic IP block sources the host's settings let it run.
 
 ### Changed

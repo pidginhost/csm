@@ -208,6 +208,7 @@ func isMailboxTakeoverCheck(check string) bool {
 	case "email_cloud_relay_abuse",
 		"email_compromised_account",
 		"email_credential_leak",
+		"email_mailbox_compromise",
 		"email_rate_critical",
 		"email_rate_warning",
 		"email_spam_outbreak",

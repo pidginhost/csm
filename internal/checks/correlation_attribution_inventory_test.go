@@ -78,6 +78,7 @@ var attributionEvidence = map[string]string{
 	"email_php_relay_abuse":      "TestPHPRelayAbuseStampsOwner",
 	"email_cloud_relay_abuse":    "TestCloudRelayFindingCarriesTenant",
 	"email_suspicious_geo":       "TestDovecotGeoFindingCarriesTenant",
+	"email_mailbox_compromise":   "TestMailboxCompromiseFindingCarriesTenant",
 
 	"email_php_form_relay_script": "TestPHPFormRelayScriptStampsOwner",
 
