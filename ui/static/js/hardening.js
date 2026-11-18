@@ -275,7 +275,7 @@
                 // Safe: hardcoded spinner HTML, no user data
                 btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying...';
             }
-            CSM.post('/api/v1/hardening/apply', { category: cat, names: names })
+            CSM.post('/api/v1/hardening/apply', { category: cat, names: names }, { timeoutMs: 0 })
                 .then(function(resp) {
                     var outcome = (resp && resp.applied) || [];
                     lastApply = {};
@@ -299,8 +299,15 @@
                     CSM.toast((err && err.message) || 'Applying fixes failed', 'error');
                     // A failed worker may have changed some files; the server
                     // re-ran the audit, so show that report.
-                    lastApply = {};
-                    loadReport();
+                    if (err && err.status === 500) {
+                        lastApply = {};
+                        if (err.body && err.body.report) {
+                            renderReport(err.body.report);
+                        } else {
+                            setApplyBusy(true);
+                            loadReport().finally(function() { setApplyBusy(false); });
+                        }
+                    }
                 });
         }, function() {});
     }
@@ -309,7 +316,7 @@
         // silent:true so CSM.request does not toast; the failure shows in
         // place of the report. The "no audit results" message is hidden with
         // it, or a failed load would read as "nothing has run".
-        CSM.get('/api/v1/hardening', { silent: true })
+        return CSM.get('/api/v1/hardening', { silent: true })
             .then(renderReport)
             .catch(function(err) {
                 document.getElementById('empty-state').classList.add('d-none');

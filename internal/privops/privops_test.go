@@ -124,7 +124,7 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"operate.restore_backup", "cmd/csm/restore.go: stage and replace config, drop-ins and state", "", "", []Privilege{Root}, []string{"/etc/csm", "/var/lib/csm", "/opt/csm", "/tmp"}},
 		{"integrate.challenge_snippet", "integration/webserver/installer.go: Install and Remove reload the web server", "mode", "observe", []Privilege{Root}, []string{"service:web server reload"}},
 		{"operate.manual_remediation", "checks/remediate.go: ApplyFix can kill and quarantine, or truncate a user crontab", "", "", []Privilege{CapKill, Root}, []string{"/home", "/tmp", "/var/tmp", "/dev/shm", "/var/spool/cron", "/var/spool/exim/input", "/var/spool/exim4/input"}},
-		{"operate.apply_hardening", "checks/hardening_apply.go: ApplyHardening runs in the hardening-apply-worker transient unit", "", "", []Privilege{Root}, []string{"/etc/ssh/sshd_config", "/etc/sysctl.d", "kernel:sysctl values", "/etc/shadow", "cpanel:tweak settings"}},
+		{"operate.apply_hardening", "checks/hardening_apply.go: ApplyHardening runs in the hardening-apply-worker transient unit", "", "", []Privilege{Root}, []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.csm-bak", "/etc/sysctl.d", "kernel:sysctl values", "/etc/shadow", "cpanel:tweak settings"}},
 		{"operate.delete_forwarder", "mailfwd/inventory/remove.go: CPanelRemover.Remove calls uapi Email delete_forwarder as the domain owner", "", "", []Privilege{Root}, []string{"cpanel:mail forwarders"}},
 	} {
 		t.Run(tc.id, func(t *testing.T) {

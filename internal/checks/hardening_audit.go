@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -236,6 +237,41 @@ func auditSSH() []store.AuditResult {
 
 // --- OS hardening checks ---
 
+func auditShadowPermissions() store.AuditResult {
+	r := store.AuditResult{Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions", Status: "warn"}
+	info, err := osFS.Stat("/etc/shadow")
+	if err != nil {
+		r.Message = "Cannot stat /etc/shadow"
+		return r
+	}
+	perm := info.Mode().Perm()
+	r.Message = fmt.Sprintf("/etc/shadow has mode %04o", perm)
+	safe := perm == 0 || perm == 0o600
+	if perm == 0o640 {
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			r.Message = "Cannot determine the group owning /etc/shadow"
+			return r
+		}
+		mode, err := shadowFixMode(st.Gid, user.LookupGroup)
+		if err != nil {
+			r.Message = err.Error()
+			return r
+		}
+		safe = st.Gid == 0 || mode == 0o640
+		if !safe {
+			r.Message += " and is readable by an unrelated group"
+		}
+	}
+	if safe {
+		r.Status = "pass"
+	} else {
+		r.Status = "fail"
+		r.Fix = "chmod 0600 /etc/shadow"
+	}
+	return r
+}
+
 func auditOS() []store.AuditResult {
 	var results []store.AuditResult
 
@@ -284,30 +320,7 @@ func auditOS() []store.AuditResult {
 		}
 	}
 
-	// /etc/shadow permissions
-	// Accept 0000, 0600 (RHEL/CentOS default), and 0640 (Debian default).
-	// All three restrict access to root only. 0600 is the standard on
-	// CentOS/CloudLinux — changing it can break passwd/chage.
-	if info, err := osFS.Stat("/etc/shadow"); err == nil {
-		perm := info.Mode().Perm()
-		if perm == 0 || perm == 0o600 || perm == 0o640 {
-			results = append(results, store.AuditResult{
-				Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
-				Status: "pass", Message: fmt.Sprintf("/etc/shadow has mode %04o", perm),
-			})
-		} else {
-			results = append(results, store.AuditResult{
-				Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
-				Status: "fail", Message: fmt.Sprintf("/etc/shadow has mode %04o (expected 0000, 0600, or 0640)", perm),
-				Fix: "chmod 0600 /etc/shadow",
-			})
-		}
-	} else {
-		results = append(results, store.AuditResult{
-			Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
-			Status: "warn", Message: "Cannot stat /etc/shadow",
-		})
-	}
+	results = append(results, auditShadowPermissions())
 
 	// Swap
 	if data, err := osFS.ReadFile("/proc/swaps"); err == nil {

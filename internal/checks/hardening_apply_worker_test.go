@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -21,6 +22,8 @@ func TestHandleHardeningApplyRefusesBadRequests(t *testing.T) {
 	manyBody, _ := json.Marshal(HardeningApplyRequest{Category: "ssh", Names: many})
 	for name, body := range map[string]string{
 		"unknown field":    `{"category":"ssh","names":[],"force":true}`,
+		"duplicate names":  `{"category":"ssh","names":["ssh_use_dns"],"names":[]}`,
+		"null names":       `{"category":"ssh","names":null}`,
 		"trailing data":    `{"category":"ssh"}{}`,
 		"unknown category": `{"category":"nope"}`,
 		"no category":      `{"names":["ssh_use_dns"]}`,
@@ -91,7 +94,7 @@ func TestRunHardeningApplyWorkerRunsOutsideTheSandbox(t *testing.T) {
 		return []byte(`{"results":[{"name":"ssh_use_dns","title":"UseDNS","status":"applied","message":"ok"}]}`), nil
 	}
 	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
-	got, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", "/etc/csm/csm.yaml", lookPath, run,
+	got, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", &config.Config{ConfigFile: "/etc/csm/csm.yaml", ConfigDir: "/etc/custom/conf.d"}, lookPath, run,
 		HardeningApplyRequest{Category: "ssh", Names: []string{"ssh_use_dns"}})
 	if err != nil {
 		t.Fatal(err)
@@ -102,12 +105,15 @@ func TestRunHardeningApplyWorkerRunsOutsideTheSandbox(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("calls = %v", calls)
 	}
+	if slices.Contains(calls[0], "--unit=csm-hardening-apply.service") {
+		t.Fatal("availability probe claimed the worker's unit name")
+	}
 	worker := calls[1]
-	if worker[0] != "/usr/bin/systemd-run" || !slices.Contains(worker, "--pipe") || slices.Contains(worker, "--scope") {
+	if worker[0] != "/usr/bin/systemd-run" || !slices.Contains(worker, "--pipe") || slices.Contains(worker, "--scope") || !slices.Contains(worker, "--unit=csm-hardening-apply.service") {
 		t.Fatalf("worker argv = %v", worker)
 	}
 	tail := worker[slices.Index(worker, "--")+1:]
-	if !slices.Equal(tail, []string{"/usr/sbin/csm", "hardening-apply-worker", "--config", "/etc/csm/csm.yaml"}) {
+	if !slices.Equal(tail, []string{"/usr/sbin/csm", "hardening-apply-worker", "--config", "/etc/csm/csm.yaml", "--config-dir", "/etc/custom/conf.d"}) {
 		t.Fatalf("worker command = %v", tail)
 	}
 	var req HardeningApplyRequest
@@ -133,7 +139,7 @@ func TestRunHardeningApplyWorkerNeverRunsInsideTheSandbox(t *testing.T) {
 				ran = true
 				return nil, nil
 			}
-			_, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", "", tc.lookPath, run, HardeningApplyRequest{Category: "ssh"})
+			_, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", &config.Config{}, tc.lookPath, run, HardeningApplyRequest{Category: "ssh"})
 			if !errors.Is(err, systemdrun.ErrUnavailable) || ran {
 				t.Fatalf("err=%v ran=%v", err, ran)
 			}
@@ -150,7 +156,7 @@ func TestRunHardeningApplyWorkerOmitsEmptyConfigPath(t *testing.T) {
 		return []byte(`{"results":[]}`), nil
 	}
 	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
-	if _, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", "", lookPath, run, HardeningApplyRequest{Category: "os"}); err != nil {
+	if _, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", &config.Config{}, lookPath, run, HardeningApplyRequest{Category: "os"}); err != nil {
 		t.Fatal(err)
 	}
 	if tail := worker[slices.Index(worker, "--")+1:]; !slices.Equal(tail, []string{"/usr/sbin/csm", "hardening-apply-worker"}) {
@@ -166,7 +172,7 @@ func TestRunHardeningApplyWorkerReportsWorkerFailure(t *testing.T) {
 		return nil, errors.New("exit status 1: loading config: no such file")
 	}
 	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
-	_, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", "", lookPath, run, HardeningApplyRequest{Category: "ssh"})
+	_, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", &config.Config{}, lookPath, run, HardeningApplyRequest{Category: "ssh"})
 	if err == nil || !strings.Contains(err.Error(), "loading config") || errors.Is(err, systemdrun.ErrUnavailable) {
 		t.Fatalf("err = %v", err)
 	}
@@ -177,7 +183,7 @@ func TestRunHardeningApplyWorkerRejectsUnreadableReply(t *testing.T) {
 		return []byte("Running as unit: run-u1.service\n"), nil
 	}
 	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
-	if _, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", "", lookPath, run, HardeningApplyRequest{Category: "ssh"}); err == nil {
+	if _, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", &config.Config{}, lookPath, run, HardeningApplyRequest{Category: "ssh"}); err == nil {
 		t.Fatal("an unreadable worker reply was accepted")
 	}
 }
@@ -186,7 +192,17 @@ func TestRunHardeningApplyWorkerValidatesBeforeStarting(t *testing.T) {
 	ran := false
 	run := func(context.Context, []byte, string, ...string) ([]byte, error) { ran = true; return nil, nil }
 	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
-	if _, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", "", lookPath, run, HardeningApplyRequest{Category: "nope"}); err == nil || ran {
+	if _, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", &config.Config{}, lookPath, run, HardeningApplyRequest{Category: "nope"}); err == nil || ran {
 		t.Fatalf("err=%v ran=%v", err, ran)
+	}
+}
+
+func TestRunHardeningApplyWorkerRequiresResults(t *testing.T) {
+	for _, reply := range []string{"null", "{}", `{"results":null}`, `{"results":[{}]}`} {
+		run := func(context.Context, []byte, string, ...string) ([]byte, error) { return []byte(reply), nil }
+		lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+		if _, err := runHardeningApplyWorker(context.Background(), "/usr/sbin/csm", &config.Config{}, lookPath, run, HardeningApplyRequest{Category: "os"}); err == nil {
+			t.Errorf("accepted worker reply %s", reply)
+		}
 	}
 }

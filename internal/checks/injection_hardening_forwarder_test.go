@@ -84,7 +84,7 @@ func TestAuditOSShadowPermissions_Pass0640(t *testing.T) {
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
 			if name == "/etc/shadow" {
-				return fakeFileInfoWithMode{name: "shadow", mode: 0o640}, nil
+				return shadowAuditInfo{fakeFileInfoWithMode{name: "shadow", mode: 0o640}, 0}, nil
 			}
 			return nil, os.ErrNotExist
 		},

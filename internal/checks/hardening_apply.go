@@ -5,16 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/safepath"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -118,10 +122,10 @@ func phpFixFor(name string) (key, suffix string, ok bool) {
 
 // phpInstallScanDir returns the single scan directory a drop-in can go in.
 func phpInstallScanDir(inst phpInstall) (string, bool) {
-	if inst.scanDir == "" || strings.Contains(inst.scanDir, string(filepath.ListSeparator)) {
+	if !filepath.IsAbs(inst.scanDir) || strings.Contains(inst.scanDir, string(filepath.ListSeparator)) {
 		return "", false
 	}
-	return inst.scanDir, true
+	return filepath.Clean(inst.scanDir), true
 }
 
 var debianPHPVersionDir = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
@@ -142,21 +146,29 @@ func phpInstallScanDirs(inst phpInstall) []string {
 	if !debianPHPVersionDir.MatchString(filepath.Base(verDir)) || filepath.Base(filepath.Dir(verDir)) != "php" {
 		return []string{dir}
 	}
-	entries, err := os.ReadDir(verDir)
+	entries, err := osFS.ReadDir(verDir)
 	if err != nil {
-		return []string{dir}
+		return nil
 	}
 	var dirs []string
 	for _, e := range entries {
-		confd := filepath.Join(verDir, e.Name(), "conf.d")
-		if info, err := os.Lstat(confd); err == nil && info.IsDir() {
-			dirs = append(dirs, confd)
+		linked := e.Type()&os.ModeSymlink != 0
+		if !e.IsDir() && !linked {
+			continue
 		}
+		confd := filepath.Join(verDir, e.Name(), "conf.d")
+		info, err := osFS.Lstat(confd)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			continue
+		}
+		if err != nil || linked || !info.IsDir() {
+			return nil
+		}
+		dirs = append(dirs, confd)
 	}
 	if !slices.Contains(dirs, dir) {
-		dirs = append(dirs, dir)
+		return nil
 	}
-	slices.Sort(dirs)
 	return dirs
 }
 
@@ -460,20 +472,30 @@ func chmodRegular(path string, mode os.FileMode) error {
 	return setModeByFD(path, mode, false, false)
 }
 
-// shadowFixMode is the mode /etc/shadow gets: 0600, or 0640 when a
-// non-root group owns it, which is how Debian lets unix_chkpwd read it.
-func shadowFixMode(gid uint32) os.FileMode {
-	if gid != 0 {
-		return 0o640
+// Only the system shadow group needs to read password hashes for unix_chkpwd.
+func shadowFixMode(gid uint32, lookup func(string) (*user.Group, error)) (os.FileMode, error) {
+	if gid == 0 {
+		return 0o600, nil
 	}
-	return 0o600
+	group, err := lookup("shadow")
+	if err != nil {
+		var missing user.UnknownGroupError
+		if errors.As(err, &missing) {
+			return 0o600, nil
+		}
+		return 0, fmt.Errorf("look up shadow group: %w", err)
+	}
+	if group.Gid == strconv.FormatUint(uint64(gid), 10) {
+		return 0o640, nil
+	}
+	return 0o600, nil
 }
 
 // fixShadow sets the shadow file's mode through a descriptor opened without
 // following a final symlink, keeping the shadow group's read access.
 func fixShadow(path string) (os.FileMode, error) {
 	// #nosec G304 -- fixed system path chosen by the fixer table.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -489,7 +511,10 @@ func fixShadow(path string) (os.FileMode, error) {
 	if !ok {
 		return 0, fmt.Errorf("%s: no owner information", path)
 	}
-	mode := shadowFixMode(st.Gid)
+	mode, err := shadowFixMode(st.Gid, user.LookupGroup)
+	if err != nil {
+		return 0, err
+	}
 	return mode, f.Chmod(mode)
 }
 
@@ -526,6 +551,18 @@ func setModeByFD(path string, mode os.FileMode, chownRoot, wantDir bool) error {
 // boot does not log errors for it.
 func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 	var out []HardeningFixResult
+	// Detect a missing drop-in directory before changing the live kernel.
+	dir := filepath.Dir(hardeningSysctlConfPath)
+	info, err := os.Stat(dir)
+	if err == nil && !info.IsDir() {
+		err = fmt.Errorf("%s is not a directory", dir)
+	}
+	if err != nil {
+		for _, r := range items {
+			out = append(out, failed(r, err))
+		}
+		return out
+	}
 	var accepted []keyValue
 	var acceptedItems []store.AuditResult
 	for _, r := range items {
@@ -552,8 +589,7 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 	return out
 }
 
-// persistSysctl writes the drop-in. /etc/sysctl.d exists on every systemd
-// host, so a missing directory is an error rather than something to create.
+// persistSysctl writes into the existing system configuration directory.
 func persistSysctl(kvs []keyValue) error {
 	var lines []string
 	// #nosec G304 -- CSM-owned sysctl drop-in.
@@ -735,69 +771,80 @@ func splitSSHDKeyword(line string) (string, string, bool) {
 // PHP once. A check is applied only when every directory of its build took
 // the drop-in.
 func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []HardeningFixResult {
-	keysByDir := map[string][]string{}
-	var dirOrder []string
-	dirsByItem := map[string][]string{}
-	var planned []store.AuditResult
+	type plan struct {
+		dirs  []string
+		keys  []string
+		items []store.AuditResult
+	}
+	byScanDir := map[string]*plan{}
+	var plans []*plan
 	var out []HardeningFixResult
 	for _, r := range items {
 		key, suffix, ok := phpFixFor(r.Name)
 		if !ok {
-			out = append(out, skipped(r, "No automatic fix; apply it manually."))
+			out = append(out, skipped(r, "No PHP directive for this check."))
 			continue
 		}
 		inst, found := findPHPInstall(installs, suffix)
-		dirs := phpInstallScanDirs(inst)
-		if !found || len(dirs) == 0 {
-			out = append(out, skipped(r, "No PHP scan directory to write a drop-in to; apply it manually."))
-			continue
-		}
-		for _, d := range dirs {
-			if _, seen := keysByDir[d]; !seen {
-				dirOrder = append(dirOrder, d)
+		p := byScanDir[inst.scanDir]
+		if p == nil {
+			dirs := phpInstallScanDirs(inst)
+			if !found || len(dirs) == 0 {
+				out = append(out, skipped(r, "Cannot verify the PHP scan directories. Apply this change manually."))
+				continue
 			}
-			keysByDir[d] = append(keysByDir[d], key)
+			// The audit reads the CLI configuration. Write it last so a failed
+			// web SAPI remains visible and the operator can retry the same fix.
+			cli := filepath.Clean(inst.scanDir)
+			dirs = slices.DeleteFunc(dirs, func(d string) bool { return d == cli })
+			p = &plan{dirs: append(dirs, cli)}
+			byScanDir[inst.scanDir] = p
+			plans = append(plans, p)
 		}
-		dirsByItem[r.Name] = dirs
-		planned = append(planned, r)
+		p.keys = append(p.keys, key)
+		p.items = append(p.items, r)
 	}
 
-	dirErr := map[string]error{}
 	var written []string
-	for _, d := range dirOrder {
-		if err := writePHPDropIn(filepath.Join(d, hardeningPHPIniName), keysByDir[d]); err != nil {
-			dirErr[d] = err
-			continue
-		}
-		written = append(written, d)
-	}
-	restart := ""
-	if len(written) > 0 {
-		restart = " " + reloadPHP(written)
-	}
-	for _, r := range planned {
-		key, _, _ := phpFixFor(r.Name)
-		dirs := dirsByItem[r.Name]
-		var errs []error
-		for _, d := range dirs {
-			if err := dirErr[d]; err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", d, err))
+	var completed []HardeningFixResult
+	for _, p := range plans {
+		var err error
+		for _, d := range p.dirs {
+			path := filepath.Join(d, hardeningPHPIniName)
+			if err = writePHPDropIn(path, p.keys); err != nil {
+				err = fmt.Errorf("updating %s: %w", path, err)
+				break
 			}
+			written = append(written, d)
 		}
-		if len(errs) > 0 {
-			out = append(out, failed(r, errors.Join(errs...)))
-			continue
+		for i, r := range p.items {
+			if err != nil {
+				out = append(out, failed(r, err))
+				continue
+			}
+			completed = append(completed, applied(r, fmt.Sprintf("%s = Off written to %s.", p.keys[i], strings.Join(phpDropInPaths(p.dirs), ", "))))
 		}
-		out = append(out, applied(r, fmt.Sprintf("%s = Off written to %s.%s", key, strings.Join(phpDropInPaths(dirs), ", "), restart)))
 	}
+	if len(written) > 0 {
+		msg := reloadPHP(written)
+		for i := range completed {
+			completed[i].Message += " " + msg
+		}
+	}
+	out = append(out, completed...)
 	return out
 }
 
 func writePHPDropIn(path string, keys []string) error {
 	values := map[string]string{}
 	var order []string
-	// #nosec G304 -- CSM-owned PHP drop-in.
-	if data, err := os.ReadFile(path); err == nil {
+	f, err := (realOS{}).openRegularFile(path, syscall.O_NOFOLLOW)
+	if err == nil {
+		defer func() { _ = f.Close() }()
+		data, readErr := io.ReadAll(f)
+		if readErr != nil {
+			return readErr
+		}
 		for _, line := range strings.Split(string(data), "\n") {
 			t := strings.TrimSpace(line)
 			if t == "" || strings.HasPrefix(t, ";") {
@@ -874,9 +921,21 @@ func reloadPHP(dirs []string) string {
 // place, so a planted link cannot point the write elsewhere.
 func touchNoFollow(path string) error {
 	// #nosec G304 -- fixed LiteSpeed path chosen by the fixer.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
 	if err != nil {
 		return err
 	}
-	return f.Close()
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st.Nlink != 1 {
+		return fmt.Errorf("%s must have a single link", path)
+	}
+	return safepath.SetModTime(f, time.Now())
 }

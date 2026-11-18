@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -104,7 +106,7 @@ func TestSetKeyValueFile(t *testing.T) {
 }
 
 func TestApplySysctlFixesPersistsOnlyAcceptedKeys(t *testing.T) {
-	// /etc/sysctl.d exists on every systemd host; the fixer never creates it.
+	// The fixer writes into an existing system configuration directory.
 	sysctlDir := filepath.Join(t.TempDir(), "sysctl.d")
 	if err := os.Mkdir(sysctlDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -284,11 +286,19 @@ func TestPersistSysctlDoesNotCreateTheDirectory(t *testing.T) {
 // setgid shadow); taking that away breaks password checks by non-root
 // programs. Both 0600 and 0640 pass the audit.
 func TestShadowFixModeKeepsShadowGroupRead(t *testing.T) {
-	if got := shadowFixMode(0); got != 0o600 {
-		t.Errorf("root group: %04o, want 0600", got)
+	lookup := func(name string) (*user.Group, error) {
+		if name != "shadow" {
+			t.Fatalf("group queried: %s", name)
+		}
+		return &user.Group{Gid: "42", Name: "shadow"}, nil
 	}
-	if got := shadowFixMode(42); got != 0o640 {
-		t.Errorf("shadow group: %04o, want 0640", got)
+	for gid, want := range map[uint32]os.FileMode{42: 0o640, 0: 0o600, 7: 0o600} {
+		if got, err := shadowFixMode(gid, lookup); err != nil || got != want {
+			t.Errorf("gid %d: mode %04o, %v; want %04o", gid, got, err, want)
+		}
+	}
+	if _, err := shadowFixMode(42, func(string) (*user.Group, error) { return nil, errors.New("lookup failed") }); err == nil {
+		t.Fatal("ignored group lookup failure")
 	}
 }
 
@@ -311,7 +321,10 @@ func TestFixShadowPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := shadowFixMode(info.Sys().(*syscall.Stat_t).Gid)
+	want, err := shadowFixMode(info.Sys().(*syscall.Stat_t).Gid, user.LookupGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if info.Mode().Perm() != want {
 		t.Fatalf("mode = %04o, want %04o", info.Mode().Perm(), want)
 	}
@@ -482,5 +495,142 @@ func TestLiteSpeedMarkerRefusesSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("symlink target was created: %v", err)
+	}
+}
+
+func TestExistingLiteSpeedMarkerGetsFreshTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".lsphp_restart.txt")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Unix(946684800, 0)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := touchNoFollow(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().After(old) {
+		t.Fatalf("marker still dated %v", info.ModTime())
+	}
+}
+
+func TestPHPFixKeepsCLIFindingWhenAnotherSAPIFails(t *testing.T) {
+	ver, _ := debianPHPTree(t, "cli", "fpm")
+	cli := filepath.Join(ver, "cli", "conf.d")
+	fpm := filepath.Join(ver, "fpm", "conf.d")
+	if err := os.Mkdir(filepath.Join(fpm, hardeningPHPIniName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) { return nil, nil }})
+	out := applyPHPFixes([]store.AuditResult{{Name: "php_expose_82"}}, []phpInstall{{shortID: "82", scanDir: cli}})
+	if len(out) != 1 || out[0].Status != "failed" {
+		t.Fatalf("results: %+v", out)
+	}
+	if _, err := os.Stat(filepath.Join(cli, hardeningPHPIniName)); !os.IsNotExist(err) {
+		t.Fatalf("CLI changed before FPM succeeded: %v", err)
+	}
+}
+
+func TestPHPScanDirsRefuseLinkedSAPI(t *testing.T) {
+	ver, _ := debianPHPTree(t, "cli")
+	// A linked file has no SAPI scan directory.
+	file := filepath.Join(ver, "note")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(file, filepath.Join(ver, "note-link")); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(ver, "cli", "conf.d")
+	if got := phpInstallScanDirs(phpInstall{scanDir: cli}); !slices.Equal(got, []string{cli}) {
+		t.Fatalf("unrelated link disabled CLI fix: %v", got)
+	}
+	outside := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outside, "conf.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ver, "fpm")); err != nil {
+		t.Fatal(err)
+	}
+	if dirs := phpInstallScanDirs(phpInstall{scanDir: filepath.Join(ver, "cli", "conf.d")}); len(dirs) != 0 {
+		t.Fatalf("offered automatic fix with unverified SAPI: %v", dirs)
+	}
+}
+
+type shadowAuditInfo struct {
+	os.FileInfo
+	gid uint32
+}
+
+func (f shadowAuditInfo) Sys() any { return &syscall.Stat_t{Gid: f.gid} }
+
+func TestAuditShadowRejectsUnrelatedGroupRead(t *testing.T) {
+	withMockCmd(t, &mockCmd{})
+	withMockOS(t, &mockOS{stat: func(name string) (os.FileInfo, error) {
+		if name == "/etc/shadow" {
+			return shadowAuditInfo{fakeFileInfoWithMode{mode: 0o640}, 4294967294}, nil
+		}
+		return nil, os.ErrNotExist
+	}})
+	for _, result := range auditOS() {
+		if result.Name == "os_shadow_permissions" {
+			if result.Status != "fail" {
+				t.Errorf("group-readable shadow passed: %+v", result)
+			}
+			return
+		}
+	}
+	t.Fatal("missing shadow result")
+}
+
+func TestWritePHPDropInRejectsLinkedFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "settings.ini")
+	if err := os.WriteFile(target, []byte("precision = 10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, hardeningPHPIniName)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePHPDropIn(link, []string{"expose_php"}); err == nil {
+		t.Fatal("merged a symlink target into the drop-in")
+	}
+	if dest, err := os.Readlink(link); err != nil || dest != target {
+		t.Fatalf("changed existing link: %q, %v", dest, err)
+	}
+}
+
+func TestSysctlMissingDirectoryLeavesRuntimeUntouched(t *testing.T) {
+	old := hardeningSysctlConfPath
+	hardeningSysctlConfPath = filepath.Join(t.TempDir(), "missing", "hardening.conf")
+	t.Cleanup(func() { hardeningSysctlConfPath = old })
+	withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) {
+		t.Fatal("changed runtime before checking persistence directory")
+		return nil, nil
+	}})
+	out := applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_aslr"}})
+	if len(out) != 1 || out[0].Status != "failed" || !strings.Contains(out[0].Message, "missing") {
+		t.Fatalf("outcome: %+v", out)
+	}
+}
+
+func TestLiteSpeedMarkerRefusesHardLink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "other")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "marker")
+	if err := os.Link(target, marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := touchNoFollow(marker); err == nil {
+		t.Fatal("touched a file shared with another path")
 	}
 }

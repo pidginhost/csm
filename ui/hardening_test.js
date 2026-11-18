@@ -93,3 +93,30 @@ test('server text in apply outcomes stays text', async () => {
     assert.equal(outcome.querySelectorAll('img, b').length, 0);
     assert.match(outcome.textContent, /<img src=x/);
 });
+
+test('apply waits for the server deadline and preserves selections when the worker cannot start', async () => {
+    const page = await hardeningPage(FAILING);
+    const post = page.window.CSM.post;
+    let opts;
+    page.window.CSM.post = (url, body, options) => { opts = options; return post(url, body, options); };
+    boxes(page, 'ssh')[1].checked = false;
+    page.document.querySelector('[data-apply-cat="ssh"]').click();
+    await settle();
+    page.respond('/api/v1/hardening/apply', 503, { error: 'Worker unavailable' });
+    await settle();
+    assert.equal(page.pending('/api/v1/hardening').length, 0);
+    assert.equal(boxes(page, 'ssh')[1].checked, false);
+    assert.ok(opts && (opts.timeoutMs === 0 || opts.timeoutMs >= 600000));
+});
+
+test('a worker error shows the fresh audit even when it could not be saved', async () => {
+    const page = await hardeningPage(FAILING);
+    page.document.querySelector('[data-apply-cat="os"]').click();
+    await settle();
+    const after = FAILING.map(r => r.category === 'os' ? Object.assign({}, r, { status: 'pass' }) : r);
+    page.respond('/api/v1/hardening/apply', 500, { error: 'Could not save the recheck', report: report(after) });
+    await settle();
+    assert.equal(boxes(page, 'os').length, 0);
+    assert.equal(page.pending('/api/v1/hardening').length, 0);
+    assert.deepEqual(page.toasts.at(-1), ['Could not save the recheck', 'error']);
+});

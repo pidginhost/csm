@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/daemon"
 )
 
 func runHardeningApplyWorker() {
@@ -31,6 +34,8 @@ func hardeningApplyWorkerArgs(args []string) bool {
 	switch len(args) {
 	case 1:
 		return args[0] == checks.HardeningApplyWorkerCommand
+	case 5:
+		return hardeningApplyWorkerArgs(args[:3]) && args[3] == "--config-dir" && filepath.IsAbs(args[4])
 	case 3:
 		return args[0] == checks.HardeningApplyWorkerCommand && args[1] == "--config" && args[2] != ""
 	}
@@ -38,9 +43,19 @@ func hardeningApplyWorkerArgs(args []string) bool {
 }
 
 func applyHardeningWithConfig(category string, names []string) ([]checks.HardeningFixResult, error) {
-	cfg, err := tryLoadConfigLiteWith(secretFreeLoadOptions)
+	var cfg *config.Config
+	var err error
+	if len(os.Args) == 6 && os.Args[5] == defaultConfDir {
+		// An absent packaged conf.d is valid on installations without drop-ins.
+		cfg, err = config.LoadWithDirOptions(os.Args[3], defaultConfDir, secretFreeLoadOptions)
+	} else {
+		cfg, err = tryLoadConfigLiteWith(secretFreeLoadOptions)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	if !daemon.InstallPlatformOverrides(cfg) {
+		return nil, fmt.Errorf("cannot apply the configured platform overrides")
 	}
 	return checks.ApplyHardening(cfg, category, names)
 }

@@ -36,6 +36,7 @@ func TestHardeningApplyWorkerWritesResults(t *testing.T) {
 	for _, args := range [][]string{
 		{"hardening-apply-worker"},
 		{"hardening-apply-worker", "--config", "/etc/csm/csm.yaml"},
+		{"hardening-apply-worker", "--config", "/etc/csm/csm.yaml", "--config-dir", "/etc/custom/conf.d"},
 	} {
 		var out, errOut bytes.Buffer
 		code := hardeningApplyWorker(0, args, strings.NewReader(`{"category":"ssh","names":["ssh_use_dns"]}`), &out, &errOut,

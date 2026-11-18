@@ -121,7 +121,7 @@ type Server struct {
 	forwarderRemover   *inventory.CPanelRemover // nil off cPanel
 	// hardeningApply runs hardening fixes; nil is the root worker outside
 	// the sandbox. Tests replace it.
-	hardeningApply     func(context.Context, string, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error)
+	hardeningApply     func(context.Context, *config.Config, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error)
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
 	queueFlusher       intel.QueueFlusher

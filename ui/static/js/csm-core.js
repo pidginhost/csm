@@ -236,6 +236,7 @@ CSM.request = function(url, options) {
             return r.json().catch(function() { return {}; }).then(function(body) {
                 var httpErr = new Error((body && body.error) || 'HTTP ' + r.status);
                 httpErr.status = r.status;
+                httpErr.body = body;
                 throw httpErr;
             });
         }

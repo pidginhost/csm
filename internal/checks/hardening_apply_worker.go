@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -40,7 +43,7 @@ var hardeningCheckNamePattern = regexp.MustCompile(`^[a-z0-9_]{1,80}$`)
 // HardeningApplyRequest is the one request the worker reads from stdin.
 type HardeningApplyRequest struct {
 	Category string   `json:"category"`
-	Names    []string `json:"names"`
+	Names    []string `json:"names,omitempty"`
 }
 
 type hardeningApplyReply struct {
@@ -63,26 +66,33 @@ func (r HardeningApplyRequest) Validate() error {
 	return nil
 }
 
+// ReadHardeningApplyRequest checks the complete request at both the HTTP
+// and worker boundaries. Omitted names and an empty list select the section.
+func ReadHardeningApplyRequest(in io.Reader) (HardeningApplyRequest, error) {
+	var req HardeningApplyRequest
+	body, err := io.ReadAll(io.LimitReader(in, hardeningApplyRequestLimit+1))
+	if err != nil {
+		return req, err
+	}
+	if len(body) > hardeningApplyRequestLimit {
+		return req, errors.New("hardening apply request exceeds limit")
+	}
+	// Distinguish an omitted selection from an explicit JSON null.
+	req.Names = []string{}
+	if err = jsonv2.Unmarshal(body, &req, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return req, errors.New("invalid hardening apply request")
+	}
+	if req.Names == nil {
+		return req, errors.New("names must be an array")
+	}
+	return req, req.Validate()
+}
+
 // HandleHardeningApply reads one request from in, applies it, and writes the
 // results to out as JSON. Nothing is applied unless the whole request is valid.
 func HandleHardeningApply(in io.Reader, out io.Writer, apply func(category string, names []string) ([]HardeningFixResult, error)) error {
-	body, err := io.ReadAll(io.LimitReader(in, hardeningApplyRequestLimit+1))
+	req, err := ReadHardeningApplyRequest(in)
 	if err != nil {
-		return err
-	}
-	if len(body) > hardeningApplyRequestLimit {
-		return errors.New("hardening apply request exceeds limit")
-	}
-	var req HardeningApplyRequest
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.DisallowUnknownFields()
-	if err = dec.Decode(&req); err != nil {
-		return fmt.Errorf("invalid hardening apply request: %w", err)
-	}
-	if err = dec.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return errors.New("hardening apply request has trailing data")
-	}
-	if err = req.Validate(); err != nil {
 		return err
 	}
 	results, err := apply(req.Category, req.Names)
@@ -97,16 +107,16 @@ func HandleHardeningApply(in io.Reader, out io.Writer, apply func(category strin
 
 // RunHardeningApplyWorker applies the fixes through the root worker. An
 // error wrapping systemdrun.ErrUnavailable means nothing was attempted.
-// configFile is passed on so the worker reads the daemon's config.
-func RunHardeningApplyWorker(ctx context.Context, configFile string, req HardeningApplyRequest) ([]HardeningFixResult, error) {
+// The worker receives the same main configuration and drop-in directory.
+func RunHardeningApplyWorker(ctx context.Context, cfg *config.Config, req HardeningApplyRequest) ([]HardeningFixResult, error) {
 	binary, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	return runHardeningApplyWorker(ctx, binary, configFile, exec.LookPath, runWorkerCommand, req)
+	return runHardeningApplyWorker(ctx, binary, cfg, exec.LookPath, runWorkerCommand, req)
 }
 
-func runHardeningApplyWorker(ctx context.Context, binary, configFile string, lookPath systemdrun.LookPathFunc, run systemdrun.InputRunnerFunc, req HardeningApplyRequest) ([]HardeningFixResult, error) {
+func runHardeningApplyWorker(ctx context.Context, binary string, cfg *config.Config, lookPath systemdrun.LookPathFunc, run systemdrun.InputRunnerFunc, req HardeningApplyRequest) ([]HardeningFixResult, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
@@ -115,12 +125,19 @@ func runHardeningApplyWorker(ctx context.Context, binary, configFile string, loo
 		return nil, err
 	}
 	args := []string{HardeningApplyWorkerCommand}
-	if configFile != "" {
-		args = append(args, "--config", configFile)
+	if cfg.ConfigFile != "" {
+		path, pathErr := filepath.Abs(cfg.ConfigFile)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		args = append(args, "--config", path)
+		if cfg.ConfigDir != "" {
+			args = append(args, "--config-dir", cfg.ConfigDir)
+		}
 	}
 	// Required: inside the sandbox most fixes would fail half-way, after
 	// the /tmp ones had already changed the host.
-	out, err := systemdrun.RunInput(ctx, lookPath, run, systemdrun.Options{Required: true, RuntimeMax: HardeningApplyWorkerTimeout}, body, binary, args...)
+	out, err := systemdrun.RunInput(ctx, lookPath, run, systemdrun.Options{Required: true, Unit: "csm-hardening-apply.service", RuntimeMax: HardeningApplyWorkerTimeout}, body, binary, args...)
 	if err != nil {
 		if errors.Is(err, systemdrun.ErrUnavailable) {
 			return nil, err
@@ -128,8 +145,13 @@ func runHardeningApplyWorker(ctx context.Context, binary, configFile string, loo
 		return nil, fmt.Errorf("hardening worker: %w", err)
 	}
 	var reply hardeningApplyReply
-	if err := json.Unmarshal(out, &reply); err != nil {
-		return nil, fmt.Errorf("hardening worker reply: %w: %s", err, firstLines(strings.TrimSpace(string(out)), 3))
+	if err := jsonv2.Unmarshal(out, &reply, jsonv2.RejectUnknownMembers(true)); err != nil || reply.Results == nil {
+		return nil, errors.New("invalid hardening worker reply")
+	}
+	for _, result := range reply.Results {
+		if !hardeningCheckNamePattern.MatchString(result.Name) || (result.Status != "applied" && result.Status != "skipped" && result.Status != "failed") {
+			return nil, errors.New("invalid hardening worker result")
+		}
 	}
 	return reply.Results, nil
 }

@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -65,7 +67,7 @@ func TestHardeningApplyRunsTheWorkerAndRechecks(t *testing.T) {
 	s := newTestServer(t, "tok")
 	var got checks.HardeningApplyRequest
 	calls := 0
-	s.hardeningApply = func(_ context.Context, _ string, req checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
+	s.hardeningApply = func(_ context.Context, _ *config.Config, req checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
 		calls++
 		got = req
 		return []checks.HardeningFixResult{{Name: "ssh_use_dns", Title: "UseDNS", Status: "applied", Message: "ok"}}, nil
@@ -92,11 +94,18 @@ func TestHardeningApplyRunsTheWorkerAndRechecks(t *testing.T) {
 
 func TestHardeningApplyRejectsBadNamesBeforeTheWorker(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.hardeningApply = func(context.Context, string, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
+	s.hardeningApply = func(context.Context, *config.Config, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
 		t.Fatal("worker started for an invalid request")
 		return nil, nil
 	}
-	for _, body := range []string{`{"category":"ssh","names":["../shadow"]}`, `{"category":"ssh","extra":1}`} {
+	for _, body := range []string{
+		`{"category":"ssh","names":["../shadow"]}`,
+		`{"category":"ssh","extra":1}`,
+		`{"category":"ssh"}]`,
+		`{"category":"ssh","names":null}`,
+		`{"category":"ssh","names":["ssh_use_dns"],"names":[]}`,
+		`{"category":"ssh"}` + strings.Repeat(" ", 1<<14),
+	} {
 		if rec := postHardeningApply(t, s, body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status %d", body, rec.Code)
 		}
@@ -105,7 +114,7 @@ func TestHardeningApplyRejectsBadNamesBeforeTheWorker(t *testing.T) {
 
 func TestHardeningApplyWithoutSystemdRunChangesNothing(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.hardeningApply = func(context.Context, string, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
+	s.hardeningApply = func(context.Context, *config.Config, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
 		return nil, fmt.Errorf("%w: systemd-run not found", systemdrun.ErrUnavailable)
 	}
 	rec := postHardeningApply(t, s, `{"category":"ssh"}`)
@@ -116,11 +125,50 @@ func TestHardeningApplyWithoutSystemdRunChangesNothing(t *testing.T) {
 
 func TestHardeningApplyWorkerFailureStillRechecks(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.hardeningApply = func(context.Context, string, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
+	s.hardeningApply = func(context.Context, *config.Config, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
 		return nil, errors.New("hardening worker: signal: killed")
 	}
 	rec := postHardeningApply(t, s, `{"category":"os"}`)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "audit was re-run") {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHardeningApplyReportsWorkerAndSaveFailures(t *testing.T) {
+	s := newTestServer(t, "tok")
+	db := withTempStoreForWebui(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.hardeningApply = func(context.Context, *config.Config, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
+		return nil, errors.New("worker stopped")
+	}
+	rec := postHardeningApply(t, s, `{"category":"os"}`)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "worker stopped") || !strings.Contains(rec.Body.String(), "save the recheck") {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Report struct {
+			Results []json.RawMessage `json:"results"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Report.Results) == 0 {
+		t.Fatal("missing fresh report after storage failure")
+	}
+}
+
+func TestHardeningApplyAllowsTimeForWorkerAndRecheck(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := newDeadlineRecorder()
+	var workerDeadline time.Time
+	s.hardeningApply = func(ctx context.Context, _ *config.Config, _ checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error) {
+		workerDeadline, _ = ctx.Deadline()
+		return nil, nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hardening/apply", strings.NewReader(`{"category":"ssh"}`))
+	s.apiHardeningApply(w, req)
+	_, deadlines, _ := w.snapshot()
+	if w.status != http.StatusOK || len(deadlines) != 1 || workerDeadline.IsZero() || deadlines[0].deadline.Before(workerDeadline.Add(longRequestTimeout)) {
+		t.Fatalf("status %d, HTTP deadlines %v, worker deadline %v", w.status, deadlines, workerDeadline)
 	}
 }

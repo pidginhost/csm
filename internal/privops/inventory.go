@@ -923,7 +923,7 @@ var operations = []Op{
 		Privileges:       []Privilege{Root},
 		Trigger:          Operator,
 		Unsandboxed:      true,
-		Writes:           []string{"/etc/ssh/sshd_config", "/etc/sysctl.d", "kernel:sysctl values", "/etc/shadow", "/tmp", "/var/tmp", "/etc/cpupdate.conf", "/usr/bin", "cpanel:tweak settings", "/opt/cpanel", "/etc/php", "/etc/php.d", "/usr/local/lsws/admin/tmp", "service:sshd, PHP-FPM and Apache reload"},
+		Writes:           []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.csm-bak", "/etc/sysctl.d", "kernel:sysctl values", "/etc/shadow", "/tmp", "/var/tmp", "/etc/cpupdate.conf", "/usr/bin", "cpanel:tweak settings", "/opt/cpanel", "/etc/php", "/etc/php.d", "/usr/local/lsws/admin/tmp", "service:sshd, PHP-FPM and Apache reload"},
 		WithoutPrivilege: "each fix is applied by hand from the audit's suggested fix",
 	},
 	{

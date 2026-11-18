@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -72,12 +73,8 @@ func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var req checks.HardeningApplyRequest
-	if err := decodeJSONBodyLimited(w, r, 1<<14, &req); err != nil {
-		writeJSONError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if err := req.Validate(); err != nil {
+	req, err := checks.ReadHardeningApplyRequest(r.Body)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -88,9 +85,6 @@ func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.releaseScan()
 
-	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Now().Add(longRequestTimeout))
-
 	cfg := s.liveCfg()
 	apply := s.hardeningApply
 	if apply == nil {
@@ -99,7 +93,11 @@ func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 	// A closed browser tab must not stop a worker half-way through.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), checks.HardeningApplyWorkerTimeout+time.Minute)
 	defer cancel()
-	fixes, err := apply(ctx, cfg.ConfigFile, req)
+	// The final audit can take the same time as a standalone audit.
+	workerDeadline, _ := ctx.Deadline()
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(workerDeadline.Add(longRequestTimeout))
+	fixes, err := apply(ctx, cfg, req)
 	if errors.Is(err, systemdrun.ErrUnavailable) {
 		s.auditLog(r, "hardening_apply", req.Category, "not started: "+err.Error())
 		writeJSONError(w, "Applying fixes needs systemd-run, so nothing was changed: "+err.Error(), http.StatusServiceUnavailable)
@@ -112,12 +110,14 @@ func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 	report := checks.RunHardeningAudit(cfg)
 	if db := store.Global(); db != nil {
 		if saveErr := db.SaveHardeningReport(report); saveErr != nil {
-			writeJSONError(w, "fixes applied but failed to save the recheck: "+saveErr.Error(), http.StatusInternalServerError)
-			return
+			err = errors.Join(err, fmt.Errorf("failed to save the recheck: %w", saveErr))
 		}
 	}
 	if err != nil {
-		writeJSONError(w, "Applying fixes failed: "+err.Error()+". The audit was re-run.", http.StatusInternalServerError)
+		writeJSONStatus(w, http.StatusInternalServerError, struct {
+			Error  string             `json:"error"`
+			Report *store.AuditReport `json:"report"`
+		}{"Hardening apply: " + err.Error() + ". The audit was re-run.", report})
 		return
 	}
 	if fixes == nil {
