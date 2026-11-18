@@ -20,6 +20,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
+- Knot DNS servers no longer raise connection alerts for their own zone transfers.
 
 ## [4.14.0] - 2026-11-18
 
