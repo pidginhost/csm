@@ -363,6 +363,11 @@
                 <div class="card-body border-bottom">
                     <div class="text-muted small">Releasing does not change the password. Have the customer change it first.</div>
                 </div>
+                <div class="csm-toolbar">
+                    <input type="search" id="email-suspended-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search mailbox, account, reason" aria-label="Search suspended mailboxes">
+                    <span class="csm-toolbar__spacer"></span>
+                    <span class="csm-toolbar__count" id="email-suspended-count"></span>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table table-sm" id="email-suspended-table">
                         <thead>
@@ -387,16 +392,18 @@
         <!-- Rejects: recent rejects in the range -->
         <div class="tab-pane fade" id="email-pane-rejects" role="tabpanel" aria-labelledby="email-tab-rejects" tabindex="0">
             <div class="card">
-                <div class="card-header flex-wrap gap-2">
-                    <h2 class="card-title"><i class="ti ti-mail-off"></i>&nbsp;Recent rejects</h2>
-                    <div class="card-actions">
-                        <select id="email-rejects-filter" class="form-select form-select-sm csm-auto-width" aria-label="Reject reason" title="Reject reason">
-                            <option value="content">Spam and malware</option>
-                            <option value="all">All reasons</option>
-                        </select>
-                    </div>
+                <div class="card-body border-bottom">
+                    <div class="text-muted small" id="email-rejects-note">Counts are permanent rejects; temporary ones are listed and tagged.</div>
                 </div>
-                <div class="card-body border-bottom py-2 small text-muted" id="email-rejects-note">Counts are permanent rejects; temporary ones are listed and tagged.</div>
+                <div class="csm-toolbar">
+                    <select id="email-rejects-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Reject reason">
+                        <option value="content">Spam and malware</option>
+                        <option value="all">All reasons</option>
+                    </select>
+                    <input type="search" id="email-rejects-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender, recipient, IP, detail" aria-label="Search rejects">
+                    <span class="csm-toolbar__spacer"></span>
+                    <span class="csm-toolbar__count" id="email-rejects-count"></span>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table table-sm" id="email-rejects-table">
                         <thead>
@@ -425,6 +432,11 @@
                     <div class="text-muted small">The SMTP firewall loads when this tab is opened.</div>
                 </div>
                 <div class="card-body border-bottom py-2 small" id="email-sending-summary"></div>
+                <div class="csm-toolbar">
+                    <input type="search" id="email-sending-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search account" aria-label="Search sending accounts">
+                    <span class="csm-toolbar__spacer"></span>
+                    <span class="csm-toolbar__count" id="email-sending-count"></span>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table table-sm" id="email-sending-table">
                         <thead>
@@ -459,13 +471,13 @@
         <div class="tab-pane fade" id="email-pane-forwarders" role="tabpanel" aria-labelledby="email-tab-forwarders" tabindex="0">
             <div class="card">
                 <div class="csm-toolbar">
-                    <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
                     <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
                         <option value="">All forwarders</option>
                         <option value="external" selected>External only</option>
                         <option value="free">Free providers</option>
                         <option value="forward_only">Forward-only (no local copy)</option>
                     </select>
+                    <input type="search" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source, destination, owner" aria-label="Search forwarders">
                     <span class="csm-toolbar__spacer"></span>
                     <span class="csm-toolbar__count" id="email-fwd-count"></span>
                 </div>
@@ -544,7 +556,6 @@
             <div class="card">
                 <div class="card-body border-bottom fw-medium" id="email-findings-summary" hidden></div>
                 <div class="csm-toolbar">
-                    <input type="text" id="email-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search findings..." aria-label="Search findings">
                     <select id="filter-severity" class="form-select form-select-sm csm-auto-width" aria-label="Severity">
                         <option value="">All</option>
                         <option value="2">Critical</option>
@@ -557,6 +568,7 @@
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="email-filter-auth" aria-pressed="false" disabled>
                         <i class="ti ti-lock-access"></i>&nbsp;Auth failures
                     </button>
+                    <input type="search" id="email-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search findings" aria-label="Search findings">
                     <span class="csm-toolbar__spacer"></span>
                     <span class="csm-toolbar__count" id="email-total-label"></span>
                     <div class="dropdown csm-toolbar__actions">
