@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -129,7 +130,37 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 			live := config.Active()
 			return checks.AutomaticResponseAllowed(live, c.Key.Kind, c.Entry, c.Check) && !checks.BlocksAProxy(live, c, roots)
 		},
+		BlockEntries: func() []admission.Entry { return admissionBlockEntries(config.Active()) },
 	}
+}
+
+// admissionBlockEntries lists the entries whose automatic IP blocks cfg
+// lets admission run: each allows a block for some check it serves. Other
+// entries only preview. A central block outlasts a block lease shorter
+// than a day, so it then stays on the legacy path.
+func admissionBlockEntries(cfg *config.Config) []admission.Entry {
+	if cfg == nil {
+		return nil
+	}
+	served := map[admission.Entry][]string{}
+	for _, p := range checks.ProducerTable() {
+		served[p.Spec.Entry] = append(served[p.Spec.Entry], p.Spec.Checks...)
+	}
+	for _, spec := range checks.DerivedEntries() {
+		served[spec.Entry] = append(served[spec.Entry], spec.Checks...)
+	}
+	var out []admission.Entry
+	for _, e := range []admission.Entry{admission.EntryScan, admission.EntryChallengeTimeout, admission.EntryIncident, admission.EntryIncidentSpray, admission.EntryCentral} {
+		if e == admission.EntryCentral && parseBlockExpiry(cfg.AutoResponse.BlockExpiry) < centralBlockTTL {
+			continue
+		}
+		if slices.ContainsFunc(served[e], func(check string) bool {
+			return checks.AutomaticResponseAllowed(cfg, admission.KindBlockIP, e, check)
+		}) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // newVerdictClient is the verdict callback client cfg configures.

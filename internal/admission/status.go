@@ -284,6 +284,10 @@ const PreviewUnaffected = "existing blocking is unaffected while admission previ
 // an unavailable ledger, ingress, owner or clock fails.
 const ExecutionAffected = "admission decides automatic blocks"
 
+// ResponseGapsRow names the doctor row of the latest Critical response
+// gap; doctor rates a gap from before the daemon started.
+const ResponseGapsRow = "admission response gaps"
+
 // UnresolvedOutcomesRow names the doctor row of unknown outcomes; doctor
 // replaces its retire time with the cause when retirement cannot run.
 const UnresolvedOutcomesRow = "admission unresolved outcomes"
@@ -315,7 +319,7 @@ func DoctorChecks(s *LedgerStatus, in *IngressHealth, now time.Time, executing b
 	if s == nil {
 		return rows
 	}
-	gap := DoctorRow{Name: "admission response gaps", Status: DoctorOK, Message: closing}
+	gap := DoctorRow{Name: ResponseGapsRow, Status: DoctorOK, Message: closing}
 	if last := s.Notices.LastCriticalGap; !last.IsZero() && now.Before(last.Add(time.Hour)) {
 		gap.Status = outage
 		gap.Message = "a Critical finding would not have received its response at " + last.UTC().Format(time.RFC3339) + "; " + closing

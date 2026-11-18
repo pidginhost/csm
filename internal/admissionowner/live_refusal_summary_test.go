@@ -168,7 +168,7 @@ func TestOwnerCountedRefusalRows(t *testing.T) {
 			want := actionlog.Record{
 				Timestamp: endingHour.Add(time.Hour), Op: "respond.block_ip", Action: kind.String(),
 				Actor: actionlog.Daemon, ActorDetail: before.Entry.String(), Reason: "unknown",
-				Result: actionlog.Refused, Error: reason.String(), Count: 1,
+				Result: actionlog.Refused, Error: reason.String(), Count: 1, Epoch: 1,
 			}
 			if cause != 0 {
 				want.Cause = cause.String()
@@ -200,8 +200,8 @@ func TestOwnerForecastKeepsComparisonRows(t *testing.T) {
 	}
 	rows, _ := o.compare.take(f.host.now(), true)
 	want := []actionlog.Record{
-		{Timestamp: f.host.now().UTC().Truncate(time.Hour).Add(time.Hour), Op: "respond.block_ip", Action: "block_ip", Actor: actionlog.Daemon, ActorDetail: "scan", Reason: "unknown", Result: "queued", Count: 2},
-		{Timestamp: f.host.now().UTC().Truncate(time.Hour).Add(time.Hour), Op: "respond.block_ip", Action: "block_ip", Actor: actionlog.Daemon, ActorDetail: "scan", Reason: "unknown", Result: actionlog.DryRun, Prediction: admission.PredictCapacityAdmit.String(), Count: 1},
+		{Timestamp: f.host.now().UTC().Truncate(time.Hour).Add(time.Hour), Op: "respond.block_ip", Action: "block_ip", Actor: actionlog.Daemon, ActorDetail: "scan", Reason: "unknown", Result: "queued", Count: 2, Epoch: 1},
+		{Timestamp: f.host.now().UTC().Truncate(time.Hour).Add(time.Hour), Op: "respond.block_ip", Action: "block_ip", Actor: actionlog.Daemon, ActorDetail: "scan", Reason: "unknown", Result: actionlog.DryRun, Prediction: admission.PredictCapacityAdmit.String(), Count: 1, Epoch: 1},
 	}
 	// Rows in an hour have no ordering contract.
 	if len(rows) != len(want) {

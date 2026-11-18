@@ -165,10 +165,11 @@ scrubbed:
   firewall target, so it joins the legacy row for the same address, and its
   reason category names the lane. An hourly summary, which sets `count`,
   keeps its check, entry, decision, refusal reason and attribution cause,
-  dry-run prediction and count and names no target; a check that matches a
-  learned account, host or domain refuses the run. An attribution cause
-  belongs only on a refusal summary; action inspection rows carrying one
-  refuse the run.
+  dry-run prediction, count and `epoch` and names no target; a check that
+  matches a learned account, host or domain refuses the run. An attribution
+  cause belongs only on a refusal summary; action inspection rows carrying
+  one refuse the run. An `epoch` belongs only on a summary; any other row
+  carrying one refuses the run.
 - An operation, action, actor, result or source the tool has not been
   reviewed against refuses the run instead of passing through.
 
@@ -216,19 +217,38 @@ preview did with its finding. Older unstamped finding rows still supply
 their identifiers and checks for joins:
 
 ```bash
-/tmp/finding-stream compare --findings host-a/findings.jsonl.gz --actions host-a/actions.jsonl.gz
+/tmp/finding-stream compare --findings host-a/findings.jsonl.gz --actions host-a/actions.jsonl.gz --status host-a/status.json
 ```
 
-The window runs from the first to the last hourly admission summary. A block
+`--status` takes the host's `csm status --json` output, taken at the end of
+the run being judged; compare reads only the ledger's ingress `generation`,
+which names that run, and the admission owner's `block_entries` from it.
+Each hourly summary names the daemon run that counted it (`epoch`), and
+compare reports each run apart, since a restart loses the hour in progress.
+Summaries recorded before they named their run are reported as one unmarked
+run. A run's window spans its first to its last hourly admission summary;
+the hour the first one counts may have begun before the run, so it is not
+counted. A block
 is matched by one observed attempt for the same finding, response kind and
 typed target within an hour; a scan block retried from the pending queue may
 land later, until its retry ages out two hours after it was queued. Spray
 blocks match through their own entries: the incident spray block of one
 address through `incident_spray`, the mail spray subnet block through
-`mail_subnet`. Matching can reassign compatible decisions
-when their windows overlap; each decision is consumed once. Coalesced
-decisions and designed refusals each spend one summary count for the same
-entry, kind and check in the same or an adjacent hour. Hourly aggregation
+`mail_subnet`. Matching can reassign compatible decisions when their windows
+overlap; each step explains at most one legacy row across all runs. An
+unused step from before a restart may still explain a pending retry. The
+same legacy row in a shared boundary hour needs only one step, even when
+both run reports include it. Observed steps and coalesced decisions are
+matched before designed refusals, which explain discrepancies but do not
+satisfy coverage. Coalesced decisions and designed refusals each spend one
+summary count from their own run for the same entry, kind and check in the
+same or an adjacent hour. A block the old process made in the hour of a
+restart also falls in the next run's window; when the earlier run's own
+summaries explain it, the next run reports it as explained by another run,
+and it adds no coverage there. When both runs can explain several boundary
+blocks, matching assigns distinct rows before spending spare counts on rows
+already explained by the other run. Each run still spends only its own
+counts and earns coverage only from its own matches. Hourly aggregation
 cannot prove the exact event delay. A backward wall step clamps counts to
 the admission hour floor; larger clock disagreement stays unexplained and
 must be checked through clock status.
@@ -243,9 +263,18 @@ and output errors never repeat file paths or host data.
 Summary matches are aggregate lower bounds, not proof about one finding. Anything else is listed
 as unexplained. The report also totals Invalid and queue overflow refusals,
 and names what only `csm status` and the metrics show: Critical deferrals,
-queue evictions and the handoff latency. The stream criteria pass when the window spans at
-least seven days, nothing is unexplained and both totals are zero; the
-operator must also verify the named status and metric criteria. Shape
+queue evictions and the handoff latency.
+
+Each run ends with its gate; only the run the status names is judged. It
+passes once its window spans at least 48 hours, nothing is unexplained, both
+totals are zero, and three blocks are matched for every entry the status
+lists and for every scan check that blocked, even if a later configuration
+change removes scan blocking from the status. An entry short of three, or
+listed but never blocking, holds the gate until the run spans seven days;
+the gate then passes and names it unproven. An unmarked run, or a comparison
+without `--status`, never passes. The report ends with the verdict on the
+status's run: an earlier run that passed does not pass it.
+The operator must also verify the named status and metric criteria. Shape
 validation cannot authenticate a prior run: compare accepts outputs only
 from the joined run that already passed its identity verifier. The report
 describes one host's responses; keep it private. Summary retention discards

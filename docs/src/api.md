@@ -375,7 +375,11 @@ It never applies them; the view is not an enforcement record.
   started. Policy refusals and recovery update this cause with the
   execution hold, without waiting for the next ledger sample. Once the
   cause is gone, each block still retires only after it
-  has expired and the firewall shows nothing of it. The owner also reports why
+  has expired and the firewall shows nothing of it. While the owner has the
+  firewall engine, `block_entries` names the entries whose automatic IP
+  blocks the live configuration lets admission run on this host (`scan`,
+  `challenge_timeout`, `incident`, `incident_spray`, `central`); the
+  comparison gate expects each to be seen. The owner also reports why
   the last clock reading or its live start failed (`tick_error`), whether
   the clock is degraded, where the ceiling came from (`ceiling_source`:
   `default`, `configured` or `clamped`), the legacy hourly count imported at
@@ -502,7 +506,9 @@ wall-clock change cannot age; every prediction name is present, and both
 are zero while no forecast runs. `examples_lost`, `summaries_lost` and
 `record_errors` count this process's losses and failed writes,
 `examples_stale` is true while a purge of earlier sessions' examples is
-pending, and `comparison_incomplete` is true after a restart or any loss.
+pending, and `comparison_incomplete` is true after any loss in this
+process; a restart alone does not set it, since each run's hourly
+summaries carry its `epoch`.
 `forecast_error` names why forecasting last failed (`engine_unavailable`,
 `clock_degraded`, `ledger_unavailable`, `snapshot_mismatch`,
 `session_id_unavailable`, `invalid_policy` or `model_error`) until a turn
@@ -564,8 +570,10 @@ gap in the last hour and a ledger the firewall could not read at startup
 fail. Until `owner.settled` is set, and for at most two minutes after the
 daemon starts, those rows warn and say so: the check that follows an
 upgrade runs before the first turn, and its failure would roll the upgrade
-back. The `admission execution` fix names the configuration for a refused
-policy and the firewall otherwise.
+back. A Critical gap recorded before the daemon started only warns, and
+says so: a flood of the hourly ceiling could otherwise fail every check
+after a restart for an hour. The `admission execution` fix names the
+configuration for a refused policy and the firewall otherwise.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
