@@ -271,6 +271,53 @@ func TestSmokeAgainstStalwart(t *testing.T) {
 		}
 	})
 
+	// Network keys are globs that must match from the start of the address:
+	// 2.0.2.* must not match 192.0.2.7. The 198.51.100.* key shows globs
+	// match at all, so the miss is not vacuous.
+	t.Run("address list globs anchored", func(t *testing.T) {
+		ns := ipmap.StalwartNamespace(ipmap.Canary, false)
+		globs := []string{"2.0.2.*", "198.51.100.*"}
+		if err := key.CreateLookupKeys(ctx, ns, globs); err != nil {
+			t.Fatalf("CreateLookupKeys through the key: %v", err)
+		}
+		defer func() {
+			keys, err := key.LookupKeys(ctx, ns)
+			if err != nil {
+				t.Fatalf("LookupKeys through the key: %v", err)
+			}
+			var ids []string
+			for _, k := range keys {
+				if slices.Contains(globs, k.Key) {
+					ids = append(ids, k.ID)
+				}
+			}
+			if len(ids) != len(globs) {
+				t.Errorf("found %d of the %d glob keys to remove", len(ids), len(globs))
+			}
+			if err := key.DeleteLookupKeys(ctx, ids); err != nil {
+				t.Fatalf("DeleteLookupKeys through the key: %v", err)
+			}
+			if err := key.ReloadLookupStores(ctx); err != nil {
+				t.Fatalf("ReloadLookupStores through the key: %v", err)
+			}
+		}()
+		if err := key.ReloadLookupStores(ctx); err != nil {
+			t.Fatalf("ReloadLookupStores through the key: %v", err)
+		}
+		for addr, want := range map[string]bool{"198.51.100.7": true, "192.0.2.7": false} {
+			probe := stalwartapi.BlocklistProbe
+			probe.RemoteIP = addr
+			res, err := key.ClassifySpam(ctx, probe)
+			if err != nil {
+				t.Fatalf("ClassifySpam from %s through the key: %v", addr, err)
+			}
+			t.Logf("probe from %s: score %v, result %s, tags %q", addr, res.Score, res.Result, res.Tags)
+			if got := slices.Contains(res.Tags, ipmap.Canary.Name); got != want {
+				t.Errorf("probe from %s matched %s = %v, want %v", addr, ipmap.Canary.Name, got, want)
+			}
+		}
+	})
+
 	t.Run("no escalation", func(t *testing.T) {
 		if admin.ID == "" {
 			t.Skip("the admin account was not found")
