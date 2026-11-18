@@ -15,6 +15,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- The Email page Rejects, Sending accounts and Suspended tabs now share the Held mail layout, with a search box and larger pages.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
 
 ### Fixed
