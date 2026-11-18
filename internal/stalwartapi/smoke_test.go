@@ -3,6 +3,7 @@ package stalwartapi
 import (
 	"context"
 	"errors"
+	"maps"
 	"net"
 	"os"
 	"testing"
@@ -61,14 +62,48 @@ func TestSmokeKeyLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
-	got, err := NewKey(url, secret, anyPeer).SessionAccount(ctx)
+	key := NewKey(url, secret, anyPeer)
+	got, err := key.SessionAccount(ctx)
 	if err != nil || got != owner.ID {
 		t.Fatalf("key session account = %q, %v; want the key's owner %q", got, err, owner.ID)
 	}
+	smokeLookupKeys(ctx, t, key)
 	if err = admin.DeleteAPIKeys(ctx, owner.ID, []string{id}); err != nil {
 		t.Fatalf("DeleteAPIKeys: %v", err)
 	}
 	if _, err = NewKey(url, secret, anyPeer).SessionAccount(ctx); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("destroyed key: %v, want ErrUnauthorized", err)
 	}
+}
+
+// smokeLookupKeys creates, lists and deletes lookup keys through c.
+func smokeLookupKeys(ctx context.Context, t *testing.T, c *Client) {
+	t.Helper()
+	const ns = "csm-smoke"
+	if err := c.CreateLookupKeys(ctx, ns, []string{"203.0.113.9", "198.51.*"}); err != nil {
+		t.Fatalf("CreateLookupKeys: %v", err)
+	}
+	keys, err := c.LookupKeys(ctx, ns)
+	if err != nil {
+		t.Fatalf("LookupKeys: %v", err)
+	}
+	globs := map[string]bool{}
+	var ids []string
+	for _, k := range keys {
+		globs[k.Key] = k.Glob
+		ids = append(ids, k.ID)
+	}
+	if want := map[string]bool{"203.0.113.9": false, "198.51.*": true}; !maps.Equal(globs, want) || len(keys) != 2 {
+		t.Fatalf("LookupKeys = %+v, want %v", keys, want)
+	}
+	if err = c.DeleteLookupKeys(ctx, ids); err != nil {
+		t.Fatalf("DeleteLookupKeys: %v", err)
+	}
+	if err = c.ReloadLookupStores(ctx); err != nil {
+		t.Fatalf("ReloadLookupStores: %v", err)
+	}
+	if keys, err = c.LookupKeys(ctx, ns); err != nil || len(keys) != 0 {
+		t.Fatalf("after delete LookupKeys = %+v, %v; want none", keys, err)
+	}
+	t.Logf("lookup keys: created, listed %d with glob flags, deleted, reloaded", len(ids))
 }
