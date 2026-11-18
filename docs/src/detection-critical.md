@@ -15,7 +15,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `php_processes` | PHP process execution, working dirs, environment variables |
 | `shadow_changes` | /etc/shadow modification outside maintenance windows |
 | `uid0_accounts` | Unauthorized root (UID 0) accounts |
-| `kernel_modules` | Kernel module loading (post-baseline) |
+| `kernel_modules` | Kernel module loading (post-baseline). High, or a Warning when a package manager ran since the previous scan, so modules an upgrade loads on demand do not open an incident; `algif_aead` (Copy Fail) stays High |
 | `af_alg_socket_use` | AF_ALG socket use that may indicate Copy Fail exploit activity |
 | `af_alg_enforcement` | AF_ALG hardening policy drift and correction status |
 
