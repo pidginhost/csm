@@ -69,6 +69,9 @@ type Inputs struct {
 	KeyAccount string
 	// WriteKey stores a new key in CSM's key file.
 	WriteKey func(secret string) error
+	// Observe is true in observe mode, where the daemon does not write CSM's
+	// address list to Stalwart, so doctor does not test it.
+	Observe bool
 }
 
 // State is a step's outcome.

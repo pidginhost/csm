@@ -227,6 +227,9 @@ type setupHarness struct {
 	keyAccount string
 	keyErr     error
 	gotKey     string
+
+	// doctorIn is what doctorChecks passes as CSM's inputs.
+	doctorIn stalwartsetup.Inputs
 }
 
 func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {

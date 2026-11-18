@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/stalwartlog"
@@ -298,7 +299,7 @@ func (h *setupHarness) doctorChecks() []DoctorCheck {
 		h.api.session, h.api.sessionErr = h.keyAccount, h.keyErr
 		return h.api
 	}
-	return stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, newAPI, newKeyAPI, h.deps.checkListener, cfg.Stalwart, stalwartsetup.Inputs{})
+	return stalwartSettingsDoctorChecks(context.Background(), h.deps.getenv, newAPI, newKeyAPI, h.deps.checkListener, cfg.Stalwart, h.doctorIn)
 }
 
 const doctorTestKey = "test-key-1"
@@ -605,6 +606,105 @@ func TestStalwartBlocklistCheckSkippedWhenFilterOff(t *testing.T) {
 	h.doctorChecks()
 	if len(h.api.probes) != 0 {
 		t.Fatalf("no login: probes sent = %d, want none", len(h.api.probes))
+	}
+}
+
+func TestStalwartAddressListCheckMatched(t *testing.T) {
+	c := stalwartAddressListCheck(stalwartapi.SpamProbeResult{Tags: []string{"CSM_IP_CANARY", "RDNS_NONE", "SPF_FAIL"}})
+	if c.Name != "stalwart address list match" || c.Status != "ok" || c.Message != "Stalwart scores senders on CSM's address list" || c.Fix != "" {
+		t.Fatalf("check = %+v, want ok", c)
+	}
+}
+
+func TestStalwartAddressListCheckMissing(t *testing.T) {
+	for _, tags := range [][]string{nil, {"CSM_IP_CANARY_X", "CSM_IP_DROP", "RDNS_NONE"}} {
+		c := stalwartAddressListCheck(stalwartapi.SpamProbeResult{Tags: tags})
+		if c.Name != "stalwart address list match" || c.Status != "warn" {
+			t.Fatalf("tags %q: check = %+v, want warn", tags, c)
+		}
+		for _, want := range []string{"CSM daemon", "stalwart_address_list", "csm stalwart setup"} {
+			if !strings.Contains(c.Fix, want) {
+				t.Fatalf("tags %q: fix %q does not name %s", tags, c.Fix, want)
+			}
+		}
+	}
+}
+
+func TestStalwartDoctorOneProbe(t *testing.T) {
+	ruleOn := func(h *setupHarness) {
+		h.api.rule = &stalwartapi.SpamRule{ID: "rule1", Type: "Any", Enabled: true, Arms: stalwartsetup.AddressListArms(), Else: "false"}
+		h.api.probe.Tags = []string{"CSM_IP_CANARY", "RDNS_NONE"}
+	}
+	if stalwartapi.BlocklistProbe.RemoteIP != ipmap.CanaryAddr {
+		t.Fatalf("probe address = %q, want the canary %s", stalwartapi.BlocklistProbe.RemoteIP, ipmap.CanaryAddr)
+	}
+
+	h := newSetupHarness(t)
+	ruleOn(h)
+	checks := h.doctorChecks()
+	if len(h.api.probes) != 1 || h.api.probes[0] != stalwartapi.BlocklistProbe || h.api.probes[0].RemoteIP != "192.0.2.255" {
+		t.Fatalf("probes sent = %+v, want one from 192.0.2.255", h.api.probes)
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart blocklists"); c.Status != "ok" {
+		t.Fatalf("blocklist check = %+v, want ok", c)
+	}
+	if c := stalwartCheckNamed(t, checks, "stalwart address list match"); c.Status != "ok" {
+		t.Fatalf("list check = %+v, want ok", c)
+	}
+	if len(h.api.writes) != 0 {
+		t.Fatalf("doctor wrote %q", h.api.writes)
+	}
+
+	for name, mutate := range map[string]func(*setupHarness){
+		"rule off":     func(h *setupHarness) { ruleOn(h); h.api.rule.Enabled = false },
+		"rule missing": func(h *setupHarness) { h.api.probe.Tags = []string{"CSM_IP_CANARY"} },
+		"observe":      func(h *setupHarness) { ruleOn(h); h.doctorIn.Observe = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newSetupHarness(t)
+			mutate(h)
+			checks := h.doctorChecks()
+			if len(h.api.probes) != 1 {
+				t.Fatalf("probes sent = %d, want the blocklist probe once", len(h.api.probes))
+			}
+			stalwartCheckNamed(t, checks, "stalwart blocklists")
+			for _, c := range checks {
+				if c.Name == "stalwart address list match" {
+					t.Fatalf("got %+v, want no list check", c)
+				}
+			}
+		})
+	}
+
+	t.Run("probe error", func(t *testing.T) {
+		h := newSetupHarness(t)
+		ruleOn(h)
+		h.api.probeErr = errors.New("API error " + setupTestPassword)
+		checks := h.doctorChecks()
+		if len(h.api.probes) != 1 {
+			t.Fatalf("probes sent = %d, want one", len(h.api.probes))
+		}
+		if c := stalwartCheckNamed(t, checks, "stalwart blocklists"); c.Status != "warn" || !strings.HasPrefix(c.Message, "Could not test Stalwart's DNS blocklists: ") {
+			t.Fatalf("blocklist check = %+v, want its probe error", c)
+		}
+		c := stalwartCheckNamed(t, checks, "stalwart address list match")
+		if c.Status != "warn" || !strings.HasPrefix(c.Message, "Could not test whether Stalwart scores senders on CSM's address list: ") || c.Fix != "" {
+			t.Fatalf("list check = %+v, want a probe error warn with no fix", c)
+		}
+		if !strings.Contains(c.Message, "[redacted]") || strings.Contains(c.Message, setupTestPassword) {
+			t.Fatalf("list check message %q, want the password redacted", c.Message)
+		}
+	})
+}
+
+func TestStalwartInputsObserveMode(t *testing.T) {
+	cfg := &config.Config{}
+	if stalwartInputs(cfg, nil, nil).Observe {
+		t.Fatal("enforce mode read as observe")
+	}
+	cfg.Mode = config.ModeObserve
+	if !stalwartInputs(cfg, nil, nil).Observe {
+		t.Fatal("observe mode not passed to doctor")
 	}
 }
 

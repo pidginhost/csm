@@ -241,7 +241,7 @@ func stalwartSetupInputs(cfg *config.Config, deps stalwartSetupDeps) stalwartset
 // only when the running daemon reports it: a lock written to the config but
 // not loaded protects nothing.
 func stalwartInputs(cfg *config.Config, webUsers []string, automation *health.AutomationStatus) stalwartsetup.Inputs {
-	in := stalwartsetup.Inputs{WebUsers: webUsers}
+	in := stalwartsetup.Inputs{WebUsers: webUsers, Observe: cfg.ObserveMode()}
 	expiry, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry)
 	if err != nil || expiry <= 0 {
 		expiry, _ = time.ParseDuration(config.DefaultBlockExpiry)
