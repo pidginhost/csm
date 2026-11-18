@@ -178,7 +178,7 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	if full, ok := LookupSettingsSection(sectionID); ok {
 		for _, f := range full.Fields {
 			if lookupSchemaField(section, f.YAMLPath) == nil {
-				delete(values, f.YAMLPath)
+				removeSettingsValue(values, f.YAMLPath)
 			}
 		}
 	}
@@ -205,6 +205,21 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 		"pending_fields":   pendingFields,
 		"pending_sections": pendingSections,
 	})
+}
+
+func removeSettingsValue(values map[string]interface{}, path string) {
+	key, rest, nested := strings.Cut(path, ".")
+	if nested {
+		child, ok := values[key].(map[string]interface{})
+		if !ok {
+			return
+		}
+		removeSettingsValue(child, rest)
+		if len(child) != 0 {
+			return
+		}
+	}
+	delete(values, key)
 }
 
 func extractSectionValues(rawBytes []byte, effectiveCfg *config.Config, section SettingsSection) (map[string]interface{}, error) {
