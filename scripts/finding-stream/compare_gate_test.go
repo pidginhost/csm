@@ -397,3 +397,64 @@ func TestCompareGateAcceptsBlocksTheEarlierRunExplained(t *testing.T) {
 		t.Fatalf("an unexplained block passed:\n%s", report)
 	}
 }
+
+// Both runs can explain either boundary block, but their counts must be
+// assigned to different rows before sharing explanations across the restart.
+func TestCompareGateSharesDistinctSummaryMatches(t *testing.T) {
+	for _, decision := range []string{"coalesced", "policy"} {
+		for _, blocks := range []int{2, 3} {
+			t.Run(fmt.Sprintf("%s/%d", decision, blocks), func(t *testing.T) {
+				findings, actions := gateRun(2, 3, 0, 48*time.Hour)
+				fid := "fid-" + strings.Repeat("d", 32)
+				findings = append(findings, alert.AuditEvent{V: 1, Timestamp: compareTS, FindingID: fid, Check: "pam_bruteforce"})
+				for i := range blocks {
+					actions = append(actions, legacyBlock(fid, time.Duration(-30+i)*time.Minute, "incident"))
+				}
+				for _, epoch := range []uint64{1, 2} {
+					s := summary(0, "pam_bruteforce", "coalesced", "", 1)
+					s.Entry, s.Epoch = "incident", epoch
+					if decision == "policy" {
+						s.Check, s.Result, s.Refusal, s.HasError = "unknown", "refused", "policy", true
+					}
+					actions = append(actions, s)
+				}
+				report := compareGate(t, findings, actions, statusFile(t, 2, "scan"))
+				runs := strings.Split(report, "\nrun ")
+				if len(runs) != 3 {
+					t.Fatalf("runs not reported apart:\n%s", report)
+				}
+				unexplained := "  unexplained: 0: pass\n"
+				verdict := "verdict: pass (run 2)\n"
+				if blocks == 3 {
+					unexplained = "  unexplained: 1: FAIL\n"
+					verdict = "verdict: FAIL: run 2 does not pass the gate\n"
+				}
+				own := "  matched by a coalesced admission: 1\n"
+				if decision == "policy" {
+					own = "  explained by a designed refusal: 1 (policy 1)\n"
+				}
+				for _, run := range runs[1:] {
+					for _, want := range []string{own, "  explained by another run's summaries: 1\n", unexplained} {
+						if !strings.Contains(run, want) {
+							t.Fatalf("missing %q:\n%s", want, report)
+						}
+					}
+				}
+				if !strings.Contains(report, verdict) {
+					t.Fatalf("missing %q:\n%s", verdict, report)
+				}
+				if blocks == 2 {
+					report = compareGate(t, findings, actions, statusFile(t, 2, "scan", "incident"))
+					matched := 1
+					if decision == "policy" {
+						matched = 0
+					}
+					coverage := fmt.Sprintf("  incident: 2 legacy, %d matched: short\n", matched)
+					if !strings.Contains(report, coverage) || !strings.Contains(report, "gate: FAIL: coverage short until 168h0m0s\n") {
+						t.Fatalf("shared explanations counted toward coverage:\n%s", report)
+					}
+				}
+			})
+		}
+	}
+}

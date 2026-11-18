@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
@@ -108,12 +109,25 @@ func matchComparisons(checks map[string]string, runs []*compareRun, steps map[co
 				local[i] = nil
 			}
 		}
-		// Fix the shared step allocation, then spend each run's summaries
-		// on its remaining rows. A shared boundary row can be explained by
-		// a separate aggregate count in each run, but cannot borrow one.
-		for i, d := range matchDecisions(local, decisions) {
+		// Preserve the rows assigned to this run by the shared matching.
+		// Otherwise both runs can spend their counts on the same boundary
+		// row and leave another unexplained despite sufficient evidence.
+		// Remaining rows may still use this run's spare summary capacity.
+		var order []int
+		var ordered [][]int
+		for _, assigned := range []bool{true, false} {
+			for i, block := range run.legacy {
+				d := matches[blocks[block.row]]
+				own := slices.ContainsFunc(local[i], func(id int) bool { return d == &decisions[id] })
+				if own == assigned {
+					order = append(order, i)
+					ordered = append(ordered, local[i])
+				}
+			}
+		}
+		for i, d := range matchDecisions(ordered, decisions) {
 			if d != nil {
-				run.matches[i] = d.kind
+				run.matches[order[i]] = d.kind
 			}
 		}
 	}

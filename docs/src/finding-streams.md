@@ -245,7 +245,11 @@ refusals each spend one summary count from their own run for the same entry,
 kind and check in the same or an adjacent hour. A block the old process
 made in the hour of a restart also falls in the next run's window; when
 the earlier run's own summaries explain it, the next run reports it as
-explained by another run, and it adds no coverage there. Hourly aggregation
+explained by another run, and it adds no coverage there. When both runs
+can explain several boundary blocks, matching assigns distinct rows before
+spending spare counts on rows already explained by the other run. Each run
+still spends only its own counts and earns coverage only from its own matches.
+Hourly aggregation
 cannot prove the exact event delay. A backward wall step clamps counts to
 the admission hour floor; larger clock disagreement stays unexplained and
 must be checked through clock status.
