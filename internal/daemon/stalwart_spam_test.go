@@ -567,3 +567,57 @@ func TestStalwartGuardIPv6Network(t *testing.T) {
 		t.Fatalf("sender outside the listed network spam verdicts = %d, want 1", spam)
 	}
 }
+
+func TestStalwartGuardUnknownAndDisabledState(t *testing.T) {
+	for _, name := range []string{"nil stalwart", "nil list", "empty map", "rule off", "filter and rule off"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := stalwartBruteConfig()
+			d, adb := newStalwartVerdictDaemon(t, cfg)
+			ip := netip.MustParseAddr("198.51.100.43")
+			switch name {
+			case "nil stalwart":
+				d.stalwart = nil
+			case "empty map":
+				guardStalwartList(d, nil, false, false)
+			case "rule off", "filter and rule off":
+				guardStalwartList(d, map[string][]string{ipmap.Spam.Name: {ip.String()}}, name == "filter and rule off", true)
+			}
+			adb.RecordMailVerdict(ip.String(), true, stalwartTestStart.Add(-time.Hour))
+			d.recordStalwartVerdict(ip, true, stalwartTestStart, cfg)
+			d.recordStalwartVerdict(ip, false, stalwartTestStart, cfg)
+			wantSpam, wantHam := 2, 1
+			if name == "filter and rule off" {
+				wantSpam, wantHam = 1, 0
+			}
+			if spam, ham, _ := spamOf(adb, ip.String()); spam != wantSpam || ham != wantHam {
+				t.Fatalf("spam %d ham %d, want %d and %d", spam, ham, wantSpam, wantHam)
+			}
+		})
+	}
+}
+
+func TestStalwartGuardConcurrentListReplacement(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	ip := netip.MustParseAddr("198.51.100.44")
+	entries := map[string][]string{ipmap.Spam.Name: {ip.String()}}
+	guardStalwartList(d, entries, false, false)
+	adb.RecordMailVerdict(ip.String(), true, stalwartTestStart.Add(-time.Hour))
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 100 {
+			guardStalwartList(d, nil, true, true)
+			guardStalwartList(d, entries, false, false)
+		}
+	})
+	wg.Go(func() {
+		for range 100 {
+			d.recordStalwartVerdict(ip, true, stalwartTestStart, cfg)
+			d.recordStalwartVerdict(ip, false, stalwartTestStart, cfg)
+		}
+	})
+	wg.Wait()
+	if spam, ham, _ := spamOf(adb, ip.String()); spam != 1 || ham != 0 {
+		t.Fatalf("spam %d ham %d, want only the seeded spam verdict", spam, ham)
+	}
+}
