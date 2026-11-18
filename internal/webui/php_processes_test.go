@@ -3,6 +3,8 @@ package webui
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/platform"
@@ -10,13 +12,18 @@ import (
 
 const testShieldPath = "/opt/csm/php_shield.php"
 
-func fakeProc(t *testing.T, root, pid, cmdline string, shield bool) {
+func fakeProc(t testing.TB, root, pid, cmdline string, shield bool) {
 	t.Helper()
 	dir := filepath.Join(root, pid)
 	if err := os.MkdirAll(filepath.Join(dir, "root"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exe, _, _ := strings.Cut(cmdline, "\x00")
+	exe, _, _ = strings.Cut(exe, ":")
+	if err := os.Symlink(filepath.Join("/usr/bin", exe), filepath.Join(dir, "exe")); err != nil {
 		t.Fatal(err)
 	}
 	if shield {
@@ -40,6 +47,8 @@ func TestScanPHPProcesses(t *testing.T) {
 		{"no PHP", map[string]string{"10": "nginx: worker process\x00"}, "10", false, false},
 		{"container fpm worker", map[string]string{"10": "php-fpm: pool www\x00"}, "", true, false},
 		{"idle ondemand pool", map[string]string{"10": "php-fpm: master process (/usr/local/etc/php-fpm.conf)\x00"}, "", true, false},
+		{"argument mentioning lsphp", map[string]string{"10": "grep\x00lsphp\x00"}, "", false, false},
+		{"versioned FPM executable", map[string]string{"10": "php-fpm8.3\x00-F\x00"}, "", true, false},
 		{"lsphp", map[string]string{"10": "lsphp\x00"}, "", true, false},
 		{"shield in a PHP container", map[string]string{"10": "nginx: worker process\x00", "20": "php-fpm: pool www\x00"}, "20", true, true},
 	}
@@ -54,6 +63,22 @@ func TestScanPHPProcesses(t *testing.T) {
 				t.Errorf("got running=%v shielded=%v, want %v %v", running, shielded, c.running, c.shielded)
 			}
 		})
+	}
+}
+
+func BenchmarkScanPHPProcesses(b *testing.B) {
+	root := b.TempDir()
+	for pid := 1; pid <= 1000; pid++ {
+		cmd := "nginx: worker process"
+		if pid%10 == 0 {
+			cmd = "php-fpm: pool www"
+		}
+		fakeProc(b, root, strconv.Itoa(pid), cmd, false)
+	}
+	for b.Loop() {
+		if running, shielded := scanPHPProcesses(root, testShieldPath); !running || shielded {
+			b.Fatalf("running=%v shielded=%v, want true false", running, shielded)
+		}
 	}
 }
 
@@ -95,5 +120,24 @@ func TestUIFeaturesPHPShieldFollowsDetection(t *testing.T) {
 	got = uiFeatures(platform.Info{Panel: platform.PanelNone}, platform.MTAUnknown, phpPresence{php: true, shield: true})
 	if !got["php"] || !got["phpShield"] {
 		t.Errorf("shielded PHP: %v", got)
+	}
+}
+
+func TestScanPHPProcessesConfinesShieldLookup(t *testing.T) {
+	root := t.TempDir()
+	fakeProc(t, root, "10", "php-fpm: pool www\x00", false)
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, filepath.Base(testShieldPath)), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "10", "root", "opt")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "csm")); err != nil {
+		t.Fatal(err)
+	}
+	if running, shielded := scanPHPProcesses(root, testShieldPath); !running || shielded {
+		t.Fatalf("running=%v shielded=%v, want true false", running, shielded)
 	}
 }

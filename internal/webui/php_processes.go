@@ -4,33 +4,48 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/platform"
 )
 
-// scanPHPProcesses reports whether a PHP-FPM or lsphp process runs on this
-// host, including inside containers, and whether one of them can see the
-// PHP Shield script in its own root filesystem.
-//
-// shortcut: Apache mod_php containers (php:apache images) have no PHP process
-// of their own and are not found; match the httpd cmdline if one shows up.
+// scanPHPProcesses reads executable names from procfs. Command lines can be
+// large and can mention PHP in arguments to an unrelated executable.
 func scanPHPProcesses(procRoot, shieldPath string) (running, shielded bool) {
-	cmdlinePaths, _ := filepath.Glob(filepath.Join(procRoot, "[0-9]*", "cmdline"))
-	for _, cmdPath := range cmdlinePaths {
-		// #nosec G304 -- cmdPath from /proc/*/cmdline glob; kernel pseudo-FS.
-		data, err := os.ReadFile(cmdPath)
-		if err != nil {
-			continue
+	proc, err := os.Open(procRoot) // #nosec G304 -- kernel procfs directory in production.
+	if err != nil {
+		return false, false
+	}
+	defer proc.Close()
+	for {
+		entries, readErr := proc.ReadDir(128)
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.Trim(entry.Name(), "0123456789") != "" {
+				continue
+			}
+			pid := filepath.Join(procRoot, entry.Name())
+			exe, err := os.Readlink(filepath.Join(pid, "exe"))
+			if err != nil || !platform.IsPHPServerBinary(filepath.Base(strings.TrimSuffix(exe, " (deleted)"))) {
+				continue
+			}
+			running = true
+			if processHasShield(pid, shieldPath) {
+				return true, true
+			}
 		}
-		cmd := strings.ReplaceAll(string(data), "\x00", " ")
-		// An idle ondemand pool runs only its master.
-		if !isPHPWorkerCmdline(cmd) && !strings.HasPrefix(cmd, "php-fpm: master") {
-			continue
-		}
-		running = true
-		// Lstat: a container must not claim the shield by linking to the host's copy.
-		fi, err := os.Lstat(filepath.Join(filepath.Dir(cmdPath), "root", shieldPath))
-		if err == nil && fi.Mode().IsRegular() {
-			return true, true
+		if readErr != nil {
+			return running, false
 		}
 	}
-	return running, false
+}
+
+func processHasShield(pid, shieldPath string) bool {
+	// Follow the kernel's root link once. Resolve every container-controlled
+	// component relative to that directory, even if a symlink changes.
+	root, err := os.OpenRoot(filepath.Join(pid, "root"))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = root.Close() }()
+	fi, err := root.Lstat(strings.TrimPrefix(shieldPath, "/"))
+	return err == nil && fi.Mode().IsRegular()
 }

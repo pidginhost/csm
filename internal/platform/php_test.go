@@ -22,6 +22,9 @@ func TestDetectPHPUnderFindsInterpreters(t *testing.T) {
 		"usr/bin/php",
 		"usr/bin/php8.3",
 		"usr/sbin/php-fpm8.2",
+		"opt/remi/php83/root/usr/sbin/php-fpm",
+		"opt/plesk/php/8.3/sbin/php-fpm",
+		"usr/local/bin/php-cgi",
 		"opt/cpanel/ea-php83/root/usr/bin/php",
 		"opt/alt/php81/usr/bin/php",
 		"usr/local/lsws/lsphp83/bin/lsphp",
@@ -43,6 +46,8 @@ func TestDetectPHPUnderFindsInterpreters(t *testing.T) {
 func TestDetectPHPUnderIgnoresNonInterpreters(t *testing.T) {
 	root := t.TempDir()
 	// php-common helpers can outlive the interpreter.
+	writePHPTestFile(t, root, "usr/sbin/php-fpm-exporter", 0o755)
+	writePHPTestFile(t, root, "usr/bin/php8.3-helper", 0o755)
 	writePHPTestFile(t, root, "usr/sbin/phpenmod", 0o755)
 	writePHPTestFile(t, root, "usr/sbin/phpdismod", 0o755)
 	// A non-executable leftover is not an interpreter.
@@ -57,14 +62,13 @@ func TestDetectPHPUnderIgnoresNonInterpreters(t *testing.T) {
 }
 
 func TestDetectPHPFallsBackToPath(t *testing.T) {
-	orig := phpLookPath
-	t.Cleanup(func() { phpLookPath = orig })
-
-	phpLookPath = func(string) (string, error) { return "/srv/php/bin/php", nil }
-	if !DetectPHP() {
-		t.Error("php on PATH not detected")
+	root, bin := t.TempDir(), t.TempDir()
+	t.Setenv("PATH", bin)
+	if detectPHP(root) {
+		t.Fatal("empty root and PATH reported PHP")
 	}
-	if detectPHPUnder(t.TempDir()) {
-		t.Error("empty root reported PHP")
+	writePHPTestFile(t, bin, "php", 0o755)
+	if !detectPHP(root) {
+		t.Error("php on PATH not detected")
 	}
 }

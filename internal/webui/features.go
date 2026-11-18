@@ -1,7 +1,8 @@
 package webui
 
 import (
-	"sync"
+	"maps"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/phpshield"
@@ -40,83 +41,63 @@ func uiFeatures(info platform.Info, mta platform.MTAKind, php phpPresence) map[s
 	}
 }
 
-// featureSnapshot is one platform detection and the features derived from it.
-type featureSnapshot struct {
-	at       time.Time
-	features map[string]bool
-}
-
-// hostPlatform detects this host's panel and mail server. The package tests
-// replace it so no test depends on what the build host runs.
+// Tests replace these probes so constructing a server never depends on the build host.
 var hostPlatform = func() (platform.Info, platform.MTAKind) {
 	return platform.Detect(), platform.DetectMTA()
 }
+var hostPHP = platform.DetectPHP
 
-// phpPresence says whether this host runs PHP and whether PHP Shield can
-// reach it.
 type phpPresence struct{ php, shield bool }
 
-// hostPHP finds PHP on the host, or else PHP running in a container. PHP can
-// be installed after CSM starts, so it is re-checked with the platform.
-var hostPHP = func() phpPresence {
-	if platform.DetectPHP() {
-		return phpPresence{php: true, shield: true}
-	}
-	running, shielded := scanPHPProcesses("/proc", phpshield.ScriptPath)
-	return phpPresence{php: running, shield: shielded}
-}
-
 type featureState struct {
-	// detectPlatform, detectPHP and featureNow are nil outside tests.
-	detectPlatform func() (platform.Info, platform.MTAKind)
-	detectPHP      func() phpPresence
-	featureNow     func() time.Time
-	featureMu      sync.Mutex
-	featureCache   featureSnapshot
-	// featureRefreshing is set while one caller re-detects; the others
-	// keep the previous snapshot instead of waiting on systemd.
-	featureRefreshing bool
+	featureCache       atomic.Pointer[map[string]bool]
+	detectPlatform     func() (platform.Info, platform.MTAKind)
+	detectContainerPHP func() (bool, bool)
 }
 
-func (s *Server) platformSnapshot() featureSnapshot {
-	now := time.Now()
-	if s.featureNow != nil {
-		now = s.featureNow()
+func (s *Server) hostFeatures() map[string]bool {
+	detect := s.detectPlatform
+	if detect == nil {
+		detect = hostPlatform
 	}
-	s.featureMu.Lock()
-	c := s.featureCache
-	if c.features != nil && (now.Sub(c.at) < featureTTL || s.featureRefreshing) {
-		s.featureMu.Unlock()
-		return c
-	}
-	s.featureRefreshing = c.features != nil
-	s.featureMu.Unlock()
-
-	// Detection runs unlocked: it can wait on systemd for seconds.
-	var info platform.Info
-	var mta platform.MTAKind
-	if s.detectPlatform != nil {
-		info, mta = s.detectPlatform()
-	} else {
-		info, mta = hostPlatform()
-	}
-	var php phpPresence
-	if s.detectPHP != nil {
-		php = s.detectPHP()
-	} else {
-		php = hostPHP()
-	}
-	snap := featureSnapshot{at: now, features: uiFeatures(info, mta, php)}
-	s.featureMu.Lock()
-	s.featureCache = snap
-	s.featureRefreshing = false
-	s.featureMu.Unlock()
-	return snap
+	info, mta := detect()
+	php := hostPHP()
+	return uiFeatures(info, mta, phpPresence{php: php, shield: php})
 }
 
-// features returns the feature flags for this host. The map is shared;
-// callers must not modify it.
-func (s *Server) features() map[string]bool { return s.platformSnapshot().features }
+// watchFeatures is the sole writer after startup. A slow probe leaves the
+// last complete snapshot available to every request, including the first.
+func (s *Server) watchFeatures() {
+	detect := s.detectContainerPHP
+	if detect == nil {
+		detect = func() (bool, bool) { return scanPHPProcesses("/proc", phpshield.ScriptPath) }
+	}
+	ticker := time.NewTicker(featureTTL)
+	defer ticker.Stop()
+	features := maps.Clone(s.features())
+	for {
+		if !features["php"] {
+			features["php"], features["phpShield"] = detect()
+		}
+		s.setFeatures(features)
+		select {
+		case <-s.pruneDone:
+			return
+		case <-ticker.C:
+		}
+		features = s.hostFeatures()
+	}
+}
+
+func (s *Server) setFeatures(features map[string]bool) { s.featureCache.Store(&features) }
+
+// features returns an immutable snapshot.
+func (s *Server) features() map[string]bool {
+	if f := s.featureCache.Load(); f != nil {
+		return *f
+	}
+	return nil
+}
 
 // feature reports whether the named feature is available on this host.
 // Unknown names are off.

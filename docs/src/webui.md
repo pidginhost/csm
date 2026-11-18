@@ -138,12 +138,17 @@ up within five minutes. Its Queue, Held mail, Forwarders and
 Provider delays tabs, the antivirus lines of the Protection card, cPHulk
 actions on the Firewall page, the dashboard's Email AV chip, and the Email AV,
 cPanel and webmail login, and known API token settings need cPanel and are not
-shown elsewhere. On a host with no PHP interpreter, the PHP Shield, WordPress,
-WP-Cron, XML-RPC and PHP process settings and the Performance page's PHP
-cards are hidden; PHP installed after CSM starts shows them within five
-minutes. PHP-FPM or lsphp running in a container counts as PHP; the PHP Shield
-settings then show only when that container has the shield script mounted at
-its usual path. Hidden settings keep the values they have in `csm.yaml`.
+shown elsewhere.
+
+The Web UI checks for PHP at startup and refreshes in the background every
+five minutes. It shows the WordPress, WP-Cron, XML-RPC and PHP process settings
+and the Performance page's PHP cards when it finds a host interpreter or a
+running PHP-FPM or lsphp container. A container running only Apache with
+mod_php has no separate PHP process to detect. For container-only PHP, the
+PHP Shield settings appear when the scan finds the shield script inside a PHP
+process's root. This controls visibility only. Hidden settings keep their
+values in `csm.yaml`, including when you save another field in the same section.
+
 The Suspended tab shows on cPanel and Stalwart hosts. On a Stalwart host it
 lists the mailboxes whose sign-ins CSM stopped, and Release allows them again.
 On a Stalwart host the first three Email Security cards show the mail

@@ -521,6 +521,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 
 	s.restartDaemon = defaultRestartDaemon
 
+	s.setFeatures(s.hostFeatures())
 	return s, nil
 }
 
@@ -593,6 +594,7 @@ func (s *Server) Start() error {
 
 	// A listener failure ends these workers just as Shutdown does.
 	defer s.shutdownOnce.Do(func() { close(s.pruneDone) })
+	obs.Go("webui-features", s.watchFeatures)
 	obs.Go("webui-prune-logins", s.pruneLoginAttempts)
 	obs.Go("webui-cert-renewal", func() { s.renewCertLoop(certPath, keyPath) })
 

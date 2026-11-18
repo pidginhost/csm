@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -56,6 +57,10 @@ auto_response:
   enabled: true
   block_ips: false
   enforce_permissions: true
+performance:
+  wp_cron_fix:
+    interval_minutes: 18
+    php_bin: /usr/bin/php8.3
 php_shield:
   enabled: true
 `
@@ -137,5 +142,58 @@ func TestPerformancePagePHPCardsFollowFeature(t *testing.T) {
 	}
 	if !has(out, "perf-findings") || !strings.Contains(out, `class="col-12"`) {
 		t.Error("performance findings do not take the full row without PHP")
+	}
+}
+
+func TestSettingsWithoutPHPKeepsNestedValuesPrivate(t *testing.T) {
+	s, cfgPath := newSettingsTestServer(t, "tok", phpSettingsYAML)
+	setTestPHP(s, false)
+	w := httptest.NewRecorder()
+	s.apiSettingsGet(w, settingsAuthedReq("GET", "/api/v1/settings/performance", "tok", ""))
+	var resp struct{ Values map[string]json.RawMessage }
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("GET performance: status %d, err %v", w.Code, err)
+	}
+	if _, ok := resp.Values["wp_cron_fix"]; ok {
+		t.Error("GET performance returned hidden WP-Cron settings")
+	}
+	w = postSettingsChange(t, s, "performance", `{"error_log_warn_size_mb":25}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save performance: %d %s", w.Code, w.Body.String())
+	}
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"interval_minutes: 18", "php_bin: /usr/bin/php8.3", "error_log_warn_size_mb: 25"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("saved config missing %q", want)
+		}
+	}
+}
+
+func TestPerformanceCardsUseOnePHPResult(t *testing.T) {
+	s := newTestServer(t, "tok")
+	funcs := s.templateFuncs()
+	reads := 0
+	funcs["feature"] = func(name string) bool {
+		if name != "php" {
+			return s.feature(name)
+		}
+		reads++
+		return reads == 1
+	}
+	page, err := template.New("performance.html").Funcs(funcs).ParseFiles("../../ui/templates/performance.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := page.ExecuteTemplate(&out, "content", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`id="stat-php"`, `id="php-consumers"`, `class="col-lg-7"`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("inconsistent PHP layout: missing %s", want)
+		}
 	}
 }
