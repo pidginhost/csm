@@ -585,6 +585,115 @@ test('a failed rejects load shows a load error with retry', async () => {
     assert.match(tbody.textContent, /score 15\.2/);
 });
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function shownRows(page, tbodyId) {
+    return Array.from(page.document.querySelectorAll('#' + tbodyId + ' tr')).filter(r => r.style.display !== 'none');
+}
+
+function typeSearch(page, id, text) {
+    const box = page.document.getElementById(id);
+    box.value = text;
+    box.dispatchEvent(new page.window.Event('input'));
+    return box;
+}
+
+function rejectItems(n) {
+    return Array.from({ length: n }, (_, i) => ({ at: AT, class: 'spam', ip: '203.0.113.5', sender: 's' + i + '@example.com', recipient: 'b@example.net', detail: 'score ' + i }));
+}
+
+// Rejects read like Held mail: what the list covers on top, one toolbar
+// with the reason, a search and the count, then 25 rows a page.
+test('rejects use the held mail layout with a search, a count and 25 rows a page', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'rejects');
+    await settle();
+    const pane = page.document.getElementById('email-pane-rejects');
+    assert.equal(pane.querySelector('.card-header'), null, 'the old card header is still there');
+    const toolbar = pane.querySelector('.csm-toolbar');
+    assert.ok(toolbar, 'no toolbar');
+    for (const id of ['email-rejects-filter', 'email-rejects-search', 'email-rejects-count']) {
+        assert.ok(toolbar.querySelector('#' + id), id + ' is not in the toolbar');
+    }
+    assert.equal(query(page.pending('/api/v1/email/rejects')[0].url).get('limit'), '200');
+    page.respond('/api/v1/email/rejects', 200, items(rejectItems(30), { class: 'content', limit: 200, kept_days: 7 }));
+    await settle();
+    assert.equal(shownRows(page, 'email-rejects-tbody').length, 25);
+    assert.match(page.document.getElementById('email-rejects-count').textContent, /30/);
+
+    const box = typeSearch(page, 'email-rejects-search', 's7@');
+    await sleep(400);
+    assert.equal(shownRows(page, 'email-rejects-tbody').length, 1);
+    assert.equal(new URL(page.window.location.href).searchParams.get('email_rejects_q'), 's7@');
+
+    // A refresh with new rejects keeps what the box holds.
+    page.window.CSM.refresh.manual();
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items(rejectItems(31), { class: 'content', limit: 200, kept_days: 7 }));
+    await settle();
+    assert.equal(box.value, 's7@', 'the refresh cleared the search');
+    assert.equal(shownRows(page, 'email-rejects-tbody').length, 1, 'the refresh dropped the search');
+});
+
+test('the rejects note says when the list stops at the newest rejects', async () => {
+    const page = emailPage();
+    showEmailTab(page, 'rejects');
+    await settle();
+    page.respond('/api/v1/email/rejects', 200, items(rejectItems(200), { class: 'content', limit: 200, kept_days: 7 }));
+    await settle();
+    assert.match(page.document.getElementById('email-rejects-note').textContent, /Showing the newest 200\./);
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/rejects', 503, { error: 'unavailable' });
+    await settle();
+    assert.match(page.document.getElementById('email-rejects-tbody').textContent, /Failed to load/);
+    assert.equal(page.document.getElementById('email-rejects-count').textContent, '');
+    assert.doesNotMatch(page.document.getElementById('email-rejects-note').textContent, /Showing the newest/);
+});
+
+test('reject time sorts by instant across a clock change', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=rejects' });
+    const rows = ['2026-11-01T01:10:00-05:00', '2026-11-01T01:50:00-04:00'].map(at => ({ at, class: 'spam', detail: at }));
+    page.respond('/api/v1/email/rejects', 200, items(rows));
+    await settle();
+    const header = page.document.querySelector('#email-rejects-table th');
+    const order = () => shownRows(page, 'email-rejects-tbody').map(r => r.cells[5].textContent);
+    header.click();
+    assert.deepEqual(order(), [rows[1].at, rows[0].at]);
+    header.click();
+    assert.deepEqual(order(), rows.map(r => r.at));
+});
+
+test('reject search cannot join a sender to the next column', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=rejects&email_rejects_q=comb%40' });
+    page.respond('/api/v1/email/rejects', 200, items(rejectItems(1)));
+    await settle();
+    assert.match(page.document.getElementById('email-rejects-tbody').textContent, /No rejects match/);
+});
+
+test('reject searches start on the first page after URL restore and during a refresh', async () => {
+    const page = emailPage({ url: 'https://csm.example.test/email?tab=rejects&email_rejects_q=ScOrE',
+        storage: { 'csm-email-rejects': JSON.stringify({ page: 2, search: 'example.com' }) } });
+    const rows = rejectItems(60);
+    rows[0].detail = 'blocked';
+    page.respond('/api/v1/email/rejects', 200, items(rows));
+    await settle();
+    const box = page.document.getElementById('email-rejects-search');
+    assert.equal(box.value, 'ScOrE');
+    assert.match(rejectsShowing(page), /Showing 1.25 of 59 \(60 total\)/);
+    page.document.querySelector('#email-rejects-table-controls [data-page="2"]').click();
+    page.window.CSM.refresh.manual();
+    typeSearch(page, box.id, 'EXAMPLE.NET');
+    page.respond('/api/v1/email/rejects', 200, items(rows.concat({ at: AT, class: 'spam', detail: 'blocked' })));
+    await settle();
+    assert.equal(box.value, 'EXAMPLE.NET');
+    assert.match(rejectsShowing(page), /Showing 1.25 of 60 \(61 total\)/);
+    page.window.location._set('https://csm.example.test/email?tab=rejects&email_rejects_q=S7%40');
+    page.window.dispatchEvent(new page.window.Event('popstate'));
+    await sleep(400);
+    assert.equal(box.value, 'S7@');
+    assert.deepEqual(shownRows(page, 'email-rejects-tbody').map(r => r.cells[2].textContent), ['s7@example.com']);
+});
+
 test('the rejects list loads when its tab opens and refreshes only while it is open', async () => {
     const rejects = page => page.requests.filter(r => r.url.includes('/api/v1/email/rejects'));
     const page = emailPage();
@@ -799,30 +908,30 @@ test('rejects keep their page across a refresh with the same filter and range', 
     const page = emailPage();
     showEmailTab(page, 'rejects');
     await settle();
-    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 25 }, (_, i) => reject(i)), { kept_days: 7 }));
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 60 }, (_, i) => reject(i)), { kept_days: 7 }));
     await settle();
     page.document.querySelector('#email-rejects-table-controls [data-page="3"]').click();
-    assert.match(rejectsShowing(page), /Showing 21.25 of 25/);
+    assert.match(rejectsShowing(page), /Showing 51.60 of 60/);
 
     page.document.getElementById('email-refresh').click();
     await settle();
-    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 25 }, (_, i) => reject(i)), { kept_days: 7 }));
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 60 }, (_, i) => reject(i)), { kept_days: 7 }));
     await settle();
-    assert.match(rejectsShowing(page), /Showing 21.25 of 25/, 'a refresh sent the operator back to page 1');
+    assert.match(rejectsShowing(page), /Showing 51.60 of 60/, 'a refresh sent the operator back to page 1');
 
     page.document.getElementById('email-refresh').click();
     await settle();
-    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 12 }, (_, i) => reject(i)), { kept_days: 7 }));
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 30 }, (_, i) => reject(i)), { kept_days: 7 }));
     await settle();
-    assert.match(rejectsShowing(page), /Showing 11.12 of 12/, 'the kept page is not clamped to the new page count');
+    assert.match(rejectsShowing(page), /Showing 26.30 of 30/, 'the kept page is not clamped to the new page count');
 
     const filter = page.document.getElementById('email-rejects-filter');
     filter.value = 'all';
     filter.dispatchEvent(new page.window.Event('change'));
     await settle();
-    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 25 }, (_, i) => reject(i)), { kept_days: 7 }));
+    page.respond('/api/v1/email/rejects', 200, items(Array.from({ length: 60 }, (_, i) => reject(i)), { kept_days: 7 }));
     await settle();
-    assert.match(rejectsShowing(page), /Showing 1.10 of 25/, 'a new filter kept the old page');
+    assert.match(rejectsShowing(page), /Showing 1.25 of 60/, 'a new filter kept the old page');
 });
 
 test('a failed groups reload clears the group count', async () => {
@@ -3021,6 +3130,26 @@ test('View findings opens Findings searched for the account', async () => {
     assert.equal(url.searchParams.get('search'), 'shopuser');
 });
 
+test('Sending accounts has a search in a toolbar', async () => {
+    const page = await sendingPage({
+        '/api/v1/email/overview': overview({}),
+        '/api/v1/email/senders': senders([{ account: 'shopuser', messages: 300 }, { account: 'blogger', messages: 100 }])
+    });
+    const box = typeSearch(page, 'email-sending-search', 'blog');
+    assert.ok(box.closest('.csm-toolbar'), 'the search is not in a toolbar');
+    await sleep(400);
+    assert.deepEqual(sendingRows(page).filter(r => r.style.display !== 'none').map(r => r.querySelector('[data-label="Account"]').textContent), ['blogger']);
+    assert.equal(new URL(page.window.location.href).searchParams.get('email_sending_q'), 'blog');
+    assert.match(page.document.getElementById('email-sending-count').textContent, /1/);
+    typeSearch(page, box.id, 'view');
+    await sleep(400);
+    assert.equal(sendingRows(page).filter(r => r.style.display !== 'none').length, 0, 'an action label matched the account search');
+    page.window.CSM.refresh.manual();
+    page.respond('/api/v1/email/senders', 200, senders([]));
+    await settle();
+    assert.equal(page.document.getElementById('email-sending-count').textContent, '');
+});
+
 test('the accounts table says since when sends are counted', async () => {
     const since = new Date(Date.now() - 2 * HOUR_MS).toISOString();
     const page = await sendingPage({
@@ -4021,23 +4150,23 @@ test('the queue summary takes frozen and oldest from the overview, as the Queue 
 // Refreshes must preserve work in progress, including when the data changes.
 test('reject refreshes keep unchanged rows and restore link focus after changes', async () => {
     const page = emailPage({ url: 'https://csm.example.com/email?tab=rejects' });
-    const list = Array.from({ length: 15 }, (_, i) => ({ at: AT, class: 'spam', ip: '192.0.2.1', detail: 'reject ' + i }));
+    const list = Array.from({ length: 40 }, (_, i) => ({ at: AT, class: 'spam', ip: '192.0.2.1', detail: 'reject ' + i }));
     page.respond('/api/v1/email/rejects', 200, items(list, { kept_days: 7 }));
     await settle();
     const table = () => page.window.CSM._tableInstances.find(t => t.opts.tableId === 'email-rejects-table');
     page.document.querySelector('#email-rejects-table-controls [data-page="2"]').click();
-    const row = table().allRows[11].row;
+    const row = table().allRows[36].row;
     row.querySelector('a').focus();
     page.window.CSM.refresh.manual();
     page.respond('/api/v1/email/rejects', 200, items(list, { kept_days: 7 }));
     await settle();
-    assert.equal(table().allRows[11].row, row, 'unchanged rows were rebuilt');
+    assert.equal(table().allRows[36].row, row, 'unchanged rows were rebuilt');
     assert.equal(page.document.activeElement, row.querySelector('a'));
     page.window.CSM.refresh.manual();
     page.respond('/api/v1/email/rejects', 200, items(list.concat({ at: AT, class: 'spam', detail: 'new' }), { kept_days: 7 }));
     await settle();
     assert.equal(table().currentPage, 2);
-    assert.equal(page.document.activeElement, table().allRows[11].row.querySelector('a'), 'changed rows lost focus');
+    assert.equal(page.document.activeElement, table().allRows[36].row.querySelector('a'), 'changed rows lost focus');
 });
 
 test('Findings refresh on opening and poll only while visible', async () => {
@@ -4338,6 +4467,28 @@ test('a Stalwart suspension says sign-ins were stopped and names no cPanel accou
     const applied = row.querySelector('[data-label="Applied"]');
     assert.equal(applied.textContent, 'sign-ins');
     assert.ok(!row.textContent.includes('cPanel account'), 'a Stalwart row named a cPanel account');
+});
+
+test('Suspended has a search in a toolbar that survives a reload', async () => {
+    const page = await suspendedPage([suspension(SID[0]), suspension(SID[1], { subject: 'other@victim.example' })]);
+    const box = typeSearch(page, 'email-suspended-search', 'other@');
+    assert.ok(box.closest('.csm-toolbar'), 'the search is not in a toolbar');
+    await sleep(400);
+    assert.deepEqual(shownRows(page, 'email-suspended-tbody').map(r => r.getAttribute('data-suspension-id')), [SID[1]]);
+    assert.equal(new URL(page.window.location.href).searchParams.get('email_suspended_q'), 'other@');
+    assert.match(page.document.getElementById('email-suspended-count').textContent, /1/);
+    page.document.getElementById('email-refresh').click();
+    await settle();
+    page.respond('/api/v1/email/suspensions', 200, items([suspension(SID[0]), suspension(SID[1], { subject: 'other@victim.example' })]));
+    await settle();
+    assert.deepEqual(shownRows(page, 'email-suspended-tbody').map(r => r.getAttribute('data-suspension-id')), [SID[1]], 'the reload dropped the search');
+    typeSearch(page, box.id, 'release');
+    await sleep(400);
+    assert.match(page.document.getElementById('email-suspended-tbody').textContent, /No suspension matches/);
+    page.document.getElementById('email-refresh').click();
+    page.respond('/api/v1/email/suspensions', 200, items([]));
+    await settle();
+    assert.equal(page.document.getElementById('email-suspended-count').textContent, '');
 });
 
 test('releasing a suspended mailbox asks, posts with the CSRF header and reads the list again', async () => {
