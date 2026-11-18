@@ -12,8 +12,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Fixed
 
 - Knot DNS servers no longer raise connection alerts for their own zone transfers.
-- chrony no longer raises a connection alert when it reaches Network Time Security servers, which Ubuntu uses by default.
-- A kernel module loaded during a package upgrade is now a warning instead of a HIGH incident. `algif_aead` (Copy Fail) stays HIGH.
+- chrony no longer raises connection alerts when it reaches Network Time Security servers.
+- Kernel modules loaded during a package upgrade now raise a warning instead of a HIGH incident.
 
 ## [4.14.0] - 2026-11-18
 

@@ -36,13 +36,13 @@ var AncestryProvenance func(pid uint32) string
 // pkgManagerWindow returns true when any pkgManagerLogs file was modified
 // within window. Reads file mtime only; does not parse log contents.
 func pkgManagerWindow(now time.Time, window time.Duration) bool {
-	return pkgManagerActiveSince(now.Add(-window))
+	return filesModifiedSince(pkgManagerLogs, now.Add(-window))
 }
 
-// pkgManagerActiveSince returns true when any pkgManagerLogs file was
-// modified after cutoff. Reads file mtime only.
-func pkgManagerActiveSince(cutoff time.Time) bool {
-	for _, p := range pkgManagerLogs {
+// filesModifiedSince returns true when any of paths was modified after
+// cutoff. Reads file mtime only.
+func filesModifiedSince(paths []string, cutoff time.Time) bool {
+	for _, p := range paths {
 		fi, err := os.Stat(p)
 		if err != nil {
 			continue

@@ -45,7 +45,7 @@ func CheckKernelModules(ctx context.Context, _ *config.Config, store *state.Stor
 	}
 
 	now := time.Now()
-	pkgActive := pkgManagerActiveSince(kmodPkgCutoff(store, now))
+	pkgActive := filesModifiedSince(kmodPkgTransactionFiles, kmodPkgCutoff(store, now))
 	store.SetRaw(kmodLastScanKey, now.UTC().Format(time.RFC3339Nano))
 
 	// Check for modules not seen at baseline
@@ -81,6 +81,17 @@ const kmodLastScanKey = "_kmod_last_scan"
 // module. The check runs on the critical tier (minutes apart); after a long
 // daemon outage an old upgrade must not demote a module loaded much later.
 const kmodPkgWindowMax = 30 * time.Minute
+
+// kmodPkgTransactionFiles change only when a package transaction runs.
+// dnf.log and dnf.rpm.log are left out: dnf makecache rewrites both hourly
+// without installing anything, which would excuse any module loaded then.
+var kmodPkgTransactionFiles = []string{
+	"/var/lib/rpm/rpmdb.sqlite",
+	"/var/lib/rpm/Packages",
+	"/var/log/yum.log",
+	"/var/log/dpkg.log",
+	"/var/log/apt/history.log",
+}
 
 // kmodNeverDemote lists modules whose load stays High even inside a package
 // transaction. algif_aead is the CVE-2026-31431 ("Copy Fail") entry point;

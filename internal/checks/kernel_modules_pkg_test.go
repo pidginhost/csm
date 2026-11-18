@@ -33,9 +33,9 @@ func kmodScenario(t *testing.T, newMod string, lastScanAgo, pkgAgo time.Duration
 	})
 
 	logPath := filepath.Join(t.TempDir(), "dpkg.log")
-	oldLogs := pkgManagerLogs
-	pkgManagerLogs = []string{logPath}
-	t.Cleanup(func() { pkgManagerLogs = oldLogs })
+	oldFiles := kmodPkgTransactionFiles
+	kmodPkgTransactionFiles = []string{logPath}
+	t.Cleanup(func() { kmodPkgTransactionFiles = oldFiles })
 	now := time.Now()
 	if pkgAgo >= 0 {
 		if err := os.WriteFile(logPath, []byte("status installed\n"), 0o600); err != nil {
@@ -139,5 +139,22 @@ func TestKmodPkgCutoff(t *testing.T) {
 	store.SetRaw(kmodLastScanKey, "garbage")
 	if got, want := kmodPkgCutoff(store, now), now.Add(-pkgWindowDefault); !got.Equal(want) {
 		t.Errorf("unparsable scan: cutoff = %v, want %v", got, want)
+	}
+}
+
+func TestCheckKernelModulesMetadataRefreshStaysHigh(t *testing.T) {
+	// dnf makecache rewrites dnf.log and dnf.rpm.log hourly without
+	// installing anything; that must not excuse a new module.
+	dnfLog := filepath.Join(t.TempDir(), "dnf.log")
+	if err := os.WriteFile(dnfLog, []byte("Metadata cache created.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldLogs := pkgManagerLogs
+	pkgManagerLogs = []string{dnfLog}
+	t.Cleanup(func() { pkgManagerLogs = oldLogs })
+
+	findings := kmodScenario(t, "rootkit", 10*time.Minute, -1)
+	if len(findings) != 1 || findings[0].Severity != alert.High {
+		t.Fatalf("want one High finding, got %+v", findings)
 	}
 }
