@@ -9,10 +9,21 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+## [4.14.0] - 2026-11-18
+
+### Highlights
+
+- On Stalwart hosts CSM can suspend a hacked mailbox, lift Stalwart's own bans and score senders on its address list. Run `csm stalwart setup` again after upgrading.
+- Backup, export, import and restore now refuse a damaged state database instead of crashing or hanging CSM.
+- At the temporary block limit, automatic blocks no longer replace an operator's temporary block, and new blocks never go in above the limit.
+- After a firewall rollback, temporary blocks end at the time shown.
+- Automatic and manual fixes now act only on the file a finding names.
+
 ### Security
 
 - Backup, export, import and restore now refuse a damaged or malformed state database instead of crashing or hanging CSM.
 - At the temporary block limit, automatic blocks no longer replace an operator's temporary block, and are refused when only those, or blocks saved before 4.10.0, remain.
+- Automatic and manual fixes now act only on the file a finding names. Before, some paths led a permission fix to a different file or to none.
 
 ### Added
 
@@ -31,11 +42,15 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Saving attack records after a burst of new or dropped addresses no longer takes minutes on slow disks, which had delayed shutdown and `csm threat forget`.
-- Automatic and manual fixes now act only on the file a finding names. Before, some paths led a permission fix to a different file or to none.
+#### Firewall and blocking
+
 - With IPv6 filtering turned off, saved IPv6 blocks no longer cause new temporary blocks to be refused at the temporary block limit.
 - At the temporary block limit, a new block now replaces a block still in the firewall or is refused, instead of going in above the limit.
 - After a firewall rollback, temporary blocks end at the time shown instead of staying blocked for as long again as the confirmation window was open.
+- Saving attack records after a burst of new or dropped addresses no longer takes minutes on slow disks, which had delayed shutdown and `csm threat forget`.
+
+#### Mail
+
 - `csm doctor` on Stalwart hosts no longer warns about Stalwart delivery, DKIM and reverse DNS log lines CSM reads correctly.
 
 ## [4.13.1] - 2026-11-18
