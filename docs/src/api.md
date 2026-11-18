@@ -1717,6 +1717,7 @@ cache period.
 ```
 GET  /api/v1/hardening           Load last hardening audit report (admin scope)
 POST /api/v1/hardening/run       Run hardening audit and save report (admin scope, CSRF)
+POST /api/v1/hardening/apply     Apply automatic fixes for one section, then re-run the audit (admin scope, CSRF)
 ```
 
 ## Scan Jobs

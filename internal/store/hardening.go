@@ -15,6 +15,9 @@ type AuditResult struct {
 	Status   string `json:"status"`
 	Message  string `json:"message"`
 	Fix      string `json:"fix,omitempty"`
+	// AutoFix describes the change CSM makes when the operator applies
+	// this check from the hardening page. Empty means the fix is manual.
+	AutoFix string `json:"auto_fix,omitempty"`
 }
 
 // AuditReport is the full result of a hardening audit run.

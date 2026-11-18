@@ -2571,6 +2571,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"POST", "/api/v1/scan-account"},
 		{"POST", "/api/v1/test-alert"},
 		{"POST", "/api/v1/hardening/run"},
+		{"POST", "/api/v1/hardening/apply"},
 		{"POST", "/api/v1/settings/alerts"},
 		{"POST", "/api/v1/settings/restart"},
 		{"POST", "/api/v1/settings/firewall/tentative-apply"},

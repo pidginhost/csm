@@ -401,6 +401,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/perf/fix-wp-cron", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixWPCron))))
 	mux.Handle("/api/v1/hardening", s.requireAuth(getOnly(http.HandlerFunc(s.apiHardening))))
 	mux.Handle("/api/v1/hardening/run", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiHardeningRun))))
+	mux.Handle("/api/v1/hardening/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiHardeningApply))))
 
 	// Threat Intelligence API
 	mux.Handle("/api/v1/threat/stats", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatStats))))
