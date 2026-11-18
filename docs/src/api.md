@@ -503,9 +503,8 @@ are zero while no forecast runs. `examples_lost`, `summaries_lost` and
 `record_errors` count this process's losses and failed writes,
 `examples_stale` is true while a purge of earlier sessions' examples is
 pending, and `comparison_incomplete` is true after any loss in this
-process; a restart alone does not set it. Hourly summaries carry a stable
-`epoch` once startup opens an ingress generation; earlier summaries omit it
-and cannot identify a run.
+process; a restart alone does not set it, since each run's hourly
+summaries carry its `epoch`.
 `forecast_error` names why forecasting last failed (`engine_unavailable`,
 `clock_degraded`, `ledger_unavailable`, `snapshot_mismatch`,
 `session_id_unavailable`, `invalid_policy` or `model_error`) until a turn

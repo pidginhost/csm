@@ -122,8 +122,8 @@ type Record struct {
 	// Only an attribution refusal summary sets it.
 	Cause string `json:"cause,omitempty"`
 	// Epoch names the daemon run an admission summary counts: the
-	// run's first ledger ingress generation. Only a summary sets it;
-	// zero means startup has not opened an ingress generation yet.
+	// ledger's ingress generation, which every start advances. Only a
+	// summary sets it.
 	Epoch uint64 `json:"epoch,omitempty"`
 }
 

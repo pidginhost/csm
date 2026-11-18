@@ -255,8 +255,8 @@ type anonAction struct {
 	Cause      string `json:"cause,omitempty"`
 	Prediction string `json:"prediction,omitempty"`
 	Count      uint64 `json:"count,omitempty"`
-	// Epoch is the daemon run a summary counts; zero on older recordings
-	// or while startup has not opened an ingress generation.
+	// Epoch is the daemon run a summary counts; zero on recordings made
+	// before summaries named their run.
 	Epoch uint64 `json:"epoch,omitempty"`
 }
 
