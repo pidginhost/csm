@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/stalwartsetup"
+	"golang.org/x/term"
 )
 
 const stalwartSetupUsage = "usage: csm stalwart setup [--dry-run] [--password-file PATH] [--url URL] [--account-domain NAME]"
@@ -30,6 +32,12 @@ type stalwartSetupDeps struct {
 	webUsers   func() []string
 	getenv     func(string) string
 	readFile   func(string) ([]byte, error)
+	// stdin carries the admin login. On a terminal setup asks for it on
+	// prompt and reads the password with readHidden, which does not echo.
+	stdin         io.Reader
+	prompt        io.Writer
+	stdinTerminal func() bool
+	readHidden    func() ([]byte, error)
 	// checkListener refuses an API address another local user may be
 	// listening on.
 	checkListener func(url string) error
@@ -46,6 +54,10 @@ func defaultStalwartSetupDeps() stalwartSetupDeps {
 		webUsers:      func() []string { return platform.Detect().WebServerUsers() },
 		getenv:        os.Getenv,
 		readFile:      os.ReadFile,
+		stdin:         os.Stdin,
+		prompt:        os.Stderr,
+		stdinTerminal: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
+		readHidden:    func() ([]byte, error) { return term.ReadPassword(int(os.Stdin.Fd())) },
 		checkListener: stalwartapi.CheckListener,
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			return stalwartapi.NewWithPeerCheck(url, user, password, stalwartapi.CheckPeer)
@@ -69,7 +81,7 @@ func runStalwart() {
 // response account cannot be set up or a write failed, and 2 on a usage,
 // login or host error.
 func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int {
-	user, password := deps.getenv("STALWART_USER"), deps.getenv("STALWART_PASSWORD")
+	var user, password string
 	// keys are the API key in the key file and any key setup creates.
 	var keys []string
 	var output bytes.Buffer
@@ -121,9 +133,18 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 		}
 		password, _, _ = strings.Cut(string(data), "\n")
 		password = strings.TrimRight(password, "\r")
+		if password == "" {
+			fmt.Fprintf(out, "The password file %s has an empty first line.\n", *passwordFile)
+			return 2
+		}
 	}
-	if user == "" || password == "" {
-		fmt.Fprintln(out, "Set STALWART_USER to a Stalwart admin, and STALWART_PASSWORD or --password-file to its password.")
+	user, password, err = readStalwartLogin(deps, password)
+	if err != nil {
+		fmt.Fprintf(out, "Cannot read the Stalwart admin login from stdin: %v\n", err)
+		return 2
+	}
+	if password == "" {
+		fmt.Fprintln(out, "No Stalwart admin password: type it when asked, send it on stdin after the user name, or use --password-file.")
 		return 2
 	}
 	// Defense in depth: the client never puts the login in an error, but
@@ -207,6 +228,50 @@ func runStalwartSetup(args []string, deps stalwartSetupDeps, out io.Writer) int 
 		fmt.Fprintf(out, "Stalwart reload warning: %s\n", redact(w))
 	}
 	return stalwartSetupExit(plan)
+}
+
+// defaultStalwartAdmin is the user name setup uses when stdin gives none.
+const defaultStalwartAdmin = "admin"
+
+// readStalwartLogin reads the admin user name from stdin, then the password
+// unless the password file gave it. An empty user name means admin. On a
+// terminal it asks for each and does not echo the password; otherwise it
+// reads one line each and prints no prompt.
+func readStalwartLogin(deps stalwartSetupDeps, password string) (string, string, error) {
+	r := bufio.NewReader(deps.stdin)
+	tty := deps.stdinTerminal()
+	if tty {
+		fmt.Fprintf(deps.prompt, "Stalwart admin user [%s]: ", defaultStalwartAdmin)
+	}
+	user, err := readStalwartLine(r)
+	if err != nil {
+		return "", "", err
+	}
+	user = strings.TrimSpace(user)
+	if user == "" {
+		user = defaultStalwartAdmin
+	}
+	if password != "" {
+		return user, password, nil
+	}
+	if !tty {
+		password, err = readStalwartLine(r)
+		return user, password, err
+	}
+	fmt.Fprint(deps.prompt, "Stalwart admin password: ")
+	secret, err := deps.readHidden()
+	fmt.Fprintln(deps.prompt)
+	return user, string(secret), err
+}
+
+// readStalwartLine reads one line without its line ending. End of input is
+// an empty line, not an error.
+func readStalwartLine(r *bufio.Reader) (string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 // stalwartKeyAccount reads CSM's key file and asks Stalwart which account the

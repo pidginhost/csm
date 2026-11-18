@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"reflect"
@@ -218,6 +219,7 @@ type setupHarness struct {
 	deps    stalwartSetupDeps
 	api     *setupFakeAPI
 	env     map[string]string
+	stdin   string
 	gotURL  string
 	gotUser string
 	gotPass string
@@ -244,8 +246,9 @@ func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
 func newSetupHarness(t *testing.T) *setupHarness {
 	t.Helper()
 	h := &setupHarness{
-		api: &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, spam: stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5}},
-		env: map[string]string{"STALWART_USER": "admin", "STALWART_PASSWORD": setupTestPassword},
+		api:   &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "peer", ForwardedHops: 1}, spam: stalwartapi.SpamSettings{Enabled: true, ScoreSpam: 5}},
+		env:   map[string]string{"STALWART_USER": "admin", "STALWART_PASSWORD": setupTestPassword},
+		stdin: "admin\n" + setupTestPassword + "\n",
 	}
 	cfg := &config.Config{}
 	cfg.AutoResponse.BlockExpiry = "12h"
@@ -258,6 +261,9 @@ func newSetupHarness(t *testing.T) *setupHarness {
 		webUsers:      func() []string { return []string{"www-data"} },
 		getenv:        func(k string) string { return h.env[k] },
 		readFile:      os.ReadFile,
+		prompt:        io.Discard,
+		stdinTerminal: func() bool { return false },
+		readHidden:    func() ([]byte, error) { return nil, errors.New("not a terminal") },
 		checkListener: func(string) error { return nil },
 		newAPI: func(url, user, password string) stalwartsetup.API {
 			h.gotURL, h.gotUser, h.gotPass = url, user, password
@@ -274,6 +280,7 @@ func newSetupHarness(t *testing.T) *setupHarness {
 
 func (h *setupHarness) run(args ...string) (int, string) {
 	var out bytes.Buffer
+	h.deps.stdin = strings.NewReader(h.stdin)
 	code := runStalwartSetup(args, h.deps, &out)
 	return code, out.String()
 }
@@ -292,15 +299,97 @@ func TestStalwartSetupRefusesNonStalwartHost(t *testing.T) {
 
 func TestStalwartSetupNeedsLogin(t *testing.T) {
 	h := newSetupHarness(t)
-	h.env = map[string]string{}
+	h.stdin = ""
 	code, out := h.run()
 	if code != 2 {
 		t.Fatalf("code = %d, want 2", code)
 	}
-	for _, want := range []string{"STALWART_USER", "STALWART_PASSWORD", "--password-file"} {
+	for _, want := range []string{"stdin", "--password-file"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q does not name %s", out, want)
 		}
+	}
+	if h.gotUser != "" {
+		t.Fatal("the API was contacted without a password")
+	}
+}
+
+func TestStalwartSetupIgnoresLoginEnvironment(t *testing.T) {
+	h := newSetupHarness(t)
+	h.stdin = ""
+	if code, _ := h.run(); code != 2 || h.gotUser != "" {
+		t.Fatalf("code %d, user %q: setup took the login from the environment", code, h.gotUser)
+	}
+}
+
+func TestStalwartSetupReadsLoginFromStdin(t *testing.T) {
+	for name, tc := range map[string]struct{ stdin, user, pass string }{
+		"named user":   {"root-admin\n" + setupTestPassword + "\n", "root-admin", setupTestPassword},
+		"default user": {"\n" + setupTestPassword + "\n", "admin", setupTestPassword},
+		"crlf no eol":  {"  ops \r\n" + setupTestPassword, "ops", setupTestPassword},
+		"keeps spaces": {"admin\n pw with spaces \n", "admin", " pw with spaces "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newSetupHarness(t)
+			h.api.userRole = true
+			h.stdin = tc.stdin
+			if code, out := h.run("--dry-run"); code != 0 {
+				t.Fatalf("code %d, out %q", code, out)
+			}
+			if h.gotUser != tc.user || h.gotPass != tc.pass {
+				t.Fatalf("login %q/%q, want %q/%q", h.gotUser, h.gotPass, tc.user, tc.pass)
+			}
+		})
+	}
+}
+
+func TestStalwartSetupPromptsOnTerminal(t *testing.T) {
+	h := newSetupHarness(t)
+	h.api.userRole = true
+	h.stdin = "\n"
+	var prompt bytes.Buffer
+	h.deps.prompt = &prompt
+	h.deps.stdinTerminal = func() bool { return true }
+	h.deps.readHidden = func() ([]byte, error) { return []byte(setupTestPassword), nil }
+	code, out := h.run("--dry-run")
+	if code != 0 {
+		t.Fatalf("code %d, out %q", code, out)
+	}
+	if h.gotUser != "admin" || h.gotPass != setupTestPassword {
+		t.Fatalf("login %q/%q", h.gotUser, h.gotPass)
+	}
+	for _, want := range []string{"user [admin]: ", "password: "} {
+		if !strings.Contains(prompt.String(), want) {
+			t.Fatalf("prompt %q lacks %q", prompt.String(), want)
+		}
+	}
+	if strings.Contains(prompt.String(), setupTestPassword) || strings.Contains(out, "[admin]") {
+		t.Fatalf("prompt %q / out %q", prompt.String(), out)
+	}
+}
+
+func TestStalwartSetupPasswordFileReadsOnlyUser(t *testing.T) {
+	file := t.TempDir() + "/pw"
+	if err := os.WriteFile(file, []byte(setupTestPassword+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := newSetupHarness(t)
+	h.api.userRole = true
+	h.stdin = ""
+	h.deps.readHidden = func() ([]byte, error) { t.Fatal("asked for a password the file gave"); return nil, nil }
+	if code, out := h.run("--dry-run", "--password-file", file); code != 0 {
+		t.Fatalf("code %d, out %q", code, out)
+	}
+	if h.gotUser != "admin" || h.gotPass != setupTestPassword {
+		t.Fatalf("login %q/%q", h.gotUser, h.gotPass)
+	}
+	empty := t.TempDir() + "/empty"
+	if err := os.WriteFile(empty, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h = newSetupHarness(t)
+	if code, _ := h.run("--password-file", empty); code != 2 || h.gotUser != "" {
+		t.Fatalf("empty password file: code %d, user %q", code, h.gotUser)
 	}
 }
 
@@ -318,7 +407,7 @@ func TestStalwartSetupNeverPrintsPassword(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newSetupHarness(t)
-			h.env = map[string]string{"STALWART_USER": "admin"}
+			h.stdin = "admin\n"
 			mutate(h)
 			_, out := h.run("--password-file", file)
 			if h.gotPass != setupTestPassword {
@@ -452,7 +541,7 @@ func TestStalwartSetupRedactsPlanAndLogin(t *testing.T) {
 			h := newSetupHarness(t)
 			h.api.http.ClientIPSource = setupTestPassword
 			if mode == "login" {
-				h.env["STALWART_USER"] = setupTestPassword
+				h.stdin = setupTestPassword + "\n" + setupTestPassword + "\n"
 				h.api.readErr = stalwartapi.ErrUnauthorized
 			}
 			args := []string{}
