@@ -593,7 +593,7 @@ func TestPlanSpamFilterStates(t *testing.T) {
 	}
 }
 
-// Setup reports the spam filter but never changes what happens to a message.
+// Reporting the filter's switch and action scores must not change those settings.
 func TestPlanSpamFilterNeverWrites(t *testing.T) {
 	for name, mutate := range map[string]func(*fakeAPI){
 		"stock":        func(*fakeAPI) {},
@@ -1224,6 +1224,9 @@ var addressListWrites = []string{
 
 const addressListDone = "rule CSM_IP adds CSM_IP_DROP 4, CSM_IP_BLOCKED 3, CSM_IP_MAIL_AUTH 3, CSM_IP_SPAM 3, CSM_IP_BLOCKLISTDE 2, CSM_IP_CINS 2, CSM_IP_CANARY 0 to senders on CSM's address list"
 
+const addressListCreate = "create rule CSM_IP: Stalwart adds up to 4 to the spam score of senders on CSM's address list, so more of their mail goes to Junk; switch the rule off in Stalwart to stop"
+const addressListOff = "rule CSM_IP is switched off in Stalwart, so CSM's address list adds no score"
+
 func TestAddressListArms(t *testing.T) {
 	arms := AddressListArms()
 	symbols := ipmap.Symbols()
@@ -1254,10 +1257,8 @@ func TestAddressListStepCreates(t *testing.T) {
 	if s.State != Change || p.AddressListOn {
 		t.Fatalf("step = %+v, on %v; want Change and the list off", s, p.AddressListOn)
 	}
-	for _, want := range []string{"up to 4", "Junk", "switch the rule off in Stalwart"} {
-		if !strings.Contains(s.Detail, want) {
-			t.Errorf("detail %q does not say %q", s.Detail, want)
-		}
+	if s.Detail != addressListCreate {
+		t.Errorf("detail = %q, want %q", s.Detail, addressListCreate)
 	}
 	if calls, want := applyCalls(t, api, p), append(slices.Clone(addressListWrites), "ReloadSettings"); !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %q, want %q", calls, want)
@@ -1285,7 +1286,7 @@ func TestAddressListStepOffIsDone(t *testing.T) {
 	api.rules[AddressListRule] = r
 	delete(api.tags, "CSM_IP_CINS")
 	p := inspect(t, api, fieldInputs())
-	if s := stepNamed(t, p, "address list"); s.State != Done || !strings.Contains(s.Detail, "switched off") || p.AddressListOn {
+	if s := stepNamed(t, p, "address list"); s.State != Done || s.Detail != addressListOff || p.AddressListOn {
 		t.Fatalf("step = %+v, on %v; want Done saying it is switched off, and the list off", s, p.AddressListOn)
 	}
 	if calls := applyCalls(t, api, p); len(calls) != 0 {
@@ -1338,7 +1339,7 @@ func TestAddressListStepKeepsOperatorTags(t *testing.T) {
 
 	delete(api.tags, "CSM_IP_SPAM")
 	p = inspect(t, api, fieldInputs())
-	if s := stepNamed(t, p, "address list"); s.State != Change || !strings.Contains(s.Detail, "CSM_IP_SPAM") {
+	if s := stepNamed(t, p, "address list"); s.State != Change || s.Detail != "create the missing tag CSM_IP_SPAM" {
 		t.Fatalf("missing tag: step = %+v, want Change naming CSM_IP_SPAM", s)
 	}
 	if calls := applyCalls(t, api, p); !reflect.DeepEqual(calls, []string{"CreateSpamTag(CSM_IP_SPAM,3)", "ReloadSettings"}) {

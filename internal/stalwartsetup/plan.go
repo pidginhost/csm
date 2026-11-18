@@ -504,7 +504,7 @@ func addressListStep(ctx context.Context, api API) (s Step, on bool, err error) 
 	}
 	on = found
 
-	var scores, missing []string
+	var scores, nonScoring, missing []string
 	var create []ipmap.Symbol
 	for _, sym := range ipmap.Symbols() {
 		tag, have, err := api.SpamTag(ctx, sym.Name)
@@ -516,19 +516,30 @@ func addressListStep(ctx context.Context, api API) (s Step, on bool, err error) 
 			create = append(create, sym)
 			continue
 		}
-		scores = append(scores, sym.Name+" "+strconv.FormatFloat(tag.Score, 'f', -1, 64))
+		if tag.Type == "Score" {
+			scores = append(scores, sym.Name+" "+strconv.FormatFloat(tag.Score, 'f', -1, 64))
+		} else {
+			nonScoring = append(nonScoring, sym.Name)
+		}
 	}
 	arms := AddressListArms()
 	reset := found && (!slices.Equal(rule.Arms, arms) || rule.Else != "false")
 	switch {
 	case !found:
-		strongest := float64(ipmap.Symbols()[0].Tenths()) / 10
+		var strongest int
+		for _, sym := range ipmap.Symbols() {
+			strongest = max(strongest, sym.Tenths())
+		}
 		s.Detail = fmt.Sprintf("create rule %s: Stalwart adds up to %s to the spam score of senders on CSM's address list, so more of their mail goes to Junk; switch the rule off in Stalwart to stop",
-			AddressListRule, strconv.FormatFloat(strongest, 'f', -1, 64))
+			AddressListRule, strconv.FormatFloat(float64(strongest)/10, 'f', -1, 64))
 	case len(missing) > 0 || reset:
 		var parts []string
 		if len(missing) > 0 {
-			parts = append(parts, "create the missing tags "+strings.Join(missing, ", "))
+			noun := "tag"
+			if len(missing) > 1 {
+				noun = "tags"
+			}
+			parts = append(parts, "create the missing "+noun+" "+strings.Join(missing, ", "))
 		}
 		if reset {
 			parts = append(parts, "reset the condition of rule "+AddressListRule+" to match CSM's address list")
@@ -536,6 +547,12 @@ func addressListStep(ctx context.Context, api API) (s Step, on bool, err error) 
 		s.Detail = strings.Join(parts, "; ")
 	default:
 		s.State, s.Detail = Done, "rule "+AddressListRule+" adds "+strings.Join(scores, ", ")+" to senders on CSM's address list"
+		if len(scores) == 0 {
+			s.Detail = "rule " + AddressListRule + " has no scoring tags"
+		}
+		if len(nonScoring) > 0 {
+			s.Detail += "; non-scoring tags: " + strings.Join(nonScoring, ", ")
+		}
 		return s, on, nil
 	}
 	s.State = Change
@@ -629,8 +646,7 @@ func tracingStep(name, event string, levels []stalwartapi.TracingLevel, why stri
 	return s
 }
 
-// spamFilterStep reports Stalwart's spam filter. It has no apply: setup never
-// switches the filter or changes what happens to a message.
+// spamFilterStep only reports the filter's switch and action scores; the address list is a separate step.
 func spamFilterStep(sp stalwartapi.SpamSettings, stageOff bool) Step {
 	s := Step{Name: "spam filter"}
 	if !sp.Enabled || stageOff {
