@@ -235,9 +235,14 @@ land later, until its retry ages out two hours after it was queued. Spray
 blocks match through their own entries: the incident spray block of one
 address through `incident_spray`, the mail spray subnet block through
 `mail_subnet`. Matching can reassign compatible decisions
-when their windows overlap; each decision is consumed once. Coalesced
-decisions and designed refusals each spend one summary count for the same
-entry, kind and check in the same or an adjacent hour. Hourly aggregation
+when their windows overlap; each step explains at most one legacy row
+across all runs. An unused step from before a restart may still explain a
+pending retry. The same legacy row in a shared boundary hour needs only
+one step, even when both run reports include it. Observed steps and
+coalesced decisions are matched before designed refusals, which explain
+discrepancies but do not satisfy coverage. Coalesced decisions and designed
+refusals each spend one summary count from their own run for the same entry,
+kind and check in the same or an adjacent hour. Hourly aggregation
 cannot prove the exact event delay. A backward wall step clamps counts to
 the admission hour floor; larger clock disagreement stays unexplained and
 must be checked through clock status.
@@ -257,7 +262,8 @@ queue evictions and the handoff latency.
 Each run ends with its gate; only the run the status names is judged. It
 passes once its window spans at least 48 hours, nothing is unexplained, both
 totals are zero, and three blocks are matched for every entry the status
-lists and for every scan check that blocked. An entry short of three, or
+lists and for every scan check that blocked, even if a later configuration
+change removes scan blocking from the status. An entry short of three, or
 listed but never blocking, holds the gate until the run spans seven days;
 the gate then passes and names it unproven. An unmarked run, or a comparison
 without `--status`, never passes. The report ends with the verdict on the

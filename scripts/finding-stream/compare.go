@@ -330,6 +330,13 @@ type compareRun struct {
 	summaries         map[summaryKey]uint64
 	first, last       time.Time
 	invalid, overflow uint64
+	legacy            []compareBlock
+	matches           []string
+}
+
+type compareBlock struct {
+	anonAction
+	row int
 }
 
 // compareRuns reports each run apart and passes when the run the status
@@ -382,13 +389,21 @@ func compareRuns(checks map[string]string, actions []anonAction, status *compare
 		b.WriteString("window: no admission summaries: FAIL\n")
 	}
 	passed := false
-	for _, epoch := range slices.Sorted(maps.Keys(runs)) {
+	epochs := slices.Sorted(maps.Keys(runs))
+	ordered := make([]*compareRun, 0, len(epochs))
+	for _, epoch := range epochs {
+		r := runs[epoch]
+		r.collectLegacy(actions)
+		ordered = append(ordered, r)
+	}
+	matchComparisons(checks, ordered, steps)
+	for _, epoch := range epochs {
 		label := "unmarked"
 		if epoch != 0 {
 			label = strconv.FormatUint(epoch, 10)
 		}
 		fmt.Fprintf(&b, "run %s\n", label)
-		if runs[epoch].report(&b, checks, actions, steps, epoch, status) {
+		if runs[epoch].report(&b, checks, epoch, status) {
 			passed = true
 		}
 	}
@@ -406,27 +421,30 @@ func compareRuns(checks map[string]string, actions []anonAction, status *compare
 	return b.String(), nil
 }
 
-// report writes one run's comparison and gate, and says whether it is the
-// status's run and passed.
-func (r *compareRun) report(b *strings.Builder, checks map[string]string, actions []anonAction, steps map[compareStepKey][]time.Time, epoch uint64, status *compareStatus) bool {
+func (r *compareRun) collectLegacy(actions []anonAction) {
 	// A summary is stamped with the end of the hour it counts, which may
 	// have begun before the run: blocks are judged from the start of that
 	// hour, but the window counts from the stamp.
 	start := r.first.Add(-time.Hour)
-	var legacy []anonAction
-	for _, o := range actions {
+	for i, o := range actions {
 		if o.Count == 0 && o.Op == "respond.block_ip" && o.Actor == "daemon" && legacyKind(o) != "" && legacyAutomatic[o.ReasonKind] &&
 			(o.Result == "applied" || o.Result == "dry_run") && !o.Timestamp.Before(start) && o.Timestamp.Before(r.last) {
-			legacy = append(legacy, o)
+			r.legacy = append(r.legacy, compareBlock{o, i})
 		}
 	}
-	slices.SortStableFunc(legacy, func(a, b anonAction) int { return a.Timestamp.Compare(b.Timestamp) })
+	slices.SortStableFunc(r.legacy, func(a, b compareBlock) int { return a.Timestamp.Compare(b.Timestamp) })
+}
+
+// report writes one run's comparison and gate, and says whether it is the
+// status's run and passed.
+func (r *compareRun) report(b *strings.Builder, checks map[string]string, epoch uint64, status *compareStatus) bool {
+	legacy := r.legacy
 	var stepped, coalesced int
 	designed := map[string]int{}
 	var unexplained []anonAction
 	blocked, matched := map[string]int{}, map[string]int{}
-	for i, decision := range matchComparison(checks, legacy, steps, r.summaries) {
-		target := legacyEntry(legacy[i])
+	for i, decision := range r.matches {
+		target := legacyEntry(legacy[i].anonAction)
 		if target == "scan" {
 			check := checks[legacy[i].FindingID]
 			if check == "" {
@@ -443,7 +461,7 @@ func (r *compareRun) report(b *strings.Builder, checks map[string]string, action
 			coalesced++
 			matched[target]++
 		case "":
-			unexplained = append(unexplained, legacy[i])
+			unexplained = append(unexplained, legacy[i].anonAction)
 		default:
 			designed[decision]++
 		}
@@ -507,7 +525,7 @@ func (r *compareRun) report(b *strings.Builder, checks map[string]string, action
 	}
 	scanBlocked := false
 	for target := range blocked {
-		if strings.HasPrefix(target, "scan ") && slices.Contains(expected, "scan") {
+		if strings.HasPrefix(target, "scan ") {
 			targets[target], scanBlocked = true, true
 		}
 	}

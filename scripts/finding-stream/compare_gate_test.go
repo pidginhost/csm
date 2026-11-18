@@ -129,6 +129,142 @@ func TestCompareGateCountsScanChecksApart(t *testing.T) {
 	}
 }
 
+// A config change cannot erase the coverage owed by a scan check that
+// already blocked during the run.
+func TestCompareGateKeepsObservedScanChecks(t *testing.T) {
+	for _, span := range []time.Duration{48 * time.Hour, 7 * 24 * time.Hour} {
+		findings, actions := gateRun(2, 2, 3, span)
+		report := compareGate(t, findings, actions, statusFile(t, 2, "incident"))
+		want := "gate: FAIL: coverage short until 168h0m0s\n"
+		if span == 7*24*time.Hour {
+			want = "gate: pass; unproven: scan pam_bruteforce\n"
+		}
+		if !strings.Contains(report, "  scan pam_bruteforce: 2 legacy, 2 matched: short\n") || !strings.Contains(report, want) {
+			t.Fatalf("scan coverage disappeared after a config change:\n%s", report)
+		}
+	}
+}
+
+// A pending retry may use a step from before a restart, but that step
+// cannot also explain a different block in the earlier run.
+func TestCompareGateSpendsStepsOnceAcrossRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		priorBlock  bool
+		alternative bool
+	}{
+		{name: "unused step"},
+		{name: "spent step", priorBlock: true},
+		{name: "reassign prior block", priorBlock: true, alternative: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			findings, actions := gateRun(2, 2, 0, 48*time.Hour)
+			for i := range actions {
+				actions[i].Timestamp = actions[i].Timestamp.Add(2 * time.Hour)
+			}
+			fid := "fid-" + strings.Repeat("f", 32)
+			findings = append(findings, alert.AuditEvent{V: 1, Timestamp: compareTS, FindingID: fid, Check: "pam_bruteforce"})
+			first, last := summary(0, "pam_bruteforce", "queued", "", 1), summary(time.Hour, "pam_bruteforce", "queued", "", 1)
+			first.Epoch, last.Epoch = 1, 1
+			actions = append(actions, first, last, admissionStep(fid, 30*time.Minute), legacyBlock(fid, 90*time.Minute, "scan"))
+			if tc.priorBlock {
+				actions = append(actions, legacyBlock(fid, 30*time.Minute, "scan"))
+			}
+			if tc.alternative {
+				coalesced := summary(time.Hour, "pam_bruteforce", "coalesced", "", 1)
+				coalesced.Epoch = 1
+				actions = append(actions, coalesced)
+			}
+			report := compareGate(t, findings, actions, statusFile(t, 2, "scan"))
+			want := "verdict: pass (run 2)\n"
+			if tc.priorBlock && !tc.alternative {
+				want = "verdict: FAIL: run 2 does not pass the gate\n"
+			}
+			if !strings.Contains(report, want) {
+				t.Fatalf("missing %q:\n%s", want, report)
+			}
+		})
+	}
+}
+
+// A clean restart can give both runs the same boundary hour. The same
+// legacy row then appears in both reports but needs only one step.
+func TestCompareSharedBoundaryDoesNotDuplicateBlocks(t *testing.T) {
+	findings, actions := gateRun(2, 3, 0, 48*time.Hour)
+	for i := range actions {
+		if actions[i].Count != 0 {
+			actions[i].Timestamp = actions[i].Timestamp.Add(time.Hour)
+		}
+	}
+	first, last := summary(-time.Hour, "pam_bruteforce", "queued", "", 1), summary(time.Hour, "pam_bruteforce", "queued", "", 1)
+	first.Epoch, last.Epoch = 1, 1
+	actions = append(actions, first, last)
+	report := compareGate(t, findings, actions, statusFile(t, 2, "scan"))
+	if strings.Count(report, "matched by an admission step: 3\n") != 2 || !strings.Contains(report, "verdict: pass (run 2)\n") {
+		t.Fatalf("the shared hour duplicated physical blocks:\n%s", report)
+	}
+}
+
+// Shared boundary hours retain each run's own aggregate budget; a count
+// from the earlier run cannot explain the current run's blocks.
+func TestCompareSharedBoundaryKeepsSummaryBudgets(t *testing.T) {
+	for _, currentSummary := range []bool{false, true} {
+		t.Run(fmt.Sprint(currentSummary), func(t *testing.T) {
+			findings, actions := gateRun(2, 0, 3, 48*time.Hour)
+			for i := range actions {
+				if actions[i].Count != 0 && actions[i].Entry == "scan" {
+					actions[i].Timestamp = actions[i].Timestamp.Add(time.Hour)
+				}
+			}
+			if !currentSummary {
+				for i := range actions {
+					if actions[i].Result == "coalesced" {
+						actions[i].Epoch = 1
+					}
+				}
+			}
+			prior := summary(time.Hour, "pam_bruteforce", "coalesced", "", 3)
+			prior.Entry, prior.Epoch = "incident", 1
+			actions = append(actions, prior)
+			report := compareGate(t, findings, actions, statusFile(t, 2, "incident"))
+			want := "verdict: FAIL: run 2 does not pass the gate\n"
+			if currentSummary {
+				want = "verdict: pass (run 2)\n"
+				if strings.Count(report, "matched by a coalesced admission: 3\n") != 2 {
+					t.Fatalf("a run lost its own summary budget:\n%s", report)
+				}
+			}
+			if !strings.Contains(report, want) {
+				t.Fatalf("missing %q:\n%s", want, report)
+			}
+		})
+	}
+}
+
+// A designed refusal must not displace an observed match when all blocks
+// can be matched by steps. Refusals do not satisfy the coverage floor.
+func TestCompareGatePrefersMatchesOverDesignedRefusals(t *testing.T) {
+	fid, other := "fid-"+strings.Repeat("a", 32), "fid-"+strings.Repeat("b", 32)
+	findings := []alert.AuditEvent{
+		{V: 1, Timestamp: compareTS, FindingID: fid, Check: "pam_bruteforce"},
+		{V: 1, Timestamp: compareTS, FindingID: other, Check: "pam_bruteforce"},
+	}
+	later := admissionStep(fid, 125*time.Minute)
+	later.ActionID = "aid-" + strings.Repeat("c", 32)
+	first, last := summary(0, "pam_bruteforce", "queued", "", 1), summary(48*time.Hour, "pam_bruteforce", "queued", "", 1)
+	refusal := summary(time.Hour, "unknown", "refused", "policy", 1)
+	first.Epoch, last.Epoch, refusal.Epoch, refusal.Entry = 2, 2, 2, "incident"
+	actions := []anonAction{
+		first, last, refusal,
+		legacyBlock(fid, 5*time.Minute, "incident"), legacyBlock(fid, 65*time.Minute, "incident"), legacyBlock(other, 6*time.Minute, "incident"),
+		admissionStep(fid, 5*time.Minute), later, admissionStep(other, 6*time.Minute),
+	}
+	report := compareGate(t, findings, actions, statusFile(t, 2, "incident"))
+	if !strings.Contains(report, "  incident: 3 legacy, 3 matched: pass\n") || !strings.Contains(report, "verdict: pass (run 2)\n") {
+		t.Fatalf("a designed refusal displaced a matched block:\n%s", report)
+	}
+}
+
 // Each run is reported alone, and only the run the status was taken in is
 // judged: the status names the entries that run expects, not an earlier
 // run's. Two runs of 30 hours do not make 48, an unexplained block in an

@@ -25,7 +25,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - `csm doctor` on Stalwart hosts now checks Stalwart's settings with CSM's own API key, with no admin login needed.
 - In dry-run mode, the hourly action log no longer predicts that a block would replace another while the firewall holds automatic blocks with an unproven outcome.
-- `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
+- `finding-stream compare` judges each daemon run separately, preserves scan coverage after configuration changes, and counts observed evidence once before considering designed refusals.
 
 ### Fixed
 
