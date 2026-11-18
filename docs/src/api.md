@@ -564,8 +564,10 @@ gap in the last hour and a ledger the firewall could not read at startup
 fail. Until `owner.settled` is set, and for at most two minutes after the
 daemon starts, those rows warn and say so: the check that follows an
 upgrade runs before the first turn, and its failure would roll the upgrade
-back. The `admission execution` fix names the configuration for a refused
-policy and the firewall otherwise.
+back. A Critical gap recorded before the daemon started only warns, and
+says so: a flood of the hourly ceiling could otherwise fail every check
+after a restart for an hour. The `admission execution` fix names the
+configuration for a refused policy and the firewall otherwise.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
