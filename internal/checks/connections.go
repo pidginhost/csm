@@ -27,6 +27,7 @@ var safeRemotePorts = map[uint16]bool{
 var safeUsers = map[string]bool{
 	"imunify360-webshield": true,
 	"named":                true,
+	"knot":                 true, // Knot DNS zone transfers, often over TLS on 853
 	"mysql":                true,
 	"memcached":            true,
 	"icinga":               true,

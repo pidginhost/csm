@@ -16,6 +16,7 @@ import (
 // (e.g. BIND doing recursive resolution on a cPanel server).
 var dnsServerUsers = map[string]bool{
 	"named":           true, // BIND
+	"knot":            true, // Knot DNS
 	"unbound":         true, // Unbound
 	"pdns":            true, // PowerDNS
 	"systemd-resolve": true, // systemd-resolved forwarding to its upstreams
