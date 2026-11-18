@@ -93,14 +93,14 @@ func stageLearningOnlyDatabase(stageRoot, stateDir string) error {
 	if !info.Mode().IsRegular() {
 		return errors.New("existing state database is not a regular file")
 	}
-	// The copy is opened in full to hold learning; bbolt crashes on damage.
-	if err = csmstore.VerifyDatabase(source); err != nil {
-		return fmt.Errorf("existing state database: %w", err)
-	}
 	target := filepath.Join(stageRoot, "state", "csm.db")
 	prepared, err := prepareRestoreReplacement(source, target, false)
 	if err != nil {
 		return err
+	}
+	// Check the bytes bbolt will open, including any damage from the copy.
+	if err := csmstore.VerifyDatabase(prepared); err != nil {
+		return fmt.Errorf("existing state database: %w", err)
 	}
 	return os.Rename(prepared, target)
 }

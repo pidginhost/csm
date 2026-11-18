@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	csmstore "github.com/pidginhost/csm/internal/store"
 )
 
 // A learning-only restore copies the live database to hold the restored
@@ -68,8 +72,8 @@ func TestRestoreLearningOnlyRefusesDamagedLiveDatabase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = RestoreBackupArchive(archive, dst); err == nil {
-				t.Fatal("restore accepted a damaged live database")
+			if err = RestoreBackupArchive(archive, dst); err == nil || !strings.Contains(err.Error(), "bbolt snapshot is damaged") {
+				t.Fatalf("restore error = %v, want database damage", err)
 			}
 			if after, readErr := os.ReadFile(live); readErr != nil || !bytes.Equal(before, after) {
 				t.Fatalf("refused restore changed the live database: %v", readErr)
@@ -78,5 +82,61 @@ func TestRestoreLearningOnlyRefusesDamagedLiveDatabase(t *testing.T) {
 				t.Fatalf("refused restore changed keys: %q, %v", got, readErr)
 			}
 		})
+	}
+}
+
+func TestStageLearningOnlyDatabaseChecksCopiedBytes(t *testing.T) {
+	stateDir := t.TempDir()
+	bindLedger(t, stateDir)
+	// Shorten the source after the copier has opened and measured it.
+	// An empty copy would be initialized as a fresh database by bbolt.
+	original := backupFreeBytes
+	t.Cleanup(func() { backupFreeBytes = original })
+	backupFreeBytes = func(path string) (uint64, error) {
+		if err := os.Truncate(filepath.Join(stateDir, "csm.db"), 0); err != nil {
+			t.Fatal(err)
+		}
+		return original(path)
+	}
+	if err := stageLearningOnlyDatabase(t.TempDir(), stateDir); err == nil || !strings.Contains(err.Error(), "bbolt snapshot is damaged") {
+		t.Fatalf("staging error = %v, want database damage", err)
+	}
+}
+
+func TestRestoreLearningOnlyAcceptsLeakedLivePages(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source-learning")
+	writeLearningTree(t, source, "csmfz_restored")
+	archive := filepath.Join(dir, "backup.tar.gz")
+	if err := WriteBackupArchive(archive, BackupSources{LearningDir: source}); err != nil {
+		t.Fatal(err)
+	}
+	dst := BackupSources{StateDir: filepath.Join(dir, "state"), LearningDir: filepath.Join(dir, "learning")}
+	bindLedger(t, dst.StateDir)
+	live := filepath.Join(dst.StateDir, "csm.db")
+	data, err := os.ReadFile(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drop the free page IDs from the active transaction's freelist.
+	order := binary.NativeEndian
+	page := os.Getpagesize()
+	meta := data[:page]
+	if order.Uint64(data[page+64:]) > order.Uint64(meta[64:]) {
+		meta = data[page:]
+	}
+	freelist := order.Uint64(meta[48:]) * uint64(page)
+	order.PutUint16(data[freelist+10:], 0)
+	if err := os.WriteFile(live, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := csmstore.DisarmFirewallRollbackSnapshot(live); err == nil || !strings.Contains(err.Error(), "unreachable unfreed pages") {
+		t.Fatalf("snapshot verification = %v, want leaked pages", err)
+	}
+	if err := RestoreBackupArchive(archive, dst); err != nil {
+		t.Fatal(err)
+	}
+	if !declaredRestore(t, dst.StateDir) {
+		t.Fatal("learning was not held after restore")
 	}
 }
