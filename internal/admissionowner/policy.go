@@ -44,6 +44,9 @@ type ExecutionPolicy struct {
 	// under the ledger write transaction: consume roots synchronously,
 	// never retain the loader or call back into the ledger.
 	Allows func(c admission.Candidate, roots func() []admission.Evidence) bool
+	// BlockEntries lists the entries whose automatic IP blocks the live
+	// configuration lets admission run; nil lists none.
+	BlockEntries func() []admission.Entry
 }
 
 // ErrPolicy marks an execution policy the owner refused to install.

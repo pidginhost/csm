@@ -29,7 +29,7 @@ func TestBuildOwnsAdmissionSnapshot(t *testing.T) {
 			Notices: admission.NoticesStatus{Records: []admission.NoticeStatusRow{{Count: 6}}},
 		},
 		Ingress: &admission.IngressHealth{Admitting: true},
-		Owner:   &AdmissionOwner{CeilingSource: "default", Import: &AdmissionImport{Units: 7}},
+		Owner:   &AdmissionOwner{CeilingSource: "default", Import: &AdmissionImport{Units: 7}, BlockEntries: []string{"scan", "incident"}},
 	}
 	class, at := "timeout", time.Unix(50, 0).UTC()
 	status.Owner.Verdict = &AdmissionVerdict{Pending: 8, LastError: &class, LastErrorAt: &at}
@@ -49,6 +49,7 @@ func TestBuildOwnsAdmissionSnapshot(t *testing.T) {
 	status.Ledger.Notices.Records[0].Count++
 	status.Owner.CeilingSource = "configured"
 	status.Owner.Import.Units++
+	status.Owner.BlockEntries[0] = "central"
 	status.Owner.Set.General.Used++
 	status.Owner.Verdict.Pending++
 	*status.Owner.Verdict.LastError = "transport"

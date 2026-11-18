@@ -247,13 +247,17 @@ type anonAction struct {
 	AfterExists  *bool  `json:"after_exists,omitempty"`
 	// An admission summary's typed fields: the check that asked, the entry
 	// it came through, a refusal's reason and an attribution refusal's
-	// cause, a dry run's prediction and how many responses it counts.
+	// cause, a dry run's prediction, how many responses it counts and the
+	// daemon run that counted them.
 	Check      string `json:"check,omitempty"`
 	Entry      string `json:"entry,omitempty"`
 	Refusal    string `json:"refusal,omitempty"`
 	Cause      string `json:"cause,omitempty"`
 	Prediction string `json:"prediction,omitempty"`
 	Count      uint64 `json:"count,omitempty"`
+	// Epoch is the daemon run a summary counts; zero on recordings made
+	// before summaries named their run.
+	Epoch uint64 `json:"epoch,omitempty"`
 }
 
 // anonFirewallAudit is the only shape a firewall audit entry leaves in. The
@@ -328,6 +332,10 @@ func validateAction(r actionlog.Record) (parsedTarget, error) {
 	if !ok {
 		return parsedTarget{}, errUnknownOp
 	}
+	if r.Epoch != 0 && r.Count == 0 {
+		// Only a summary names the run that counted it.
+		return parsedTarget{}, errSummary
+	}
 	if r.Action == "show" {
 		return validateActionShow(r)
 	}
@@ -370,7 +378,7 @@ func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
 	kept := summary || a.actorDetail(&out, r.ActorDetail)
 	if summary {
 		out.Check, out.Entry, out.Refusal, out.Count, out.ReasonKind = r.Reason, r.ActorDetail, r.Error, r.Count, "check"
-		out.Prediction, out.Cause = r.Prediction, r.Cause
+		out.Prediction, out.Cause, out.Epoch = r.Prediction, r.Cause, r.Epoch
 	}
 	if r.Before != nil {
 		exists := r.Before.Exists
@@ -636,7 +644,7 @@ func (a *Anonymizer) VerifyAction(o anonAction) error {
 		a.emittedName(o.Hostname, "host-") && a.emittedName(o.Account, "acct-") &&
 		(o.ActorIP == "" || a.emittedAddress(o.ActorIP)) &&
 		a.emittedID(o.FindingID, idFinding) && a.emittedID(o.IncidentID, idIncident) &&
-		a.emittedID(o.ActionID, idAction) && a.emittedID(o.UndoOf, idAction)
+		a.emittedID(o.ActionID, idAction) && a.emittedID(o.UndoOf, idAction) && (o.Epoch == 0 || o.Count != 0)
 	switch {
 	case o.Action == "show":
 		valid = valid && a.verifyActionShow(o)

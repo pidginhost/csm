@@ -121,6 +121,10 @@ type Record struct {
 	// Cause narrows a refusal summary's Error, from its fixed vocabulary.
 	// Only an attribution refusal summary sets it.
 	Cause string `json:"cause,omitempty"`
+	// Epoch names the daemon run an admission summary counts: the
+	// ledger's ingress generation, which every start advances. Only a
+	// summary sets it.
+	Epoch uint64 `json:"epoch,omitempty"`
 }
 
 // Sink writes records. The daemon installs a file sink at startup; tests
