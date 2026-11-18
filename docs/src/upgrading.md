@@ -22,6 +22,10 @@ sudo dnf upgrade csm                                     # RHEL family
 
 The package preserves the operator config and state, updates runtime assets, re-records integrity hashes, and restarts the daemon when it was already active.
 
+Debian and Ubuntu upgrades keep the local main config without a dpkg prompt. Compare it with the shipped template at `/usr/lib/csm/csm.yaml.default`. RPM keeps a locally modified config and writes a changed template to `/etc/csm/csm.yaml.rpmnew`. RPM may update an unmodified config in place.
+
+If the main config is missing on upgrade and there is no regular legacy config to migrate, package setup stops before restarting CSM. Restore your config to `/etc/csm/csm.yaml` and retry.
+
 ## Standalone installations
 
 ```bash
