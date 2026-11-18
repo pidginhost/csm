@@ -154,8 +154,9 @@ type AdmissionDryRun struct {
 	// session starts.
 	ForecastError *string    `json:"forecast_error"`
 	LastErrorAt   *time.Time `json:"last_error_at"`
-	// ComparisonIncomplete is set after a restart or a lost example,
-	// summary or comparison row.
+	// ComparisonIncomplete is set after a lost example, summary or
+	// comparison row in this process. A restart alone does not set it:
+	// each run's summaries name their run.
 	ComparisonIncomplete bool `json:"comparison_incomplete"`
 }
 

@@ -18,7 +18,7 @@ func (o *Owner) dryRunStatus() *health.AdmissionDryRun {
 	d := &health.AdmissionDryRun{
 		Active: o.forecasting(), ModelledKinds: []string{admission.KindBlockIP.String()}, PredictionScope: predictionScope,
 		ExamplesLost: o.out.examplesLost, SummariesLost: o.out.summariesLost, RecordErrors: o.out.recordErrors, ExamplesStale: o.out.stale,
-		ComparisonIncomplete: o.out.restarted || o.out.examplesLost > 0 || o.out.summariesLost > 0 || o.compare.droppedRows() > 0,
+		ComparisonIncomplete: o.out.examplesLost > 0 || o.out.summariesLost > 0 || o.compare.droppedRows() > 0,
 	}
 	var picks, recent [admission.PredictionSlots]uint64
 	// An earlier session's identity shows only once the owner stops

@@ -509,8 +509,8 @@ func (o *Owner) start() error {
 	if err != nil {
 		return fmt.Errorf("beginning an ingress generation: %w", err)
 	}
-	// An earlier process's comparison counts and examples may be lost.
-	o.out.restarted = generation.Generation > 1
+	// Each run's summaries name it, so a comparison never mixes runs.
+	o.compare.setEpoch(generation.Generation)
 	if err = o.ledger.Revalidate(); err != nil {
 		return fmt.Errorf("revalidating the queue: %w", err)
 	}

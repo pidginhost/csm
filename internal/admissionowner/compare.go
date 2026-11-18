@@ -47,6 +47,9 @@ type comparison struct {
 	// discardedThrough keeps late rows from restoring partial hours after
 	// retention discarded them, even when acknowledgement makes room.
 	discardedThrough time.Time
+	// epoch is the ingress generation of this run, stamped on every row
+	// written; zero until the ingress begins.
+	epoch uint64
 }
 
 type comparisonRow struct {
@@ -171,6 +174,13 @@ func (c *comparison) retain() {
 	}
 }
 
+// setEpoch names the run the rows written from now on belong to.
+func (c *comparison) setEpoch(epoch uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.epoch = epoch
+}
+
 // droppedRows is how many rows retention discarded unwritten.
 func (c *comparison) droppedRows() uint64 {
 	c.mu.Lock()
@@ -193,6 +203,7 @@ func (c *comparison) take(now time.Time, final bool) ([]actionlog.Record, uint64
 	rows := make([]actionlog.Record, len(c.unwritten))
 	for i, r := range c.unwritten {
 		rows[i] = r.Record
+		rows[i].Epoch = c.epoch
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Timestamp.Before(rows[j].Timestamp) })
 	return rows, c.next
