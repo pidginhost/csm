@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/atomicio"
@@ -394,28 +395,39 @@ func setKeyValueFile(path, key, value string) error {
 // --- OS ---
 
 func fixTmpDir(dir string) error {
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
-	}
-	if err := os.Lchown(dir, 0, 0); err != nil {
-		return err
-	}
-	return os.Chmod(dir, os.ModeSticky|0o777)
+	return setModeByFD(dir, os.ModeSticky|0o777, true, true)
 }
 
 func chmodRegular(path string, mode os.FileMode) error {
-	info, err := os.Lstat(path)
+	return setModeByFD(path, mode, false, false)
+}
+
+// setModeByFD opens path without following a final symlink and changes the
+// mode (and, with chownRoot, the owner) through the descriptor, so the
+// object checked is the one changed.
+func setModeByFD(path string, mode os.FileMode, chownRoot, wantDir bool) error {
+	// #nosec G304 -- fixed system paths chosen by the fixer table.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() {
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if wantDir && !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	if !wantDir && !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", path)
 	}
-	return os.Chmod(path, mode)
+	if chownRoot {
+		if err := f.Chown(0, 0); err != nil {
+			return err
+		}
+	}
+	return f.Chmod(mode)
 }
 
 // applySysctlFixes sets each key at runtime, then persists the ones the

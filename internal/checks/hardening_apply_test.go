@@ -238,3 +238,24 @@ func TestApplyHardeningRejectsUnknownCategory(t *testing.T) {
 		t.Fatal("want error for unknown category")
 	}
 }
+
+func TestChmodRegularRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := chmodRegular(link, 0o600); err == nil {
+		t.Fatal("chmod followed a symlink")
+	}
+	if err := chmodRegular(target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(target); info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", info.Mode().Perm())
+	}
+}
