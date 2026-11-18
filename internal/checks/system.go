@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -39,26 +40,91 @@ func CheckKernelModules(ctx context.Context, _ *config.Config, store *state.Stor
 			store.SetRaw("_kmod:"+mod, "baseline")
 		}
 		store.SetRaw("_kmod_baseline_set", "true")
+		store.SetRaw(kmodLastScanKey, time.Now().UTC().Format(time.RFC3339Nano))
 		return nil
 	}
+
+	now := time.Now()
+	pkgActive := filesModifiedSince(kmodPkgTransactionFiles, kmodPkgCutoff(store, now))
+	store.SetRaw(kmodLastScanKey, now.UTC().Format(time.RFC3339Nano))
 
 	// Check for modules not seen at baseline
 	for _, mod := range modules {
 		key := "_kmod:" + mod
 		_, known := store.GetRaw(key)
 		if !known {
-			findings = append(findings, alert.Finding{
+			f := alert.Finding{
 				Severity: alert.High,
 				Check:    "kernel_module",
 				Message:  fmt.Sprintf("New kernel module loaded after baseline: %s", mod),
 				Details:  "This module was not present when CSM baseline was set. Verify it is legitimate.",
-			})
+			}
+			if pkgActive && kmodUpgradeModules[mod] {
+				f.Severity = alert.Warning
+				f.Details += " [demoted: package manager active since the previous module scan]"
+			}
+			findings = append(findings, f)
 			// Store it so we don't re-alert
 			store.SetRaw(key, "new")
 		}
 	}
 
 	return findings
+}
+
+// kmodLastScanKey records when CheckKernelModules last read /proc/modules,
+// so package activity can be matched to the interval in which a module
+// appeared rather than to the two-minute window used by write events.
+const kmodLastScanKey = "_kmod_last_scan"
+
+// kmodPkgWindowMax bounds how far back package activity may excuse a new
+// module. The check runs on the critical tier (minutes apart); after a long
+// daemon outage an old upgrade must not demote a module loaded much later.
+const kmodPkgWindowMax = 30 * time.Minute
+
+// kmodPkgTransactionFiles change only when a package transaction runs.
+// dnf.log and dnf.rpm.log are left out: dnf makecache rewrites both hourly
+// without installing anything, which would excuse any module loaded then.
+var kmodPkgTransactionFiles = []string{
+	"/var/lib/rpm/rpmdb.sqlite",
+	"/var/lib/rpm/Packages",
+	"/var/log/yum.log",
+	"/var/log/dpkg.log",
+	"/var/log/apt/history.log",
+}
+
+// kmodUpgradeModules lists the modules package scriptlets load on demand
+// that may demote during a transaction. Unprivileged users can autoload
+// most modules and can watch the package logs, so every other module,
+// algif_aead (the Copy Fail entry point) included, stays High.
+var kmodUpgradeModules = map[string]bool{
+	"af_alg":     true,
+	"algif_hash": true,
+}
+
+// kmodPkgCutoff returns the start of the interval in which a newly listed
+// module was loaded: the previous scan, clamped to kmodPkgWindowMax, or
+// pkgWindowDefault when no previous scan was recorded.
+//
+// Package upgrades load modules on demand (af_alg and algif_hash from
+// systemd or cryptsetup scriptlets, for example), usually minutes before
+// the next scan reads /proc/modules. The 2-minute pkgWindowDefault missed
+// those, so a routine apt upgrade opened a HIGH host_integrity_risk
+// incident.
+func kmodPkgCutoff(store *state.Store, now time.Time) time.Time {
+	floor := now.Add(-kmodPkgWindowMax)
+	raw, ok := store.GetRaw(kmodLastScanKey)
+	if !ok {
+		return now.Add(-pkgWindowDefault)
+	}
+	last, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil || last.After(now) {
+		return now.Add(-pkgWindowDefault)
+	}
+	if last.Before(floor) {
+		return floor
+	}
+	return last
 }
 
 func loadModuleList() []string {
