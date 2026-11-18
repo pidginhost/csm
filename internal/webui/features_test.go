@@ -1,13 +1,10 @@
 package webui
 
 import (
-	"maps"
 	"os"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/platform"
@@ -24,19 +21,27 @@ func init() {
 	hostPlatform = func() (platform.Info, platform.MTAKind) {
 		return platform.Info{Panel: platform.PanelCPanel}, platform.MTAExim
 	}
-	hostPHP = func() bool { return true }
+	hostPHP = func() phpPresence { return phpPresence{php: true, shield: true} }
 }
 
 // setTestPHP makes s see PHP installed or not.
 func setTestPHP(s *Server, installed bool) {
-	f := maps.Clone(s.features())
-	f["php"], f["phpShield"] = installed, installed
-	s.setFeatures(f)
+	s.detectPHP = func() phpPresence { return phpPresence{php: installed, shield: installed} }
+	s.featureMu.Lock()
+	s.featureCache = featureSnapshot{}
+	s.featureRefreshing = false
+	s.featureMu.Unlock()
 }
 
+// setTestPlatform makes s see the given panel and mail server.
 func setTestPlatform(s *Server, panel platform.Panel, mta platform.MTAKind) {
-	f := s.features()
-	s.setFeatures(uiFeatures(platform.Info{Panel: panel}, mta, phpPresence{php: f["php"], shield: f["phpShield"]}))
+	s.detectPlatform = func() (platform.Info, platform.MTAKind) {
+		return platform.Info{Panel: panel}, mta
+	}
+	s.featureMu.Lock()
+	s.featureCache = featureSnapshot{}
+	s.featureRefreshing = false
+	s.featureMu.Unlock()
 }
 
 func TestUIFeaturesByPlatform(t *testing.T) {
@@ -108,27 +113,29 @@ func TestServerFeatureUnknownNameIsFalse(t *testing.T) {
 }
 
 func TestServerFeaturesRefreshAfterTTL(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		s := &Server{pruneDone: make(chan struct{})}
-		s.setFeatures(uiFeatures(platform.Info{}, platform.MTAUnknown, phpPresence{php: true}))
-		var calls atomic.Int32
-		s.detectPlatform = func() (platform.Info, platform.MTAKind) {
-			calls.Add(1)
-			return platform.Info{}, platform.MTAPostfix
+	s := newTestServer(t, "tok")
+	calls := 0
+	s.detectPlatform = func() (platform.Info, platform.MTAKind) {
+		calls++
+		if calls == 1 {
+			return platform.Info{}, platform.MTAUnknown
 		}
-		go s.watchFeatures()
-		defer close(s.pruneDone)
-		synctest.Wait()
-		time.Sleep(featureTTL - time.Second)
-		if s.feature("mail") || calls.Load() != 0 {
-			t.Fatalf("within TTL: mail=%v calls=%d", s.feature("mail"), calls.Load())
-		}
-		time.Sleep(time.Second)
-		synctest.Wait()
-		if !s.feature("mail") || calls.Load() != 1 {
-			t.Fatalf("after TTL: mail=%v calls=%d", s.feature("mail"), calls.Load())
-		}
-	})
+		return platform.Info{}, platform.MTAPostfix
+	}
+	now := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
+	s.featureNow = func() time.Time { return now }
+
+	if s.feature("mail") {
+		t.Fatal("mail on before a mail server exists")
+	}
+	now = now.Add(4*time.Minute + 59*time.Second)
+	if s.feature("mail") || calls != 1 {
+		t.Fatalf("within TTL: mail=%v calls=%d, want false and 1", s.feature("mail"), calls)
+	}
+	now = now.Add(2 * time.Second)
+	if !s.feature("mail") || calls != 2 {
+		t.Fatalf("after TTL: mail=%v calls=%d, want true and 2", s.feature("mail"), calls)
+	}
 }
 
 func TestServerFeaturesFollowPlatformOverride(t *testing.T) {
@@ -146,7 +153,6 @@ func TestServerFeaturesFollowPlatformOverride(t *testing.T) {
 		s.detectPlatform = func() (platform.Info, platform.MTAKind) {
 			return platform.Detect(), platform.MTAUnknown
 		}
-		s.setFeatures(s.hostFeatures())
 		if got := s.feature("cphulk"); got != c.want {
 			t.Errorf("panel %q: cphulk = %v, want %v", c.panel, got, c.want)
 		}
@@ -176,44 +182,47 @@ func TestCoreExposesFeatureHelper(t *testing.T) {
 	}
 }
 
-// A blocked detector must never hold up a reader, even on the first scan.
-func TestPHPRefreshDoesNotBlockFirstRequest(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		s := &Server{pruneDone: make(chan struct{})}
-		s.setFeatures(uiFeatures(platform.Info{}, platform.MTAUnknown, phpPresence{}))
-		entered, release := make(chan struct{}), make(chan struct{})
-		s.detectContainerPHP = func() (bool, bool) {
-			close(entered)
-			<-release
-			return true, false
+// A slow detection (systemd answering late) must not hold up page renders:
+// while one request re-detects, the others keep the previous answer.
+func TestServerFeaturesServeStaleWhileRefreshing(t *testing.T) {
+	s := newTestServer(t, "tok")
+	now := time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
+	s.featureNow = func() time.Time { return now }
+	entered, release := make(chan struct{}), make(chan struct{})
+	first := true
+	s.detectPlatform = func() (platform.Info, platform.MTAKind) {
+		if first {
+			first = false
+			return platform.Info{}, platform.MTAUnknown
 		}
-		platformEntered, platformRelease := make(chan struct{}), make(chan struct{})
-		s.detectPlatform = func() (platform.Info, platform.MTAKind) {
-			close(platformEntered)
-			<-platformRelease
-			return platform.Info{}, platform.MTAPostfix
-		}
-		go s.watchFeatures()
-		defer close(s.pruneDone)
-		<-entered
-		if s.feature("php") {
-			t.Fatal("PHP reported before detection completed")
-		}
-		close(release)
-		synctest.Wait()
-		if !s.feature("php") || s.feature("phpShield") {
-			t.Fatal("container PHP snapshot was not published")
-		}
+		close(entered)
+		<-release
+		return platform.Info{}, platform.MTAPostfix
+	}
+	if s.feature("mail") {
+		t.Fatal("mail on before a mail server exists")
+	}
+	now = now.Add(featureTTL + time.Second)
 
-		time.Sleep(featureTTL)
-		<-platformEntered
-		if s.feature("mail") || !s.feature("php") {
-			t.Fatal("page lost the previous snapshot during refresh")
+	refreshed := make(chan bool)
+	go func() { refreshed <- s.feature("mail") }()
+	<-entered
+
+	got := make(chan bool)
+	go func() { got <- s.feature("mail") }()
+	select {
+	case v := <-got:
+		if v {
+			t.Error("stale read returned the value still being detected")
 		}
-		close(platformRelease)
-		synctest.Wait()
-		if !s.feature("mail") || !s.feature("phpShield") {
-			t.Fatal("host snapshot was not refreshed")
-		}
-	})
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second caller waited on the detection in progress")
+	}
+	close(release)
+	if !<-refreshed {
+		t.Error("the refreshing caller did not get the new value")
+	}
+	if !s.feature("mail") {
+		t.Error("the new value was not cached")
+	}
 }

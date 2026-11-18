@@ -8,8 +8,13 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// scanPHPProcesses reads executable names from procfs. Command lines can be
-// large and can mention PHP in arguments to an unrelated executable.
+// scanPHPProcesses reports whether a PHP-FPM or lsphp process runs on this
+// host, including inside containers, and whether one of them sees the PHP
+// Shield script in its own root. It reads executable names, not command lines,
+// which can mention PHP in arguments to an unrelated program.
+//
+// shortcut: Apache mod_php containers have no PHP process of their own and are
+// not found; match the httpd executable if such a deployment shows up.
 func scanPHPProcesses(procRoot, shieldPath string) (running, shielded bool) {
 	proc, err := os.Open(procRoot) // #nosec G304 -- kernel procfs directory in production.
 	if err != nil {
