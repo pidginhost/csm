@@ -356,8 +356,8 @@ Registered when `reputation.upstream.enabled: true`.
   `kill`, `quarantine`, or `block`. Incremented once per finding
   the corresponding `Auto*` helper produces, so a batch blocking
   four IPs in one cycle adds 4 to `action=block`. Useful for
-  detecting response storms. Verified admission blocks also increment this counter,
-  once per engine result, without waiting for alert delivery:
+  detecting response storms. Verified admission blocks also increment this
+  counter, once per engine result, without waiting for alert delivery:
   `rate(csm_auto_response_actions_total[5m])`.
 - `csm_admission_handoff_seconds` (histogram): how long a response
   funnel waits to hand an automatic response to the admission ledger,

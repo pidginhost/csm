@@ -21,8 +21,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Automatic IP blocks keep response counters and challenge escalation totals current when admission executes them.
-- Automatic response settings now explain that admission also limits challenge, central, and incident IP blocks.
 - Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
 - Knot DNS servers no longer raise connection alerts for their own zone transfers.
 

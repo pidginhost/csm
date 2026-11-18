@@ -514,8 +514,8 @@ Reloading these switches takes effect before the next block attempt, including
 later entries in a challenge-timeout batch. Incident block refusals caused by
 these switches keep the incident visible without a failed-block warning.
 Admission applies `auto_response.max_blocks_per_hour` to scan, challenge,
-central, and incident IP blocks. On the legacy path that budget applies to scan-driven
-blocks only.
+central, and incident IP blocks. On the legacy path that budget applies to
+scan-driven blocks only.
 
 Mail login spray blocks use a separate hourly budget of the same size. They
 reserve credit before the firewall attempt. An uncertain result keeps that
@@ -529,8 +529,8 @@ reservation defers spray blocks and reports a warning, without stopping other
 scan blocks.
 
 The same setting also sets the hourly ceiling of the admission ledger, which
-covers every IP block it executes, including challenge, central, and incident blocks. For
-the ledger an omitted or zero value selects 2000 and a value above 20000 is
+covers every IP block it executes, including challenge, central, and incident
+blocks. For the ledger an omitted or zero value selects 2000 and a value above 20000 is
 clamped to 20000; the per-IP limit above keeps reading omitted or zero as 50.
 An explicit value sets both. Packaged configs used to set 50, which keeps the
 ceiling at 50 until the key is removed; `csm doctor` warns about a configured

@@ -393,7 +393,8 @@ auto_response:
   # Shared scan-driven block budget; 0/omitted selects 50.
   # Also sets the admission ledger ceiling: 0/omitted selects 2000, capped at 20000.
   # A value sets both, so leave it out unless the ceiling should be lower too.
-  # The ledger does not govern blocking yet. See Automatic response admission in the API reference.
+  # Outside dry run, with the firewall on, the ledger caps the IP blocks it applies.
+  # See Automatic response admission in the API reference.
   # max_blocks_per_hour: 0
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
   fix_wp_cron: false                    # on perf_wp_cron findings, auto-disable WP-Cron and install a per-user system cron

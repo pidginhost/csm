@@ -9,8 +9,8 @@ import (
 )
 
 // observeBlockBatch counts the engine call once, before outcome persistence
-// can retry. A short reply cannot prove which members applied; unknown outcomes must
-// never advertise a healthy block path.
+// can retry. A short reply cannot prove which members applied; unknown
+// outcomes must never advertise a healthy block path.
 func observeBlockBatch(picks []execPick, run []int, results []firewall.BlockResult, err error) {
 	if err == nil && len(results) != len(run) {
 		err = errors.New("incomplete block batch reply")
