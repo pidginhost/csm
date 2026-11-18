@@ -25,8 +25,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Server Hardening waits for long-running fixes and keeps incomplete PHP changes available for retry on Debian and Ubuntu.
-- LiteSpeed picks up subsequent PHP hardening changes after the first restart request.
 - Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
 - Knot DNS servers no longer raise connection alerts for their own zone transfers.
 - Debian and Ubuntu package upgrades no longer stop to ask whether to replace the CSM configuration file.
