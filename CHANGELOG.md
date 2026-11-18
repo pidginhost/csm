@@ -12,6 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - Webmail logins from a new country are now checked like IMAP and POP3 logins.
+- Mail sent through webmail now carries its login's country, and sends from a country the mailbox never logged in from count as compromise evidence.
 
 ### Added
 

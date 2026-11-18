@@ -118,7 +118,7 @@ func observeMailboxLoginGeo(cfg *config.Config, user, ip string, webmail bool) [
 	// Update country timestamp
 	history.Countries[country] = now
 	if webmail {
-		history.Webmail = &store.WebmailLogin{IP: ip, Country: country, At: at}
+		history.Webmail = &store.WebmailLogin{IP: ip, Country: country, At: at, New: isNewCountry}
 	}
 
 	// Persist updated history

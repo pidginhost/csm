@@ -570,6 +570,8 @@ The finding is `email_compromised_account`. Four signals raise it:
 
 Each bar adapts to the mailbox's own prior maximum with a fixed minimum, so a shared office mailbox or a travelling owner is judged against their own habit rather than a global number. A country listed in `suppressions.trusted_countries` is never treated as new. A mailbox needs established prior activity before a new country counts. A newly seen country remains relevant if unusual sending develops later in the same UTC day. Repeated findings are suppressed during a cooldown, while escalation from High to Critical remains possible.
 
+Webmail hands its mail to Exim over loopback, so a loopback send is placed in the country of the mailbox's webmail login from the last two hours. Without a recent webmail login it has no country.
+
 Recipient fan-out counts distinct envelope recipients of individually addressed messages; bulk announcements do not contribute. Quoted addresses remain single recipients. Records with ambiguous recipient metadata do not contribute recipient evidence, but verified source evidence still counts.
 
 Daily history covers the recent baseline period and expires even for inactive mailboxes. It is cached and saved periodically, before idle eviction and during normal shutdown. An abrupt termination can lose submissions since the last save; a restart always starts a fresh hourly window. Save failures retain pending history for retry. An unreadable baseline pauses profiling for that mailbox until the store can be read again.
@@ -588,7 +590,7 @@ A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, ea
 | A Sieve script or forwarder that redirects all mail to an outside address | 2, and 1 more when it appeared within 30 days of a login from a new country |
 | Reputation deferrals from large providers on the address the mailbox sends from, while it is that address's top sender | 1 |
 
-A login from a new country is also an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins.
+A login from a new country is also an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country.
 
 Each kind of sign counts once, however often it repeats. Signs expire a week after they were last seen.
 

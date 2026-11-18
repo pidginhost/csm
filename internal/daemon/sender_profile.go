@@ -154,21 +154,88 @@ func recentSenderIPs(events []senderEvent, n int) []string {
 // the sender's own history. It returns at most one email_compromised_account
 // finding and never acts on its own; the caller responds to Critical ones.
 func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (findings []alert.Finding) {
+	user, ip, ok := authenticatedSend(line)
+	if !ok {
+		return nil
+	}
+	return senderProfileObserve(cfg, user, ip, eximlog.Recipients(line), now)
+}
+
+// authenticatedSend reads the login and client address of an authenticated
+// Exim arrival.
+func authenticatedSend(line string) (user, ip string, ok bool) {
 	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
-		return nil
+		return "", "", false
 	}
-	user := extractAuthUser(line)
+	user = extractAuthUser(line)
 	if user == "" {
-		return nil
+		return "", "", false
 	}
-	ip := eximlog.ClientIP(line)
+	ip = eximlog.ClientIP(line)
 	if ip == "" {
-		return nil
+		return "", "", false
 	}
 	if parsed := net.ParseIP(ip); parsed != nil {
 		ip = parsed.String()
 	}
-	return senderProfileObserve(cfg, user, ip, eximlog.Recipients(line), now)
+	return user, ip, true
+}
+
+// webmailSendWindow is how long after a webmail login the mailbox's
+// loopback sends are placed in that login's country.
+const webmailSendWindow = 2 * time.Hour
+
+// sendCountry places an authenticated send. Webmail submits over loopback,
+// so a loopback send takes the country of the mailbox's recent webmail
+// login, which it also returns.
+func sendCountry(cfg *config.Config, user, ip string, now time.Time) (string, *store.WebmailLogin) {
+	if ip == "" {
+		return "", nil
+	}
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+		db := store.Global()
+		if db == nil {
+			return "", nil
+		}
+		h, _ := db.GetGeoHistory(user)
+		if h.Webmail == nil || absDuration(now.Sub(h.Webmail.At)) > webmailSendWindow {
+			return "", nil
+		}
+		return h.Webmail.Country, h.Webmail
+	}
+	if isPrivateOrLoopback(ip) || isInfraIPDaemon(ip, cfg.InfraIPs) {
+		return "", nil
+	}
+	return geoLookup(ip).Country, nil
+}
+
+// observeSendCountry records an authenticated send from a country new for
+// the mailbox as compromise evidence. A direct send is judged against the
+// mailbox's login history; a webmail send inherits its login's verdict.
+func observeSendCountry(cfg *config.Config, user, ip string, now time.Time) []alert.Finding {
+	country, webmail := sendCountry(cfg, user, ip, now)
+	if country == "" || countryTrusted(country, cfg.Suppressions.TrustedCountries) {
+		return nil
+	}
+	var detail string
+	if webmail != nil {
+		if !webmail.New {
+			return nil
+		}
+		detail = fmt.Sprintf("webmail send from %s (login from %s)", country, webmail.IP)
+	} else {
+		db := store.Global()
+		if db == nil {
+			return nil
+		}
+		h, _ := db.GetGeoHistory(user)
+		_, known := pruneOldCountries(h.Countries, now.Unix(), geoHistoryMaxAge)[country]
+		if known || h.LoginCount < geoMinLoginCount {
+			return nil
+		}
+		detail = fmt.Sprintf("authenticated send from %s (%s)", country, ip)
+	}
+	return observeMailboxSignal(cfg, user, mailboxSignal{kind: signalNewCountry, key: country, at: now, detail: detail})
 }
 
 // senderProfileObserve judges one authenticated send by user against the
@@ -179,10 +246,7 @@ func senderProfileObserve(cfg *config.Config, user, ip string, recipients []stri
 	if user == "" || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
 		return nil
 	}
-	country := ""
-	if ip != "" && !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
-		country = geoLookup(ip).Country
-	}
+	country, _ := sendCountry(cfg, user, ip, now)
 	db := store.Global()
 
 	// Registered before the unlock defer so owner I/O runs after it.

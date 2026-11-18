@@ -786,6 +786,11 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 		findings = append(findings, f)
 	}
+	// Sent from a country the mailbox never logged in from. Evaluated
+	// outside the profile, whose volume exemption does not apply.
+	if user, ip, ok := authenticatedSend(line); ok {
+		findings = append(findings, observeSendCountry(cfg, user, ip, time.Now())...)
+	}
 
 	if eng := PHPRelayEvaluator(); eng != nil {
 		findings = append(findings, eng.parsePHPRelayAccountVolume(line, time.Now())...)

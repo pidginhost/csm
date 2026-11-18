@@ -21,6 +21,8 @@ type WebmailLogin struct {
 	IP      string    `json:"ip"`
 	Country string    `json:"country"`
 	At      time.Time `json:"at"`
+	// New marks a login from a country new for the mailbox.
+	New bool `json:"new,omitempty"`
 }
 
 // SetGeoHistory stores geo login history for a mailbox in the email:geo bucket.
