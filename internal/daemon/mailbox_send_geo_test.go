@@ -133,3 +133,22 @@ func TestSMTPSendNeedsLoginHistory(t *testing.T) {
 		t.Fatalf("unlearned mailbox reported %+v", s)
 	}
 }
+
+// Each sign is reported once in the daily summary.
+func TestSMTPSendFromNewCountryIsReportedOnce(t *testing.T) {
+	_, _ = evidenceCase(t)
+	resetSenderProfileState()
+	resetBulkRecipientState()
+	withGeoCountries(t, map[string]string{"192.0.2.9": "BR"})
+	cfg := eximAutoHoldConfig()
+	homeHistory(t, store.Global(), "real@victim.example", nil)
+
+	got := findingsOf(parseEximLogLine(senderSendLine("real@victim.example", "192.0.2.9", "a@friend.example"), cfg), "email_suspicious_geo")
+	if len(got) != 1 || got[0].SourceIP != "192.0.2.9" || got[0].Mailbox != "real@victim.example" || got[0].TenantID != "cpuser" ||
+		!strings.Contains(got[0].Message, "authenticated send from BR") {
+		t.Fatalf("geo findings = %+v", got)
+	}
+	if again := findingsOf(parseEximLogLine(senderSendLine("real@victim.example", "192.0.2.9", "b@friend.example"), cfg), "email_suspicious_geo"); len(again) != 0 {
+		t.Fatalf("second send reported again: %+v", again)
+	}
+}

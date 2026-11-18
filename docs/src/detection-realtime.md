@@ -590,7 +590,7 @@ A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, ea
 | A Sieve script or forwarder that redirects all mail to an outside address | 2, and 1 more when it appeared within 30 days of a login from a new country |
 | Reputation deferrals from large providers on the address the mailbox sends from, while it is that address's top sender | 1 |
 
-A login from a new country is also an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country.
+A login from a new country is also an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
 
 A mailing is an `email_bulk_recipients` finding the first time the ledger records it. Mailboxes in `email_protection.high_volume_senders` send mailings by design and are not judged by it.
 

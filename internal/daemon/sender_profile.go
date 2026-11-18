@@ -235,7 +235,21 @@ func observeSendCountry(cfg *config.Config, user, ip string, now time.Time) []al
 		}
 		detail = fmt.Sprintf("authenticated send from %s (%s)", country, ip)
 	}
-	return observeMailboxSignal(cfg, user, mailboxSignal{kind: signalNewCountry, key: country, at: now, detail: detail})
+	mailbox, domain, _ := splitMailAccount(user)
+	summary := []alert.Finding{{
+		Severity:  alert.High,
+		Check:     "email_suspicious_geo",
+		Message:   fmt.Sprintf("Suspicious email for %s: %s", user, detail),
+		SourceIP:  ip,
+		Mailbox:   mailbox,
+		Domain:    domain,
+		Timestamp: now,
+	}}
+	if webmail != nil {
+		summary[0].SourceIP = webmail.IP
+	}
+	stampMailAccountOwner(summary, user)
+	return observeMailboxSignal(cfg, user, mailboxSignal{kind: signalNewCountry, key: country, at: now, detail: detail, summary: summary[0]})
 }
 
 // senderProfileObserve judges one authenticated send by user against the
