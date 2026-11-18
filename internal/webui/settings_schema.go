@@ -239,7 +239,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "log_dir", Type: "string", Label: "Log directory", Placeholder: "/var/log/stalwart", Help: "Where Stalwart writes its daily log files.", FileOnly: true},
 			{YAMLPath: "log_prefix", Type: "string", Label: "Log file prefix", Placeholder: "stalwart.log", Help: "Name of the daily log files before the date suffix."},
 			{YAMLPath: "ports", Type: "[]string", Label: "Listener ports", Help: "Listener ports CSM cannot map by default, as PORT:PROTOCOL with protocol smtp, imap, pop3, sieve or http. One per line (e.g. 10465:smtp)."},
-			{YAMLPath: "api_url", Type: "string", Label: "Admin API address", Placeholder: "http://127.0.0.1:8080", Help: "Where csm stalwart setup reaches Stalwart's admin API. The login comes from the environment, never from this file.", FileOnly: true},
+			{YAMLPath: "api_url", Type: "string", Label: "Admin API address", Placeholder: "http://127.0.0.1:8080", Help: "Where csm stalwart setup reaches Stalwart's admin API. Setup asks for the login on stdin; it is never read from this file.", FileOnly: true},
 			{YAMLPath: "api_key_file", Type: "string", Label: "API key file", Placeholder: "/etc/csm/stalwart-api.key", Help: "File holding the API key CSM acts on Stalwart with. It must be a regular file owned by root with no group or other access.", FileOnly: true},
 		},
 	},
