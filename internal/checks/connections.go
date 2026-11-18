@@ -34,6 +34,21 @@ var safeUsers = map[string]bool{
 	"mailman":              true,
 }
 
+// ntsKEPort is the Network Time Security key-establishment port (RFC 8915).
+const ntsKEPort = 4460
+
+// safeUserPorts admits one destination port per system service account,
+// narrower than safeUsers: the account stays reported on every other port.
+// Ubuntu's default chrony.conf uses NTS pools (ntp.ubuntu.com), so every
+// chronyd restart (package upgrade, reboot) opened a TCP connection to
+// 4460 that was reported as a compromised account phoning home.
+var safeUserPorts = map[string]map[uint16]bool{
+	"knot":    {853: true},       // Knot DNS zone transfers over TLS
+	"_chrony": {ntsKEPort: true}, // Debian, Ubuntu
+	"chrony":  {ntsKEPort: true}, // RHEL family
+	"ntpsec":  {ntsKEPort: true}, // ntpsec on Debian, Ubuntu
+}
+
 var serverLocalPorts = map[uint16]bool{
 	21: true, 25: true, 26: true, 53: true, 80: true, 110: true,
 	143: true, 443: true, 465: true, 587: true, 993: true, 995: true,
@@ -79,8 +94,10 @@ func EvaluateConnection(
 	if isInfraIP(dstIP.String(), cfg.InfraIPs) {
 		return alert.Finding{}, false
 	}
-	// Knot uses DNS over TLS for zone transfers.
-	if safeUsers[user] || (user == "knot" && dstPort == 853) {
+	if safeUsers[user] {
+		return alert.Finding{}, false
+	}
+	if safeUserPorts[user][dstPort] {
 		return alert.Finding{}, false
 	}
 
