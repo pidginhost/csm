@@ -105,7 +105,7 @@ func mergeFirewallBucketsFromSnapshot(snapshotPath, statePath string) ([]string,
 			return fmt.Errorf("creating target directory: %w", mkdirErr)
 		}
 		target := filepath.Join(statePath, "csm.db")
-		if verifyErr := verifyDatabase(target); verifyErr != nil {
+		if verifyErr := VerifyDatabase(target); verifyErr != nil {
 			return fmt.Errorf("target database: %w", verifyErr)
 		}
 		// bbolt otherwise commits during Open if the file has no persisted

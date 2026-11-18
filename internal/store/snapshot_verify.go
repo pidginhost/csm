@@ -57,10 +57,10 @@ func verifyStoppedDatabase(path string, allowLeakedPages bool) error {
 
 var errLeakedPages = errors.New("snapshot has unreachable unfreed pages")
 
-// verifyDatabase checks a stopped live database as verifySnapshot checks a
+// VerifyDatabase checks a stopped live database as verifySnapshot checks a
 // snapshot, but accepts leaked pages: they waste space, and bbolt reads and
 // writes around them. A missing file is a new database.
-func verifyDatabase(path string) error {
+func VerifyDatabase(path string) error {
 	err := verifyStoppedDatabase(path, true)
 	if os.IsNotExist(err) {
 		// A dangling link is an existing target. A writable bbolt open
