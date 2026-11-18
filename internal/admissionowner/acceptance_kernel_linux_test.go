@@ -25,6 +25,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
@@ -137,6 +138,9 @@ type kernelEngine struct {
 	*firewall.Engine
 	mu    sync.Mutex
 	calls map[string]int
+	// killApply stops the next batch once the kernel holds it, as a
+	// process killed inside the engine would stop.
+	killApply bool
 }
 
 func (k *kernelEngine) count(name string) {
@@ -168,7 +172,15 @@ func (k *kernelEngine) BlockAdmissionSnapshot(m []firewall.BlockMember, shadow [
 
 func (k *kernelEngine) ApplyBlockBatch(m []firewall.BlockMember) ([]firewall.BlockResult, error) {
 	k.count("ApplyBlockBatch")
-	return k.Engine.ApplyBlockBatch(m)
+	r, err := k.Engine.ApplyBlockBatch(m)
+	k.mu.Lock()
+	kill := k.killApply
+	k.killApply = false
+	k.mu.Unlock()
+	if kill {
+		panic(killPoint{})
+	}
+	return r, err
 }
 
 func (k *kernelEngine) LeaseNow() time.Time {
@@ -403,4 +415,142 @@ func TestKernelDryRunLeavesTheFirewallUnchanged(t *testing.T) {
 		t.Errorf("a dry run charged %d live units", used)
 	}
 	sameFirewall(t, before, after)
+}
+
+// blockedElements counts the elements of the namespace's blocked sets of
+// both families.
+func blockedElements(t *testing.T, dir string) int {
+	t.Helper()
+	v := readFirewall(t, dir)
+	n := 0
+	for name, els := range v.elements {
+		if strings.HasSuffix(name, "/blocked_ips") || strings.HasSuffix(name, "/blocked_ips6") {
+			n += len(els)
+		}
+	}
+	return n
+}
+
+// An owner that executes on a real engine and ledger starts live at its
+// first turn and applies block picks of both families. Killed inside the
+// engine once the kernel holds a batch, it restarts on the same ledger
+// without a second live start: the batch's members are unknown outcomes
+// that hold their addresses, nothing is sent to the engine again, and once
+// their lifetime has passed the kernel has dropped them and they retire.
+func TestKernelLiveOwnerConvergesAfterAKillInsideTheEngine(t *testing.T) {
+	ns := kernelNamespace(t)
+	dir := t.TempDir()
+	e, err := firewall.NewEngine(&firewall.FirewallConfig{Enabled: true, IPv6: true}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	engine := &kernelEngine{Engine: e, calls: map[string]int{}}
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	f.host.set(func(h *fakeHost) { h.wall = time.Now() })
+	const lifetime = 5 * time.Second
+	policy := validPolicy(1)
+	policy.Expiry = func(admission.Candidate) time.Duration { return lifetime }
+	policy.BlockExpiry = lifetime
+	opts := previewOptions(f)
+	opts.Expiry = policy.Expiry
+	opts.BlockExpiry = func() time.Duration { return lifetime }
+	opts.Blocks = func() BlockEngine { return engine }
+	opts.Policy = func() ExecutionPolicy { return policy }
+	starts := 0
+	swapStartLive(t, func(l *store.AdmissionLedger, h admission.LegacyHandover) error {
+		starts++
+		return l.StartLive(h)
+	})
+	o := f.start(opts)
+	enterNamespace(t, o, ns)
+	mono := heldMono(t, o)
+	if !liveStarted(t, o) || starts != 1 {
+		t.Fatalf("live start ran %d times, started %t", starts, liveStarted(t, o))
+	}
+	first := observe(t, o, p, f, "192.0.2.10", "offset=1")
+	turn(t, o)
+	if c := candidate(t, o, first); c.State != admission.StateVerified {
+		t.Fatalf("live pick on the real engine = %+v", c)
+	}
+	if n := blockedElements(t, dir); n != 1 {
+		t.Fatalf("the kernel holds %d blocked elements, want the verified one", n)
+	}
+
+	var killed []admission.CandidateID
+	for _, addr := range []string{"192.0.2.20", "2001:db8::20"} {
+		killed = append(killed, observe(t, o, p, f, addr, "offset=2"))
+	}
+	mono.advance(batchEvery)
+	engine.mu.Lock()
+	engine.killApply = true
+	engine.mu.Unlock()
+	crash(t, o, o.turn)
+	if n := blockedElements(t, dir); n != 3 {
+		t.Fatalf("the kernel holds %d blocked elements after the kill, want 3", n)
+	}
+	applied := engine.counted()["ApplyBlockBatch"]
+
+	o = f.start(opts)
+	enterNamespace(t, o, ns)
+	mono = heldMono(t, o)
+	if starts != 1 {
+		t.Fatalf("the restart ran the live start again: %d starts", starts)
+	}
+	for _, id := range killed {
+		c := candidate(t, o, id)
+		if a := attemptOf(t, o, c); c.State != admission.StateUnknown || a.State != admission.StateUnknown || a.Retired {
+			t.Fatalf("killed pick after the restart = %+v, attempt %+v", c, a)
+		}
+	}
+	submitObservation(t, o, p, "192.0.2.20", "offset=3", f.host.now())
+	if err := o.do(o.drain); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range queuedCandidates(t, o) {
+		if c.Key.Target.Key() == "ip:192.0.2.20" {
+			t.Fatalf("a held address was queued again: %+v", c)
+		}
+	}
+	mono.advance(batchEvery)
+	turn(t, o)
+	if n := engine.counted()["ApplyBlockBatch"]; n != applied {
+		t.Fatalf("the restart sent %d batches to the engine", n-applied)
+	}
+
+	// The kernel drops an element once its timeout passes; an unknown
+	// attempt the engine still finds is asked about again a minute later.
+	time.Sleep(lifetime)
+	f.host.advance(lifetime)
+	retired := func() bool {
+		for _, id := range killed {
+			if a := attemptOf(t, o, candidate(t, o, id)); !a.Retired {
+				return false
+			}
+		}
+		return true
+	}
+	for i := 0; i < 10 && !retired(); i++ {
+		time.Sleep(time.Second)
+		f.host.advance(time.Second)
+		mono.advance(2 * retireRecheck)
+		if err := o.do(o.deliverAudit); err != nil {
+			t.Fatal(err)
+		}
+		if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range killed {
+		c := candidate(t, o, id)
+		if a := attemptOf(t, o, c); !a.Retired {
+			t.Fatalf("killed pick past its lifetime = %+v, attempt %+v; retirement error %q", c, a, o.status().Owner.RetirementError)
+		}
+	}
+	if n := blockedElements(t, dir); n != 0 {
+		t.Fatalf("the kernel still holds %d blocked elements past their lifetime", n)
+	}
 }
