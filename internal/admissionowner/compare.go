@@ -47,7 +47,7 @@ type comparison struct {
 	// discardedThrough keeps late rows from restoring partial hours after
 	// retention discarded them, even when acknowledgement makes room.
 	discardedThrough time.Time
-	// epoch is the ingress generation of this run, stamped on every row
+	// epoch is this run's first ingress generation, stamped on every row
 	// written; zero until the ingress begins.
 	epoch uint64
 }
@@ -174,11 +174,14 @@ func (c *comparison) retain() {
 	}
 }
 
-// setEpoch names the run the rows written from now on belong to.
+// setEpoch keeps the first ingress generation: startup retries can advance
+// the generation after summaries from this run have already been written.
 func (c *comparison) setEpoch(epoch uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.epoch = epoch
+	if c.epoch == 0 {
+		c.epoch = epoch
+	}
 }
 
 // droppedRows is how many rows retention discarded unwritten.

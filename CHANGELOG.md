@@ -34,7 +34,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - After a firewall rollback, temporary blocks end at the time shown instead of staying blocked for as long again as the confirmation window was open.
 - `csm doctor` on Stalwart hosts no longer warns about Stalwart delivery, DKIM and reverse DNS log lines CSM reads correctly.
 - Package upgrades and `csm verify` no longer fail when callback secrets are set only in the service environment.
-- Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
+- Admission dry-run status treats only lost records as incomplete, and summary run identities stay stable across startup retries.
 
 ## [4.13.0] - 2026-11-15
 

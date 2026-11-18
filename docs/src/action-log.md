@@ -170,9 +170,11 @@ of what live admission would have done: `capacity_admit`, `existing_actual`,
 `forecast_limited`, `not_modelled`, `capacity_evict`, `capacity_rotate` or
 `equal_tier_wait`. A prediction is not a refusal reason. A clean stop writes
 the open hour early, so summaries for the same hour add up; a crash loses the
-open hour, so the counts are lower bounds. Each summary also sets `epoch`, the
-daemon run that counted it: a number that rises at every start of the owner,
-so summaries of two runs never share one.
+open hour, so the counts are lower bounds. Once startup opens an ingress
+generation, each summary also sets `epoch`, the run's first generation.
+It stays fixed across startup retries and rises for each new owner using
+the same ledger. Summaries written before any generation opens omit
+`epoch`; these rows cannot identify a run.
 
 Refused previews and submissions displaced from the memory queue count as
 `refused` with their reason, including every report merged into a displaced

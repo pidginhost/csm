@@ -169,7 +169,8 @@ scrubbed:
   matches a learned account, host or domain refuses the run. An attribution
   cause belongs only on a refusal summary; action inspection rows carrying
   one refuse the run. An `epoch` belongs only on a summary; any other row
-  carrying one refuses the run.
+  carrying one refuses the run. Older summaries and summaries written before
+  startup opens an ingress generation have no `epoch` and cannot identify a run.
 - An operation, action, actor, result or source the tool has not been
   reviewed against refuses the run instead of passing through.
 
