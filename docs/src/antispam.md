@@ -1116,24 +1116,30 @@ CSM keeps its address list in Stalwart's lookup lists, where the rule
 `CSM_IP` reads it. The list holds the same addresses as the
 [CSM IP map](#csm-ip-map), from the same sources and with the same
 exceptions. CSM checks it at start and every 10 minutes, writes only what
-changed, and then has Stalwart load it.
+changed, and then has Stalwart load it. If loading fails twice, CSM keeps
+retrying on later checks, even when no keys need changing.
 
 The lookup namespaces whose names start with `csm-ip` belong to CSM. CSM
 deletes any key there that it did not add, so edits made there in Stalwart
 are undone within 10 minutes. To stop the scoring, switch the rule `CSM_IP`
-off in Stalwart: CSM then empties these namespaces, and fills them again
-once the rule is back on. In observe mode CSM reads Stalwart but writes
-nothing, so the namespaces keep what they hold, even with the rule off.
+off in Stalwart: CSM then empties these namespaces. A missing rule or a
+rule whose type is not `Any` also empties them. CSM fills them again once
+the rule exists, has type `Any`, and is enabled. In observe mode CSM reads
+Stalwart but writes nothing, so the namespaces keep what they hold, even
+with the rule off. An unfinished reload keeps its warning in observe mode.
 
 `stalwart_spam_filter_off` warns while Stalwart's spam filter is off, since
-Stalwart then scores no mail. `stalwart_address_list` warns when CSM cannot
-read the rule or write the list. When Stalwart refuses CSM's key, its
-message says to run `csm stalwart setup`. Both clear once the cause is
-fixed.
+Stalwart then scores no mail. A failed filter read leaves an existing
+warning in place until CSM can confirm the filter is on.
+`stalwart_address_list` warns when CSM cannot inspect or read its key file,
+read the rule or list, write the list, or have Stalwart load it. When
+Stalwart refuses CSM's key, its message says to run `csm stalwart setup`.
+These warnings clear once recovery is confirmed.
 
 CSM's key needs more access to keep the list, so run `csm stalwart setup`
 again after upgrading. Without a key file CSM writes nothing to Stalwart and
-raises neither finding; setup and `csm doctor` report the missing key.
+raises neither finding; setup and `csm doctor` report the missing key. An
+unreadable key file instead raises `stalwart_address_list`.
 
 ### Not done on Stalwart
 
@@ -1600,7 +1606,7 @@ that failed in its last pass, until a later pass reads it.
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 | `antispam_learning` | Warning | One finding per learning readiness or removal problem. Core filtering is unaffected. See [Learning findings](#learning-findings). |
 | `stalwart_spam_filter_off` | Warning | Stalwart's spam filter is off, so Stalwart scores no mail. See [CSM's address list on Stalwart](#csms-address-list-on-stalwart). |
-| `stalwart_address_list` | Warning | CSM could not read its rule in Stalwart or write its address list there. Run `csm stalwart setup` when the message says so. See [CSM's address list on Stalwart](#csms-address-list-on-stalwart). |
+| `stalwart_address_list` | Warning | CSM could not inspect or read its key file, read its rule or list, update the list, or have Stalwart load it. Run `csm stalwart setup` when the message says so. See [CSM's address list on Stalwart](#csms-address-list-on-stalwart). |
 | `spam_evidence_evicted` | Warning | The spam evidence budget was reached and CSM dropped the weakest records. The message names the most crowded network and how many records it held. See [Spam evidence budget](#spam-evidence-budget). |
 
 While rspamd is down or scans fail on a cPanel host, mail is delivered

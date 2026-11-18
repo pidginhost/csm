@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -22,15 +24,14 @@ const (
 	stalwartListTickLimit    = 5 * time.Minute
 )
 
-// stalwartListState is what the last address list tick learned. ruleOff and
-// filterOff are true only when Stalwart said so.
+// stalwartListState retains confirmed filter state and unfinished reloads between ticks.
 type stalwartListState struct {
 	m                  *ipmap.Map
 	filterOff, ruleOff bool
+	reloadPending      bool
 }
 
-// startStalwartAddressList keeps CSM's address list in Stalwart's lookup
-// lists, at start and every 10 minutes.
+// startStalwartAddressList syncs at start and every 10 minutes.
 func (d *Daemon) startStalwartAddressList() {
 	ctx := d.scanContext()
 	d.wg.Add(1)
@@ -51,55 +52,20 @@ func (d *Daemon) startStalwartAddressList() {
 	})
 }
 
-// stalwartListTick builds the list, records what Stalwart says about its
-// filter and rule, syncs the keys and settles both findings.
+// stalwartListTick syncs the address list and settles its findings.
 func (d *Daemon) stalwartListTick(ctx context.Context, now time.Time) []alert.Finding {
 	cfg := d.currentCfg()
 	m := ipmap.Build(ipmapSources(now, d.antispamInfraIPs(cfg)))
-	// Store the map before reading Stalwart so a hung read leaves evidence guarded.
-	d.storeStalwartList(&stalwartListState{m: &m})
-	st := &stalwartListState{m: &m}
-	api, findings := stalwartListRead(ctx, cfg, st, now)
-	d.storeStalwartList(st)
-	// Observe mode reads but leaves Stalwart's lookup lists as they are.
-	if api != nil && !cfg.ObserveMode() {
-		want := m.StalwartKeys()
-		if st.ruleOff {
-			want = nil
-		}
-		if _, err := syncStalwartKeys(ctx, api, want); err != nil {
-			findings = append(findings, stalwartListFinding(err, now))
-		}
-	}
-	// A timed-out tick still reports; only shutdown leaves findings as they are.
-	if !errors.Is(ctx.Err(), context.Canceled) {
-		owned := []string{stalwartCheckAddressList, stalwartCheckFilterOff}
-		d.store.RearmAbsentDedupFindings(owned, findings)
-		d.processScanFindings(cfg, findings, owned, "stalwart")
-	}
-	return findings
-}
-
-func (d *Daemon) storeStalwartList(st *stalwartListState) {
+	st := stalwartListState{m: &m}
 	if s := d.stalwart; s != nil {
-		s.list.Store(st)
+		if previous := s.list.Load(); previous != nil {
+			st.filterOff, st.reloadPending = previous.filterOff, previous.reloadPending
+		}
 	}
-}
-
-// stalwartListRead fills st from Stalwart. It returns the client only when
-// the rule was read, so the keys can be synced.
-func stalwartListRead(ctx context.Context, cfg *config.Config, st *stalwartListState, now time.Time) (stalwartAPI, []alert.Finding) {
-	// Without a key, setup and doctor report what is missing.
-	if !stalwartKeyPresent(cfg) {
-		return nil, nil
-	}
-	api, err := stalwartClient(cfg)
-	if err != nil {
-		return nil, []alert.Finding{stalwartListFinding(err, now)}
-	}
-	var findings []alert.Finding
-	if stalwartFilterOff(ctx, api) {
-		st.filterOff = true
+	// Store the map before reading Stalwart so a hung read leaves evidence guarded.
+	d.storeStalwartList(st)
+	api, findings, filterKnown := stalwartListRead(ctx, cfg, &st, now)
+	if filterKnown && st.filterOff {
 		findings = append(findings, alert.Finding{
 			Severity: alert.Warning, Check: stalwartCheckFilterOff, DedupKey: "filter_off",
 			Message:   "Stalwart's spam filter is off",
@@ -107,22 +73,85 @@ func stalwartListRead(ctx context.Context, cfg *config.Config, st *stalwartListS
 			Timestamp: now,
 		})
 	}
-	rule, found, err := api.SpamRule(ctx, stalwartsetup.AddressListRule)
-	if err != nil {
-		return nil, append(findings, stalwartListFinding(err, now))
+	d.storeStalwartList(st)
+	// Observe mode reads but leaves Stalwart's lookup lists as they are.
+	if api != nil && !cfg.ObserveMode() {
+		want := m.StalwartKeys()
+		if st.ruleOff {
+			want = nil
+		}
+		var err error
+		st.reloadPending, err = syncStalwartKeys(ctx, api, want, st.reloadPending)
+		if err != nil {
+			findings = append(findings, stalwartListFinding(err, now))
+		}
+		d.storeStalwartList(st)
 	}
-	st.ruleOff = !found || rule.Type != "Any" || !rule.Enabled
-	return api, findings
+	// A timed-out tick still reports; only shutdown leaves findings as they are.
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		var owned []string
+		// Observe mode cannot confirm recovery from a failed reload.
+		if api == nil || !cfg.ObserveMode() || !st.reloadPending {
+			owned = append(owned, stalwartCheckAddressList)
+		}
+		if filterKnown {
+			owned = append(owned, stalwartCheckFilterOff)
+		}
+		d.store.RearmAbsentDedupFindings(owned, findings)
+		d.processScanFindings(cfg, findings, owned, "stalwart")
+	}
+	return findings
 }
 
-// stalwartFilterOff reports whether Stalwart says its spam filter is off. A
-// setting it cannot read leaves the filter not known off.
-func stalwartFilterOff(ctx context.Context, api stalwartAPI) bool {
-	if s, err := api.SpamSettings(ctx); err == nil && !s.Enabled {
-		return true
+func (d *Daemon) storeStalwartList(st stalwartListState) {
+	if s := d.stalwart; s != nil {
+		s.list.Store(&st)
 	}
-	off, err := api.SpamFilterStageOff(ctx)
-	return err == nil && off
+}
+
+// stalwartListRead returns the client only after reading the rule permits a sync.
+func stalwartListRead(ctx context.Context, cfg *config.Config, st *stalwartListState, now time.Time) (stalwartAPI, []alert.Finding, bool) {
+	// Without a key, setup and doctor report what is missing.
+	if _, err := os.Lstat(cfg.Stalwart.APIKeyFile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			st.filterOff = false
+			return nil, nil, true
+		}
+		return nil, []alert.Finding{stalwartListFinding(err, now)}, false
+	}
+	api, err := stalwartClient(cfg)
+	if err != nil {
+		return nil, []alert.Finding{stalwartListFinding(err, now)}, false
+	}
+	off, known := stalwartFilterOff(ctx, api)
+	if known {
+		st.filterOff = off
+	}
+	readCtx, cancel := context.WithTimeout(ctx, stalwartCallTimeout)
+	rule, found, err := api.SpamRule(readCtx, stalwartsetup.AddressListRule)
+	cancel()
+	if err != nil {
+		return nil, []alert.Finding{stalwartListFinding(err, now)}, known
+	}
+	st.ruleOff = !found || rule.Type != "Any" || !rule.Enabled
+	return api, nil, known
+}
+
+// Either switch proves the filter off; both must be readable to prove it on.
+func stalwartFilterOff(ctx context.Context, api stalwartAPI) (off, known bool) {
+	readCtx, cancel := context.WithTimeout(ctx, stalwartCallTimeout)
+	s, settingsErr := api.SpamSettings(readCtx)
+	cancel()
+	if settingsErr == nil && !s.Enabled {
+		return true, true
+	}
+	readCtx, cancel = context.WithTimeout(ctx, stalwartCallTimeout)
+	off, stageErr := api.SpamFilterStageOff(readCtx)
+	cancel()
+	if stageErr == nil && off {
+		return true, true
+	}
+	return false, settingsErr == nil && stageErr == nil
 }
 
 func stalwartListFinding(err error, now time.Time) alert.Finding {
@@ -130,20 +159,30 @@ func stalwartListFinding(err error, now time.Time) alert.Finding {
 	if errors.Is(err, stalwartapi.ErrForbidden) || stalwartMethodForbidden(err) {
 		msg = "Stalwart refused CSM's key access to the address list; run csm stalwart setup"
 	}
+	// Bound server text before persisting it or sending it to alert sinks.
+	details := strings.ToValidUTF8(truncateStr(err.Error(), 1024), "")
+	details = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, details)
 	return alert.Finding{
 		Severity: alert.Warning, Check: stalwartCheckAddressList, DedupKey: "address_list",
-		Message: msg, Details: err.Error(), Timestamp: now,
+		Message: msg, Details: details, Timestamp: now,
 	}
 }
 
-// syncStalwartKeys makes each CSM namespace hold exactly want's keys. CSM
-// owns these namespaces, so any other key, a duplicate, or a glob flag that
-// disagrees with the key text is deleted.
-func syncStalwartKeys(ctx context.Context, api stalwartAPI, want map[string][]string) (changed bool, err error) {
+// syncStalwartKeys owns each namespace and returns whether a reload still needs retrying.
+func syncStalwartKeys(ctx context.Context, api stalwartAPI, want map[string][]string, reloadPending bool) (pending bool, err error) {
+	changed := false
 	added, removed := 0, 0
 	for _, ns := range ipmap.StalwartNamespaces() {
 		var have []stalwartapi.LookupKey
-		if have, err = api.LookupKeys(ctx, ns); err != nil {
+		callCtx, cancel := context.WithTimeout(ctx, stalwartCallTimeout)
+		have, err = api.LookupKeys(callCtx, ns)
+		cancel()
+		if err != nil {
 			break
 		}
 		wanted := make(map[string]bool, len(want[ns]))
@@ -167,20 +206,26 @@ func syncStalwartKeys(ctx context.Context, api stalwartAPI, want map[string][]st
 		// A failed write may have applied in part, so it counts as a change.
 		if len(stale) > 0 {
 			changed = true
-			if err = api.DeleteLookupKeys(ctx, stale); err != nil {
+			callCtx, cancel := context.WithTimeout(ctx, stalwartCallTimeout)
+			err = api.DeleteLookupKeys(callCtx, stale)
+			cancel()
+			if err != nil {
 				break
 			}
 			removed += len(stale)
 		}
 		if len(missing) > 0 {
 			changed = true
-			if err = api.CreateLookupKeys(ctx, ns, missing); err != nil {
+			callCtx, cancel := context.WithTimeout(ctx, stalwartCallTimeout)
+			err = api.CreateLookupKeys(callCtx, ns, missing)
+			cancel()
+			if err != nil {
 				break
 			}
 			added += len(missing)
 		}
 	}
-	if !changed {
+	if !changed && !reloadPending {
 		return false, err
 	}
 	if added+removed > 0 {
@@ -193,7 +238,7 @@ func syncStalwartKeys(ctx context.Context, api stalwartAPI, want map[string][]st
 		reloadErr = api.ReloadLookupStores(reloadCtx)
 		cancel()
 		if reloadErr == nil {
-			return true, err
+			return false, err
 		}
 	}
 	return true, errors.Join(err, fmt.Errorf("reloading Stalwart's lookup lists: %w", reloadErr))

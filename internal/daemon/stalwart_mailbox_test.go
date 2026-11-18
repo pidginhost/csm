@@ -60,10 +60,17 @@ type fakeStalwart struct {
 	// The address list: spamOff and stageOff switch the filter off, rule is
 	// the CSM rule or nil when missing, and keys holds each namespace.
 	// keyCreates, keyDeletes and lookupReloads record the writes.
-	spamOff, stageOff bool
-	rule              *stalwartapi.SpamRule
-	keys              map[string][]stalwartapi.LookupKey
-	keysErr, ruleErr  error
+	spamOff, stageOff   bool
+	rule                *stalwartapi.SpamRule
+	keys                map[string][]stalwartapi.LookupKey
+	keysErr, ruleErr    error
+	spamErr, stageErr   error
+	keyDeleteErr        error
+	lookupReloadErrors  []error
+	listCalls           []string
+	reloadContextErrors []error
+	reloadTimeouts      []time.Duration
+	onKeyCreate         func()
 	// filterHold, when set, keeps SpamSettings waiting until it is closed;
 	// filterHeld is signalled as the read starts.
 	filterHold, filterHeld chan struct{}
@@ -74,25 +81,31 @@ type fakeStalwart struct {
 	nextKeyID              int
 }
 
-func (f *fakeStalwart) SpamSettings(context.Context) (stalwartapi.SpamSettings, error) {
+func (f *fakeStalwart) SpamSettings(ctx context.Context) (stalwartapi.SpamSettings, error) {
 	if f.filterHeld != nil {
 		f.filterHeld <- struct{}{}
 		<-f.filterHold
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return stalwartapi.SpamSettings{Enabled: !f.spamOff}, nil
+	f.bound(ctx)
+	f.listCalls = append(f.listCalls, "settings")
+	return stalwartapi.SpamSettings{Enabled: !f.spamOff}, f.spamErr
 }
 
-func (f *fakeStalwart) SpamFilterStageOff(context.Context) (bool, error) {
+func (f *fakeStalwart) SpamFilterStageOff(ctx context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.stageOff, nil
+	f.bound(ctx)
+	f.listCalls = append(f.listCalls, "stage")
+	return f.stageOff, f.stageErr
 }
 
-func (f *fakeStalwart) SpamRule(_ context.Context, name string) (stalwartapi.SpamRule, bool, error) {
+func (f *fakeStalwart) SpamRule(ctx context.Context, name string) (stalwartapi.SpamRule, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.bound(ctx)
+	f.listCalls = append(f.listCalls, "rule")
 	if f.ruleErr != nil {
 		return stalwartapi.SpamRule{}, false, f.ruleErr
 	}
@@ -102,18 +115,25 @@ func (f *fakeStalwart) SpamRule(_ context.Context, name string) (stalwartapi.Spa
 	return *f.rule, true, nil
 }
 
-func (f *fakeStalwart) LookupKeys(_ context.Context, ns string) ([]stalwartapi.LookupKey, error) {
+func (f *fakeStalwart) LookupKeys(ctx context.Context, ns string) ([]stalwartapi.LookupKey, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.bound(ctx)
+	f.listCalls = append(f.listCalls, "keys:"+ns)
 	if f.keysErr != nil {
 		return nil, f.keysErr
 	}
 	return append([]stalwartapi.LookupKey(nil), f.keys[ns]...), nil
 }
 
-func (f *fakeStalwart) CreateLookupKeys(_ context.Context, ns string, keys []string) error {
+func (f *fakeStalwart) CreateLookupKeys(ctx context.Context, ns string, keys []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.bound(ctx)
+	f.listCalls = append(f.listCalls, "create:"+ns)
+	if f.onKeyCreate != nil {
+		f.onKeyCreate()
+	}
 	if f.createErr != nil {
 		return f.createErr
 	}
@@ -131,9 +151,14 @@ func (f *fakeStalwart) CreateLookupKeys(_ context.Context, ns string, keys []str
 	return nil
 }
 
-func (f *fakeStalwart) DeleteLookupKeys(_ context.Context, ids []string) error {
+func (f *fakeStalwart) DeleteLookupKeys(ctx context.Context, ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.bound(ctx)
+	f.listCalls = append(f.listCalls, "delete")
+	if f.keyDeleteErr != nil {
+		return f.keyDeleteErr
+	}
 	f.keyDeletes = append(f.keyDeletes, ids...)
 	for ns, keys := range f.keys {
 		f.keys[ns] = slices.DeleteFunc(keys, func(k stalwartapi.LookupKey) bool { return slices.Contains(ids, k.ID) })
@@ -141,10 +166,19 @@ func (f *fakeStalwart) DeleteLookupKeys(_ context.Context, ids []string) error {
 	return nil
 }
 
-func (f *fakeStalwart) ReloadLookupStores(context.Context) error {
+func (f *fakeStalwart) ReloadLookupStores(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.listCalls = append(f.listCalls, "reload")
+	f.reloadContextErrors = append(f.reloadContextErrors, ctx.Err())
+	deadline, _ := ctx.Deadline()
+	f.reloadTimeouts = append(f.reloadTimeouts, time.Until(deadline))
 	f.lookupReloads++
+	if len(f.lookupReloadErrors) > 0 {
+		err := f.lookupReloadErrors[0]
+		f.lookupReloadErrors = f.lookupReloadErrors[1:]
+		return err
+	}
 	return nil
 }
 
