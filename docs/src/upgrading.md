@@ -115,8 +115,8 @@ Then `systemctl daemon-reload && systemctl restart csm`. Verify with `systemctl 
 
 The first disabled queued response raises admission state to schema 10,
 which older binaries that read only schema 9 cannot open; they keep blocking
-with the legacy budget. In this release admission only previews and forecasts:
-it creates no genuine charge, attempt or unknown hold beyond the state legacy
+with the legacy budget. While admission only previews and forecasts, it
+creates no genuine charge, attempt or unknown hold beyond the state legacy
 blocking keeps. Preview accounting is not enforcement state. This is not a
 downgrade guard for a ledger that has executed real actions. Never delete the
 state database or replace it with an older copy to get past the format check.
@@ -133,8 +133,7 @@ forgotten. The first verified block raises the ledger to schema 15. Roll
 back only to a build that reads schema 15, understands the recorded
 verified generation, and retains and cleans up these rows; older builds
 refuse this ledger. This
-writer remains behind live execution and does not run on preview-only
-hosts. Keep the database when changing binaries.
+writer runs only on hosts where admission executes. Keep the database when changing binaries.
 
 After live re-admissions, roll back only to a build that also keeps the
 original verified boundary and caps queued returns at it. A build that

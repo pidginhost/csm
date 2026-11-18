@@ -56,39 +56,6 @@ func TestOwnerBudgetsBlockWorkByTheSet(t *testing.T) {
 	}
 }
 
-// A preview owner budgets its previews by the same set, read once a turn
-// without asking anything else of the engine: work the set cannot take
-// waits as set_full instead of being previewed.
-func TestOwnerPreviewsBlockWorkWithinTheSet(t *testing.T) {
-	withLiveExecution(t, false)
-	p := withTestRegistry(t)
-	f := newOwnerFixture(t)
-	blocks := newFakeBlocks()
-	// Three slots: an operator block leaves two, and a legacy automatic
-	// block holds the only general one.
-	blocks.limit, blocks.temp, blocks.imported = 3, 2, 1
-	o := f.start(executeOptions(f, blocks))
-	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
-	turn(t, o)
-	if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != admission.ReasonSetFull {
-		t.Fatalf("preview into a full set = %+v", c)
-	}
-	want := &health.AdmissionSet{Limit: 3, Capacity: 3, Unclaimed: 1, Imported: 1,
-		General: health.AdmissionDryRunPartition{Size: 1, Used: 1}, Reserved: health.AdmissionDryRunPartition{Size: 1, Free: 1}}
-	if set, _ := ownerSet(t, o); set == nil || *set != *want {
-		t.Fatalf("set status %+v, want %+v", set, want)
-	}
-	blocks.set(func(b *fakeBlocks) { b.limit = 4 })
-	turn(t, o)
-	if c := candidate(t, o, id); c.State != admission.StateObserved {
-		t.Fatalf("preview after a raised limit = %+v", c)
-	}
-	checks, applies := blocks.calls()
-	if len(checks) != 0 || len(applies) != 0 || len(blocks.snapshots) != 0 || blocks.setReads != 2 || blocks.marks != 0 || blocks.stateProbes != 0 || len(blocks.retireCalls()) != 0 {
-		t.Fatalf("engine calls: %d checks, %d applies, %d snapshots, %d set reads", len(checks), len(applies), len(blocks.snapshots), blocks.setReads)
-	}
-}
-
 // The set is read only for queued work that takes a slot: not on an idle
 // turn, for a challenge, or for a retry still in its backoff.
 func TestOwnerReadsTheSetOnlyForSlotWork(t *testing.T) {
@@ -130,7 +97,6 @@ func (e advancingSetEngine) BlockAdmissionSnapshot(members []firewall.BlockMembe
 // Time spent reading the engine cannot make a retry ready within the
 // turn. At its exact deadline the next turn must read and enforce the set.
 func TestOwnerSetReadKeepsTheCommittedAdmissionTime(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
@@ -138,6 +104,7 @@ func TestOwnerSetReadKeepsTheCommittedAdmissionTime(t *testing.T) {
 	opts := executeOptions(f, blocks)
 	opts.Blocks = func() BlockEngine { return advancingSetEngine{BlockEngine: blocks, host: f.host} }
 	o := f.start(opts)
+	mono := heldMono(t, o)
 	retry, now := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	if err := o.do(func() error {
 		_, attempt, _, err := o.ledger.Reserve(retry, admission.LaneGeneral, now.Add(time.Hour))
@@ -153,8 +120,8 @@ func TestOwnerSetReadKeepsTheCommittedAdmissionTime(t *testing.T) {
 	f.host.advance(admission.RetryBackoff(1) - time.Nanosecond)
 	ready, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
 	turn(t, o)
-	if c := candidate(t, o, ready); c.State != admission.StateObserved {
-		t.Fatalf("ready work was not previewed: %+v", c)
+	if c := candidate(t, o, ready); c.State != admission.StateVerified {
+		t.Fatalf("ready work did not run: %+v", c)
 	}
 	if c := candidate(t, o, retry); c.State != admission.StateQueued || c.Attempts != 1 || c.NotBefore != due {
 		t.Fatalf("the set read advanced retry readiness: %+v", c)
@@ -166,6 +133,7 @@ func TestOwnerSetReadKeepsTheCommittedAdmissionTime(t *testing.T) {
 		t.Fatalf("a tick ran between the set read and schedule: %v", st.Owner.LastTick)
 	}
 	blocks.set(func(b *fakeBlocks) { b.temp = b.limit })
+	mono.advance(batchEvery)
 	turn(t, o)
 	if c := candidate(t, o, retry); c.State != admission.StateQueued || c.Attempts != 1 || c.Reason != admission.ReasonSetFull {
 		t.Fatalf("retry at its deadline escaped the full set: %+v", c)
@@ -173,34 +141,38 @@ func TestOwnerSetReadKeepsTheCommittedAdmissionTime(t *testing.T) {
 	if blocks.setReads != 2 {
 		t.Fatalf("retry at its exact deadline made %d set reads, want two total", blocks.setReads)
 	}
-	if checks, applies := blocks.calls(); len(checks) != 0 || len(applies) != 0 {
-		t.Fatalf("preview reached the engine: %d checks, %d applies", len(checks), len(applies))
+	if _, applies := blocks.calls(); len(applies) != 1 {
+		t.Fatalf("%d applies, want the ready work's only", len(applies))
 	}
 }
 
-// A set the turn could not read shows in status and leaves block work
-// without a slot budget; the preview goes on.
+// A set the turn could not read shows in status, and block work waits
+// as for an unavailable engine until a read succeeds.
 func TestOwnerShowsAnUnreadableSet(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	blocks.checkErr = errors.New("set dump failed")
 	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
 	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	turn(t, o)
-	if c := candidate(t, o, id); c.State != admission.StateObserved {
-		t.Fatalf("preview with an unreadable set = %+v", c)
+	if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != admission.ReasonEngineUnavailable || c.Attempts != 0 {
+		t.Fatalf("block with an unreadable set = %+v", c)
 	}
 	if set, setErr := ownerSet(t, o); set != nil || setErr != "set dump failed" {
 		t.Fatalf("set status %+v %q", set, setErr)
 	}
 	blocks.set(func(b *fakeBlocks) { b.checkErr = nil })
-	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	mono.advance(batchEvery)
 	turn(t, o)
 	if set, setErr := ownerSet(t, o); set == nil || setErr != "" {
 		t.Fatalf("successful read kept a stale error: %+v %q", set, setErr)
 	}
+	if c := candidate(t, o, id); c.State != admission.StateVerified {
+		t.Fatalf("block after a readable set = %+v", c)
+	}
+	mono.advance(batchEvery)
 	turn(t, o)
 	if set, setErr := ownerSet(t, o); set != nil || setErr != "" {
 		t.Fatalf("idle scheduling turn kept the old set or error: %+v %q", set, setErr)
@@ -252,7 +224,6 @@ func TestOwnerDryRunPolicyDropsTheSetBeforeATurn(t *testing.T) {
 				name = tc.name + "/read error"
 			}
 			t.Run(name, func(t *testing.T) {
-				withLiveExecution(t, false)
 				p := withTestRegistry(t)
 				f := newOwnerFixture(t)
 				blocks := newFakeBlocks()

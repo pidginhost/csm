@@ -136,8 +136,7 @@ type Options struct {
 	Caps func() admission.Caps
 	// Blocks returns the firewall engine that runs block_ip picks, or nil
 	// while none runs. Without a provider every pick is a preview. With
-	// one, the policy and liveExecution guard decide whether block picks
-	// forecast, preview or execute. The provider must be safe to call
+	// one, the policy decides whether block picks forecast or execute. The provider must be safe to call
 	// concurrently and return promptly: response funnels also read it.
 	Blocks func() BlockEngine
 	// Policy reads the published execution policy. An owner with

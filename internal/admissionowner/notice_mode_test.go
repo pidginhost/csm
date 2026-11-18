@@ -707,14 +707,16 @@ func TestOwnerStopNoticeRetryUsesCurrentMode(t *testing.T) {
 	}
 }
 
-// Production still sends ledger previews to history and the independent
-// stop Warning to alerts. Compare the complete frozen finding, not a prefix.
+// An owner without an engine still sends ledger previews to history and
+// the independent stop Warning to alerts. Compare the complete frozen
+// finding, not a prefix.
 func TestOwnerNoticeProductionBytesStayUnchanged(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	sink := &noticeSink{}
-	o, _ := noticeOwner(t, f, validPolicy(1), sink)
+	opts := previewOptions(f)
+	opts.Deliver = sink.deliver
+	o := f.start(opts)
 	id, at := queued(t, o, p, f.host, admission.SeverityCritical)
 	if err := o.do(func() error { _, err := o.ledger.Terminate(id, admission.ReasonPolicy); return err }); err != nil {
 		t.Fatal(err)

@@ -79,45 +79,38 @@ func TestOwnerDisabledRetryDoesNotWaitForBackoff(t *testing.T) {
 // Refusing disabled work must not require or consume the scheduler's live
 // budget, including when another response spends its final unit.
 func TestOwnerDisabledWorkNeedsNoSchedulingCredit(t *testing.T) {
-	for _, live := range []bool{false, true} {
-		for _, spent := range []bool{false, true} {
-			t.Run(map[bool]string{false: "preview", true: "live"}[live]+"/"+map[bool]string{false: "last_unit", true: "spent"}[spent], func(t *testing.T) {
-				withLiveExecution(t, live)
-				p := withTestRegistry(t)
-				f := newOwnerFixture(t)
-				blocks := newFakeBlocks()
-				policy := validPolicy(1)
-				policy.CeilingLimit = 2
-				policy.Allows = func(c admission.Candidate, _ func() []admission.Evidence) bool {
-					addr, _ := c.Key.Target.Addr()
-					return addr.String() != "192.0.2.10"
-				}
-				o, _, mono := policyOwner(t, f, blocks, policy)
-				on, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
-				if spent {
-					turn(t, o)
-					if ceiling(t, o).Budget(admission.LaneGeneral) != 0 {
-						t.Fatal("fixture still has general credit")
-					}
-					mono.advance(batchEvery)
-				}
-				off, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.10")
+	for _, spent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "last_unit", true: "spent"}[spent], func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			policy := validPolicy(1)
+			policy.CeilingLimit = 2
+			policy.Allows = func(c admission.Candidate, _ func() []admission.Evidence) bool {
+				addr, _ := c.Key.Target.Addr()
+				return addr.String() != "192.0.2.10"
+			}
+			o, _, mono := policyOwner(t, f, blocks, policy)
+			on, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+			if spent {
 				turn(t, o)
-				if c := candidate(t, o, off); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != 0 {
-					t.Errorf("disabled work = %s/%s, attempts %d", c.State, c.Reason, c.Attempts)
+				if ceiling(t, o).Budget(admission.LaneGeneral) != 0 {
+					t.Fatal("fixture still has general credit")
 				}
-				want := admission.StateObserved
-				if live {
-					want = admission.StateVerified
-				}
-				if c := candidate(t, o, on); c.State != want || c.Attempts != 1 {
-					t.Errorf("allowed work = %s/%s, attempts %d; want %s/1", c.State, c.Reason, c.Attempts, want)
-				}
-				if used := liveUsed(t, o); used != 1 {
-					t.Errorf("ceiling charged %d units, want 1", used)
-				}
-			})
-		}
+				mono.advance(batchEvery)
+			}
+			off, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.10")
+			turn(t, o)
+			if c := candidate(t, o, off); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != 0 {
+				t.Errorf("disabled work = %s/%s, attempts %d", c.State, c.Reason, c.Attempts)
+			}
+			if c := candidate(t, o, on); c.State != admission.StateVerified || c.Attempts != 1 {
+				t.Errorf("allowed work = %s/%s, attempts %d; want verified/1", c.State, c.Reason, c.Attempts)
+			}
+			if used := liveUsed(t, o); used != 1 {
+				t.Errorf("ceiling charged %d units, want 1", used)
+			}
+		})
 	}
 }
 
@@ -127,16 +120,13 @@ func TestOwnerDisabledWorkNeedsNoSchedulingCredit(t *testing.T) {
 // reservation. Allowed work beside it runs as before.
 func TestOwnerRefusesWorkTheConfigurationTurnedOff(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		live, dry bool
+		name string
+		dry  bool
 	}{
-		{"live", true, false},
-		{"dry_run", true, true},
-		{"production_preview", false, false},
-		{"production_forecast", false, true},
+		{"live", false},
+		{"dry_run", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			withLiveExecution(t, tc.live)
 			dry := tc.dry
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
@@ -162,11 +152,7 @@ func TestOwnerRefusesWorkTheConfigurationTurnedOff(t *testing.T) {
 				t.Fatalf("turned-off pick = %+v", c)
 			}
 			asked, _, _, _ := panel.state()
-			if !tc.live && !dry {
-				if len(asked) != 0 {
-					t.Fatalf("preview asked the panel: %v", asked)
-				}
-			} else if len(asked) != 1 || asked[0] != "192.0.2.11" {
+			if len(asked) != 1 || asked[0] != "192.0.2.11" {
 				t.Fatalf("the panel was asked about %v", asked)
 			}
 			checks, applies := blocks.calls()
@@ -180,8 +166,6 @@ func TestOwnerRefusesWorkTheConfigurationTurnedOff(t *testing.T) {
 			want := admission.StateVerified
 			if dry {
 				want = admission.StateDryRun
-			} else if !tc.live {
-				want = admission.StateObserved
 			}
 			if c := candidate(t, o, on); c.State != want {
 				t.Fatalf("allowed pick = %+v, want %s", c, want)
@@ -260,7 +244,6 @@ func TestOwnerDisableRetiresPendingVerdicts(t *testing.T) {
 func TestOwnerDisableAfterRestartUsesNewPolicy(t *testing.T) {
 	for _, dry := range []bool{false, true} {
 		t.Run(map[bool]string{false: "preview", true: "forecast"}[dry], func(t *testing.T) {
-			withLiveExecution(t, false)
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			first := validPolicy(1)
@@ -299,7 +282,6 @@ func TestOwnerDisableAfterRestartUsesNewPolicy(t *testing.T) {
 func TestOwnerDisableCoversPreviewAndUnmodelledKinds(t *testing.T) {
 	for _, dry := range []bool{false, true} {
 		t.Run(map[bool]string{false: "preview", true: "forecast"}[dry], func(t *testing.T) {
-			withLiveExecution(t, false)
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()

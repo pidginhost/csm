@@ -272,7 +272,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "kill_processes", Type: "bool", Label: "Kill malicious processes"},
 			{YAMLPath: "quarantine_files", Type: "bool", Label: "Quarantine malicious files"},
 			{YAMLPath: "block_ips", Type: "bool", Label: "Block attacker IPs"},
-			{YAMLPath: "block_expiry", Type: "string", Label: "Block expiry", Placeholder: config.DefaultBlockExpiry, Help: fmt.Sprintf("Positive temporary-block duration. Default %s. Admission previews and dry-run forecasts cap new automatic lifetimes at this duration. Retries keep their first expiry. Existing blocking keeps its own lifetimes.", config.DefaultBlockExpiry)},
+			{YAMLPath: "block_expiry", Type: "string", Label: "Block expiry", Placeholder: config.DefaultBlockExpiry, Help: fmt.Sprintf("Positive temporary-block duration. Default %s. Admission caps new automatic lifetimes at this duration. Retries keep their first expiry. Existing blocking keeps its own lifetimes.", config.DefaultBlockExpiry)},
 			{YAMLPath: "max_blocks_per_hour", Type: "int", Label: "Max IP blocks per hour", Min: int64p(0), Help: fmt.Sprintf("Hourly budget for scan-driven IP blocks; challenge, central and incident blocks are not limited. 0 uses the defaults: %d for scan-driven blocks and %d for the admission ledger, which caps any value at %d.", config.DefaultMaxBlocksPerHour, config.DefaultAdmissionCeiling, admission.MaxCeiling)},
 			{YAMLPath: "enforce_permissions", Type: "bool", Label: "Auto-chmod 644 world/group-writable PHP"},
 			{YAMLPath: "fix_wp_cron", Type: "bool", Label: "Auto-disable WP-Cron + install system cron", Help: "On perf_wp_cron findings, edit wp-config.php and add a per-user cron. Tune interval/php under Performance."},

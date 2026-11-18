@@ -48,6 +48,6 @@ a script finding repeats neither for a later client nor after the routine sweep
 of per-script state within the window.
 
 Client findings carry the triggering Exim message ID as their observation in
-the spool stream. Admission previews and forecasts can trace direct responses
+the spool stream. Admission can trace direct responses
 and later challenge timeouts to that same mail. Script findings remain advisory
 and carry no address evidence.

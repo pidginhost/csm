@@ -11,24 +11,23 @@ import (
 // A forecast session starts from real state without preview state. Its
 // ceiling leaves out an earlier preview's charge and keeps the imported
 // legacy hour, and an address a preview answered is forecast again on its
-// next observation. Back under a live policy, previews answer their
-// episodes again.
+// next observation.
 func TestForecastSessionLeavesPreviewStateOut(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	f.legacy(`{"ips":[],"blocks_this_hour":12,"hour_key":"2026-10-04T12"}`)
-	o, r, mono := policyOwner(t, f, newFakeBlocks(), validPolicy(1))
+	o := f.start(previewOptions(f))
 	first := observe(t, o, p, f, "192.0.2.10", "offset=1")
 	turn(t, o)
 	if c := candidate(t, o, first); c.State != admission.StateObserved {
-		t.Fatalf("pick under a live policy = %+v", c)
+		t.Fatalf("pick without an engine = %+v", c)
 	}
 	real := ceiling(t, o)
 	if real.General.Used != 13 {
 		t.Fatalf("real general use = %d, want the legacy 12 and the preview", real.General.Used)
 	}
-	r.publish(dryPolicy(2))
+	o.Stop()
+	o, _, mono := policyOwner(t, f, newFakeBlocks(), dryPolicy(1))
 	mono.advance(batchEvery)
 	turn(t, o)
 	if s := forecastOf(t, o); s == nil || s.ceiling.General.Used != 12 || s.ceiling.General.Credit <= real.General.Credit {
@@ -51,44 +50,21 @@ func TestForecastSessionLeavesPreviewStateOut(t *testing.T) {
 	if c := candidate(t, o, again); c.State != admission.StateDryRun || c.Key.Generation != 2 {
 		t.Fatalf("previewed address while forecasting = %+v", c)
 	}
-
-	r.publish(validPolicy(3))
-	mono.advance(batchEvery)
-	turn(t, o)
-	f.host.advance(time.Second)
-	third := observe(t, o, p, f, "192.0.2.10", "offset=3")
-	mono.advance(batchEvery)
-	turn(t, o)
-	if c := candidate(t, o, third); c.State != admission.StateObserved || c.Key.Generation != 3 {
-		t.Fatalf("pick back under a live policy = %+v", c)
-	}
-	f.host.advance(time.Second)
-	submitObservation(t, o, p, "192.0.2.10", "offset=4", f.host.now())
-	if err := o.do(o.drain); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range queuedCandidates(t, o) {
-		if c.Key.Target.Key() == "ip:192.0.2.10" {
-			t.Fatalf("a preview no longer answers its episode: %+v", c)
-		}
-	}
 }
 
 // A restart straight into dry run forecasts an address previewed before
 // it: the new owner tells the ledger before its first drain.
 func TestForecastAfterARestartLeavesPreviewsOut(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
-	blocks := newFakeBlocks()
-	o, _, _ := policyOwner(t, f, blocks, validPolicy(1))
+	o := f.start(previewOptions(f))
 	first := observe(t, o, p, f, "192.0.2.10", "offset=1")
 	turn(t, o)
 	if c := candidate(t, o, first); c.State != admission.StateObserved {
-		t.Fatalf("pick under a live policy = %+v", c)
+		t.Fatalf("pick without an engine = %+v", c)
 	}
 	o.Stop()
-	o, _, mono := policyOwner(t, f, blocks, dryPolicy(1))
+	o, _, mono := policyOwner(t, f, newFakeBlocks(), dryPolicy(1))
 	f.host.advance(time.Second)
 	again := observe(t, o, p, f, "192.0.2.10", "offset=2")
 	mono.advance(batchEvery)
@@ -101,19 +77,16 @@ func TestForecastAfterARestartLeavesPreviewsOut(t *testing.T) {
 // A refused refresh leaves forecasting, so stored previews answer again.
 // A later valid dry-run policy must turn that placement rule off again.
 func TestForecastPreviewRuleFollowsRefusedPolicies(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
-	o, r, mono := policyOwner(t, f, newFakeBlocks(), validPolicy(1))
+	o := f.start(previewOptions(f))
 	first := observe(t, o, p, f, "192.0.2.10", "offset=1")
 	turn(t, o)
 	if c := candidate(t, o, first); c.State != admission.StateObserved {
 		t.Fatalf("preview fixture = %+v", c)
 	}
-	r.publish(dryPolicy(2))
-	if err := o.Reload(); err != nil {
-		t.Fatal(err)
-	}
+	o.Stop()
+	o, r, mono := policyOwner(t, f, newFakeBlocks(), dryPolicy(2))
 	invalid := dryPolicy(3)
 	invalid.Allows = nil
 	r.publish(invalid)
@@ -147,7 +120,6 @@ func TestForecastPreviewRuleFollowsRefusedPolicies(t *testing.T) {
 // A comparison-only owner does not read even an available dry-run policy,
 // and its previews keep answering after startup and reload.
 func TestComparisonOnlyOwnerKeepsPreviewAnswers(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	r := &policyReader{p: dryPolicy(1)}

@@ -90,10 +90,9 @@ func TestOwnerLeaseCoversEveryEntryAndKind(t *testing.T) {
 // A challenge beside live work is previewed without an attempt, so it has
 // no expiry to cap.
 func TestOwnerLeaseReachesEveryPath(t *testing.T) {
-	for _, mode := range []string{"no engine", "preview", "forecast", "execute"} {
+	for _, mode := range []string{"no engine", "forecast", "execute"} {
 		for _, kind := range []admission.Kind{admission.KindBlockIP, admission.KindChallenge} {
 			t.Run(mode+"/"+kind.String(), func(t *testing.T) {
-				withLiveExecution(t, mode == "execute")
 				producer := withTestRegistry(t)
 				f := newOwnerFixture(t)
 				blocks := newFakeBlocks()

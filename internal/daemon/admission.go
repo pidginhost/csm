@@ -50,9 +50,8 @@ var setResponseAdmission = checks.SetResponseAdmission
 // one handle on the state database's ledger. Every automatic response the
 // legacy funnels select is also handed to it. With the firewall on and
 // outside observe mode the owner runs on the firewall engine: a dry-run
-// policy forecasts, and a live one previews. Otherwise it only previews.
-// Live execution stays disabled while legacy blocking still enforces, so
-// the same observation cannot trigger both legacy and admission execution.
+// policy forecasts, and a live one applies block picks, which the funnels
+// then leave to it. Otherwise it only previews.
 func (d *Daemon) startAdmission() {
 	d.startAdmissionWith(d.admissionOptions(store.Global()))
 }

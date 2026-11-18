@@ -130,9 +130,6 @@ func (s *sender) cycle() {
 		if l == nil {
 			return nil
 		}
-		if !liveExecution {
-			return nil
-		}
 		s.o.noteMode()
 		spans = slices.Clone(s.o.liveSpans)
 		started = l.LiveStarted()
@@ -154,12 +151,6 @@ func (s *sender) cycle() {
 	if err != nil || l == nil {
 		return
 	}
-	if !liveExecution {
-		due, err = l.PendingNotices()
-	}
-	if err != nil {
-		return
-	}
 	if started != s.ledgerStarted {
 		s.ledgerRetry, s.previewRetry = retryBackoff{}, retryBackoff{}
 		s.ledgerStarted = started
@@ -178,7 +169,7 @@ func (s *sender) cycle() {
 		var findings []alert.Finding
 		var group []admission.NoticeAck
 		for _, r := range due {
-			if (liveExecution && raisedLive(r, spans, s.ackedRead[r.Key])) == preview {
+			if raisedLive(r, spans, s.ackedRead[r.Key]) == preview {
 				continue
 			}
 			findings = append(findings, noticeFinding(r, now, !preview))
@@ -420,7 +411,7 @@ func alertSeverity(k admission.NoticeKind) alert.Severity {
 // ackNoticeSnapshot runs on the owner. Clearing preview notices at cutover
 // invalidates their receipts, even if a new notice has the same first time.
 func ackNoticeSnapshot(l *store.AdmissionLedger, started bool, acks []admission.NoticeAck) error {
-	if liveExecution && started != l.LiveStarted() {
+	if started != l.LiveStarted() {
 		return nil
 	}
 	return ackNotices(l, acks)

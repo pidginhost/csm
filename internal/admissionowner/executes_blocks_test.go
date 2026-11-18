@@ -6,21 +6,19 @@ import (
 )
 
 // The response funnels read whether the owner applies block picks before
-// they mint: legacy leaves a block to admission only when an engine, live
-// execution and a live policy are all present, and never once it stops.
+// they mint: legacy leaves a block to admission only when an engine and a
+// live policy are both present, and never once it stops.
 func TestOwnerPublishesWhetherItExecutesBlocks(t *testing.T) {
 	for _, tc := range []struct {
-		name                 string
-		live, dryRun, engine bool
-		want                 bool
+		name           string
+		dryRun, engine bool
+		want           bool
 	}{
-		{"live", true, false, true, true},
-		{"dry_run", true, true, true, false},
-		{"preview_only", false, false, true, false},
-		{"no_engine", true, false, false, false},
+		{"live", false, true, true},
+		{"dry_run", true, true, false},
+		{"no_engine", false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			withLiveExecution(t, tc.live)
 			f := newOwnerFixture(t)
 			opts := previewOptions(f)
 			if tc.engine {

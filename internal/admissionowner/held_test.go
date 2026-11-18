@@ -188,7 +188,6 @@ func TestOwnerHeldCheckRequiresRetirementPermission(t *testing.T) {
 // Shipped preview and forecast modes have no live effects and perform no
 // held checks or schema raise. The production execution gate stays false.
 func TestOwnerHeldCheckDoesNotChangeNonLiveModes(t *testing.T) {
-	withLiveExecution(t, false)
 	for _, mode := range []string{"preview", "forecast"} {
 		t.Run(mode, func(t *testing.T) {
 			p := withTestRegistry(t)

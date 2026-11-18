@@ -15,6 +15,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- With `auto_response.dry_run: false` and the firewall on outside observe mode, admission now applies automatic IP blocks, within the hourly ceiling and free temporary slots.
+- Temporary blocks that admission applies are never promoted to permanent blocks by repeat-offense escalation.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
 
 ### Fixed

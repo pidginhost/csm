@@ -505,7 +505,9 @@ Every auto-response block source - scan findings, challenge-timeout
 escalations, central-intel corroborated blocks, and incident spray
 containment - records the same evidence: a temporary threat-DB row, a
 blocked-IPs tracker entry, an `auto_block` finding visible to the block
-digest and alerting, and a step toward permanent-block escalation.
+digest and alerting, and a step toward permanent-block escalation. A block
+the admission ledger applied is never promoted to a permanent block while it
+stands; its offense still counts toward a later block of the address.
 All of them block only while `auto_response.enabled` and `block_ips` are
 on; with either off, an expired challenge simply leaves the challenge list.
 Reloading these switches takes effect before the next block attempt, including
@@ -539,17 +541,21 @@ it without saved credit. Status and `csm doctor` show the ceiling and its
 source. A changed ceiling applies on reload, and a web UI settings save
 applies at the owner's next clock tick; a failed change is retried on later
 ticks before admission resumes, with elapsed time credited at the saved
-ceiling before the new one applies. Existing blocking paths remain unchanged:
-every automatic response they select is also handed to the ledger, which
-previews it within this ceiling and the free slots of the temporary block
-set, or forecasts it in dry run, and never applies it. A preview the set has
+ceiling before the new one applies. Every automatic response the existing
+blocking paths select is also handed to the ledger. With
+`auto_response.dry_run` false, the firewall on and outside observe mode,
+the ledger applies automatic IP blocks itself within this ceiling and the
+free slots of the temporary block set, and the existing paths leave those
+blocks to it. In dry run it forecasts them. With the firewall disabled or
+in observe mode it previews them; neither applies them. While a configured
+firewall engine is starting or unavailable, queued live blocks wait and
+new responses remain on the legacy path. Work the set has
 no room for waits as `set_full` until a slot frees: the slots operator,
 unknown and subnet blocks leave are divided as in the forecast, legacy
 automatic blocks occupy general slots, and an unlimited set counts as 10000
 entries. A Critical local attack, or one with direct compromise or
 independently corroborated evidence, may instead take the general slot of
-a legacy automatic block that recorded its origin; status counts those
-previews. With the firewall on, queued responses disabled by the current
+a legacy automatic block that recorded its origin. With the firewall on, queued responses disabled by the current
 policy end as `disabled` without a withheld alert, including when their evidence expires before a
 restart or configuration reload. Turning a response back on requires a new
 eligible observation; ended work is not replayed. Status, `csm doctor` and findings

@@ -356,19 +356,16 @@ func TestOwnerEvictedRowsRotateAfterEveryCheck(t *testing.T) {
 	}
 }
 
-// Evicted-row cleanup follows the existing retirement policy, including
-// cleanup of earlier real work during dry run, without becoming an apply probe.
+// Evicted-row cleanup follows the existing retirement policy, live and in
+// dry run, without becoming an apply probe.
 func TestOwnerEvictedRowsRespectRetirementPolicy(t *testing.T) {
-	for _, mode := range []string{"invalid", "preview", "dry-run"} {
+	for _, mode := range []string{"invalid", "live", "dry-run"} {
 		t.Run(mode, func(t *testing.T) {
 			o, blocks, _, _ := evictionOwner(t, firewall.BlockResult{Effect: firewall.BlockApplied, Victim: firewall.VictimRemoved})
 			blocks.set(func(b *fakeBlocks) { b.retireErr = errors.New("wait") })
 			turn(t, o)
 			blocks.set(func(b *fakeBlocks) { b.retireErr = nil })
 			marks, calls := blocks.probes(), len(blocks.retireCalls())
-			if mode == "preview" {
-				setOwnerHook(t, o, &liveExecution, false)
-			}
 			if err := o.do(func() error {
 				switch mode {
 				case "invalid":
@@ -380,9 +377,9 @@ func TestOwnerEvictedRowsRespectRetirementPolicy(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			want := 0
-			if mode == "dry-run" {
-				want = 1
+			want := 1
+			if mode == "invalid" {
+				want = 0
 			}
 			if blocks.probes()-marks != want || len(blocks.retireCalls())-calls != want {
 				t.Fatalf("%s: %d marks and %d retirements; want %d", mode, blocks.probes()-marks, len(blocks.retireCalls())-calls, want)

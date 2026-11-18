@@ -179,7 +179,6 @@ func TestWaitingOfSharesPartitionsByLane(t *testing.T) {
 // blocks have ingress episodes, so a return is a linked generation.
 func rotationOwner(t *testing.T) (*Owner, *admission.Producer, *ownerFixture) {
 	t.Helper()
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()

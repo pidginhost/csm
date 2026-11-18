@@ -85,10 +85,10 @@ Design: [auto-response safety model](docs/src/design/auto-response-safety-model.
 **Problem:** file responses share persistent budgets, failure pauses and
 identity revalidation, and the risk tier table in `internal/privops` has a
 completeness test. Automatic IP responses also pass through the admission
-ledger, which previews capacity without applying blocks. With the firewall
-enabled outside observe mode, dry run also forecasts occupancy, priority
-eviction, equal-priority rotation and per-scope shares. Existing blocking
-paths still decide every block. Other response families have no shared limits
+ledger. With `auto_response.dry_run` false and the firewall enabled outside
+observe mode it applies automatic IP blocks within its ceiling and the
+temporary set; in dry run it forecasts occupancy, priority eviction,
+equal-priority rotation and per-scope shares. Other response families have no shared limits
 or failure pause, not every action has a rollback and identity proof, and the
 reputation escalation loop has no feedback-lifecycle guard.
 
@@ -112,9 +112,8 @@ exists behind engine injection. The admission ledger records each automatic
 IP response's intent before execution, settles attempts left by a crash and
 holds blocks from unresolved attempts out of the kernel at startup. Its
 block executor (per-member batch checks, kernel readback, proof of an
-existing block) is not wired in production, so every pick is a preview.
-Execution cutover, reader cutover, migration, restore, downgrade and
-operator recovery interfaces remain open.
+existing block) runs those blocks on hosts outside dry run. Reader cutover,
+migration, restore and operator recovery interfaces remain open.
 
 **Acceptance:** every tier 2 to 4 operation maps to the lifecycle from every
 entry point and the coverage test proves it; faults injected around intent

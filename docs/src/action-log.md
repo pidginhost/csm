@@ -94,10 +94,12 @@ ledger admitted: `op` is `respond.block_ip`, `action` the kind of response
 `failed` or `unknown`). `action_id` and `action_version` name the attempt and
 the step. A record is written durably before the ledger lets it go, so after a
 crash it can appear twice; drop a copy whose `action_id`, `action_version` and
-`ts` match another. Existing blocking paths still decide every block: the
-ledger previews each response they hand it, so an admitted response is
-`reserved` and then `observe`, and is never executed. In dry run with the
-firewall on outside observe mode, it forecasts block responses instead.
+`ts` match another. An admitted IP block takes these steps while the ledger
+executes, with `auto_response.dry_run` false, the firewall on and outside
+observe mode. Otherwise the ledger previews each response it is handed, so
+an admitted response is `reserved` and then `observe` and is never
+executed; in dry run with the firewall on outside observe mode it forecasts
+block responses instead.
 Their terminal outcomes are counted in the ledger without a new per-attempt
 action-log row; bounded forecast examples and summaries are separate.
 
