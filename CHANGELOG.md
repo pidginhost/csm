@@ -12,7 +12,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - Backup, export, import and restore now refuse a damaged or malformed state database instead of crashing or hanging CSM.
-- Restoring antispam learning refuses a damaged copy of the host database before replacing any learning keys or state.
 - At the temporary block limit, automatic blocks no longer replace an operator's temporary block, and are refused when only those, or blocks saved before 4.10.0, remain.
 
 ### Added
