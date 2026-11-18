@@ -160,6 +160,12 @@ before the upgrade, compare a dry-run window as described in
 [finding streams](finding-streams.md#comparing-the-admission-preview), and
 set `dry_run: false` once it passes.
 
+Legacy blocks applied before the upgrade stay until they expire. When
+admission wants a longer block for an address such a block already holds,
+the work waits for that block to end. For Critical work the wait raises a
+capacity notice with reason `pending_recovery`; the legacy block keeps the
+address blocked meanwhile.
+
 To stop admission applying blocks without changing the binary, set
 `auto_response.dry_run: true` and run `systemctl reload csm`. Dry run stops
 every automatic IP block, legacy ones included; blocks already applied stay
