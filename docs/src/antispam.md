@@ -1103,6 +1103,13 @@ evidence never blocks an address, never changes its threat score and is
 never reported. It does not need `email_protection.antispam`.
 The [spam evidence budget](#spam-evidence-budget) applies here too.
 
+A sender on [CSM's address list](#csms-address-list-on-stalwart) gets no
+verdict unless the rule `CSM_IP` is off in Stalwart. The rule already
+raised the score of its mail, so such a verdict would only keep it on the
+list. The list that counts is the one CSM builds now, not what Stalwart
+holds. While Stalwart's spam filter is off, no verdict is recorded at all.
+The Email page counts these messages as usual.
+
 ### CSM's address list on Stalwart
 
 CSM keeps its address list in Stalwart's lookup lists, where the rule
