@@ -20,6 +20,7 @@ func TestResolveDNSServerUIDsParsesPasswdFile(t *testing.T) {
 					"named:x:25:25:Named:/var/named:/sbin/nologin",
 					"unbound:x:1001:1001:Unbound:/var/lib/unbound:/sbin/nologin",
 					"pdns:x:953:953::/var/spool/powerdns:/sbin/nologin",
+					"knot:x:954:954:Knot DNS:/var/lib/knot:/usr/sbin/nologin",
 					"alice:x:1000:1000::/home/alice:/bin/bash",
 					"corrupt-line-with-no-fields",
 				}, "\n")), nil
@@ -29,7 +30,7 @@ func TestResolveDNSServerUIDsParsesPasswdFile(t *testing.T) {
 	})
 
 	got := resolveDNSServerUIDs()
-	for _, want := range []string{"25", "1001", "953"} {
+	for _, want := range []string{"25", "1001", "953", "954"} {
 		if !got[want] {
 			t.Errorf("expected DNS server UID %s, got %v", want, got)
 		}

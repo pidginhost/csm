@@ -35,6 +35,9 @@ func TestEvaluateConnection(t *testing.T) {
 		{"server_local_port_2087", 1000, net.ParseIP("8.8.8.8"), 1234, 2087, "tcp", "alice", false},
 		{"safe_user_named", 0, net.ParseIP("8.8.8.8"), 1234, 50000, "tcp", "named", false}, // root anyway
 		{"safe_user_mysql_nonroot", 1000, net.ParseIP("8.8.8.8"), 1234, 50000, "tcp", "mysql", false},
+		{"safe_user_knot_zone_transfer_tls", 1000, net.ParseIP("203.0.113.2"), 853, 50000, "tcp", "knot", false},
+		{"knot_unusual_port", 1000, net.ParseIP("203.0.113.2"), 4444, 50000, "tcp", "knot", true},
+		{"other_user_dns_over_tls", 1000, net.ParseIP("203.0.113.2"), 853, 50000, "tcp", "alice", true},
 		{"non_root_unusual_port", 1000, net.ParseIP("8.8.8.8"), 4444, 50000, "tcp", "alice", true},
 		{"non_root_v6", 1000, net.ParseIP("2001:db8::1"), 4444, 50000, "tcp6", "alice", true},
 	}
