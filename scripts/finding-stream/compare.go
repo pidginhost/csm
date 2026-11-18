@@ -439,7 +439,7 @@ func (r *compareRun) collectLegacy(actions []anonAction) {
 // status's run and passed.
 func (r *compareRun) report(b *strings.Builder, checks map[string]string, epoch uint64, status *compareStatus) bool {
 	legacy := r.legacy
-	var stepped, coalesced int
+	var stepped, coalesced, other int
 	designed := map[string]int{}
 	var unexplained []anonAction
 	blocked, matched := map[string]int{}, map[string]int{}
@@ -462,6 +462,8 @@ func (r *compareRun) report(b *strings.Builder, checks map[string]string, epoch 
 			matched[target]++
 		case "":
 			unexplained = append(unexplained, legacy[i].anonAction)
+		case otherRun:
+			other++
 		default:
 			designed[decision]++
 		}
@@ -492,7 +494,11 @@ func (r *compareRun) report(b *strings.Builder, checks map[string]string, epoch 
 	if len(parts) > 0 {
 		fmt.Fprintf(b, " (%s)", strings.Join(parts, ", "))
 	}
-	fmt.Fprintf(b, "\n  unexplained: %d: %s\n", len(unexplained), verdict(len(unexplained) == 0))
+	b.WriteString("\n")
+	if other > 0 {
+		fmt.Fprintf(b, "  explained by another run's summaries: %d\n", other)
+	}
+	fmt.Fprintf(b, "  unexplained: %d: %s\n", len(unexplained), verdict(len(unexplained) == 0))
 	for _, o := range unexplained[:min(len(unexplained), compareShown)] {
 		id, check := o.FindingID, checks[o.FindingID]
 		if id == "" {

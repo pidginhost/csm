@@ -117,7 +117,29 @@ func matchComparisons(checks map[string]string, runs []*compareRun, steps map[co
 			}
 		}
 	}
+	// A restart mid-hour puts the old process's blocks of that hour in the
+	// new run's window too. One the old run's own summaries explain is
+	// explained here as well, but adds no coverage to this run. A step is
+	// one decision per row, so a row a step matched is matched in every run.
+	explained := map[int]bool{}
+	for _, run := range runs {
+		for i, block := range run.legacy {
+			if d := run.matches[i]; d != "" && d != otherRun {
+				explained[block.row] = true
+			}
+		}
+	}
+	for _, run := range runs {
+		for i, block := range run.legacy {
+			if run.matches[i] == "" && explained[block.row] {
+				run.matches[i] = otherRun
+			}
+		}
+	}
 }
+
+// otherRun marks a block another run's summaries explain.
+const otherRun = "other run"
 
 func matchDecisions(choices [][]int, decisions []compareDecision) []*compareDecision {
 	for i := range decisions {

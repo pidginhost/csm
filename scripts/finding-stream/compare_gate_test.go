@@ -369,3 +369,31 @@ func TestCompareStatusFileIsChecked(t *testing.T) {
 		t.Fatalf("a valid status at the bound: err %v\n%s", err, out.String())
 	}
 }
+
+// An upgrade restarts the daemon mid-hour. A block the old process made
+// in that hour falls in the new run's window too; when the old run's own
+// summary explains it, the new run reports it as explained by that run
+// and neither fails on it nor counts it toward its coverage.
+func TestCompareGateAcceptsBlocksTheEarlierRunExplained(t *testing.T) {
+	findings, actions := gateRun(1, 3, 0, 48*time.Hour)
+	fid := "fid-" + strings.Repeat("d", 32)
+	findings = append(findings, alert.AuditEvent{V: 1, Timestamp: compareTS, FindingID: fid, Check: "pam_bruteforce"})
+	old := summary(0, "pam_bruteforce", "coalesced", "", 1)
+	old.Entry = "incident"
+	actions = append(actions, legacyBlock(fid, -30*time.Minute, "incident"), old)
+	report := compareGate(t, findings, actions, statusFile(t, 1, "scan", "incident"))
+	runs := strings.Split(report, "\nrun ")
+	if len(runs) != 3 || !strings.HasPrefix(runs[2], "1\n") {
+		t.Fatalf("runs not reported apart:\n%s", report)
+	}
+	for _, want := range []string{"  explained by another run's summaries: 1\n", "  unexplained: 0: pass\n", "  incident: 1 legacy, 0 matched: short\n", "gate: FAIL: coverage short until 168h0m0s\n"} {
+		if !strings.Contains(runs[2], want) {
+			t.Fatalf("run 1 missing %q:\n%s", want, report)
+		}
+	}
+	// Without the old run's summary the block stays unexplained.
+	report = compareGate(t, findings, actions[:len(actions)-1], statusFile(t, 1, "scan", "incident"))
+	if !strings.Contains(report, "  unexplained: 1: FAIL\n") || !strings.Contains(report, "verdict: FAIL: run 1 does not pass the gate\n") {
+		t.Fatalf("an unexplained block passed:\n%s", report)
+	}
+}
