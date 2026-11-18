@@ -86,6 +86,7 @@ var componentCheckOrigin = map[string]string{
 	"email_mailbox_compromise":                   "maillog",
 	"email_dkim_failure":                         "maillog",
 	"email_forged_sender":                        "maillog",
+	"email_outbound_reputation":                  "maillog",
 	"email_malware":                              "email_av_spool",
 	"email_php_form_relay":                       "phprelay",
 	"email_php_form_relay_observed":              "phprelay",

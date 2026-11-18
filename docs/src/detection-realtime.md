@@ -588,6 +588,8 @@ A login from a new country is an `email_suspicious_geo` finding, at most one per
 
 A mail filter or Sieve script that sends a mailbox's mail to an outside address keeps its own `email_filter_exfil` finding and is also a sign, dated by the script's file time. The incident finding names the script and its target; CSM leaves the script in place as evidence, so remove it after review.
 
+When large providers refuse or defer this server's mail because of an address's reputation, the address is an `email_outbound_reputation` finding at most once a day, naming the authenticated mailbox that sent most of the refused mail. That mailbox gets the sign. The address alone never sends an alert.
+
 A mailing is an `email_bulk_recipients` finding the first time the ledger records it. An authenticated send whose envelope sender is a domain the login's hosting account does not own is an `email_forged_sender` finding the first time the ledger records that domain. The account's own domains, aliases and subdomains never count.
 
 Each kind of sign counts once, however often it repeats. Mailboxes in `email_protection.high_volume_senders` send mailings by design, so forged sender domains and bulk recipients do not count for them. Signs expire a week after their last sighting. The ledger groups older details when many distinct values appear.

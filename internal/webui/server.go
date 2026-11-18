@@ -926,6 +926,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"email_mailbox_compromise":       "Mailbox Compromise",
 			"email_bulk_recipients":          "Bulk Recipients",
 			"email_forged_sender":            "Forged Sender",
+			"email_outbound_reputation":      "Outbound Reputation",
 			"email_cloud_relay_abuse":        "Cloud-Relay Credential Abuse",
 			"email_spam_outbreak":            "Spam Outbreak",
 			"email_defer_fail_governor":      "Defer/Fail Governor",

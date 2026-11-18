@@ -81,6 +81,7 @@ var attributionEvidence = map[string]string{
 	"email_mailbox_compromise":   "TestMailboxCompromiseFindingCarriesTenant",
 	"email_bulk_recipients":      "TestBulkMessageIsEvidence",
 	"email_forged_sender":        "TestForgedSenderIsEvidence",
+	"email_outbound_reputation":  "TestReputationDeferralsAreEvidence",
 
 	"email_php_form_relay_script": "TestPHPFormRelayScriptStampsOwner",
 

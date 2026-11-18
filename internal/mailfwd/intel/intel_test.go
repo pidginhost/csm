@@ -359,3 +359,36 @@ func TestParseDeferralLineWithZoneAndPID(t *testing.T) {
 		}
 	}
 }
+
+const (
+	outlookS775  = `2026-06-07 10:05:00 1uXo00-000S75-1A == user@outlook.example R=dkim_lookuphost T=remote_smtp defer (-45) H=victim-example.mail.protection.outlook.com [203.0.113.42]: SMTP error from remote mail server after pipelined MAIL FROM:<real@victim.example> SIZE=1234: 451 4.7.650 The mail server [198.51.100.20] has been temporarily rate limited due to IP reputation. For e-mail delivery information, see https://aka.ms/postmaster (S775)`
+	spamhausFail = `2026-06-07 10:06:00 1uXf00-000SPH-1A ** contact@partner.example R=dkim_lookuphost T=remote_smtp H=mx.partner.example [203.0.113.99]: SMTP error from remote mail server after RCPT TO:<contact@partner.example>: 554 5.7.1 Service unavailable; client host [198.51.100.20] blocked using zen.spamhaus.org`
+)
+
+func TestParseOutcomeMarksReputation(t *testing.T) {
+	cases := []struct {
+		name, line, id, ip string
+		reputation         bool
+	}{
+		{"microsoft rate limit", outlookS775, "1uXo00-000S75-1A", "198.51.100.20", true},
+		{"gmail unusual rate", gmailRate, "1uXz00-000DEF-9C", "198.51.100.7", true},
+		{"spamhaus deferral", spamhausBlock, "1uXw11-000AAA-1B", "198.51.100.8", true},
+		{"spamhaus failure", spamhausFail, "1uXf00-000SPH-1A", "198.51.100.20", true},
+		{"yahoo complaints", yahooTSS04, "1uXyZ1-000ABC-2A", "198.51.100.7", false},
+		{"greylist", greylistNoHost, "1uXg00-000GGG-1A", "", false},
+		{"no such user", failureLine, "1uXc00-000333-44", "", false},
+	}
+	for _, c := range cases {
+		d, ok := ParseOutcome(c.line)
+		if !ok || d.MessageID != c.id || d.OutboundIP != c.ip || d.Reputation != c.reputation {
+			t.Errorf("%s: ParseOutcome = %+v, %v", c.name, d, ok)
+		}
+	}
+	if _, ok := ParseOutcome(`2026-06-07 10:00:00 1uXc00-000333-44 <= a@victim.example H=x [192.0.2.1] P=esmtpa`); ok {
+		t.Error("an arrival parsed as an outcome")
+	}
+	// The deferral report still reads deferrals only.
+	if _, ok := parseDeferralLine(spamhausFail); ok {
+		t.Error("a failure counted as a deferral")
+	}
+}

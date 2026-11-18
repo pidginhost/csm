@@ -380,6 +380,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_php_relay_sweep_failed", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_php_relay_watcher_failed", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_defer_fail_governor", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
+	// One sign among several; email_mailbox_compromise reports them together.
+	{Name: "email_outbound_reputation", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Summary: true},
 	{Name: "email_pipe_forwarder", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_rate_critical", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_rate_warning", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},

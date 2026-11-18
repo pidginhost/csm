@@ -34,9 +34,11 @@ const (
 	maxTextLen    = 240
 )
 
-// Deferral is one parsed exim "==" deferral event.
+// Deferral is one parsed exim "==" deferral event, or a "**" failure read
+// by ParseOutcome.
 type Deferral struct {
 	Time       time.Time
+	MessageID  string
 	Recipient  string
 	Domain     string
 	Provider   inventory.ProviderClass
@@ -46,6 +48,9 @@ type Deferral struct {
 	SMTPCode   string // "421", "" if none
 	ReasonCode string // bracketed code (TSS04) or a keyword label (spamhaus, rate_limit)
 	Text       string // bounded remote error text
+	// Reputation marks a provider refusing this server's address: a rate
+	// limit, a Spamhaus listing or a block.
+	Reputation bool
 }
 
 var (
@@ -66,11 +71,27 @@ func parseDeferralLine(line string) (Deferral, bool) {
 	return parseDeferral(line, p, rest)
 }
 
+// ParseOutcome parses a delivery deferral ("==") or failure ("**") line.
+func ParseOutcome(line string) (Deferral, bool) {
+	p, rest, ok := eximlog.SplitPrefix(line, time.Local)
+	if !ok {
+		return Deferral{}, false
+	}
+	if fields := strings.Fields(rest); len(fields) > 0 && fields[0] == "**" {
+		return parseOutcome(line, p, rest, "**")
+	}
+	return parseDeferral(line, p, rest)
+}
+
 // parseDeferral is parseDeferralLine for a line whose prefix is already read.
 func parseDeferral(line string, p eximlog.Prefix, rest string) (Deferral, bool) {
+	return parseOutcome(line, p, rest, "==")
+}
+
+func parseOutcome(line string, p eximlog.Prefix, rest, marker string) (Deferral, bool) {
 	// <msgid> == <recipient> ...
 	fields := strings.Fields(rest)
-	if p.MessageID == "" || len(fields) < 2 || fields[0] != "==" {
+	if p.MessageID == "" || len(fields) < 2 || fields[0] != marker {
 		return Deferral{}, false
 	}
 
@@ -79,7 +100,7 @@ func parseDeferral(line string, p eximlog.Prefix, rest string) (Deferral, bool) 
 		return Deferral{}, false
 	}
 
-	d := Deferral{Recipient: recipient}
+	d := Deferral{Recipient: recipient, MessageID: p.MessageID}
 	if at := strings.LastIndexByte(recipient, '@'); at >= 0 && at < len(recipient)-1 {
 		d.Domain = strings.ToLower(recipient[at+1:])
 	}
@@ -107,6 +128,10 @@ func parseDeferral(line string, p eximlog.Prefix, rest string) (Deferral, bool) 
 		d.OutboundIP = firstIPv4(errText)
 	}
 	d.ReasonCode = classifyReason(errText)
+	switch keywordReason(errText) {
+	case "rate_limit", "spamhaus", "blocked":
+		d.Reputation = true
+	}
 	d.Text = boundText(errText)
 
 	return d, true
