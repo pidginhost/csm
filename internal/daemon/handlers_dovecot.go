@@ -46,7 +46,28 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 	if user == "" || ip == "" {
 		return nil
 	}
+	return observeMailboxLoginGeo(cfg, user, ip, false)
+}
 
+// webmailLogin reads a webmail login from a session_log line. A session a
+// panel opened through the API is not a login the user made.
+func webmailLogin(line string) (user, ip string, ok bool) {
+	r, ok := checks.ParseSessionRecord(line)
+	if !ok || r.Service != "webmaild" || r.Event != "NEW" || r.CreatedByAPI() {
+		return "", "", false
+	}
+	addr, ok := r.ClientAddr()
+	if !ok {
+		return "", "", false
+	}
+	return r.Account, addr.String(), true
+}
+
+// observeMailboxLoginGeo records a mailbox login's country. A country new
+// for the mailbox is compromise evidence and a summary-class
+// email_suspicious_geo finding. A webmail login is also kept as the
+// mailbox's last one, so the loopback sends webmail makes can be placed.
+func observeMailboxLoginGeo(cfg *config.Config, user, ip string, webmail bool) []alert.Finding {
 	// Skip private/loopback IPs
 	if isPrivateOrLoopback(ip) {
 		return nil
@@ -76,7 +97,8 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 
-	now := time.Now().Unix()
+	at := time.Now()
+	now := at.Unix()
 
 	history, _ := boltDB.GetGeoHistory(user)
 	if history.Countries == nil {
@@ -95,6 +117,9 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// Update country timestamp
 	history.Countries[country] = now
+	if webmail {
+		history.Webmail = &store.WebmailLogin{IP: ip, Country: country, At: at}
+	}
 
 	// Persist updated history
 	if err := boltDB.SetGeoHistory(user, history); err != nil {
@@ -106,13 +131,28 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 
+	countryName := info.CountryName
+	if countryName == "" {
+		countryName = country
+	}
+	via := "email"
+	if webmail {
+		via = "webmail"
+	}
+
+	// The ledger sees every new country; only the finding has a cooldown.
+	findings := observeMailboxSignal(cfg, user, mailboxSignal{
+		kind: signalNewCountry, key: country, at: at,
+		detail: fmt.Sprintf("%s login from %s (%s)", via, countryName, ip),
+	})
+
 	// Rate limit: max 1 alert per account per 24h
 	alertKey := "email:geo_alert:" + user
 	lastAlertStr := boltDB.GetMetaString(alertKey)
 	if lastAlertStr != "" {
 		if lastAlert, err := time.Parse(time.RFC3339, lastAlertStr); err == nil {
 			if time.Since(lastAlert) < time.Duration(geoAlertCooldownH)*time.Hour {
-				return nil
+				return findings
 			}
 		}
 	}
@@ -132,18 +172,13 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		previousList = strings.Join(knownCountries, ", ")
 	}
 
-	countryName := info.CountryName
-	if countryName == "" {
-		countryName = country
-	}
-
 	mailbox, domain, _ := splitMailAccount(user)
 	tenant := mailAccountOwner(user)
-	return []alert.Finding{{
+	return append(findings, alert.Finding{
 		Severity: alert.High,
 		Check:    "email_suspicious_geo",
-		Message: fmt.Sprintf("Suspicious email login for %s from %s (%s) - previously seen: %s",
-			user, countryName, ip, previousList),
+		Message: fmt.Sprintf("Suspicious %s login for %s from %s (%s) - previously seen: %s",
+			via, user, countryName, ip, previousList),
 		Details: fmt.Sprintf("Country: %s (%s)\nIP: %s\nLogin count: %d\nPreviously seen countries: %s",
 			country, countryName, ip, history.LoginCount, previousList),
 		SourceIP:  ip,
@@ -151,7 +186,7 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		Domain:    domain,
 		TenantID:  tenant,
 		Timestamp: time.Now(),
-	}}
+	})
 }
 
 // parseDovecotLoginFields extracts user and remote IP from a Dovecot login line.

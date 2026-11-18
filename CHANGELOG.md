@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- Webmail logins from a new country are now checked like IMAP and POP3 logins.
+
 ### Added
 
 - Signs of a stolen mailbox now add up per mailbox: CSM suspends it once they do and sends one alert listing the evidence, rather than one per sign.
@@ -16,6 +20,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- Mail logins from a new country now go to the daily summary as compromise evidence instead of raising an alert each.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
 
 ### Fixed

@@ -382,7 +382,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_spam_outbreak", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "email_spf_rejection", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
 	{Name: "email_suspicious_forwarder", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
-	{Name: "email_suspicious_geo", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
+	// One sign among several; email_mailbox_compromise reports them together.
+	{Name: "email_suspicious_geo", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Summary: true},
 	{Name: "email_weak_password", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonPosture},
 	{Name: "email_password_audit_incomplete", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "exim_frozen_realtime", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},

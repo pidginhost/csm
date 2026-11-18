@@ -11,6 +11,16 @@ import (
 type GeoHistory struct {
 	Countries  map[string]int64 `json:"countries"`
 	LoginCount int              `json:"login_count"`
+	// Webmail is the mailbox's last webmail login. Webmail reaches the mail
+	// server over loopback, so its sends carry no address of their own.
+	Webmail *WebmailLogin `json:"webmail,omitempty"`
+}
+
+// WebmailLogin is where and when a mailbox last logged in to webmail.
+type WebmailLogin struct {
+	IP      string    `json:"ip"`
+	Country string    `json:"country"`
+	At      time.Time `json:"at"`
 }
 
 // SetGeoHistory stores geo login history for a mailbox in the email:geo bucket.

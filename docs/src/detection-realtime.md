@@ -588,13 +588,15 @@ A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, ea
 | A Sieve script or forwarder that redirects all mail to an outside address | 2, and 1 more when it appeared within 30 days of a login from a new country |
 | Reputation deferrals from large providers on the address the mailbox sends from, while it is that address's top sender | 1 |
 
+A login from a new country is also an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail logins count the same as IMAP and POP3 logins.
+
 Each kind of sign counts once, however often it repeats. Signs expire a week after they were last seen.
 
 When a mailbox reaches 4 points, CSM suspends its logins and outgoing mail and raises one Critical `email_mailbox_compromise` finding. The finding lists each sign with its time and says how to release the mailbox: the Email page, Suspended tab. The suspension follows `auto_response.enabled` and dry-run; with either off the finding says the mailbox would have been suspended. Further signs for the same mailbox add to the ledger without a second finding. A new finding needs the earlier signs to expire or a release; release forgets the evidence.
 
 ## Mail Auth Brute-Force Tracker
 
-Detects credential stuffing and password spray against IMAP, POP3, and ManageSieve. Runs through the `mail_logs` reader: file source uses `/var/log/mail.log` on Debian-family hosts and `/var/log/maillog` on RHEL-family and cPanel hosts, while journal source reads configured Postfix/Dovecot units. The wrapper composes with the existing geo-based login monitor, so `email_suspicious_geo` keeps firing for successful logins from novel countries.
+Detects credential stuffing and password spray against IMAP, POP3, and ManageSieve. Runs through the `mail_logs` reader: file source uses `/var/log/mail.log` on Debian-family hosts and `/var/log/maillog` on RHEL-family and cPanel hosts, while journal source reads configured Postfix/Dovecot units. The wrapper composes with the existing geo-based login monitor, so `email_suspicious_geo` keeps reporting successful logins from novel countries as [compromise evidence](#mailbox-compromise-evidence).
 
 Signals:
 

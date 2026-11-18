@@ -227,7 +227,7 @@ func pruneExplanations[K comparable](entries map[K]observedExplanation, now time
 
 // cpanelSessionLogHandler feeds session_log to the password hijack detector,
 // the stale-session correlation and the known-customer set before the
-// regular session handling.
+// regular session handling, and webmail logins to the mailbox geo check.
 func (d *Daemon) cpanelSessionLogHandler(line string, cfg *config.Config) []alert.Finding {
 	ParseSessionLineForHijack(line, d.hijackDetector)
 	d.staleSession401.observeSessionLine(line, time.Now())
@@ -238,7 +238,11 @@ func (d *Daemon) cpanelSessionLogHandler(line string, cfg *config.Config) []aler
 		}
 		d.knownCustomers.Note(ip, kind, account, customerLoginTime(line, time.Now()), serviceLog)
 	}
-	return parseSessionLogLine(line, cfg)
+	findings := parseSessionLogLine(line, cfg)
+	if user, ip, ok := webmailLogin(line); ok {
+		findings = append(findings, observeMailboxLoginGeo(cfg, user, ip, true)...)
+	}
+	return findings
 }
 
 // cpanelAccessLogHandler holds back the API auth failures a stale browser
