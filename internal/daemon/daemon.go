@@ -1756,6 +1756,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// A Critical login after brute force suspends the cracked mailbox; the
 	// outcome finding tells staff what was done and what is left to them.
 	responseFindings = append(responseFindings, stolenLoginResponses(cfg, remediableFindings)...)
+	// A redirect the mail filter audit reports is evidence for its mailbox.
+	responseFindings = append(responseFindings, mailFilterEvidence(cfg, remediableFindings)...)
 
 	if len(responseFindings) == 0 {
 		// A scan applies its own blocks and hands them over as findings,

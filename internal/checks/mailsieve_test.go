@@ -991,3 +991,72 @@ func TestCheckMailFiltersUpgradeBaselinesExistingSieve(t *testing.T) {
 		t.Fatalf("post-baseline Sieve change was not detected: %+v", findings)
 	}
 }
+
+// A Sieve redirect planted between daily audits waited up to a day. The
+// throttled audit now looks at Sieve file times and runs when one changed.
+func sieveThrottleCase(t *testing.T, scriptAge time.Duration) (*mockOS, *bool) {
+	t.Helper()
+	db := withTestStore(t)
+	refreshed := time.Now().Add(-time.Hour)
+	for _, key := range []string{"email:mailfilter_last_refresh", "email:mailsieve_last_refresh"} {
+		if err := db.SetMetaString(key, refreshed.Format(time.RFC3339)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sievePath := "/home/acmeacct/mail/acmeacct.example/alice/sieve/roundcube.sieve"
+	read := false
+	fs := &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve") {
+				return []string{sievePath}, nil
+			}
+			return nil, nil
+		},
+		stat:  mtimesByPath(map[string]time.Time{sievePath: refreshed.Add(scriptAge)}),
+		lstat: mtimesByPath(map[string]time.Time{sievePath: refreshed.Add(scriptAge)}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("acmeacct.example\n"), nil
+			case sievePath:
+				read = true
+				return []byte(sieveStealthForward), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	}
+	withMockOS(t, fs)
+	return fs, &read
+}
+
+func TestCheckMailFiltersRunsWhenSieveChangedDuringThrottle(t *testing.T) {
+	sieveThrottleCase(t, 30*time.Minute)
+	cfg := &config.Config{}
+	cfg.EmailProtection.PasswordCheckIntervalMin = 1440
+	findings := CheckMailFilters(context.Background(), cfg, nil)
+	if len(findings) != 1 || findings[0].Check != "email_filter_exfil" {
+		t.Fatalf("findings = %+v, want the new Sieve redirect", findings)
+	}
+}
+
+func TestCheckMailFiltersThrottleKeepsUnchangedSieve(t *testing.T) {
+	_, read := sieveThrottleCase(t, -48*time.Hour)
+	cfg := &config.Config{}
+	cfg.EmailProtection.PasswordCheckIntervalMin = 1440
+	if findings := CheckMailFilters(context.Background(), cfg, nil); len(findings) != 0 {
+		t.Fatalf("throttled run with unchanged scripts reported %+v", findings)
+	}
+	if *read {
+		t.Fatal("throttled run read an unchanged script")
+	}
+}
+
+func TestMailFilterDestination(t *testing.T) {
+	f := alert.Finding{Details: "Mailbox: a@victim.example\nDomain: victim.example\nFile: /x\nDestination: x@freemail.example\nfilter forwards"}
+	if got := MailFilterDestination(f); got != "x@freemail.example" {
+		t.Fatalf("destination = %q", got)
+	}
+	if got := MailFilterDestination(alert.Finding{Details: "Mailbox: a\nfilter"}); got != "" {
+		t.Fatalf("destination without one = %q", got)
+	}
+}

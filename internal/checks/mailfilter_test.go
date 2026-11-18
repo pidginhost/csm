@@ -1194,9 +1194,10 @@ func TestCheckMailFiltersThrottled(t *testing.T) {
 	if err := db.SetMetaString("email:mailsieve_last_refresh", time.Now().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
-	called := false
+	// Only Sieve script times are looked at while throttled.
+	var globbed []string
 	withMockOS(t, &mockOS{
-		glob: func(string) ([]string, error) { called = true; return nil, nil },
+		glob: func(pattern string) ([]string, error) { globbed = append(globbed, pattern); return nil, nil },
 	})
 	cfg := &config.Config{}
 	cfg.EmailProtection.PasswordCheckIntervalMin = 1440
@@ -1204,7 +1205,9 @@ func TestCheckMailFiltersThrottled(t *testing.T) {
 	if len(findings) != 0 {
 		t.Fatalf("throttled run should return no findings; got %+v", findings)
 	}
-	if called {
-		t.Error("throttled run should not glob the filesystem")
+	for _, pattern := range globbed {
+		if !strings.Contains(pattern, "sieve") {
+			t.Errorf("throttled run globbed %s; only Sieve script times may be checked", pattern)
+		}
 	}
 }
