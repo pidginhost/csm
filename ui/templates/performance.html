@@ -1,6 +1,7 @@
 {{define "title"}}Performance{{end}}
 {{define "page"}}performance{{end}}
 {{define "content"}}
+    {{$hasPHP := feature "php"}}
     <div class="csm-page-header mb-3">
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-activity"></i>&nbsp;Performance</h1>
@@ -46,6 +47,7 @@
                 </div>
             </div>
         </div>
+        {{if $hasPHP}}
         <div class="col-6 col-lg">
             <div class="card">
                 <div class="card-body">
@@ -54,6 +56,7 @@
                 </div>
             </div>
         </div>
+        {{end}}
         <div class="col-6 col-lg">
             <div class="card">
                 <div class="card-body">
@@ -74,6 +77,7 @@
 
     <!-- Second Row -->
     <div class="row row-deck row-cards mb-3">
+        {{if $hasPHP}}
         <!-- Left: Top PHP Consumers -->
         <div class="col-lg-5">
             <div class="card">
@@ -96,8 +100,9 @@
                 </div>
             </div>
         </div>
+        {{end}}
         <!-- Right: Performance Findings -->
-        <div class="col-lg-7">
+        <div class="{{if $hasPHP}}col-lg-7{{else}}col-12{{end}}">
             <div class="card">
                 <div class="card-header">
                     <h2 class="card-title"><i class="ti ti-activity"></i>&nbsp;Performance Findings</h2>
