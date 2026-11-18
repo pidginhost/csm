@@ -56,6 +56,10 @@ type setupFakeAPI struct {
 	// session and sessionErr answer SessionAccount.
 	session    string
 	sessionErr error
+
+	// CSM's address list rule and its tags.
+	rule *stalwartapi.SpamRule
+	tags map[string]stalwartapi.SpamTag
 }
 
 func (f *setupFakeAPI) SessionAccount(context.Context) (string, error) {
@@ -158,6 +162,45 @@ func (f *setupFakeAPI) DeleteAPIKeys(_ context.Context, _ string, ids []string) 
 	return errors.Join(f.writeErr, f.deleteErr)
 }
 
+func (f *setupFakeAPI) SpamRule(context.Context, string) (stalwartapi.SpamRule, bool, error) {
+	if f.rule == nil {
+		return stalwartapi.SpamRule{}, false, f.readErr
+	}
+	return *f.rule, true, f.readErr
+}
+func (f *setupFakeAPI) CreateSpamRule(_ context.Context, _ string, r stalwartapi.SpamRule) error {
+	f.writes = append(f.writes, "spam rule")
+	f.rule = &stalwartapi.SpamRule{ID: "rule1", Type: "Any", Enabled: true, Arms: r.Arms, Else: r.Else}
+	return f.writeErr
+}
+func (f *setupFakeAPI) SetSpamRuleCondition(_ context.Context, _ string, arms []stalwartapi.RuleArm, elseExpr string) error {
+	f.writes = append(f.writes, "rule condition")
+	f.rule.Arms, f.rule.Else = arms, elseExpr
+	return f.writeErr
+}
+func (f *setupFakeAPI) SpamTag(_ context.Context, tag string) (stalwartapi.SpamTag, bool, error) {
+	t, ok := f.tags[tag]
+	return t, ok, f.readErr
+}
+func (f *setupFakeAPI) CreateSpamTag(_ context.Context, tag string, score float64) error {
+	f.writes = append(f.writes, "spam tag")
+	if f.tags == nil {
+		f.tags = map[string]stalwartapi.SpamTag{}
+	}
+	f.tags[tag] = stalwartapi.SpamTag{ID: "tag-" + tag, Type: "Score", Tag: tag, Score: score}
+	return f.writeErr
+}
+
+// settingsSetupWrites are setup's writes to a fresh Stalwart whose response
+// steps are done: four settings, CSM's seven tags and rule, then one reload.
+func settingsSetupWrites() []string {
+	w := []string{"tracing", "http", "bans", "tracing"}
+	for range 7 {
+		w = append(w, "spam tag")
+	}
+	return append(w, "spam rule", "reload")
+}
+
 // prepare gives the fake the User role and, with done, CSM's role and
 // account as setup leaves them.
 func (f *setupFakeAPI) prepare(done bool) {
@@ -184,6 +227,9 @@ type setupHarness struct {
 	keyAccount string
 	keyErr     error
 	gotKey     string
+
+	// doctorIn is what doctorChecks passes as CSM's inputs.
+	doctorIn stalwartsetup.Inputs
 }
 
 func setupStatusJSON(t *testing.T, a health.AutomationStatus) []byte {
@@ -329,13 +375,13 @@ func TestStalwartSetupAppliesAndReloadsOnce(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, out %q", code, out)
 	}
-	if want := []string{"tracing", "http", "bans", "tracing", "reload"}; !reflect.DeepEqual(h.api.writes, want) {
+	if want := settingsSetupWrites(); !reflect.DeepEqual(h.api.writes, want) {
 		t.Fatalf("writes = %q, want %q", h.api.writes, want)
 	}
 	if h.gotURL != "http://127.0.0.1:18080" {
 		t.Fatalf("--url ignored: %q", h.gotURL)
 	}
-	for _, want := range []string{"failed-login logging: changed: ", "ban expiry: changed: ", "12h", "store: reloaded with a note"} {
+	for _, want := range []string{"failed-login logging: changed: ", "ban expiry: changed: ", "12h", "address list: changed: ", "store: reloaded with a note"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q lacks %q", out, want)
 		}
@@ -490,7 +536,7 @@ func TestStalwartSetupSpamReadFailures(t *testing.T) {
 					}
 					var want []string
 					if !dryRun {
-						want = []string{"tracing", "http", "bans", "tracing", "reload"}
+						want = settingsSetupWrites()
 					}
 					if !reflect.DeepEqual(h.api.writes, want) {
 						t.Fatalf("writes = %q, want %q", h.api.writes, want)

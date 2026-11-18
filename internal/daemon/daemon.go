@@ -2336,6 +2336,7 @@ func (d *Daemon) startLogWatchers() {
 
 	if useStalwartReader(platform.DetectMTA()) {
 		d.startStalwartLogReader(d.cfg)
+		d.startStalwartAddressList()
 	} else {
 		d.startMailLogReader(hostInfo.MailLogPath(), d.handleMailLine)
 	}

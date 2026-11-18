@@ -249,7 +249,8 @@ type SpamProbeResult struct {
 }
 
 // BlocklistProbe is a harmless message whose tags show whether Stalwart's
-// DNS blocklist lookups are refused by its resolver.
+// DNS blocklist lookups are refused by its resolver. It comes from the
+// address the daemon keeps on CSM's list, so it also shows that list matches.
 var BlocklistProbe = SpamProbe{
 	Message: "From: sender@example.com\r\n" +
 		"To: postmaster@example.com\r\n" +
@@ -258,7 +259,7 @@ var BlocklistProbe = SpamProbe{
 		"Message-ID: <csm-blocklist-probe@example.com>\r\n" +
 		"\r\n" +
 		"This message checks the spam filter's blocklist lookups.\r\n",
-	RemoteIP:   "192.0.2.10",
+	RemoteIP:   "192.0.2.255",
 	EhloDomain: "mx.example.com",
 	MailFrom:   "sender@example.com",
 	RcptTo:     "postmaster@example.com",

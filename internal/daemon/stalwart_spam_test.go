@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/stalwartlog"
@@ -471,5 +473,151 @@ func TestStalwartVerdictConcurrentSweeps(t *testing.T) {
 	}
 	if spam, ham, _ := spamOf(adb, "198.51.100.20"); spam != 100 || ham != 0 {
 		t.Fatalf("spam %d ham %d, want 100 spam", spam, ham)
+	}
+}
+
+// guardStalwartList stores the state an address list tick would leave.
+func guardStalwartList(d *Daemon, entries map[string][]string, filterOff, ruleOff bool) {
+	m := ipmap.Build(ipmap.Sources{Entries: entries})
+	d.stalwart.list.Store(&stalwartListState{m: &m, filterOff: filterOff, ruleOff: ruleOff})
+}
+
+func TestStalwartGuardSkipsListedSender(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	guardStalwartList(d, map[string][]string{ipmap.Spam.Name: {"198.51.100.40"}}, false, false)
+	feedStalwart(d,
+		stalwartQueuedLine(25, "198.51.100.40", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org"),
+		stalwartQueuedLine(25, "198.51.100.41", 1002), stalwartIngestLine(stalwartTestStart, true, 1002, "user1@example.org"))
+	sweepAfterHold(d, cfg)
+	if got := stalwartCounts(d); got != (stalwartFilterCounts{junk: 2}) {
+		t.Fatalf("counts = %+v, want two junk", got)
+	}
+	if rec := adb.LookupIP("198.51.100.40"); rec != nil {
+		t.Fatalf("listed sender recorded: %+v", rec.Mail)
+	}
+	if spam, _, _ := spamOf(adb, "198.51.100.41"); spam != 1 {
+		t.Fatalf("unlisted sender spam verdicts = %d, want 1", spam)
+	}
+
+	// Ham only adds to an existing record, so seed one to see it skipped.
+	adb.RecordMailVerdict("198.51.100.40", true, stalwartTestStart.Add(-time.Hour))
+	feedStalwart(d, stalwartQueuedLine(25, "198.51.100.40", 1003), stalwartIngestLine(stalwartTestStart, false, 1003, "user1@example.org"))
+	sweepAfterHold(d, cfg)
+	if got := stalwartCounts(d); got != (stalwartFilterCounts{delivered: 1, junk: 2}) {
+		t.Fatalf("counts = %+v, want one delivered and two junk", got)
+	}
+	if spam, ham, _ := spamOf(adb, "198.51.100.40"); spam != 1 || ham != 0 {
+		t.Fatalf("listed sender spam %d ham %d, want only the seeded spam verdict", spam, ham)
+	}
+}
+
+func TestStalwartGuardIPv4MappedSender(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	guardStalwartList(d, map[string][]string{ipmap.Spam.Name: {"198.51.100.40"}}, false, false)
+	d.recordStalwartVerdict(netip.MustParseAddr("::ffff:198.51.100.40"), true, stalwartTestStart, cfg)
+	for _, ip := range []string{"198.51.100.40", "::ffff:198.51.100.40"} {
+		if rec := adb.LookupIP(ip); rec != nil {
+			t.Fatalf("mapped listed sender recorded as %s: %+v", ip, rec.Mail)
+		}
+	}
+}
+
+func TestStalwartGuardRuleOffRecords(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	guardStalwartList(d, map[string][]string{ipmap.Spam.Name: {"198.51.100.40"}}, false, true)
+	feedStalwart(d, stalwartQueuedLine(25, "198.51.100.40", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org"))
+	sweepAfterHold(d, cfg)
+	if spam, _, _ := spamOf(adb, "198.51.100.40"); spam != 1 {
+		t.Fatalf("spam verdicts = %d, want 1 while the rule is off", spam)
+	}
+}
+
+func TestStalwartGuardFilterOffRecordsNothing(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	guardStalwartList(d, nil, true, false)
+	adb.RecordMailVerdict("198.51.100.42", true, stalwartTestStart.Add(-time.Hour))
+	feedStalwart(d,
+		stalwartQueuedLine(25, "198.51.100.42", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org"),
+		stalwartQueuedLine(25, "198.51.100.42", 1002), stalwartIngestLine(stalwartTestStart, false, 1002, "user1@example.org"))
+	sweepAfterHold(d, cfg)
+	if got := stalwartCounts(d); got != (stalwartFilterCounts{delivered: 1, junk: 1}) {
+		t.Fatalf("counts = %+v, want one delivered and one junk", got)
+	}
+	if spam, ham, _ := spamOf(adb, "198.51.100.42"); spam != 1 || ham != 0 {
+		t.Fatalf("spam %d ham %d, want only the earlier spam verdict", spam, ham)
+	}
+}
+
+func TestStalwartGuardIPv6Network(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	guardStalwartList(d, map[string][]string{ipmap.Spam.Name: {"2001:db8:0:5::/64"}}, false, false)
+	feedStalwart(d,
+		stalwartQueuedLine(25, "2001:db8:0:5::77", 1001), stalwartIngestLine(stalwartTestStart, true, 1001, "user1@example.org"),
+		stalwartQueuedLine(25, "2001:db8:0:6::77", 1002), stalwartIngestLine(stalwartTestStart, true, 1002, "user1@example.org"))
+	sweepAfterHold(d, cfg)
+	if rec := adb.LookupIP("2001:db8:0:5::77"); rec != nil {
+		t.Fatalf("sender inside the listed network recorded: %+v", rec.Mail)
+	}
+	if spam, _, _ := spamOf(adb, "2001:db8:0:6::77"); spam != 1 {
+		t.Fatalf("sender outside the listed network spam verdicts = %d, want 1", spam)
+	}
+}
+
+func TestStalwartGuardUnknownAndDisabledState(t *testing.T) {
+	for _, name := range []string{"nil stalwart", "nil list", "empty map", "rule off", "filter and rule off"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := stalwartBruteConfig()
+			d, adb := newStalwartVerdictDaemon(t, cfg)
+			ip := netip.MustParseAddr("198.51.100.43")
+			switch name {
+			case "nil stalwart":
+				d.stalwart = nil
+			case "empty map":
+				guardStalwartList(d, nil, false, false)
+			case "rule off", "filter and rule off":
+				guardStalwartList(d, map[string][]string{ipmap.Spam.Name: {ip.String()}}, name == "filter and rule off", true)
+			}
+			adb.RecordMailVerdict(ip.String(), true, stalwartTestStart.Add(-time.Hour))
+			d.recordStalwartVerdict(ip, true, stalwartTestStart, cfg)
+			d.recordStalwartVerdict(ip, false, stalwartTestStart, cfg)
+			wantSpam, wantHam := 2, 1
+			if name == "filter and rule off" {
+				wantSpam, wantHam = 1, 0
+			}
+			if spam, ham, _ := spamOf(adb, ip.String()); spam != wantSpam || ham != wantHam {
+				t.Fatalf("spam %d ham %d, want %d and %d", spam, ham, wantSpam, wantHam)
+			}
+		})
+	}
+}
+
+func TestStalwartGuardConcurrentListReplacement(t *testing.T) {
+	cfg := stalwartBruteConfig()
+	d, adb := newStalwartVerdictDaemon(t, cfg)
+	ip := netip.MustParseAddr("198.51.100.44")
+	entries := map[string][]string{ipmap.Spam.Name: {ip.String()}}
+	guardStalwartList(d, entries, false, false)
+	adb.RecordMailVerdict(ip.String(), true, stalwartTestStart.Add(-time.Hour))
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 100 {
+			guardStalwartList(d, nil, true, true)
+			guardStalwartList(d, entries, false, false)
+		}
+	})
+	wg.Go(func() {
+		for range 100 {
+			d.recordStalwartVerdict(ip, true, stalwartTestStart, cfg)
+			d.recordStalwartVerdict(ip, false, stalwartTestStart, cfg)
+		}
+	})
+	wg.Wait()
+	if spam, ham, _ := spamOf(adb, ip.String()); spam != 1 || ham != 0 {
+		t.Fatalf("spam %d ham %d, want only the seeded spam verdict", spam, ham)
 	}
 }

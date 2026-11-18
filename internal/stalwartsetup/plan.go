@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/stalwartapi"
 )
 
@@ -40,6 +41,11 @@ type API interface {
 	APIKeys(ctx context.Context, accountID string) ([]stalwartapi.APIKey, error)
 	CreateAPIKey(ctx context.Context, accountID, description string, allowedIPs []string) (id, secret string, err error)
 	DeleteAPIKeys(ctx context.Context, accountID string, ids []string) error
+	SpamRule(ctx context.Context, name string) (stalwartapi.SpamRule, bool, error)
+	CreateSpamRule(ctx context.Context, name string, r stalwartapi.SpamRule) error
+	SetSpamRuleCondition(ctx context.Context, id string, arms []stalwartapi.RuleArm, elseExpr string) error
+	SpamTag(ctx context.Context, tag string) (stalwartapi.SpamTag, bool, error)
+	CreateSpamTag(ctx context.Context, tag string, score float64) error
 }
 
 // Inputs is what CSM knows about itself.
@@ -63,6 +69,9 @@ type Inputs struct {
 	KeyAccount string
 	// WriteKey stores a new key in CSM's key file.
 	WriteKey func(secret string) error
+	// Observe is true in observe mode, where the daemon does not write CSM's
+	// address list to Stalwart, so doctor does not test it.
+	Observe bool
 }
 
 // State is a step's outcome.
@@ -88,7 +97,10 @@ type Step struct {
 
 // Plan is the setup steps in order.
 type Plan struct {
-	Steps         []Step
+	Steps []Step
+	// AddressListOn is true when Stalwart's rule for CSM's address list
+	// exists and is switched on.
+	AddressListOn bool
 	pendingReload bool
 }
 
@@ -106,7 +118,8 @@ const (
 )
 
 // ResponsePermissions are what CSM's key needs beyond the User role: suspend
-// accounts, lift bans, and read every setting setup and doctor read.
+// accounts, lift bans, keep CSM's address list in Stalwart, and read every
+// setting setup and doctor read.
 var ResponsePermissions = []string{
 	"authenticate", "sysAccountGet", "sysAccountQuery", "sysAccountUpdate",
 	"sysBlockedIpGet", "sysBlockedIpQuery", "sysBlockedIpDestroy",
@@ -115,6 +128,8 @@ var ResponsePermissions = []string{
 	"sysSecurityGet", "sysNetworkListenerGet", "sysNetworkListenerQuery",
 	"sysSystemSettingsGet", "sysSpamSettingsGet", "sysMtaStageDataGet",
 	"sysRoleGet", "sysRoleQuery", "sysDomainGet", "sysDomainQuery",
+	"sysMemoryLookupKeyGet", "sysMemoryLookupKeyQuery", "sysMemoryLookupKeyCreate", "sysMemoryLookupKeyDestroy",
+	"actionReloadLookupStores", "sysSpamRuleGet", "sysSpamRuleQuery", "sysSpamTagGet", "sysSpamTagQuery",
 }
 
 // keyAddresses limit CSM's key to this host.
@@ -155,6 +170,10 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	listStep, listOn, err := inspectAddressList(ctx, api)
+	if err != nil {
+		return Plan{}, err
+	}
 	response, err := inspectResponse(ctx, api, in)
 	if err != nil {
 		return Plan{}, err
@@ -166,7 +185,8 @@ func Inspect(ctx context.Context, api API, in Inputs) (Plan, error) {
 		proxyStep(listeners, proxy),
 		tracingStep("spam verdict logging", spamVerdictEvent, levels, "; rejected and discarded spam is not logged until then"),
 		spamStep,
-	}, response...)}, nil
+		listStep,
+	}, response...), AddressListOn: listOn}, nil
 }
 
 // inspectResponse plans CSM's role, its service account and the account's
@@ -434,6 +454,130 @@ func inspectSpamFilter(ctx context.Context, api API) (Step, error) {
 	return s, nil
 }
 
+// AddressListRule is the Stalwart spam rule that scores senders on CSM's
+// address list.
+const AddressListRule = "CSM_IP"
+
+// AddressListArms is the rule's condition: one arm per symbol, strongest
+// first, so the first match is the strongest listing of the sender.
+func AddressListArms() []stalwartapi.RuleArm {
+	var arms []stalwartapi.RuleArm
+	for _, s := range ipmap.Symbols() {
+		arms = append(arms, stalwartapi.RuleArm{
+			If: fmt.Sprintf("key_exists('%s', remote_ip) || (is_ipv6_addr(remote_ip) && key_exists('%s', ip_reverse_name(remote_ip)))",
+				ipmap.StalwartNamespace(s, false), ipmap.StalwartNamespace(s, true)),
+			Then: "'" + s.Name + "'",
+		})
+	}
+	return arms
+}
+
+// inspectAddressList plans the rule that has Stalwart score senders on CSM's
+// address list, and its tags. on is true when the rule exists and is switched
+// on. A refused login stops setup; any other failed read is a warning, so a
+// key from before the address list does not block the other steps.
+func inspectAddressList(ctx context.Context, api API) (Step, bool, error) {
+	s, on, err := addressListStep(ctx, api)
+	if errors.Is(err, stalwartapi.ErrUnauthorized) {
+		return Step{}, false, err
+	}
+	if err != nil {
+		s = Step{Name: "address list", State: Warn, Detail: "Cannot read Stalwart's spam rules; run csm stalwart setup with an admin login"}
+	}
+	return s, on, nil
+}
+
+// addressListStep reads the rule and its tags. The rule's own switch is the
+// operator's: setup creates the rule on but never switches it back on, and
+// never changes a tag's score.
+func addressListStep(ctx context.Context, api API) (s Step, on bool, err error) {
+	s = Step{Name: "address list", State: Warn}
+	rule, found, err := api.SpamRule(ctx, AddressListRule)
+	if err != nil {
+		return s, false, err
+	}
+	switch {
+	case found && rule.Type != "Any":
+		// The type is server text, so the detail does not quote it.
+		s.Detail = "Stalwart has a rule named " + AddressListRule + " that CSM did not make; remove or rename it, then run setup"
+		return s, false, nil
+	case found && !rule.Enabled:
+		s.State, s.Detail = Done, "rule "+AddressListRule+" is switched off in Stalwart, so CSM's address list adds no score"
+		return s, false, nil
+	}
+	on = found
+
+	var scores, nonScoring, missing []string
+	var create []ipmap.Symbol
+	for _, sym := range ipmap.Symbols() {
+		tag, have, err := api.SpamTag(ctx, sym.Name)
+		if err != nil {
+			return s, on, err
+		}
+		if !have {
+			missing = append(missing, sym.Name)
+			create = append(create, sym)
+			continue
+		}
+		if tag.Type == "Score" {
+			scores = append(scores, sym.Name+" "+strconv.FormatFloat(tag.Score, 'f', -1, 64))
+		} else {
+			nonScoring = append(nonScoring, sym.Name)
+		}
+	}
+	arms := AddressListArms()
+	reset := found && (!slices.Equal(rule.Arms, arms) || rule.Else != "false")
+	switch {
+	case !found:
+		var strongest int
+		for _, sym := range ipmap.Symbols() {
+			strongest = max(strongest, sym.Tenths())
+		}
+		s.Detail = fmt.Sprintf("create rule %s: Stalwart adds up to %s to the spam score of senders on CSM's address list, so more of their mail goes to Junk, or is rejected or discarded at the scores set in Stalwart; switch the rule off in Stalwart to stop",
+			AddressListRule, strconv.FormatFloat(float64(strongest)/10, 'f', -1, 64))
+	case len(missing) > 0 || reset:
+		var parts []string
+		if len(missing) > 0 {
+			noun := "tag"
+			if len(missing) > 1 {
+				noun = "tags"
+			}
+			parts = append(parts, "create the missing "+noun+" "+strings.Join(missing, ", "))
+		}
+		if reset {
+			parts = append(parts, "reset the condition of rule "+AddressListRule+" to match CSM's address list")
+		}
+		s.Detail = strings.Join(parts, "; ")
+	default:
+		s.State, s.Detail = Done, "rule "+AddressListRule+" adds "+strings.Join(scores, ", ")+" to senders on CSM's address list"
+		if len(scores) == 0 {
+			s.Detail = "rule " + AddressListRule + " has no scoring tags"
+		}
+		if len(nonScoring) > 0 {
+			s.Detail += "; non-scoring tags: " + strings.Join(nonScoring, ", ")
+		}
+		return s, on, nil
+	}
+	s.State = Change
+	s.apply = func(ctx context.Context, api API) error {
+		// Created tags leave the list, so a retried Apply does not repeat them.
+		for len(create) > 0 {
+			if err := api.CreateSpamTag(ctx, create[0].Name, float64(create[0].Tenths())/10); err != nil {
+				return err
+			}
+			create = create[1:]
+		}
+		switch {
+		case !found:
+			return api.CreateSpamRule(ctx, AddressListRule, stalwartapi.SpamRule{Arms: arms, Else: "false"})
+		case reset:
+			return api.SetSpamRuleCondition(ctx, rule.ID, arms, "false")
+		}
+		return nil
+	}
+	return s, on, nil
+}
+
 // Apply makes each planned change in order, then reloads Stalwart's settings
 // once. It makes no call when nothing changes. A failed write stops it, and
 // the settings written before it are still reloaded: a later run reads them
@@ -505,8 +649,7 @@ func tracingStep(name, event string, levels []stalwartapi.TracingLevel, why stri
 	return s
 }
 
-// spamFilterStep reports Stalwart's spam filter. It has no apply: setup never
-// switches the filter or changes what happens to a message.
+// spamFilterStep only reports the filter's switch and action scores; the address list is a separate step.
 func spamFilterStep(sp stalwartapi.SpamSettings, stageOff bool) Step {
 	s := Step{Name: "spam filter"}
 	if !sp.Enabled || stageOff {

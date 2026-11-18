@@ -203,5 +203,11 @@ func (d *Daemon) recordStalwartVerdict(ip netip.Addr, spam bool, at time.Time, c
 	if adb == nil || !ipmap.Recordable(ip, nil) || d.spamSenderExcluded(ip, cfg) {
 		return
 	}
+	// A verdict influenced by CSM's own list says more about the list than the sender.
+	if s := d.stalwart; s != nil {
+		if st := s.list.Load(); st != nil && (st.filterOff || (!st.ruleOff && st.m.Weight(ip) > 0)) {
+			return
+		}
+	}
 	d.recordMailVerdict(adb, ip.String(), spam, at)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/stalwartapi"
 	"github.com/pidginhost/csm/internal/stalwartlog"
@@ -362,9 +363,21 @@ func stalwartSettingsDoctorChecks(ctx context.Context, getenv func(string) strin
 	checks = append(checks, stalwartStepChecks(plan)...)
 	// A filter that is off, or in an unknown state, may make no lookups.
 	for _, st := range plan.Steps {
-		if st.Name == "spam filter" && st.State != stalwartsetup.Warn {
-			checks = append(checks, stalwartBlocklistCheck(ctx, api, redact))
+		if st.Name != "spam filter" || st.State == stalwartsetup.Warn {
+			continue
 		}
+		res, err := api.ClassifySpam(ctx, stalwartapi.BlocklistProbe)
+		checks = append(checks, stalwartBlocklistCheck(res, err, redact))
+		// In observe mode the daemon does not write the list to Stalwart.
+		if !plan.AddressListOn || in.Observe {
+			continue
+		}
+		if err != nil {
+			checks = append(checks, DoctorCheck{Name: "stalwart address list match", Status: "warn",
+				Message: "Could not test whether Stalwart scores senders on CSM's address list: " + stalwartDiagnosticText(redact(err.Error()), 512)})
+			continue
+		}
+		checks = append(checks, stalwartAddressListCheck(res))
 	}
 	return checks
 }
@@ -375,12 +388,12 @@ func stalwartNoKeyCheck(path string) DoctorCheck {
 		Fix:     "run csm stalwart setup"}
 }
 
-// stalwartBlocklistCheck has Stalwart classify one test message, which it
-// neither delivers nor learns from. Through a resolver the blocklists refuse,
-// such as a public one, the matched rules include ones named *_BLOCKED. The
-// verdict and score are ignored: the test sender fails SPF and DMARC.
-func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI, redact func(string) string) DoctorCheck {
-	res, err := api.ClassifySpam(ctx, stalwartapi.BlocklistProbe)
+// stalwartBlocklistCheck reads Stalwart's verdict on one test message, which
+// it neither delivers nor learns from. Through a resolver the blocklists
+// refuse, such as a public one, the matched rules include ones named
+// *_BLOCKED. The verdict and score are ignored: the test sender fails SPF and
+// DMARC.
+func stalwartBlocklistCheck(res stalwartapi.SpamProbeResult, err error, redact func(string) string) DoctorCheck {
 	if err != nil {
 		return DoctorCheck{Name: "stalwart blocklists", Status: "warn", Message: "Could not test Stalwart's DNS blocklists: " + stalwartDiagnosticText(redact(err.Error()), 512)}
 	}
@@ -402,6 +415,17 @@ func stalwartBlocklistCheck(ctx context.Context, api stalwartDoctorAPI, redact f
 	return DoctorCheck{Name: "stalwart blocklists", Status: "warn",
 		Message: "Stalwart's DNS blocklists refuse this server's resolver (" + strings.Join(blocked, ", ") + "), so they add nothing to spam scores",
 		Fix:     "point Stalwart at a local recursive resolver, then restart Stalwart"}
+}
+
+// stalwartAddressListCheck reports whether the test message, sent from the
+// address the daemon keeps on CSM's list, matched the list's canary tag.
+func stalwartAddressListCheck(res stalwartapi.SpamProbeResult) DoctorCheck {
+	if slices.Contains(res.Tags, ipmap.Canary.Name) {
+		return DoctorCheck{Name: "stalwart address list match", Status: "ok", Message: "Stalwart scores senders on CSM's address list"}
+	}
+	return DoctorCheck{Name: "stalwart address list match", Status: "warn",
+		Message: "Stalwart did not match CSM's test sender to CSM's address list, so listed senders get no extra spam score",
+		Fix:     "the CSM daemon writes the list within 10 minutes of csm stalwart setup, so run csm doctor again after that; if it still warns, check the daemon's stalwart_address_list finding and run csm stalwart setup only when that finding says to"}
 }
 
 // stalwartDiagnosticText escapes terminal controls and bounds server text.

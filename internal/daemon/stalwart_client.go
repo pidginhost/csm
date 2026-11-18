@@ -17,6 +17,13 @@ type stalwartAPI interface {
 	BlockedIPs(ctx context.Context, address string) ([]stalwartapi.BlockedIP, error)
 	DeleteBlockedIPs(ctx context.Context, ids []string) error
 	ReloadBlockedIPs(ctx context.Context) error
+	SpamSettings(ctx context.Context) (stalwartapi.SpamSettings, error)
+	SpamFilterStageOff(ctx context.Context) (bool, error)
+	SpamRule(ctx context.Context, name string) (stalwartapi.SpamRule, bool, error)
+	LookupKeys(ctx context.Context, namespace string) ([]stalwartapi.LookupKey, error)
+	CreateLookupKeys(ctx context.Context, namespace string, keys []string) error
+	DeleteLookupKeys(ctx context.Context, ids []string) error
+	ReloadLookupStores(ctx context.Context) error
 }
 
 // newStalwartKeyClient is a var so tests can see what the client is built
@@ -38,4 +45,21 @@ var stalwartClient = func(cfg *config.Config) (stalwartAPI, error) {
 func stalwartKeyPresent(cfg *config.Config) bool {
 	_, err := os.Lstat(cfg.Stalwart.APIKeyFile)
 	return err == nil
+}
+
+// stalwartMethodForbidden also checks reload errors joined to an earlier write failure.
+func stalwartMethodForbidden(err error) bool {
+	switch e := err.(type) {
+	case *stalwartapi.MethodError:
+		return e.Type == "forbidden"
+	case interface{ Unwrap() []error }:
+		for _, child := range e.Unwrap() {
+			if stalwartMethodForbidden(child) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return stalwartMethodForbidden(e.Unwrap())
+	}
+	return false
 }

@@ -1061,7 +1061,14 @@ its own scores decide what happens to each message. `csm stalwart setup`
 makes Stalwart log the mail its filter rejects or discards and reports
 whether the filter is on and at which scores it acts; `csm doctor` checks
 the same and whether the filter's DNS blocklists answer. Neither switches
-the filter or changes its scores. See
+the filter on or off or changes the scores at which it files mail to Junk,
+rejects or discards it. Setup also adds a spam rule that adds up
+to 4 to the spam score of senders on CSM's address list, so more of their
+mail goes to Junk, or is rejected or discarded at the scores set in
+Stalwart. It is the one setup step that changes what happens to mail;
+switch the rule `CSM_IP` off in Stalwart to stop it. Setup keeps existing
+tags and reports scores only for scoring tags; it lists other tags as
+non-scoring. See
 [Preparing Stalwart](detection-realtime.md#preparing-stalwart).
 
 ### Filter verdicts
@@ -1097,11 +1104,48 @@ evidence never blocks an address, never changes its threat score and is
 never reported. It does not need `email_protection.antispam`.
 The [spam evidence budget](#spam-evidence-budget) applies here too.
 
+A sender on [CSM's address list](#csms-address-list-on-stalwart) gets no
+verdict unless CSM sees that the rule `CSM_IP` is off. The rule raised the
+score of its mail, so Stalwart's verdict on it says more about the list
+than about the sender. The list that counts is the one CSM builds now, not
+what Stalwart holds. While Stalwart's spam filter is off, no verdict is
+recorded at all. The Email page counts these messages as usual.
+
+### CSM's address list on Stalwart
+
+CSM keeps its address list in Stalwart's lookup lists, where the rule
+`CSM_IP` reads it. The list holds the same addresses as the
+[CSM IP map](#csm-ip-map), from the same sources and with the same
+exceptions. CSM checks it at start and every 10 minutes, writes only what
+changed, and then has Stalwart load it. If loading fails twice, CSM keeps
+retrying on later checks, even when no keys need changing.
+
+The lookup namespaces whose names start with `csm-ip` belong to CSM. CSM
+deletes any key there that it did not add, so edits made there in Stalwart
+are undone within 10 minutes. To stop the scoring, switch the rule `CSM_IP`
+off in Stalwart: CSM then empties these namespaces. A missing rule or a
+rule whose type is not `Any` also empties them. CSM fills them again once
+the rule exists, has type `Any`, and is enabled. In observe mode CSM reads
+Stalwart but writes nothing, so the namespaces keep what they hold, even
+with the rule off. An unfinished reload keeps its warning in observe mode.
+
+`stalwart_spam_filter_off` warns while Stalwart's spam filter is off, since
+Stalwart then scores no mail. A failed filter read leaves an existing
+warning in place until CSM can confirm the filter is on.
+`stalwart_address_list` warns when CSM cannot inspect or read its key file,
+read the rule or list, write the list, or have Stalwart load it. When
+Stalwart refuses CSM's key, its message says to run `csm stalwart setup`.
+These warnings clear once recovery is confirmed.
+
+CSM's key needs more access to keep the list, so run `csm stalwart setup`
+again after upgrading. Without a key file CSM writes nothing to Stalwart and
+raises neither finding; setup and `csm doctor` report the missing key. An
+unreadable key file instead raises `stalwart_address_list`.
+
 ### Not done on Stalwart
 
-CSM does not change Stalwart's scores or rules, set up its DNS blocklists or
-check outgoing mail. Stalwart does not yet read CSM's own address list; that
-is planned.
+Apart from the rule for its address list, CSM does not change Stalwart's
+scores or rules, set up its DNS blocklists or check outgoing mail.
 
 ## rspamd admin interface
 
@@ -1562,6 +1606,8 @@ that failed in its last pass, until a later pass reads it.
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 | `antispam_learning` | Warning | One finding per learning readiness or removal problem. Core filtering is unaffected. See [Learning findings](#learning-findings). |
+| `stalwart_spam_filter_off` | Warning | Stalwart's spam filter is off, so Stalwart scores no mail. See [CSM's address list on Stalwart](#csms-address-list-on-stalwart). |
+| `stalwart_address_list` | Warning | CSM could not inspect or read its key file, read its rule or list, update the list, or have Stalwart load it. Run `csm stalwart setup` when the message says so. See [CSM's address list on Stalwart](#csms-address-list-on-stalwart). |
 | `spam_evidence_evicted` | Warning | The spam evidence budget was reached and CSM dropped the weakest records. The message names the most crowded network and how many records it held. See [Spam evidence budget](#spam-evidence-budget). |
 
 While rspamd is down or scans fail on a cPanel host, mail is delivered
