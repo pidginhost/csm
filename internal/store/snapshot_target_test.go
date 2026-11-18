@@ -49,7 +49,7 @@ func TestVerifyDatabaseRequiresReadableMetadata(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyDatabase(path); err == nil {
+	if err := VerifyDatabase(path); err == nil {
 		t.Fatal("accepted metadata bbolt cannot use to open the database")
 	}
 }
@@ -70,7 +70,7 @@ func TestVerifyDatabaseLimitsInlineBucketSize(t *testing.T) {
 	if err = errors.Join(err, db.Close()); err != nil {
 		t.Fatal(err)
 	}
-	if err = verifyDatabase(path); err != nil {
+	if err = VerifyDatabase(path); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -94,7 +94,7 @@ func TestVerifyDatabaseLimitsInlineBucketSize(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyDatabase(path); err == nil {
+	if err := VerifyDatabase(path); err == nil {
 		t.Fatal("accepted an oversized inline bucket")
 	}
 }
@@ -132,7 +132,7 @@ func TestVerifyDatabaseChecksBranchChildren(t *testing.T) {
 	if err != nil || closeErr != nil {
 		t.Fatal(errors.Join(err, closeErr))
 	}
-	if err = verifyDatabase(path); err != nil {
+	if err = VerifyDatabase(path); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -162,7 +162,7 @@ func TestVerifyDatabaseChecksBranchChildren(t *testing.T) {
 				t.Fatal(err)
 			}
 			copy(data, original)
-			if err := verifyDatabase(path); err == nil {
+			if err := VerifyDatabase(path); err == nil {
 				t.Fatal("accepted malformed branch children")
 			}
 		})

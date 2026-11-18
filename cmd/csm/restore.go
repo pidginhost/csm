@@ -98,6 +98,10 @@ func stageLearningOnlyDatabase(stageRoot, stateDir string) error {
 	if err != nil {
 		return err
 	}
+	// Check the bytes bbolt will open, including any damage from the copy.
+	if err := csmstore.VerifyDatabase(prepared); err != nil {
+		return fmt.Errorf("existing state database: %w", err)
+	}
 	return os.Rename(prepared, target)
 }
 
