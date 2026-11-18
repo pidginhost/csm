@@ -3,6 +3,7 @@ set -e
 
 PREFERRED_CONFIG="/etc/csm/csm.yaml"
 LEGACY_CONFIG="/opt/csm/csm.yaml"
+DEFAULT_CONFIG="/usr/lib/csm/csm.yaml.default"
 CONFIG="$PREFERRED_CONFIG"
 LEGACY_MARKER="/opt/csm/state/.pkg-installed"
 MARKER="/var/lib/csm/.pkg-installed"
@@ -81,6 +82,9 @@ migrate_main_config() {
             fi
         fi
     fi
+
+    # The deb ships only the template; the rpm already installed the config.
+    [ -e "$PREFERRED_CONFIG" ] || install -m 0600 "$DEFAULT_CONFIG" "$PREFERRED_CONFIG"
 
     link_legacy_config
 }

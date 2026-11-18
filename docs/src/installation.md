@@ -158,6 +158,7 @@ The package uses FHS paths for config, state, drop-ins, and shipped profiles. Up
 | Drop-in fragments | `/etc/csm/conf.d/*.yaml` |
 | State directory | `/var/lib/csm/state/` |
 | Shipped profiles | `/usr/lib/csm/profiles/` |
+| Shipped config template | `/usr/lib/csm/csm.yaml.default` |
 | Audit log | `/var/log/csm/audit.jsonl` |
 | Binary | `/opt/csm/csm` |
 | Quarantine | `/opt/csm/quarantine/` |

@@ -22,6 +22,8 @@ sudo dnf upgrade csm                                     # RHEL family
 
 The package preserves the operator config and state, updates runtime assets, re-records integrity hashes, and restarts the daemon when it was already active.
 
+Package upgrades never ask about or replace `/etc/csm/csm.yaml`. The current shipped template is at `/usr/lib/csm/csm.yaml.default` for comparison; RPM upgrades also write it as `/etc/csm/csm.yaml.rpmnew` when it changed.
+
 ## Standalone installations
 
 ```bash

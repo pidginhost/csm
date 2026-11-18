@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Fixed
+
+- Debian and Ubuntu package upgrades no longer stop to ask whether to replace the CSM configuration file.
+
 ## [4.14.0] - 2026-11-18
 
 ### Highlights
