@@ -95,6 +95,23 @@ func TestLookupKeysRepeatedPageErrors(t *testing.T) {
 	}
 }
 
+// A page that repeats part of the last one must not list an id twice: a
+// duplicate would read as a duplicate key and get its only copy deleted.
+func TestLookupKeysOverlappingPageKeepsUnique(t *testing.T) {
+	f := lookupPages(t, idRange(0, 3), idRange(2, 5))
+	got, err := f.keyClient().LookupKeys(context.Background(), "csm-ip-drop")
+	if err != nil {
+		t.Fatalf("LookupKeys: %v", err)
+	}
+	var ids []string
+	for _, k := range got {
+		ids = append(ids, k.ID)
+	}
+	if want := idRange(0, 5); !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ids = %q, want %q", ids, want)
+	}
+}
+
 // ackAll acknowledges every create and destroy of a set call.
 func ackAll(method string, args map[string]any) (string, any) {
 	res := map[string]any{}
@@ -119,7 +136,7 @@ func ackAll(method string, args map[string]any) (string, any) {
 }
 
 func TestCreateLookupKeysBatchesAndFlagsGlobs(t *testing.T) {
-	keys := []string{"198.51.*"}
+	keys := []string{"198.51.100.*"}
 	for i := 0; i < 999; i++ {
 		keys = append(keys, fmt.Sprintf("192.0.2.%d", i%256))
 	}
@@ -150,8 +167,8 @@ func TestCreateLookupKeysBatchesAndFlagsGlobs(t *testing.T) {
 	if total != len(keys) {
 		t.Fatalf("sent %d keys, want %d", total, len(keys))
 	}
-	if glob, ok := sent["198.51.*"]; !ok || !glob {
-		t.Fatal("198.51.* was not sent as a glob")
+	if glob, ok := sent["198.51.100.*"]; !ok || !glob {
+		t.Fatal("198.51.100.* was not sent as a glob")
 	}
 	if glob, ok := sent["203.0.113.9"]; !ok || glob {
 		t.Fatal("203.0.113.9 was not sent as an exact key")

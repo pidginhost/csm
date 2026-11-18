@@ -21,9 +21,10 @@ type LookupKey struct {
 	Glob bool   `json:"isGlobPattern"`
 }
 
-// LookupKeys lists every key in namespace. A server may return fewer ids
-// than asked for, so only an empty page ends the walk, and a page with no
-// new id stops it with an error rather than looping.
+// LookupKeys lists every key in namespace once. A server may return fewer
+// ids than asked for, so only an empty page ends the walk, ids already seen
+// are skipped, and a page with no new id stops it with an error rather than
+// looping.
 func (c *Client) LookupKeys(ctx context.Context, namespace string) ([]LookupKey, error) {
 	const method = "x:MemoryLookupKey/get"
 	var all []LookupKey
@@ -38,15 +39,17 @@ func (c *Client) LookupKeys(ctx context.Context, namespace string) ([]LookupKey,
 		if len(ids) == 0 {
 			return all, nil
 		}
-		fresh := false
+		var fresh []string
 		for _, id := range ids {
-			fresh = fresh || !seen[id]
-			seen[id] = true
+			if !seen[id] {
+				fresh = append(fresh, id)
+				seen[id] = true
+			}
 		}
-		if !fresh {
+		if len(fresh) == 0 {
 			return nil, errors.New("stalwart x:MemoryLookupKey/query: paging repeated a page")
 		}
-		for page := range slices.Chunk(ids, lookupPage) {
+		for page := range slices.Chunk(fresh, lookupPage) {
 			out, err := c.call(ctx, method, map[string]any{"ids": page, "properties": []string{"key", "isGlobPattern"}})
 			if err != nil {
 				return nil, err

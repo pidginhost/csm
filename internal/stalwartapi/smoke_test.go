@@ -80,7 +80,7 @@ func TestSmokeKeyLogin(t *testing.T) {
 func smokeLookupKeys(ctx context.Context, t *testing.T, c *Client) {
 	t.Helper()
 	const ns = "csm-smoke"
-	if err := c.CreateLookupKeys(ctx, ns, []string{"203.0.113.9", "198.51.*"}); err != nil {
+	if err := c.CreateLookupKeys(ctx, ns, []string{"203.0.113.9", "198.51.100.*"}); err != nil {
 		t.Fatalf("CreateLookupKeys: %v", err)
 	}
 	keys, err := c.LookupKeys(ctx, ns)
@@ -93,7 +93,7 @@ func smokeLookupKeys(ctx context.Context, t *testing.T, c *Client) {
 		globs[k.Key] = k.Glob
 		ids = append(ids, k.ID)
 	}
-	if want := map[string]bool{"203.0.113.9": false, "198.51.*": true}; !maps.Equal(globs, want) || len(keys) != 2 {
+	if want := map[string]bool{"203.0.113.9": false, "198.51.100.*": true}; !maps.Equal(globs, want) || len(keys) != 2 {
 		t.Fatalf("LookupKeys = %+v, want %v", keys, want)
 	}
 	if err = c.DeleteLookupKeys(ctx, ids); err != nil {
