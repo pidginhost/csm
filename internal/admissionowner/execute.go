@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
@@ -232,6 +233,7 @@ func (o *Owner) execute(picks []execPick) error {
 	}
 	o.nextBatch = monoNow().Add(batchEvery)
 	results, err := engine.ApplyBlockBatch(batch)
+	observeBlockBatch(picks, run, results, err)
 	if err == nil && len(results) != len(batch) {
 		// Something may have run: no answer proves which members failed.
 		o.hold(fmt.Errorf("applying a block batch: %d results for %d members", len(results), len(batch)), true)
@@ -415,6 +417,8 @@ func (o *Owner) endRefused(p execPick, check firewall.BlockCheck) (bool, error) 
 			if reason.Disposition() == admission.DispositionDeferred {
 				return true, o.endPick(p, reason)
 			}
+		} else if !o.forecasting() {
+			observeBlockRefusal(p.c.Entry, check.Refusal)
 		}
 		return true, nil
 	case check.Refusal != "":
@@ -424,7 +428,11 @@ func (o *Owner) endRefused(p execPick, check firewall.BlockCheck) (bool, error) 
 			if o.forecasting() {
 				return true, o.endPick(p, reason)
 			}
-			return true, o.endCounted(p, reason, 0)
+			err := o.endCounted(p, reason, 0)
+			if err == nil && reason.Disposition() != admission.DispositionDeferred {
+				observeBlockRefusal(p.c.Entry, check.Refusal)
+			}
+			return true, err
 		}
 		return true, nil
 	}
@@ -516,6 +524,9 @@ func (o *Owner) endAllowed(p execPick, r verdictResult) error {
 	delete(o.verdicts.ready, p.pick.ID)
 	o.verdicts.tally.add(&o.verdicts.tally.endings)
 	logVerdictAllow(p.pick.ID, p.c.Check, r)
+	if !o.forecasting() {
+		checks.ObserveAdmissionBlock(p.c.Entry, firewall.BlockOutcomeAllowed, nil)
+	}
 	return nil
 }
 

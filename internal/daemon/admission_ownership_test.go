@@ -52,8 +52,7 @@ func TestTakenTimeoutLeavesNoLegacyEscalation(t *testing.T) {
 	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 	const ip = "203.0.113.99"
 	d.ipList.Add(ip, "wp brute", -time.Minute)
-	counter := challengeEscalatedCounter()
-	live, noop := counter.With(string(firewall.BlockOutcomeLive)).Value(), counter.With(string(firewall.BlockOutcomeNoop)).Value()
+	live, noop := checks.ChallengeEscalatedCount(firewall.BlockOutcomeLive), checks.ChallengeEscalatedCount(firewall.BlockOutcomeNoop)
 	output := captureAppliedBlockStderr(t, func() { d.escalateExpiredChallenges(time.Hour) })
 	if calls := a.got(); len(calls) != 1 || calls[0].target != ip || calls[0].via != admission.EntryChallengeTimeout {
 		t.Fatalf("timeout did not hand off exactly once: %+v", calls)
@@ -61,7 +60,7 @@ func TestTakenTimeoutLeavesNoLegacyEscalation(t *testing.T) {
 	if len(b.calls) != 0 || len(blockedTrackerIPs(t, cfg.StatePath)) != 0 {
 		t.Fatal("taken timeout left legacy block evidence")
 	}
-	if counter.With(string(firewall.BlockOutcomeLive)).Value() != live || counter.With(string(firewall.BlockOutcomeNoop)).Value() != noop {
+	if checks.ChallengeEscalatedCount(firewall.BlockOutcomeLive) != live || checks.ChallengeEscalatedCount(firewall.BlockOutcomeNoop) != noop {
 		t.Fatal("taken timeout counted a legacy escalation")
 	}
 	if output != "" {

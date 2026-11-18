@@ -3424,7 +3424,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 				continue
 			}
 		}
-		observeChallengeEscalated(res.Outcome)
+		checks.ObserveChallengeEscalated(res.Outcome)
 		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, res.Outcome))
 	}
 	d.recordAppliedBlocks(recorded)
@@ -3507,40 +3507,6 @@ func (d *Daemon) applyIncidentBlock(ip, reason string, timeout time.Duration, fi
 	}
 	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))
 	return live, err
-}
-
-var (
-	challengeEscalatedMetric     *metrics.CounterVec
-	challengeEscalatedMetricOnce sync.Once
-)
-
-// challengeEscalatedCounter returns the lazily registered metric. Count paths
-// use the same Once gate as increments so first status reads cannot race the
-// first escalation.
-func challengeEscalatedCounter() *metrics.CounterVec {
-	challengeEscalatedMetricOnce.Do(func() {
-		challengeEscalatedMetric = metrics.NewCounterVec(
-			"csm_challenge_escalated_total",
-			"Challenge-timeout escalations, by firewall outcome (live, noop, dry_run, allowed, allowlisted).",
-			[]string{"outcome"},
-		)
-		metrics.MustRegister("csm_challenge_escalated_total", challengeEscalatedMetric)
-	})
-	return challengeEscalatedMetric
-}
-
-// observeChallengeEscalated counts one challenge-timeout escalation, labelled by
-// the firewall outcome (live=a new hard block landed, noop=the IP was already
-// blocked, plus dry_run/allowed/allowlisted). It lets operators see how many
-// challenges became real blocks versus no-ops. Registered lazily on first use.
-func observeChallengeEscalated(outcome firewall.BlockOutcome) {
-	challengeEscalatedCounter().With(string(outcome)).Inc()
-}
-
-// challengeEscalatedCount returns how many challenge timeouts escalated to a new
-// hard block (outcome=live) since daemon start, for the web UI challenge panel.
-func challengeEscalatedCount() int {
-	return int(challengeEscalatedCounter().With(string(firewall.BlockOutcomeLive)).Value())
 }
 
 // challengeEscalateLogLine renders the stderr line for one challenge-timeout

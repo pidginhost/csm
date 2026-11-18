@@ -8,7 +8,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 |--------|-------------|
 | **Kill processes** | Fake kernel threads, reverse shells, GSocket, loops that write back a file CSM removed, and shell loops a web request left running in the background. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
-| **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
+| **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Admission uses `auto_response.max_blocks_per_hour` (default 2000/hour); legacy scan blocking defaults to 50/hour. |
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
@@ -513,8 +513,8 @@ on; with either off, an expired challenge simply leaves the challenge list.
 Reloading these switches takes effect before the next block attempt, including
 later entries in a challenge-timeout batch. Incident block refusals caused by
 these switches keep the incident visible without a failed-block warning.
-Challenge, central, and incident blocks are not limited by
-`auto_response.max_blocks_per_hour`; that budget applies to scan-driven
+Admission applies `auto_response.max_blocks_per_hour` to scan, challenge,
+central, and incident IP blocks. On the legacy path that budget applies to scan-driven
 blocks only.
 
 Mail login spray blocks use a separate hourly budget of the same size. They
@@ -529,7 +529,7 @@ reservation defers spray blocks and reports a warning, without stopping other
 scan blocks.
 
 The same setting also sets the hourly ceiling of the admission ledger, which
-will cover every automatic source once responses are admitted through it. For
+covers every IP block it executes, including challenge, central, and incident blocks. For
 the ledger an omitted or zero value selects 2000 and a value above 20000 is
 clamped to 20000; the per-IP limit above keeps reading omitted or zero as 50.
 An explicit value sets both. Packaged configs used to set 50, which keeps the
@@ -624,7 +624,7 @@ blocked a known customer are listed in the
 - Quarantined files preserve full metadata for restoration
 - Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
-- IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
+- IP blocks are limited by `auto_response.max_blocks_per_hour`: admission defaults to 2000/hour and legacy scan blocking to 50/hour.
 - CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour); lower-severity findings batched with them still count against it
 - Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary instead of alert email and the generic webhook; an attack whose block failed, is still queued or ran in dry run is alerted immediately, as are a block of a Cloudflare-covered address and the web attacks from it
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
