@@ -21,10 +21,7 @@ type LookupKey struct {
 	Glob bool   `json:"isGlobPattern"`
 }
 
-// LookupKeys lists every key in namespace once. A server may return fewer
-// ids than asked for, so only an empty page ends the walk, ids already seen
-// are skipped, and a page with no new id stops it with an error rather than
-// looping.
+// LookupKeys lists each key once, ending on an empty query page and rejecting pages without new IDs.
 func (c *Client) LookupKeys(ctx context.Context, namespace string) ([]LookupKey, error) {
 	const method = "x:MemoryLookupKey/get"
 	var all []LookupKey
@@ -61,14 +58,24 @@ func (c *Client) LookupKeys(ctx context.Context, namespace string) ([]LookupKey,
 			if json.Unmarshal(out, &res) != nil || res.List == nil {
 				return nil, fmt.Errorf("stalwart %s: unexpected response", method)
 			}
+			pending := make(map[string]bool, len(page))
+			for _, id := range page {
+				pending[id] = true
+			}
+			for _, key := range res.List {
+				if key.ID == "" || !pending[key.ID] {
+					return nil, fmt.Errorf("stalwart %s: unexpected response", method)
+				}
+				delete(pending, key.ID)
+			}
+			// Missing entries are allowed because keys can be deleted between query and get.
 			all = append(all, res.List...)
 		}
 		pos += len(ids)
 	}
 }
 
-// CreateLookupKeys adds keys to namespace. A key holding "*" is a glob.
-// The keys take effect after ReloadLookupStores.
+// CreateLookupKeys adds keys, treating "*" as a glob; changes take effect after ReloadLookupStores.
 func (c *Client) CreateLookupKeys(ctx context.Context, namespace string, keys []string) error {
 	for page := range slices.Chunk(keys, lookupPage) {
 		create := make(map[string]any, len(page))
@@ -82,8 +89,7 @@ func (c *Client) CreateLookupKeys(ctx context.Context, namespace string, keys []
 	return nil
 }
 
-// DeleteLookupKeys removes the keys with these ids. The change takes effect
-// after ReloadLookupStores.
+// DeleteLookupKeys removes keys by ID; changes take effect after ReloadLookupStores.
 func (c *Client) DeleteLookupKeys(ctx context.Context, ids []string) error {
 	for page := range slices.Chunk(ids, lookupPage) {
 		if _, err := c.set(ctx, "x:MemoryLookupKey/set", map[string]any{"destroy": page}); err != nil {
@@ -93,8 +99,7 @@ func (c *Client) DeleteLookupKeys(ctx context.Context, ids []string) error {
 	return nil
 }
 
-// ReloadLookupStores has Stalwart read its lookup lists again, which is
-// when created and deleted keys take effect.
+// ReloadLookupStores makes created and deleted lookup keys take effect.
 func (c *Client) ReloadLookupStores(ctx context.Context) error {
 	_, err := c.set(ctx, "x:Action/set", map[string]any{
 		"create": map[string]any{"r": map[string]any{"@type": "ReloadLookupStores"}},
@@ -102,8 +107,7 @@ func (c *Client) ReloadLookupStores(ctx context.Context) error {
 	return err
 }
 
-// SpamRule is one Stalwart spam filter rule. Arms are tried in order and the
-// first match wins; Else is the result when none match.
+// SpamRule tries Arms in order, taking the first match or Else when none match.
 type SpamRule struct {
 	ID, Type string
 	Enabled  bool
@@ -117,8 +121,7 @@ type RuleArm struct {
 	Then string `json:"then"`
 }
 
-// SpamRule reads the rule named name. A missing rule is not found, not an
-// error.
+// SpamRule reads the named rule; a missing rule is not an error.
 func (c *Client) SpamRule(ctx context.Context, name string) (SpamRule, bool, error) {
 	const method = "x:SpamRule/get"
 	ids, err := c.query(ctx, "x:SpamRule/query", map[string]any{"name": name})
@@ -161,8 +164,7 @@ func (c *Client) SpamRule(ctx context.Context, name string) (SpamRule, bool, err
 	return r, true, nil
 }
 
-// CreateSpamRule adds an enabled rule named name that matches r's arms, with
-// Stalwart's default priority.
+// CreateSpamRule adds an enabled rule with r's condition and Stalwart's default priority.
 func (c *Client) CreateSpamRule(ctx context.Context, name string, r SpamRule) error {
 	_, err := c.set(ctx, "x:SpamRule/set", map[string]any{"create": map[string]any{"r": map[string]any{
 		"@type": "Any", "name": name, "enable": true, "condition": ruleCondition(r.Arms, r.Else),
@@ -170,8 +172,7 @@ func (c *Client) CreateSpamRule(ctx context.Context, name string, r SpamRule) er
 	return err
 }
 
-// SetSpamRuleCondition replaces the condition of the rule with id and leaves
-// its other fields alone.
+// SetSpamRuleCondition replaces a rule's condition without changing its other fields.
 func (c *Client) SetSpamRuleCondition(ctx context.Context, id string, arms []RuleArm, elseExpr string) error {
 	_, err := c.set(ctx, "x:SpamRule/set", map[string]any{"update": map[string]any{
 		id: map[string]any{"condition": ruleCondition(arms, elseExpr)},

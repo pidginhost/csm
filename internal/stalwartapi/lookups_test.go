@@ -2,13 +2,13 @@ package stalwartapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 )
 
-// lookupPages answers x:MemoryLookupKey/query with the pages in order, then
-// empty pages, and x:MemoryLookupKey/get with one key per requested id.
+// lookupPages returns query pages in order, then empty pages, and one key per requested ID.
 func lookupPages(t *testing.T, pages ...[]string) *fakeStalwart {
 	f := newFake(t)
 	n := 0
@@ -95,8 +95,7 @@ func TestLookupKeysRepeatedPageErrors(t *testing.T) {
 	}
 }
 
-// A page that repeats part of the last one must not list an id twice: a
-// duplicate would read as a duplicate key and get its only copy deleted.
+// Repeated IDs must not appear as duplicate keys that could get their only copy deleted.
 func TestLookupKeysOverlappingPageKeepsUnique(t *testing.T) {
 	f := lookupPages(t, idRange(0, 3), idRange(2, 5))
 	got, err := f.keyClient().LookupKeys(context.Background(), "csm-ip-drop")
@@ -109,6 +108,61 @@ func TestLookupKeysOverlappingPageKeepsUnique(t *testing.T) {
 	}
 	if want := idRange(0, 5); !reflect.DeepEqual(ids, want) {
 		t.Fatalf("ids = %q, want %q", ids, want)
+	}
+}
+
+func TestLookupKeysRejectsInvalidGetIDs(t *testing.T) {
+	for name, list := range map[string][]LookupKey{
+		"missing":   {{Key: "192.0.2.1"}},
+		"duplicate": {{ID: "i0", Key: "192.0.2.1"}, {ID: "i0", Key: "192.0.2.1"}},
+		"unasked":   {{ID: "other", Key: "192.0.2.1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := lookupPages(t, idRange(0, 2))
+			reply := f.reply
+			f.reply = func(method string, args map[string]any) (string, any) {
+				if method == "x:MemoryLookupKey/get" {
+					return method, map[string]any{"list": list}
+				}
+				return reply(method, args)
+			}
+			got, err := f.keyClient().LookupKeys(context.Background(), "csm-ip-drop")
+			if err == nil || got != nil {
+				t.Fatalf("LookupKeys = %+v, %v; want no keys and an error", got, err)
+			}
+			if want := []string{"x:MemoryLookupKey/query", "x:MemoryLookupKey/get"}; !reflect.DeepEqual(f.methods(), want) {
+				t.Fatalf("calls = %q, want %q", f.methods(), want)
+			}
+		})
+	}
+}
+
+func TestLookupKeysAllowsDeletedKeys(t *testing.T) {
+	for _, list := range [][]LookupKey{{}, {{ID: "i1", Key: "192.0.2.1"}}} {
+		t.Run(fmt.Sprintf("remaining-%d", len(list)), func(t *testing.T) {
+			f := lookupPages(t, idRange(0, 2), idRange(2, 3))
+			reply := f.reply
+			f.reply = func(method string, args map[string]any) (string, any) {
+				if method == "x:MemoryLookupKey/get" && asJSON(t, args["ids"]) == `["i0","i1"]` {
+					return method, map[string]any{"list": list}
+				}
+				return reply(method, args)
+			}
+			got, err := f.keyClient().LookupKeys(context.Background(), "csm-ip-drop")
+			want := append(append([]LookupKey{}, list...), LookupKey{ID: "i2", Key: "k-i2"})
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("LookupKeys = %+v, %v; want %+v", got, err, want)
+			}
+			var positions []any
+			for i, method := range f.methods() {
+				if method == "x:MemoryLookupKey/query" {
+					positions = append(positions, f.callAt(i).Args["position"])
+				}
+			}
+			if got := asJSON(t, positions); got != `[0,2,3]` {
+				t.Fatalf("query positions = %s, want [0,2,3]", got)
+			}
+		})
 	}
 }
 
@@ -186,6 +240,49 @@ func TestDeleteLookupKeysBatches(t *testing.T) {
 	}
 	if a, b := len(f.callAt(0).Args["destroy"].([]any)), len(f.callAt(1).Args["destroy"].([]any)); a != 500 || b != 1 {
 		t.Fatalf("destroys = %d, %d; want 500, 1", a, b)
+	}
+}
+
+func TestLookupKeyWritesStopAtFailedBatch(t *testing.T) {
+	for _, operation := range []string{"create", "destroy"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newFake(t)
+			f.reply = func(method string, args map[string]any) (string, any) {
+				name, body := ackAll(method, args)
+				if len(f.methods()) != 2 {
+					return name, body
+				}
+				res := body.(map[string]any)
+				failure := map[string]any{"type": "forbidden", "description": "write refused"}
+				if operation == "create" {
+					delete(res["created"].(map[string]any), "k0")
+					res["notCreated"] = map[string]any{"k0": failure}
+				} else {
+					ids := res["destroyed"].([]any)
+					res["destroyed"] = ids[1:]
+					res["notDestroyed"] = map[string]any{ids[0].(string): failure}
+				}
+				return name, res
+			}
+			c := f.keyClient()
+			var err error
+			if operation == "create" {
+				keys := make([]string, 1001)
+				for i := range keys {
+					keys[i] = fmt.Sprintf("2001:db8::%x", i+1)
+				}
+				err = c.CreateLookupKeys(context.Background(), "csm-ip-drop", keys)
+			} else {
+				err = c.DeleteLookupKeys(context.Background(), idRange(0, 1001))
+			}
+			var me *MethodError
+			if !errors.As(err, &me) || me.Method != "x:MemoryLookupKey/set" || me.Type != "forbidden" || me.Description != "write refused" {
+				t.Fatalf("error = %v, want the failed entry's MethodError", err)
+			}
+			if want := []string{"x:MemoryLookupKey/set", "x:MemoryLookupKey/set"}; !reflect.DeepEqual(f.methods(), want) {
+				t.Fatalf("calls = %q, want %q", f.methods(), want)
+			}
+		})
 	}
 }
 
