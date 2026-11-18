@@ -36,9 +36,21 @@ contents:
       owner: root
       group: root
 
+  # The deb gets the template only; postinstall creates /etc/csm/csm.yaml when
+  # missing. As a conffile it makes dpkg prompt on every template change.
+  - src: build/packaging/csm.yaml.default
+    dst: /usr/lib/csm/csm.yaml.default
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  # RPM keeps owning the config: noreplace upgrades quietly, and dropping a
+  # modified %config file would move it to .rpmsave.
   - src: build/packaging/csm.yaml.default
     dst: /etc/csm/csm.yaml
     type: config|noreplace
+    packager: rpm
     file_info:
       mode: 0600
       owner: root
