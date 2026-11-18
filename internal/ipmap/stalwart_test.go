@@ -21,16 +21,21 @@ func TestStalwartNamespaceNames(t *testing.T) {
 		}
 	}
 	all := StalwartNamespaces()
-	if len(all) != 14 {
-		t.Fatalf("StalwartNamespaces() has %d names, want 14: %v", len(all), all)
+	want := []string{
+		"csm-ip-drop", "csm-ip6-drop",
+		"csm-ip-blocked", "csm-ip6-blocked",
+		"csm-ip-mail-auth", "csm-ip6-mail-auth",
+		"csm-ip-spam", "csm-ip6-spam",
+		"csm-ip-blocklistde", "csm-ip6-blocklistde",
+		"csm-ip-cins", "csm-ip6-cins",
+		"csm-ip-canary", "csm-ip6-canary",
 	}
-	if all[0] != "csm-ip-drop" || all[1] != "csm-ip6-drop" || all[13] != "csm-ip6-canary" {
-		t.Errorf("namespaces not v4 then v6 per symbol in rule order: %v", all)
+	if !slices.Equal(all, want) {
+		t.Errorf("StalwartNamespaces() = %v, want %v", all, want)
 	}
 }
 
-// checkKeys compares the namespaces in want and requires every other
-// namespace to be present and empty, apart from the canary's.
+// checkKeys requires all namespaces, with only the expected keys and the canary.
 func checkKeys(t *testing.T, got map[string][]string, want map[string][]string) {
 	t.Helper()
 	if len(got) != 14 {
@@ -60,13 +65,20 @@ func TestStalwartKeysIPv4(t *testing.T) {
 	m := Build(Sources{Entries: map[string][]string{
 		Blocked.Name: {"203.0.113.9"},
 		Drop.Name:    {"198.18.0.0/15"},
-		CINS.Name:    {"198.51.100.0/22", "192.0.2.128/30"},
+		CINS.Name:    {"192.0.2.128/30"},
 	}})
 	checkKeys(t, m.StalwartKeys(), map[string][]string{
 		"csm-ip-blocked": {"203.0.113.9"},
 		"csm-ip-drop":    {"198.18.*", "198.19.*"},
-		"csm-ip-cins":    {"192.0.2.128", "192.0.2.129", "192.0.2.130", "192.0.2.131", "198.51.100.*", "198.51.101.*", "198.51.102.*", "198.51.103.*"},
+		"csm-ip-cins":    {"192.0.2.128", "192.0.2.129", "192.0.2.130", "192.0.2.131"},
 		"csm-ip-canary":  {"192.0.2.255"},
+	})
+	// Keep the /22 separate so the stronger /15 does not suppress its keys.
+	m = Build(Sources{Entries: map[string][]string{
+		CINS.Name: {"198.18.100.0/22"},
+	}})
+	checkKeys(t, m.StalwartKeys(), map[string][]string{
+		"csm-ip-cins": {"198.18.100.*", "198.18.101.*", "198.18.102.*", "198.18.103.*"},
 	})
 }
 
@@ -87,8 +99,47 @@ func TestStalwartKeysIPv6(t *testing.T) {
 	})
 }
 
-// An IPv4-mapped network must land in the IPv4 namespace as IPv4 text,
-// the form Stalwart compares remote_ip against.
+func TestStalwartKeysIPv6HostBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		prefix string
+		want   []string
+	}{
+		{"2001:db8::/124", []string{
+			"*.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		}},
+		{"2001:db8::8/125", []string{
+			"8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"9.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"a.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"b.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"c.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"d.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"e.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"f.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		}},
+		{"2001:db8::8/126", []string{
+			"8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"9.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"a.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"b.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		}},
+		{"2001:db8::8/127", []string{
+			"8.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+			"9.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		}},
+	} {
+		t.Run(tc.prefix, func(t *testing.T) {
+			m := Build(Sources{Entries: map[string][]string{
+				Drop.Name: {tc.prefix},
+			}})
+			checkKeys(t, m.StalwartKeys(), map[string][]string{
+				"csm-ip6-drop": tc.want,
+			})
+		})
+	}
+}
+
+// IPv4-mapped networks must use the IPv4 namespace and dotted text for remote_ip.
 func TestStalwartKeysMappedPrefix(t *testing.T) {
 	m := Build(Sources{Entries: map[string][]string{
 		Drop.Name: {"::ffff:198.51.100.0/120"},
@@ -115,37 +166,34 @@ func TestStalwartKeysWidestExpansion(t *testing.T) {
 		Blocked.Name: {"192.0.2.0/25"},
 	}})
 	keys := m.StalwartKeys()
-	globs := map[string]bool{}
+	var globs []string
 	for n := range 128 {
-		globs["198.18."+strconv.Itoa(n)+".*"] = true
+		globs = append(globs, "198.18."+strconv.Itoa(n)+".*")
 	}
-	if v4 := keys["csm-ip-drop"]; len(v4) != 128 || !allIn(v4, globs) {
+	slices.Sort(globs)
+	if v4 := keys["csm-ip-drop"]; !slices.Equal(v4, globs) {
 		t.Errorf("/17 gave %d keys, want 198.18.N.* for N 0..127: %v", len(v4), v4)
 	}
-	exact := map[string]bool{}
+	var exact []string
 	for n := range 128 {
-		exact["192.0.2."+strconv.Itoa(n)] = true
+		exact = append(exact, "192.0.2."+strconv.Itoa(n))
 	}
-	if v4 := keys["csm-ip-blocked"]; len(v4) != 128 || !allIn(v4, exact) {
+	slices.Sort(exact)
+	if v4 := keys["csm-ip-blocked"]; !slices.Equal(v4, exact) {
 		t.Errorf("/25 gave %d keys, want 192.0.2.0 to 192.0.2.127 with no glob: %v", len(v4), v4)
 	}
 	v6 := keys["csm-ip6-drop"]
-	if len(v6) != 8 {
-		t.Fatalf("/61 gave %d keys, want 8: %v", len(v6), v6)
+	want := []string{
+		"*.8.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		"*.9.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		"*.a.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		"*.b.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		"*.c.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		"*.d.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		"*.e.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
+		"*.f.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2",
 	}
-	if v6[0] != "*.8.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2" || v6[7] != "*.f.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2" {
-		t.Errorf("/61 keys = %v", v6)
+	if !slices.Equal(v6, want) {
+		t.Errorf("/61 keys = %v, want %v", v6, want)
 	}
-}
-
-// allIn reports whether every key is in want, each at most once.
-func allIn(keys []string, want map[string]bool) bool {
-	seen := map[string]bool{}
-	for _, k := range keys {
-		if !want[k] || seen[k] {
-			return false
-		}
-		seen[k] = true
-	}
-	return true
 }

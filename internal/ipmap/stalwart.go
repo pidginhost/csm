@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// StalwartNamespace is the Stalwart lookup namespace holding s's keys for
-// one address family.
+// StalwartNamespace is the lookup namespace holding s's keys for one address family.
 func StalwartNamespace(s Symbol, v6 bool) string {
 	ns := "csm-ip-"
 	if v6 {
@@ -17,8 +16,7 @@ func StalwartNamespace(s Symbol, v6 bool) string {
 	return ns + strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(s.Name, "CSM_IP_")), "_", "-")
 }
 
-// StalwartNamespaces lists every CSM namespace, IPv4 then IPv6 per symbol,
-// in rule order.
+// StalwartNamespaces lists every CSM namespace in rule order, IPv4 then IPv6 per symbol.
 func StalwartNamespaces() []string {
 	var out []string
 	for _, s := range Symbols() {
@@ -27,9 +25,7 @@ func StalwartNamespaces() []string {
 	return out
 }
 
-// StalwartKeys returns the map as Stalwart lookup keys per namespace, each
-// list sorted. Every namespace is present; the IPv4 canary one holds
-// CanaryAddr.
+// StalwartKeys returns sorted keys in every namespace, with CanaryAddr in the IPv4 canary namespace.
 func (m Map) StalwartKeys() map[string][]string {
 	out := map[string][]string{}
 	for _, ns := range StalwartNamespaces() {
@@ -46,9 +42,7 @@ func (m Map) StalwartKeys() map[string][]string {
 	return out
 }
 
-// stalwartKeys widens p to the next octet (IPv4) or nibble (IPv6) boundary
-// and renders one key per sub-network there. Only the last unit varies,
-// since p is masked and widening adds fewer bits than one unit.
+// Masked prefixes split at the next octet or nibble boundary, varying only the last unit.
 func stalwartKeys(p netip.Prefix) []string {
 	a := p.Addr()
 	var units []int
@@ -76,8 +70,7 @@ func stalwartKeys(p netip.Prefix) []string {
 func stalwartKey(units []int, v4, exact bool) string {
 	parts := make([]string, len(units))
 	if v4 {
-		// Stalwart compares IPv4 remote_ip as dotted text, and CIDR keys
-		// never match, so a network is a forward glob.
+		// IPv4 remote_ip is dotted text, so networks need forward globs instead of CIDRs.
 		for i, u := range units {
 			parts[i] = strconv.Itoa(u)
 		}
@@ -86,8 +79,7 @@ func stalwartKey(units []int, v4, exact bool) string {
 		}
 		return strings.Join(parts, ".") + ".*"
 	}
-	// Stalwart matches IPv6 remote_ip as compressed text, which no forward
-	// glob can cover, so keys use its reversed nibble name.
+	// Compressed IPv6 text prevents forward globs, so keys use reversed nibble names.
 	for i, u := range units {
 		parts[len(units)-1-i] = strconv.FormatInt(int64(u), 16)
 	}
