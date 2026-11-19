@@ -915,6 +915,18 @@ var operations = []Op{
 		WithoutPrivilege: "the mitigation is applied by hand from the command the audit prints",
 	},
 	{
+		ID:               "operate.apply_hardening",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "sshd_config keeps a .csm-bak copy and is restored when sshd -t rejects the change; sysctl, permission, WHM tweak, cPanel update and PHP drop-in changes are undone by hand.",
+		Subsystem:        "operator commands",
+		Summary:          "apply the hardening audit's mechanical fixes for one section on an admin's web UI request, in a root worker started outside the sandbox, then reload the services that read them",
+		Privileges:       []Privilege{Root},
+		Trigger:          Operator,
+		Unsandboxed:      true,
+		Writes:           []string{"/etc/ssh/sshd_config", "/etc/ssh/sshd_config.csm-bak", "/etc/sysctl.d", "kernel:sysctl values", "/etc/shadow", "/tmp", "/var/tmp", "/etc/cpupdate.conf", "/usr/bin", "cpanel:tweak settings", "/opt/cpanel", "/etc/php", "/etc/php.d", "/usr/local/lsws/admin/tmp", "service:sshd, PHP-FPM and Apache reload"},
+		WithoutPrivilege: "each fix is applied by hand from the audit's suggested fix",
+	},
+	{
 		ID:               "operate.stalwart_setup",
 		Risk:             RiskReversible,
 		RecoveryGap:      "Setup prints the previous values; undoing a change is done by hand in Stalwart's admin interface.",

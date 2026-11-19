@@ -66,7 +66,11 @@ func runUnit(ctx context.Context, lookPath LookPathFunc, run InputRunnerFunc, op
 
 	// Probe with a command that has no side effects, so the decision to fall
 	// back is made before the caller's command has had a chance to run.
-	probeName, probeArgs := Argv(systemdRunPath, opt, probeCommand)
+	// The probe must not reserve a named worker's unit while PID 1
+	// collects it, or the real start can fail with "unit already exists".
+	probeOptions := opt
+	probeOptions.Unit = ""
+	probeName, probeArgs := Argv(systemdRunPath, probeOptions, probeCommand)
 	_, probeErr := run(ctx, nil, probeName, probeArgs...)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr

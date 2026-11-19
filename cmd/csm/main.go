@@ -101,6 +101,8 @@ func main() {
 		runDaemon()
 	case "forward-guard-worker":
 		runForwardGuardWorker()
+	case checks.HardeningApplyWorkerCommand:
+		runHardeningApplyWorker()
 	case "antispam-worker":
 		runAntispamWorker()
 	case "yara-worker":

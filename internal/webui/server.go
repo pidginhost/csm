@@ -119,6 +119,9 @@ type Server struct {
 	mailStats          atomic.Pointer[mailstats.Counter]
 	forwarderSource    inventory.Source
 	forwarderRemover   *inventory.CPanelRemover // nil off cPanel
+	// hardeningApply runs hardening fixes; nil is the root worker outside
+	// the sandbox. Tests replace it.
+	hardeningApply     func(context.Context, *config.Config, checks.HardeningApplyRequest) ([]checks.HardeningFixResult, error)
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
 	queueFlusher       intel.QueueFlusher
@@ -401,6 +404,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/perf/fix-wp-cron", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixWPCron))))
 	mux.Handle("/api/v1/hardening", s.requireAuth(getOnly(http.HandlerFunc(s.apiHardening))))
 	mux.Handle("/api/v1/hardening/run", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiHardeningRun))))
+	mux.Handle("/api/v1/hardening/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiHardeningApply))))
 
 	// Threat Intelligence API
 	mux.Handle("/api/v1/threat/stats", s.requireAuth(getOnly(http.HandlerFunc(s.apiThreatStats))))

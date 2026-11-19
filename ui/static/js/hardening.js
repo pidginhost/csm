@@ -14,6 +14,11 @@
         fail: '<span class="text-danger"><i class="ti ti-circle-x"></i></span>'
     };
 
+    // Outcome of the last "Apply fixes" per section, shown above that
+    // section's checks after the recheck re-renders the page.
+    var lastApply = {};
+    var applying = false;
+
     function renderReport(report) {
         if (!report || !report.results || report.results.length === 0) {
             document.getElementById('empty-state').classList.remove('d-none');
@@ -69,11 +74,12 @@
             var items = cats[cat];
             if (!items) continue;
 
-            var passed = 0, warned = 0, failed = 0;
+            var passed = 0, warned = 0, failed = 0, fixable = 0;
             for (var j = 0; j < items.length; j++) {
                 if (items[j].status === 'pass') passed++;
                 else if (items[j].status === 'warn') warned++;
                 else failed++;
+                if (items[j].status !== 'pass' && items[j].auto_fix) fixable++;
             }
 
             var badgeClass = 'bg-success', badgeText = 'All passed';
@@ -100,12 +106,19 @@
             headerInner.appendChild(iconEl);
             headerInner.appendChild(nameEl);
             headerInner.appendChild(badge);
+            if (fixable > 0) {
+                var fixBadge = document.createElement('span');
+                fixBadge.className = 'badge bg-azure-lt ms-2';
+                fixBadge.textContent = fixable + ' auto-fixable';
+                headerInner.appendChild(fixBadge);
+            }
             header.appendChild(headerInner);
             card.appendChild(header);
 
             var collapse = document.createElement('div');
-            collapse.className = 'collapse' + (failed > 0 ? ' show' : '');
+            collapse.className = 'collapse' + (failed > 0 || lastApply[cat] ? ' show' : '');
             collapse.id = collapseId;
+            if (lastApply[cat]) collapse.appendChild(renderApplyOutcome(lastApply[cat]));
             var tableWrap = document.createElement('div');
             tableWrap.className = 'table-responsive';
             var table = document.createElement('table');
@@ -148,21 +161,162 @@
                     fixTr.appendChild(fixTd);
                     tbody.appendChild(fixTr);
                 }
+
+                if (item.auto_fix && item.status !== 'pass') {
+                    var autoTr = document.createElement('tr');
+                    var autoTdEmpty = document.createElement('td');
+                    var autoTd = document.createElement('td');
+                    autoTd.className = 'small';
+                    autoTd.style.paddingTop = '0';
+                    autoTd.style.borderTop = '0';
+                    var label = document.createElement('label');
+                    label.className = 'form-check mb-0';
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.className = 'form-check-input';
+                    cb.checked = true;
+                    cb.setAttribute('data-fix-cat', cat);
+                    cb.setAttribute('data-fix-name', item.name);
+                    cb.setAttribute('data-fix-desc', item.auto_fix);
+                    var labelText = document.createElement('span');
+                    labelText.className = 'form-check-label';
+                    var autoStrong = document.createElement('strong');
+                    autoStrong.textContent = 'Auto-fix: ';
+                    labelText.appendChild(autoStrong);
+                    labelText.appendChild(document.createTextNode(item.auto_fix));
+                    label.appendChild(cb);
+                    label.appendChild(labelText);
+                    autoTd.appendChild(label);
+                    autoTr.appendChild(autoTdEmpty);
+                    autoTr.appendChild(autoTd);
+                    tbody.appendChild(autoTr);
+                }
             }
 
             table.appendChild(tbody);
             tableWrap.appendChild(table);
             collapse.appendChild(tableWrap);
+            if (fixable > 0) {
+                var footer = document.createElement('div');
+                footer.className = 'card-footer d-flex align-items-center flex-wrap gap-2';
+                var applyBtn = document.createElement('button');
+                applyBtn.type = 'button';
+                applyBtn.className = 'btn btn-primary btn-sm';
+                applyBtn.setAttribute('data-apply-cat', cat);
+                applyBtn.disabled = applying;
+                var applyIcon = document.createElement('i');
+                applyIcon.className = 'ti ti-tool';
+                applyBtn.appendChild(applyIcon);
+                applyBtn.appendChild(document.createTextNode('\u00a0Apply selected fixes'));
+                applyBtn.addEventListener('click', applySection);
+                var note = document.createElement('span');
+                note.className = 'text-muted small';
+                note.textContent = 'CSM changes only the checked items, then re-runs the audit.';
+                footer.appendChild(applyBtn);
+                footer.appendChild(note);
+                collapse.appendChild(footer);
+            }
             card.appendChild(collapse);
             container.appendChild(card);
         }
+    }
+
+    // Lists what the last apply did in a section: applied, failed, skipped.
+    function renderApplyOutcome(outcome) {
+        var box = document.createElement('div');
+        var anyFailed = outcome.some(function(o) { return o.status === 'failed'; });
+        box.className = 'alert m-3 ' + (anyFailed ? 'alert-warning' : 'alert-success');
+        box.setAttribute('role', 'status');
+        var title = document.createElement('div');
+        title.className = 'fw-bold mb-1';
+        title.textContent = 'Last apply (audit re-run afterwards)';
+        box.appendChild(title);
+        var list = document.createElement('ul');
+        list.className = 'mb-0';
+        for (var i = 0; i < outcome.length; i++) {
+            var o = outcome[i];
+            var li = document.createElement('li');
+            var st = document.createElement('strong');
+            st.className = o.status === 'applied' ? 'text-success' : (o.status === 'failed' ? 'text-danger' : 'text-muted');
+            st.textContent = o.status;
+            li.appendChild(st);
+            li.appendChild(document.createTextNode(' ' + (o.title || o.name) + ': ' + (o.message || '')));
+            list.appendChild(li);
+        }
+        box.appendChild(list);
+        return box;
+    }
+
+    function setApplyBusy(busy) {
+        applying = busy;
+        document.querySelectorAll('[data-apply-cat]').forEach(function(b) { b.disabled = busy; });
+        document.getElementById('btn-run-audit').disabled = busy;
+    }
+
+    function applySection(e) {
+        var cat = e.currentTarget.getAttribute('data-apply-cat');
+        var names = [], descs = [];
+        document.querySelectorAll('input[data-fix-cat]').forEach(function(cb) {
+            if (cb.getAttribute('data-fix-cat') !== cat || !cb.checked) return;
+            names.push(cb.getAttribute('data-fix-name'));
+            descs.push('- ' + cb.getAttribute('data-fix-desc'));
+        });
+        var section = categoryNames[cat] || cat;
+        if (names.length === 0) {
+            CSM.toast('Check at least one fix to apply in ' + section + '.', 'warning');
+            return;
+        }
+        var msg = 'Apply ' + names.length + ' fix' + (names.length > 1 ? 'es' : '') + ' in ' + section + '?\n\n' +
+            descs.join('\n') + '\n\nCSM changes this server now, then re-runs the audit.';
+        CSM.confirm(msg, { okLabel: 'Apply' }).then(function() {
+            var btn = document.querySelector('[data-apply-cat="' + cat + '"]');
+            setApplyBusy(true);
+            if (btn) {
+                // Safe: hardcoded spinner HTML, no user data
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Applying...';
+            }
+            CSM.post('/api/v1/hardening/apply', { category: cat, names: names }, { timeoutMs: 0 })
+                .then(function(resp) {
+                    var outcome = (resp && resp.applied) || [];
+                    lastApply = {};
+                    lastApply[cat] = outcome;
+                    applying = false;
+                    renderReport(resp);
+                    setApplyBusy(false);
+                    var ok = 0, bad = 0;
+                    outcome.forEach(function(o) { if (o.status === 'applied') ok++; else if (o.status === 'failed') bad++; });
+                    CSM.toast(section + ': ' + ok + ' applied' + (bad ? ', ' + bad + ' failed' : '') + '. Audit re-run.', bad ? 'warning' : 'success');
+                })
+                .catch(function(err) {
+                    setApplyBusy(false);
+                    if (btn) {
+                        btn.textContent = '';
+                        var ic = document.createElement('i');
+                        ic.className = 'ti ti-tool';
+                        btn.appendChild(ic);
+                        btn.appendChild(document.createTextNode('\u00a0Apply selected fixes'));
+                    }
+                    CSM.toast((err && err.message) || 'Applying fixes failed', 'error');
+                    // A failed worker may have changed some files; the server
+                    // re-ran the audit, so show that report.
+                    if (err && err.status === 500) {
+                        lastApply = {};
+                        if (err.body && err.body.report) {
+                            renderReport(err.body.report);
+                        } else {
+                            setApplyBusy(true);
+                            loadReport().finally(function() { setApplyBusy(false); });
+                        }
+                    }
+                });
+        }, function() {});
     }
 
     function loadReport() {
         // silent:true so CSM.request does not toast; the failure shows in
         // place of the report. The "no audit results" message is hidden with
         // it, or a failed load would read as "nothing has run".
-        CSM.get('/api/v1/hardening', { silent: true })
+        return CSM.get('/api/v1/hardening', { silent: true })
             .then(renderReport)
             .catch(function(err) {
                 document.getElementById('empty-state').classList.add('d-none');
@@ -177,6 +331,7 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running...';
         CSM.post('/api/v1/hardening/run', {})
             .then(function(report) {
+                lastApply = {};
                 renderReport(report);
                 btn.disabled = false;
                 btn.innerHTML = '<i class="ti ti-player-play"></i>&nbsp;Run Audit';
@@ -197,7 +352,8 @@
         {key: 'status',   label: 'Status'},
         {key: 'title',    label: 'Check'},
         {key: 'message',  label: 'Message'},
-        {key: 'fix',      label: 'Suggested Fix'}
+        {key: 'fix',      label: 'Suggested Fix'},
+        {key: 'auto_fix', label: 'Auto-fix'}
     ];
     var origRenderReport = renderReport;
     renderReport = function(report) {
@@ -208,7 +364,8 @@
                 status:   r.status || '',
                 title:    r.title || '',
                 message:  r.message || '',
-                fix:      r.fix || ''
+                fix:      r.fix || '',
+                auto_fix: r.auto_fix || ''
             };
         });
     };

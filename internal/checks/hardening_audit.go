@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -31,7 +32,8 @@ func RunHardeningAudit(cfg *config.Config) *store.AuditReport {
 
 	var results []store.AuditResult
 	results = append(results, auditSSH()...)
-	results = append(results, auditPHP(serverType)...)
+	phpInstalls := discoverPHPInstalls(serverType)
+	results = append(results, auditPHPInstalls(phpInstalls)...)
 	results = append(results, auditWebServer()...)
 	results = append(results, auditMail()...)
 	if serverType != "bare" {
@@ -39,6 +41,8 @@ func RunHardeningAudit(cfg *config.Config) *store.AuditReport {
 	}
 	results = append(results, auditOS()...)
 	results = append(results, auditFirewall()...)
+
+	annotateAutoFixes(results, phpInstalls)
 
 	score := 0
 	for _, r := range results {
@@ -233,6 +237,41 @@ func auditSSH() []store.AuditResult {
 
 // --- OS hardening checks ---
 
+func auditShadowPermissions() store.AuditResult {
+	r := store.AuditResult{Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions", Status: "warn"}
+	info, err := osFS.Stat("/etc/shadow")
+	if err != nil {
+		r.Message = "Cannot stat /etc/shadow"
+		return r
+	}
+	perm := info.Mode().Perm()
+	r.Message = fmt.Sprintf("/etc/shadow has mode %04o", perm)
+	safe := perm == 0 || perm == 0o600
+	if perm == 0o640 {
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			r.Message = "Cannot determine the group owning /etc/shadow"
+			return r
+		}
+		mode, err := shadowFixMode(st.Gid, user.LookupGroup)
+		if err != nil {
+			r.Message = err.Error()
+			return r
+		}
+		safe = st.Gid == 0 || mode == 0o640
+		if !safe {
+			r.Message += " and is readable by an unrelated group"
+		}
+	}
+	if safe {
+		r.Status = "pass"
+	} else {
+		r.Status = "fail"
+		r.Fix = "chmod 0600 /etc/shadow"
+	}
+	return r
+}
+
 func auditOS() []store.AuditResult {
 	var results []store.AuditResult
 
@@ -281,30 +320,7 @@ func auditOS() []store.AuditResult {
 		}
 	}
 
-	// /etc/shadow permissions
-	// Accept 0000, 0600 (RHEL/CentOS default), and 0640 (Debian default).
-	// All three restrict access to root only. 0600 is the standard on
-	// CentOS/CloudLinux — changing it can break passwd/chage.
-	if info, err := osFS.Stat("/etc/shadow"); err == nil {
-		perm := info.Mode().Perm()
-		if perm == 0 || perm == 0o600 || perm == 0o640 {
-			results = append(results, store.AuditResult{
-				Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
-				Status: "pass", Message: fmt.Sprintf("/etc/shadow has mode %04o", perm),
-			})
-		} else {
-			results = append(results, store.AuditResult{
-				Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
-				Status: "fail", Message: fmt.Sprintf("/etc/shadow has mode %04o (expected 0000, 0600, or 0640)", perm),
-				Fix: "chmod 0600 /etc/shadow",
-			})
-		}
-	} else {
-		results = append(results, store.AuditResult{
-			Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
-			Status: "warn", Message: "Cannot stat /etc/shadow",
-		})
-	}
+	results = append(results, auditShadowPermissions())
 
 	// Swap
 	if data, err := osFS.ReadFile("/proc/swaps"); err == nil {
@@ -373,7 +389,7 @@ func auditOS() []store.AuditResult {
 			results = append(results, store.AuditResult{
 				Category: "os", Name: sc.id, Title: sc.title,
 				Status: "fail", Message: fmt.Sprintf("%s = %s (expected %s)", sysctlKey, val, sc.expected),
-				Fix: fmt.Sprintf("sysctl -w %s=%s && echo '%s = %s' >> /etc/sysctl.d/99-csm-hardening.conf", sysctlKey, sc.expected, sysctlKey, sc.expected),
+				Fix: fmt.Sprintf("sysctl -w %s=%s && echo '%s = %s' >> /etc/sysctl.d/99-zz-csm-hardening.conf", sysctlKey, sc.expected, sysctlKey, sc.expected),
 			})
 		}
 	}
@@ -1293,19 +1309,21 @@ func phpBranchEOL(major, minor int, now time.Time) bool {
 	return !now.Before(end.AddDate(0, 0, 1))
 }
 
-func auditPHP(serverType string) []store.AuditResult {
-	var results []store.AuditResult
+// phpInstall is one PHP build the audit inspects and the hardening fixer
+// can write a drop-in for.
+type phpInstall struct {
+	version        string // e.g. "8.1"
+	shortID        string // e.g. "81"
+	iniPath        string
+	scanDir        string // additional .ini files PHP parses after iniPath
+	scanFiles      []string
+	scanFilesKnown bool
+	fpmDir         string // for FPM pool override merging
+}
 
-	type phpInstall struct {
-		version        string // e.g. "8.1"
-		shortID        string // e.g. "81"
-		iniPath        string
-		scanDir        string // additional .ini files PHP parses after iniPath
-		scanFiles      []string
-		scanFilesKnown bool
-		fpmDir         string // for FPM pool override merging
-	}
-
+// discoverPHPInstalls lists the PHP builds on the host: cPanel EA4,
+// CloudLinux alt-php, or the system php binary as a fallback.
+func discoverPHPInstalls(serverType string) []phpInstall {
 	var installs []phpInstall
 
 	// cPanel EA4 PHP installs
@@ -1400,7 +1418,16 @@ func auditPHP(serverType string) []store.AuditResult {
 			}
 		}
 	}
+	return installs
+}
 
+func auditPHP(serverType string) []store.AuditResult {
+	return auditPHPInstalls(discoverPHPInstalls(serverType))
+}
+
+// auditPHPInstalls audits the given PHP builds.
+func auditPHPInstalls(installs []phpInstall) []store.AuditResult {
+	var results []store.AuditResult
 	for _, inst := range installs {
 		data, err := osFS.ReadFile(inst.iniPath)
 		if err != nil {

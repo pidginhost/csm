@@ -23,6 +23,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Signs of a stolen mailbox now add up per mailbox: CSM suspends it once they do and sends one alert listing the evidence, rather than one per sign.
 - `csm stalwart setup` takes the admin password from stdin with `--password-stdin`, and on a terminal asks for a missing login without echoing it.
 - Admission status now lists which automatic IP block sources the host's settings let it run.
+- The Server Hardening page can apply safe fixes one section at a time, with a checkbox per fix, then re-runs the audit.
 
 ### Changed
 
@@ -30,6 +31,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - The Email page Rejects, Sending accounts and Suspended tabs now share the Held mail layout, with a search box and larger pages.
 - On a host without PHP, the Web UI hides the PHP settings and the Performance page's PHP cards; PHP running in a container counts.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
+
+### Security
+
+- Server Hardening flags password hashes readable by an unrelated group and removes that access when you apply the fix.
 
 ### Fixed
 
