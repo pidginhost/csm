@@ -1881,6 +1881,14 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 			_, _, _ = co.OnFinding(f)
 		}
 	}
+	// As in dispatchBatch, every reported redirect is mailbox evidence, seen
+	// before the restart or not.
+	evidence := mailFilterEvidence(cfg, filterUnsuppressedFindings(d.store, initialFindings, suppressions))
+	responseFindings = append(responseFindings, evidence...)
+	newFindings = append(newFindings, evidence...)
+	for _, f := range evidence {
+		_, _, _ = IncidentCorrelator().OnFinding(f)
+	}
 	// The baseline scan applied its own blocks; they are in initialFindings.
 	d.observeBlocks(slices.Concat(initialFindings, blockActions))
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)

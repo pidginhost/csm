@@ -97,3 +97,30 @@ func TestMailFilterRedirectDatesEditsThroughActiveLink(t *testing.T) {
 		t.Fatalf("redirect first seen at %s, want script edit at %s", s.First, edited)
 	}
 }
+
+// A redirect already on disk when the daemon starts counts at once, even when
+// the previous run had already reported it, and a second restart stays quiet.
+func TestInitialScanRedirectIsEvidence(t *testing.T) {
+	_, calls := evidenceCase(t)
+	d := newTestDaemon(t)
+	cfg := eximAutoHoldConfig()
+	f := exfilFinding(t, time.Now().Add(-time.Hour))
+	d.store.Update([]alert.Finding{f})
+	d.store.MarkAlerted([]alert.Finding{f})
+	if seen := d.store.FilterNew([]alert.Finding{f}); len(seen) != 0 {
+		t.Fatalf("redirect not seen before the restart: %+v", seen)
+	}
+	observeMailboxSignal(cfg, "real@victim.example", newCountry("DE", time.Now()))
+
+	fresh, _ := d.respondToInitialScan(cfg, []alert.Finding{f})
+	if got := findingsOf(fresh, "email_mailbox_compromise"); len(got) != 1 || got[0].Mailbox != "real@victim.example" {
+		t.Fatalf("startup findings = %+v, want one incident", fresh)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("uapi calls = %v", *calls)
+	}
+	again, _ := d.respondToInitialScan(cfg, []alert.Finding{f})
+	if got := findingsOf(again, "email_mailbox_compromise"); len(got) != 0 || len(*calls) != 2 {
+		t.Fatalf("second restart reported %+v, calls %v", got, *calls)
+	}
+}
