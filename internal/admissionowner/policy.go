@@ -89,18 +89,11 @@ func (p ExecutionPolicy) same(q ExecutionPolicy) bool {
 // executable reports whether the owner runs block picks (Options.Blocks).
 func (o *Owner) executable() bool { return o.opts.Blocks != nil }
 
-// liveExecution lets an executable owner run block picks under a live
-// policy. It stays false while legacy blocking still enforces, so the same
-// observation cannot trigger both legacy and admission execution. A live
-// policy previews block picks; a dry-run policy still forecasts. No
-// configuration reaches it; only this package's tests enable it.
-var liveExecution = false
-
-// executing reports whether block picks run live: an engine, live
-// execution and a policy that is not a dry run. A later refused policy
-// holds that execution without ending it (heldCause).
+// executing reports whether block picks run live: an engine and a policy
+// that is not a dry run. A later refused policy holds that execution
+// without ending it (heldCause).
 func (o *Owner) executing() bool {
-	return liveExecution && o.executable() && !o.policy.DryRun
+	return o.executable() && !o.policy.DryRun
 }
 
 // mayExecute reports whether block picks, probes and repairs may run now:
@@ -108,9 +101,9 @@ func (o *Owner) executing() bool {
 func (o *Owner) mayExecute() bool { return o.executing() && o.policyErr == nil }
 
 // mayRetire reports whether earlier real attempts retire now: an engine
-// under a valid installed policy that runs live or forecasts.
+// under a valid installed policy.
 func (o *Owner) mayRetire() bool {
-	return o.executable() && o.policyErr == nil && (liveExecution || o.forecasting())
+	return o.executable() && o.policyErr == nil
 }
 
 // retirementHeldBy names what keeps earlier unknown outcomes from
@@ -258,7 +251,7 @@ func (o *Owner) refuseDisabled() error {
 // process starts, so that work may no longer be selected; the incident's
 // next block still applies. Only an owner that executes blocks ends it.
 func (o *Owner) endEarlierIncidents() error {
-	if liveExecution && o.executable() && o.policyErr == nil {
+	if o.executable() && o.policyErr == nil {
 		if err := o.ledger.RefuseDisabled(func(c admission.Candidate, _ func() []admission.Evidence) bool {
 			return c.Entry != admission.EntryIncident && c.Entry != admission.EntryIncidentSpray
 		}); err != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/health"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -261,7 +262,7 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	if d.ipList != nil {
 		out.ChallengePending = d.ipList.Count()
 	}
-	out.ChallengeEscalated = challengeEscalatedCount()
+	out.ChallengeEscalated = checks.ChallengeEscalatedCount(firewall.BlockOutcomeLive)
 	out.ChallengePassed = challenge.PassedCount()
 	out.ChallengePortGateActive = d.challengeGate != nil
 	if cfg != nil {

@@ -11,17 +11,28 @@ import (
 
 // The incident correlator reads its selectors once, when the process
 // starts. An incident or spray block queued by an earlier process may no
-// longer be one this process selects, so an executing owner ends it as
-// disabled when it starts; a scan block queued beside it waits for its turn.
-// A previewing owner leaves the queue as it was.
+// longer be one this process selects, so an owner with an engine ends it
+// as disabled when it starts, in dry run too; a scan block queued beside
+// it waits for its turn. An owner without an engine leaves the queue as
+// it was.
 func TestOwnerStartEndsIncidentBlocksQueuedBeforeIt(t *testing.T) {
-	for _, live := range []bool{false, true} {
-		t.Run(map[bool]string{false: "preview", true: "live"}[live], func(t *testing.T) {
-			withLiveExecution(t, live)
+	for _, mode := range []string{"no engine", "dry run", "live"} {
+		t.Run(mode, func(t *testing.T) {
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()
-			o, _, _ := policyOwner(t, f, blocks, validPolicy(1))
+			start := func() *Owner {
+				switch mode {
+				case "no engine":
+					return f.start(previewOptions(f))
+				case "dry run":
+					o, _, _ := policyOwner(t, f, blocks, dryPolicy(1))
+					return o
+				}
+				o, _, _ := policyOwner(t, f, blocks, validPolicy(1))
+				return o
+			}
+			o := start()
 			through := func(addr string, via admission.Entry) admission.CandidateID {
 				target, err := admission.CanonicalAddress(addr, admission.Caps{IPv6: true})
 				if err != nil {
@@ -34,18 +45,19 @@ func TestOwnerStartEndsIncidentBlocksQueuedBeforeIt(t *testing.T) {
 			incident := through("192.0.2.11", admission.EntryIncident)
 			spray := through("192.0.2.12", admission.EntryIncidentSpray)
 			o.Stop()
-			o, _, _ = policyOwner(t, f, blocks, validPolicy(1))
+			o = start()
 			if c := candidate(t, o, scan); c.State != admission.StateQueued {
 				t.Fatalf("scan block after restart = %s/%s, want queued", c.State, c.Reason)
 			}
+			want := mode != "no engine"
 			for name, id := range map[string]admission.CandidateID{"incident": incident, "spray": spray} {
 				c := candidate(t, o, id)
 				ended := c.State == admission.StateRefused && c.Reason == admission.ReasonDisabled && c.Attempts == 0
-				if ended != live {
-					t.Errorf("%s block after restart = %s/%s, ended %v, want ended %v", name, c.State, c.Reason, ended, live)
+				if ended != want {
+					t.Errorf("%s block after restart = %s/%s, ended %v, want ended %v", name, c.State, c.Reason, ended, want)
 				}
-				if !live && (c.State != admission.StateQueued || c.Reason != 0 || c.Attempts != 0) {
-					t.Errorf("preview changed %s block: %+v", name, c)
+				if !want && (c.State != admission.StateQueued || c.Reason != 0 || c.Attempts != 0) {
+					t.Errorf("an owner without an engine changed the %s block: %+v", name, c)
 				}
 			}
 		})
@@ -88,7 +100,6 @@ func queueEarlier(t *testing.T, o *Owner, p *admission.Producer, f *ownerFixture
 // start completes. The retry ends each earlier incident block once, and
 // work that arrives after the start is never swept as earlier work.
 func TestOwnerStartRetryKeepsIngressClosed(t *testing.T) {
-	withLiveExecution(t, true)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
@@ -200,12 +211,10 @@ func TestOwnerStartIncidentSweepControls(t *testing.T) {
 			o := f.start(opts)
 			o.Stop()
 			// Read the queue through an owner that never sweeps.
-			withLiveExecution(t, false)
 			return f.start(f.options())
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			withLiveExecution(t, true)
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()

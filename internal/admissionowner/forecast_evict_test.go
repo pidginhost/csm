@@ -175,15 +175,15 @@ func TestShadowReplacesAListedImportUntilItExpires(t *testing.T) {
 
 // The forecast replaces a listed import with strictly higher work, as
 // live admission would, without claiming it or touching the live ledger.
-// Returning to previews uses a fresh list.
+// Live execution then uses a fresh list, and the next session finds the
+// live block in the import's slot, with nothing lower to replace.
 func TestOwnerForecastReplacesListedImports(t *testing.T) {
-	withLiveExecution(t, false)
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	blocks.limit, blocks.temp, blocks.imported = 3, 2, 1
 	blocks.imports = []firewall.BlockImport{{ID: "eff_" + strings.Repeat("ab", 16), IP: "192.0.2.60", ExpiresAt: f.host.wall.Add(time.Hour)}}
-	o, policies, _ := policyOwner(t, f, blocks, dryPolicy(1))
+	o, policies, mono := policyOwner(t, f, blocks, dryPolicy(1))
 	id, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
 	used := liveUsed(t, o)
 	turn(t, o)
@@ -201,11 +201,17 @@ func TestOwnerForecastReplacesListedImports(t *testing.T) {
 		t.Fatal("forecast spent the live ceiling")
 	}
 	policies.publish(validPolicy(2))
-	id, _ = queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.12")
-	turn(t, o)
-	if c := candidate(t, o, id); c.State != admission.StateObserved {
-		t.Fatalf("preview failed to use the fresh import list: %+v", c)
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
 	}
+	id, _ = queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.12")
+	mono.advance(batchEvery)
+	turn(t, o)
+	if c := candidate(t, o, id); c.State != admission.StateVerified {
+		t.Fatalf("live block failed to use the fresh import list: %+v", c)
+	}
+	_, applied := blocks.calls()
+	retired := len(blocks.retireCalls())
 	policies.publish(dryPolicy(3))
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
 	turn(t, o)
@@ -214,11 +220,11 @@ func TestOwnerForecastReplacesListedImports(t *testing.T) {
 	}
 	queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.14")
 	turn(t, o)
-	if fresh := forecastOf(t, o); len(fresh.replaced) != 1 || fresh.picks[admission.PredictCapacityEvict] != 1 {
-		t.Fatalf("a new session could not replace the import again: %+v", fresh)
+	if fresh := forecastOf(t, o); len(fresh.replaced) != 0 || fresh.picks[admission.PredictSetFull] != 2 {
+		t.Fatalf("a new session replaced the live block in the import's slot: %+v", fresh)
 	}
-	if _, applies := blocks.calls(); len(applies) != 0 || len(blocks.retireCalls()) != 0 {
-		t.Fatal("forecast or preview changed the firewall")
+	if _, applies := blocks.calls(); len(applies) != len(applied) || len(blocks.retireCalls()) != retired {
+		t.Fatal("the forecast changed the firewall")
 	}
 }
 

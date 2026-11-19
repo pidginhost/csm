@@ -71,31 +71,6 @@ func TestOwnerForgetsAnImportStillEnforced(t *testing.T) {
 	}
 }
 
-// Previews evict imports as execution would: strictly higher work is
-// observed with the import's slot, work at the import's tier waits as
-// set_full.
-func TestOwnerPreviewsTheEvictionOfAnImport(t *testing.T) {
-	withLiveExecution(t, false)
-	p := withTestRegistry(t)
-	f := newOwnerFixture(t)
-	blocks := newFakeBlocks()
-	blocks.limit, blocks.temp, blocks.imported = 3, 2, 1
-	blocks.imports = []firewall.BlockImport{{ID: "eff_" + strings.Repeat("ab", 16), IP: "192.0.2.60", ExpiresAt: f.host.wall.Add(time.Hour)}}
-	o := f.start(executeOptions(f, blocks))
-	high, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
-	critical, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
-	turn(t, o)
-	if c := candidate(t, o, critical); c.State != admission.StateObserved {
-		t.Fatalf("a critical preview over an import = %+v", c)
-	}
-	if c := candidate(t, o, high); c.State != admission.StateQueued || c.Reason != admission.ReasonSetFull {
-		t.Fatalf("a preview at the import's tier = %+v", c)
-	}
-	if _, applies := blocks.calls(); len(applies) != 0 || len(blocks.retireCalls()) != 0 {
-		t.Fatalf("a preview reached the engine: %d applies", len(applies))
-	}
-}
-
 // A previous turn's list cannot supply an execution victim after a
 // failed read, an idle turn, a missing engine or a move to forecasting.
 func TestOwnerDropsImportsWithTheSet(t *testing.T) {

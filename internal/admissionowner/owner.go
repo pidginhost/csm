@@ -136,10 +136,14 @@ type Options struct {
 	Caps func() admission.Caps
 	// Blocks returns the firewall engine that runs block_ip picks, or nil
 	// while none runs. Without a provider every pick is a preview. With
-	// one, the policy and liveExecution guard decide whether block picks
-	// forecast, preview or execute. The provider must be safe to call
+	// one, the policy decides whether block picks forecast or execute. The provider must be safe to call
 	// concurrently and return promptly: response funnels also read it.
 	Blocks func() BlockEngine
+	// EngineStarting reports whether the firewall's first start is still
+	// running. While it is, a missing engine leaves block work queued
+	// without a deferral, so a restart raises no outage notice; after it, a
+	// missing engine withholds the work. Nil means the start has ended.
+	EngineStarting func() bool
 	// Policy reads the published execution policy. An owner with
 	// Blocks binds to it at every turn and reload, and does not start
 	// without a valid one; a comparison-only owner never reads it.
@@ -1054,6 +1058,12 @@ func (o *Owner) heldProbeDue() bool {
 	return !monoNow().Before(o.probeAt)
 }
 
+// engineStarting reports whether a missing engine is still starting: the
+// wait for it is not yet an outage.
+func (o *Owner) engineStarting() bool {
+	return errors.Is(o.execHold, errNoEngine) && o.opts.EngineStarting != nil && o.opts.EngineStarting()
+}
+
 // deferBatchGate reports an execution outage without selecting work or
 // running a probe that cannot be followed by a batch yet. Pending verdicts
 // and allows need no execution; their state stays with the verdict stage.
@@ -1072,7 +1082,7 @@ func (o *Owner) deferBatchGate(selecting bool) error {
 	if o.opts.Blocks() == nil {
 		o.ready(nil, false)
 	}
-	if !o.degraded && o.execHold == nil {
+	if !o.degraded && (o.execHold == nil || o.engineStarting()) {
 		return nil
 	}
 	// Deferrals bypass selection, so they need its eligibility check:

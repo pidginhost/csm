@@ -8,7 +8,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 |--------|-------------|
 | **Kill processes** | Fake kernel threads, reverse shells, GSocket, loops that write back a file CSM removed, and shell loops a web request left running in the background. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
-| **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
+| **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Admission uses `auto_response.max_blocks_per_hour` (default 2000/hour); legacy scan blocking defaults to 50/hour. |
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
@@ -505,15 +505,17 @@ Every auto-response block source - scan findings, challenge-timeout
 escalations, central-intel corroborated blocks, and incident spray
 containment - records the same evidence: a temporary threat-DB row, a
 blocked-IPs tracker entry, an `auto_block` finding visible to the block
-digest and alerting, and a step toward permanent-block escalation.
+digest and alerting, and a step toward permanent-block escalation. A block
+the admission ledger applied is never promoted to a permanent block while it
+stands; its offense still counts toward a later block of the address.
 All of them block only while `auto_response.enabled` and `block_ips` are
 on; with either off, an expired challenge simply leaves the challenge list.
 Reloading these switches takes effect before the next block attempt, including
 later entries in a challenge-timeout batch. Incident block refusals caused by
 these switches keep the incident visible without a failed-block warning.
-Challenge, central, and incident blocks are not limited by
-`auto_response.max_blocks_per_hour`; that budget applies to scan-driven
-blocks only.
+Admission applies `auto_response.max_blocks_per_hour` to scan, challenge,
+central, and incident IP blocks. On the legacy path that budget applies to
+scan-driven blocks only.
 
 Mail login spray blocks use a separate hourly budget of the same size. They
 reserve credit before the firewall attempt. An uncertain result keeps that
@@ -527,8 +529,8 @@ reservation defers spray blocks and reports a warning, without stopping other
 scan blocks.
 
 The same setting also sets the hourly ceiling of the admission ledger, which
-will cover every automatic source once responses are admitted through it. For
-the ledger an omitted or zero value selects 2000 and a value above 20000 is
+covers every IP block it executes, including challenge, central, and incident
+blocks. For the ledger an omitted or zero value selects 2000 and a value above 20000 is
 clamped to 20000; the per-IP limit above keeps reading omitted or zero as 50.
 An explicit value sets both. Packaged configs used to set 50, which keeps the
 ceiling at 50 until the key is removed; `csm doctor` warns about a configured
@@ -539,17 +541,21 @@ it without saved credit. Status and `csm doctor` show the ceiling and its
 source. A changed ceiling applies on reload, and a web UI settings save
 applies at the owner's next clock tick; a failed change is retried on later
 ticks before admission resumes, with elapsed time credited at the saved
-ceiling before the new one applies. Existing blocking paths remain unchanged:
-every automatic response they select is also handed to the ledger, which
-previews it within this ceiling and the free slots of the temporary block
-set, or forecasts it in dry run, and never applies it. A preview the set has
+ceiling before the new one applies. Every automatic response the existing
+blocking paths select is also handed to the ledger. With
+`auto_response.dry_run` false, the firewall on and outside observe mode,
+the ledger applies automatic IP blocks itself within this ceiling and the
+free slots of the temporary block set, and the existing paths leave those
+blocks to it. In dry run it forecasts them. With the firewall disabled or
+in observe mode it previews them; neither applies them. While a configured
+firewall engine is starting or unavailable, queued live blocks wait and
+new responses remain on the legacy path. Work the set has
 no room for waits as `set_full` until a slot frees: the slots operator,
 unknown and subnet blocks leave are divided as in the forecast, legacy
 automatic blocks occupy general slots, and an unlimited set counts as 10000
 entries. A Critical local attack, or one with direct compromise or
 independently corroborated evidence, may instead take the general slot of
-a legacy automatic block that recorded its origin; status counts those
-previews. With the firewall on, queued responses disabled by the current
+a legacy automatic block that recorded its origin. With the firewall on, queued responses disabled by the current
 policy end as `disabled` without a withheld alert, including when their evidence expires before a
 restart or configuration reload. Turning a response back on requires a new
 eligible observation; ended work is not replayed. Status, `csm doctor` and findings
@@ -618,7 +624,7 @@ blocked a known customer are listed in the
 - Quarantined files preserve full metadata for restoration
 - Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
-- IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
+- IP blocks are limited by `auto_response.max_blocks_per_hour`: admission defaults to 2000/hour and legacy scan blocking to 50/hour.
 - CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour); lower-severity findings batched with them still count against it
 - Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary instead of alert email and the generic webhook; an attack whose block failed, is still queued or ran in dry run is alerted immediately, as are a block of a Cloudflare-covered address and the web attacks from it
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations

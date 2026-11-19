@@ -356,11 +356,12 @@ Registered when `reputation.upstream.enabled: true`.
   `kill`, `quarantine`, or `block`. Incremented once per finding
   the corresponding `Auto*` helper produces, so a batch blocking
   four IPs in one cycle adds 4 to `action=block`. Useful for
-  detecting response storms:
+  detecting response storms. Verified admission blocks also increment this
+  counter, once per engine result, without waiting for alert delivery:
   `rate(csm_auto_response_actions_total[5m])`.
 - `csm_admission_handoff_seconds` (histogram): how long a response
   funnel waits to hand an automatic response to the admission ledger,
-  which only previews or forecasts it for now. Preparing evidence for a possible later
+  which applies, previews or forecasts it. Preparing evidence for a possible later
   response adds no sample; selected refusals and responses each add one. Buckets: 0.001 s .. 1 s. The share of
   handoffs at or under 10 ms is
   `csm_admission_handoff_seconds_bucket{le="0.01"} / csm_admission_handoff_seconds_count`;
@@ -377,7 +378,8 @@ Registered when `reputation.upstream.enabled: true`.
   that timed out and were escalated to a hard block, by firewall
   `outcome`: `live` (a new block landed), `noop` (the IP was already
   blocked), plus `dry_run`, `allowed`, and `allowlisted`. `outcome=live`
-  is how many challenges actually became blocks.
+  is how many challenges actually became blocks, including those applied by
+  admission after the timeout handoff.
 - `csm_challenge_passed_total{method}` (counter): challenged addresses
   that got through, by `method`: `pow` (solved the puzzle), `captcha`,
   `verify_cookie` (passed earlier and came back), `admin_cookie`, and
@@ -394,6 +396,9 @@ Registered when `reputation.upstream.enabled: true`.
   source). All combinations are exported at zero from startup, and
   unexpected outcome or source values collapse into the fixed `error` or
   `unknown` buckets instead of creating new labels.
+  Admission execution reports into these same counters. Failed or unknown
+  batch outcomes count as errors; forecasts and queued deferrals add no
+  attempts. Retrying an outcome write or audit delivery adds no count.
   This is the aliveness signal for auto-response: alert when
   `sum(rate(csm_firewall_block_outcome_total{outcome="live",source!~"cli|web_ui"}[1h])) == 0`
   while attack findings keep coming, and watch `outcome="error"` for a

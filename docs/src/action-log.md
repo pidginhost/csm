@@ -94,10 +94,12 @@ ledger admitted: `op` is `respond.block_ip`, `action` the kind of response
 `failed` or `unknown`). `action_id` and `action_version` name the attempt and
 the step. A record is written durably before the ledger lets it go, so after a
 crash it can appear twice; drop a copy whose `action_id`, `action_version` and
-`ts` match another. Existing blocking paths still decide every block: the
-ledger previews each response they hand it, so an admitted response is
-`reserved` and then `observe`, and is never executed. In dry run with the
-firewall on outside observe mode, it forecasts block responses instead.
+`ts` match another. An admitted IP block takes these steps while the ledger
+executes, with `auto_response.dry_run` false, the firewall on and outside
+observe mode. Otherwise the ledger previews each response it is handed, so
+an admitted response is `reserved` and then `observe` and is never
+executed; in dry run with the firewall on outside observe mode it forecasts
+block responses instead.
 Their terminal outcomes are counted in the ledger without a new per-attempt
 action-log row; bounded forecast examples and summaries are separate.
 
@@ -176,7 +178,12 @@ so summaries of two runs never share one.
 
 Refused previews and submissions displaced from the memory queue count as
 `refused` with their reason, including every report merged into a displaced
-submission. Summaries continue while the ledger or its clock is unavailable,
+submission. While the owner executes, a block it runs shows only in its
+attempt rows above: the summaries count a live block pick only when the
+ledger refuses it at its recheck or reservation. A batch the firewall
+engine refuses while applying it, and a pick the panel verdict callback
+allows, add no `refused` row; the first shows in its attempt's outcome, the
+second in the log and in the `verdict` counters of status. Summaries continue while the ledger or its clock is unavailable,
 and stopping flushes completed decisions even if the final drain fails.
 Their hour never precedes the latest recorded admission hour, including
 clock readings from an incomplete startup.

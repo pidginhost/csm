@@ -331,7 +331,8 @@ Victim references accept either an admission attempt ID or an import's
 IDs; an import has no record key. Imports have the fixed tier (C2, High)
 and occupy general slots. The codecs keep their existing versions: an
 older build refuses a ledger containing import claims, so such a ledger
-must stay on a compatible build. Preview-only hosts have no such claims.
+must stay on a compatible build. A ledger that never executed has no such
+claims.
 The effect records' partition tally rejects negative counts, underflow and overflow;
 failed additions return the original tally. Combining a tally with set
 occupancy also returns an error and the original occupancy if either
@@ -640,7 +641,7 @@ and a summary once a minute after acknowledged delivery. While the owner
 previews or forecasts, ledger notices go to findings history only, as
 Warnings starting "Admission preview:". The independent stopped-admission
 notice still reaches alert channels as a Warning saying existing blocking
-is unaffected. While it executes (never in this build, see `liveExecution`),
+is unaffected. While it executes,
 a gap is an outage of automatic blocking: notices go to the alert channels
 with their kind's severity and no preview prefix, and the stopped-admission
 notice is Critical. A ledger notice keeps the mode it was raised in: a
@@ -1135,8 +1136,8 @@ A row an admission action wrote belongs to the owner: an automatic legacy
 block of its address ends as already blocked, even when the row is unproven
 or its element is gone, never evicts it at the temporary cap, and permanent
 promotion refuses it (`ErrAdmissionOwnsBlock`). Operator blocks, unblocks,
-allows, flushes and undo keep their authority over it. This build does not execute admission batches; the guard also protects any
-action rows already present in restored state.
+allows, flushes and undo keep their authority over it. The guard also
+protects action rows already present in restored state.
 An executed admission block writes no legacy tracker (`blocked_ips.json`)
 entry. Reputation, alert suppression and its injected loader, flush cleanup,
 threat lookups and the blocked list read the verified firewall row instead,
@@ -1291,16 +1292,11 @@ is still reported. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
 execution` name the cause. An owner publishes `admission.owner.executing`
-only while it runs block picks: it has `Options.Blocks`, `liveExecution` is
-on and its policy is not a dry run. `admission.DoctorImpact` then closes every
+only while it runs block picks: it has `Options.Blocks` and its policy is
+not a dry run. `admission.DoctorImpact` then closes every
 admission row with `ExecutionAffected` instead of `PreviewUnaffected` and
 turns the outages that stop automatic blocks, held execution included, from
-warnings into failures. `liveExecution` is a package variable that stays false
-until plan 1.4c-2b removes it: under a live policy an owner with an engine
-then previews its block picks as one without an engine does, asks no panel
-and holds a refused policy's picks; a dry-run policy still forecasts. No
-configuration reaches it, an architecture test refuses any production write,
-and the package's tests turn it on to exercise execution.
+warnings into failures.
 A degraded admission clock cannot bound a lease, so
 it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of
@@ -1327,8 +1323,7 @@ that cannot select work. During a batch wait, opt-outs end silently before
 any outage is reported. Outage deferrals revalidate waiting work first, so
 expired evidence and changed ownership keep their own terminal reasons.
 
-The first time an owner executes (only in tests while `liveExecution` is
-false), its live start runs once per ledger, in one transaction, before
+The first time an owner executes, its live start runs once per ledger, in one transaction, before
 anything is drained or served under that policy: every drain and turn reads
 the clock first, and the reading runs the live start. It charges the legacy
 hour as the greater of its count and the charges the ledger already retains

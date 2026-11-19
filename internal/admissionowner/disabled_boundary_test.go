@@ -13,7 +13,6 @@ func TestOwnerDisabledWorkPrecedesBoundaryRevalidation(t *testing.T) {
 	for _, boundary := range []string{"restart", "reload", "turn"} {
 		for _, dry := range []bool{false, true} {
 			t.Run(boundary+"/"+map[bool]string{false: "preview", true: "forecast"}[dry], func(t *testing.T) {
-				withLiveExecution(t, false)
 				p := withTestRegistry(t)
 				f := newOwnerFixture(t)
 				blocks := newFakeBlocks()

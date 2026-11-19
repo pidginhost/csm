@@ -210,10 +210,12 @@ supplied.
 
 ## Comparing the admission preview
 
-Automatic blocks still run on the legacy path while the admission ledger
-previews the same responses. `compare` reads the outputs of one joined run and
-sets each legacy automatic block in the preview window against what the
-preview did with its finding. Older unstamped finding rows still supply
+While the admission ledger only previews or forecasts, the legacy path
+decides every automatic block and the ledger sees the same responses.
+Compare a dry-run window: once admission executes, the legacy path leaves
+the blocks admission owns to it. `compare` reads the outputs of one joined
+run and sets each legacy automatic block in the preview window against what
+the preview did with its finding. Older unstamped finding rows still supply
 their identifiers and checks for joins:
 
 ```bash

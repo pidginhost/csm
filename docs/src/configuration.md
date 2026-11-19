@@ -388,12 +388,13 @@ auto_response:
   max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
   max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: false                      # block attacker IPs via firewall
-  block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default; admission previews and forecasts cap new temporary lifetimes; retries keep their first expiry
+  block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default; admission caps new temporary lifetimes; retries keep their first expiry
   http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration
   # Shared scan-driven block budget; 0/omitted selects 50.
   # Also sets the admission ledger ceiling: 0/omitted selects 2000, capped at 20000.
   # A value sets both, so leave it out unless the ceiling should be lower too.
-  # The ledger does not govern blocking yet. See Automatic response admission in the API reference.
+  # Outside dry run, with the firewall on, the ledger caps the IP blocks it applies.
+  # See Automatic response admission in the API reference.
   # max_blocks_per_hour: 0
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
   fix_wp_cron: false                    # on perf_wp_cron findings, auto-disable WP-Cron and install a per-user system cron

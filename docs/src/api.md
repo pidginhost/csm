@@ -340,10 +340,13 @@ separate from the Web UI configuration rollback timer.
 `status.admission.v1` advertises the `admission` object on status responses.
 The same view appears under `snapshot.admission` in `csm status --json` and as
 `admission` rows in `csm doctor`. The daemon reads it on a timer, so
-`checked_at` says how old it is. Existing blocking paths still decide every
-block. Every automatic response they select is also handed to the ledger,
-which previews or forecasts eligible work and refuses disabled responses.
-It never applies them; the view is not an enforcement record.
+`checked_at` says how old it is. Every automatic response the blocking
+paths select is also handed to the ledger, which refuses disabled
+responses. With `auto_response.dry_run` false, the firewall on and outside
+observe mode, the ledger applies the automatic IP blocks it is handed
+(`owner.executing`) and the blocking paths leave those blocks to it.
+Otherwise it previews or forecasts eligible work and never applies it, and
+the view is not an enforcement record.
 
 - `ledger` holds the stored admission time, queue, lifetime queue counters
   (including newly checkpointed ingress drops), hourly and daily
@@ -359,7 +362,10 @@ It never applies them; the view is not an enforcement record.
   Ingress drops checkpointed before this accounting change are not added
   retroactively to lifetime counters. On an upgraded host, retained outcome
   windows can therefore exceed the corresponding lifetime totals. A restart
-  does not fill that historical gap.
+  does not fill that historical gap. Once the ledger has started live, a
+  preview ends as a dry run does: the outcome windows and the candidate's
+  state show it as `dry_run`, while the hourly comparison counts it as
+  `observe`.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
 - `owner` says whether admission runs automatic blocks (`executing`),
@@ -391,14 +397,10 @@ It never applies them; the view is not an enforcement record.
   The first completed turn publishes `settled: true` with any earlier
   `turn_error` cleared. Later failed turns and policy reloads do not reset
   `settled`; a daemon restart does.
-  `preview_replacements` counts this process's previews that took the
-  temporary slot of a lower-priority automatic block, which live admission
-  would replace, and `preview_replacements_last_hour` those of the last
-  sixty one-minute buckets of process monotonic time. A preview claims
-  nothing, so later previews may name the same block.
-  `preview_rotations` and `preview_rotations_last_hour` count, in the same
-  way, the previews that took the slot of an equal-priority automatic
-  block, which live admission would rotate out.
+  `preview_replacements`, `preview_replacements_last_hour`,
+  `preview_rotations` and `preview_rotations_last_hour` remain in the API
+  for compatibility and read zero in this build. Live blocks execute and
+  dry-run blocks forecast; neither increments these preview counters.
 - An owner that runs on the firewall engine, with the firewall on and
   outside observe mode, adds `execution_held` with `execution_held_by`
   (`policy` for a refused execution policy, `firewall` for the firewall
@@ -406,11 +408,10 @@ It never applies them; the view is not an enforcement record.
   count this process and restart at zero, a `dry_run` object for its
   dry-run forecast and a `set` object for the temporary block set outside a
   dry run, both described below, with `set_error` when the last turn could
-  not read the set. `verdict.enabled` is true only while the
-  owner itself asks the panel, during a dry-run forecast; under a live policy
-  it reads false even with the callback configured. This
-  build never lets it run automatic blocks itself (`executing`): under a
-  live policy it previews. This staging route does not advertise
+  not read the set. `verdict.enabled` is true while the owner
+  itself asks the panel: with the callback configured, during a dry-run
+  forecast and while it runs automatic blocks itself (`executing`). This
+  staging route does not advertise
   `admission.dry_run_verdict.v1`; that capability requires the complete
   admission-gates contract and activation evidence.
 
@@ -521,12 +522,14 @@ An omitted or zero value selects 2000 for the ledger and 50 for the shared
 scan-driven block budget. An explicit value is used by both, and `csm doctor`
 warns when it puts the ceiling below 2000. After editing the configuration, run
 `systemctl reload csm`; web UI settings saves apply at the next ledger tick.
-Existing blocking paths still decide every block; see
-[automatic response](auto-response.md) for the scope of the current budget.
+See [automatic response](auto-response.md) for the scope of the current
+budget.
 
 While admission previews or forecasts, existing blocking paths still decide
 every block. Admission rows say existing blocking is unaffected, and
-`admission execution` warns while execution is held. The dry-run rows of an
+`admission execution` warns while execution is held. While the owner
+executes, the rows say admission decides automatic blocks, and the outages
+that stop automatic blocks, held execution included, fail. The dry-run rows of an
 owner that forecasts (`admission dry run`, `admission dry-run
 capacity` and `admission dry-run examples`) show the forecast's session,
 real against predicted capacity and lost examples. The capacity row also
@@ -544,16 +547,10 @@ or stale examples warn. Recent rotation and wait warnings remain visible
 when the forecast has no current capacity snapshot; current occupancy and
 scope shares are then unavailable. These warnings clear when they leave
 the last-hour window or the forecast session ends.
-Outside a dry run, `admission set` shows the slots
-the last turn budgeted block work by and the previews of the last hour
-that would have replaced a lower-priority automatic block, and warns in
-the same cases, when the set could not be read and when a preview of the
-last hour would have rotated out an equal-priority block. The preview
-counts remain visible when the set cannot be read. Replacement notes change
-neither the row's status nor its suggested fix; a rotation means the set
-is too small for the attack. Recent preview rotations keep this row visible
-even if a later turn has no set snapshot or read error; lifetime totals
-alone do not keep the warning active. Rows warn when
+Outside a dry run, `admission set` shows the slots the last turn budgeted
+block work by. It warns about unavailable capacity or an unreadable set.
+The retained preview replacement and rotation counters remain zero in
+this build and do not describe live replacements or rotations. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical
@@ -583,15 +580,17 @@ pending and later rows can wait behind it; `queues["admission.audit"]` reports
 no-progress stalls. Successful delivery clears the error. Keep the database
 and pending rows; repair the reported storage failure before retrying.
 
-A ledger that cannot start, or admission that stops, raises one Warning
+A ledger that cannot start, or admission that stops, raises one
 `auto_response_withheld` alert through the same path as protection queue
-alerts; it follows the notification channel settings but bypasses
+alerts, a Warning while admission previews or forecasts and Critical while
+it executes; it follows the notification channel settings but bypasses
 `alerts.max_per_hour`. Ledger notices (withheld responses, exhausted
 capacity, partial containment of an outbound destination and their
-summaries) describe what the ledger would have done, so
-they are recorded in findings history as Warnings starting with "Admission
-preview:" and sent to no alert channel; the ledger paces them per notice key
-and summary. A preview is acknowledged only after its history write succeeds.
+summaries) raised while the owner previews or forecasts describe what the
+ledger would have done, so they are recorded in findings history as
+Warnings starting with "Admission preview:" and sent to no alert channel.
+Those raised while it executes go to the alert channels with their kind's
+severity and no prefix. The ledger paces them per notice key and summary. A preview is acknowledged only after its history write succeeds.
 Delivery errors leave notices pending for retry:
 the next two cycles retry at once, then each attempt waits twice as long as
 the one before, up to an hour. Ledger notices and the stopped-admission

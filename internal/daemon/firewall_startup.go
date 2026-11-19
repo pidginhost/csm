@@ -82,6 +82,7 @@ func retryFirewallStartup(stop <-chan struct{}, delays []time.Duration, attempt 
 }
 
 func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
+	defer d.firewallStarted.Store(true)
 	if err := checks.InitAutoBlockQueueHealth(d.cfg.StatePath); err != nil {
 		csmlog.Error("auto-block retry state unreadable", "err", err)
 	}

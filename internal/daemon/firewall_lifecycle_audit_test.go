@@ -98,7 +98,7 @@ func TestChallengeVerifiedAuditFailureRetainsEvidence(t *testing.T) {
 			d, db, dispatched := lifecycleAuditDaemon(t, firewall.BlockOutcomeLive, tc.err)
 			d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
 			d.ipList.Add("203.0.113.82", "observed abuse", -time.Minute)
-			before := challengeEscalatedCount()
+			before := checks.ChallengeEscalatedCount(firewall.BlockOutcomeLive)
 			stderr := captureAppliedBlockStderr(t, func() { d.escalateExpiredChallenges(time.Hour) })
 			if !strings.Contains(stderr, tc.err.Error()) {
 				t.Fatalf("degraded action error was hidden: %q", stderr)
@@ -109,7 +109,7 @@ func TestChallengeVerifiedAuditFailureRetainsEvidence(t *testing.T) {
 			if digest := d.blockDigest.Drain(); digest.Total != tc.want || *dispatched != tc.want {
 				t.Fatalf("digest=%d dispatch=%d, want %d", digest.Total, *dispatched, tc.want)
 			}
-			if got := challengeEscalatedCount() - before; got != tc.want {
+			if got := checks.ChallengeEscalatedCount(firewall.BlockOutcomeLive) - before; got != tc.want {
 				t.Fatalf("live challenge escalations=%d, want %d", got, tc.want)
 			}
 		})

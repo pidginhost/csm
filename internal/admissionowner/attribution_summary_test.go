@@ -204,13 +204,12 @@ func TestOwnerRefusedPreviewKeepsCause(t *testing.T) {
 			name = "ending fails"
 		}
 		t.Run(name, func(t *testing.T) {
-			withLiveExecution(t, false)
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			h := f.host.now().UTC().Truncate(time.Hour)
 			comparisonClock(t, func() time.Time { return h.Add(time.Hour + 10*time.Minute) })
 			sink := &actionSink{}
-			opts := executeOptions(f, newFakeBlocks())
+			opts := previewOptions(f)
 			opts.WriteAudit = sink.write
 			o := f.start(opts)
 			setOwnerHook(t, o, &observeLedger, func(*store.AdmissionLedger, admission.CandidateID, admission.Lane, time.Time) (admission.Candidate, admission.AttemptRecord, bool, admission.EvictionVictim, error) {

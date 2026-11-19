@@ -3,6 +3,7 @@ package daemon
 import (
 	"testing"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
@@ -58,17 +59,17 @@ func TestChallengeEscalateLogLine(t *testing.T) {
 // operator can see how many challenges became real hard blocks (live) versus
 // no-ops (the IP was already blocked).
 func TestObserveChallengeEscalatedCountsByOutcome(t *testing.T) {
-	observeChallengeEscalated(firewall.BlockOutcomeLive) // registers + increments
-	liveBefore := challengeEscalatedMetric.With(string(firewall.BlockOutcomeLive)).Value()
-	noopBefore := challengeEscalatedMetric.With(string(firewall.BlockOutcomeNoop)).Value()
+	checks.ObserveChallengeEscalated(firewall.BlockOutcomeLive) // registers + increments
+	liveBefore := checks.ChallengeEscalatedCount(firewall.BlockOutcomeLive)
+	noopBefore := checks.ChallengeEscalatedCount(firewall.BlockOutcomeNoop)
 
-	observeChallengeEscalated(firewall.BlockOutcomeLive)
-	observeChallengeEscalated(firewall.BlockOutcomeNoop)
+	checks.ObserveChallengeEscalated(firewall.BlockOutcomeLive)
+	checks.ObserveChallengeEscalated(firewall.BlockOutcomeNoop)
 
-	if got := challengeEscalatedMetric.With(string(firewall.BlockOutcomeLive)).Value(); got != liveBefore+1 {
+	if got := checks.ChallengeEscalatedCount(firewall.BlockOutcomeLive); got != liveBefore+1 {
 		t.Errorf("live delta = %v, want 1", got-liveBefore)
 	}
-	if got := challengeEscalatedMetric.With(string(firewall.BlockOutcomeNoop)).Value(); got != noopBefore+1 {
+	if got := checks.ChallengeEscalatedCount(firewall.BlockOutcomeNoop); got != noopBefore+1 {
 		t.Errorf("noop delta = %v, want 1", got-noopBefore)
 	}
 }

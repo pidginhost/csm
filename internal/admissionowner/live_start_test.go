@@ -41,19 +41,18 @@ func swapStartLive(t *testing.T, fn func(*store.AdmissionLedger, admission.Legac
 	t.Cleanup(func() { startLiveLedger = previous })
 }
 
-// previewed runs a previewing owner on f's database that answers addr with
-// an observe preview, then stops it.
-func previewed(t *testing.T, f *ownerFixture, p *admission.Producer, blocks *fakeBlocks, addr string) {
+// previewed runs an owner without an engine on f's database that answers
+// addr with an observe preview, then stops it. An earlier build previewed
+// the same way with an engine under a live policy.
+func previewed(t *testing.T, f *ownerFixture, p *admission.Producer, addr string) {
 	t.Helper()
-	withLiveExecution(t, false)
-	o, _, _ := policyOwner(t, f, blocks, validPolicy(1))
+	o := f.start(previewOptions(f))
 	id := observe(t, o, p, f, addr, "offset=1")
 	turn(t, o)
 	if c := candidate(t, o, id); c.State != admission.StateObserved {
-		t.Fatalf("pick under a live policy = %+v", c)
+		t.Fatalf("pick without an engine = %+v", c)
 	}
 	o.Stop()
-	withLiveExecution(t, true)
 }
 
 // The first owner that executes carries legacy blocking's state over before
@@ -65,7 +64,7 @@ func TestOwnerStartsLiveWhenItFirstExecutes(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	previewed(t, f, p, blocks, "192.0.2.10")
+	previewed(t, f, p, "192.0.2.10")
 	now := f.host.now()
 	f.legacy(fmt.Sprintf(`{"ips":[],"pending":[{"ip":"198.51.100.1","reason":"r","queued_at":%q},{"ip":"198.51.100.2","reason":"r","queued_at":%q}],"blocks_this_hour":9,"hour_key":%q}`,
 		now.Add(-time.Minute).Format(time.RFC3339Nano), now.Add(-3*time.Hour).Format(time.RFC3339Nano), now.Format("2006-01-02T15")))
@@ -100,20 +99,18 @@ func TestOwnerStartsLiveWhenItFirstExecutes(t *testing.T) {
 	}
 }
 
-// The live start waits for live execution: an owner that previews or
-// forecasts never runs it, and a live policy a reload installs runs it
-// before the reload returns.
+// The live start waits for live execution: an owner without an engine
+// or one that forecasts never runs it, and a live policy a reload
+// installs runs it before the reload returns.
 func TestOwnerLiveStartWaitsForLiveExecution(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
-	withLiveExecution(t, false)
-	o, _, _ := policyOwner(t, f, newFakeBlocks(), validPolicy(1))
+	o := f.start(previewOptions(f))
 	turn(t, o)
 	if liveStarted(t, o) {
-		t.Fatal("a previewing owner started live")
+		t.Fatal("an owner without an engine started live")
 	}
 	o.Stop()
-	withLiveExecution(t, true)
 	o, r, _ := policyOwner(t, f, newFakeBlocks(), dryPolicy(1))
 	turn(t, o)
 	if liveStarted(t, o) {
@@ -134,7 +131,7 @@ func TestOwnerLiveStartWithoutTheLegacyStateKeepsNoCredit(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	previewed(t, f, p, blocks, "192.0.2.10")
+	previewed(t, f, p, "192.0.2.10")
 	f.legacy(`{"blocks_this_hour":3}`)
 	o, _, _ := policyOwner(t, f, blocks, validPolicy(1))
 	if s := ceiling(t, o); !liveStarted(t, o) || s.General.Credit != 0 || s.Reserved.Credit != 0 || s.General.Used != 1 {
@@ -153,7 +150,7 @@ func TestOwnerDrainsNothingBeforeTheLiveStart(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	previewed(t, f, p, blocks, "192.0.2.10")
+	previewed(t, f, p, "192.0.2.10")
 	o, r, _ := policyOwner(t, f, blocks, dryPolicy(1))
 	f.host.advance(time.Second)
 	// A block the preview period leaves queued ends in the live start.
@@ -196,8 +193,7 @@ func TestOwnerSettlesBeforeStartingLive(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	withLiveExecution(t, false)
-	o, _, _ := policyOwner(t, f, blocks, validPolicy(1))
+	o := f.start(previewOptions(f))
 	reserved := observe(t, o, p, f, "192.0.2.10", "offset=1")
 	running := observe(t, o, p, f, "192.0.2.11", "offset=2")
 	if err := o.do(func() error {
@@ -214,7 +210,6 @@ func TestOwnerSettlesBeforeStartingLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Stop()
-	withLiveExecution(t, true)
 	atStart := map[admission.CandidateID]admission.Candidate{}
 	swapStartLive(t, func(l *store.AdmissionLedger, h admission.LegacyHandover) error {
 		for _, id := range []admission.CandidateID{reserved, running} {

@@ -78,5 +78,9 @@
   {
     "Package": "github.com/pidginhost/csm/internal/daemon",
     "Name": "TestKernelTmpOccupantMountPlacement"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/admissionowner",
+    "Name": "TestKernelLiveOwnerConvergesAfterAKillInsideTheEngine"
   }
 ]
