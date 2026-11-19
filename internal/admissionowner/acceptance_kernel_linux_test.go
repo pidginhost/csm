@@ -138,8 +138,9 @@ type kernelEngine struct {
 	*firewall.Engine
 	mu    sync.Mutex
 	calls map[string]int
-	// killApply stops the next batch once the kernel holds it, as a
-	// process killed inside the engine would stop.
+	// killApply stops the turn when the next batch returns from the
+	// engine, as a process killed after the kernel write and before the
+	// ledger records the outcome would stop.
 	killApply bool
 }
 
@@ -432,11 +433,12 @@ func blockedElements(t *testing.T, dir string) int {
 }
 
 // An owner that executes on a real engine and ledger starts live at its
-// first turn and applies block picks of both families. Killed inside the
-// engine once the kernel holds a batch, it restarts on the same ledger
-// without a second live start: the batch's members are unknown outcomes
-// that hold their addresses, nothing is sent to the engine again, and once
-// their lifetime has passed the kernel has dropped them and they retire.
+// first turn and applies block picks of both families. Killed once the
+// kernel holds a batch and before the ledger records it, it restarts on
+// the same ledger without a second live start: the batch's members are
+// unknown outcomes that hold their addresses, nothing is sent to the
+// engine again, and once their lifetime has passed the kernel has dropped
+// them and they retire.
 func TestKernelLiveOwnerConvergesAfterAKillInsideTheEngine(t *testing.T) {
 	ns := kernelNamespace(t)
 	dir := t.TempDir()

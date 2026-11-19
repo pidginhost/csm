@@ -220,3 +220,34 @@ func TestPanelAllowMetricsExcludeForecasts(t *testing.T) {
 		})
 	}
 }
+
+// A refusal the engine returns when it applies counts as the same refusal
+// at check time would: work it defers is not counted until it ends.
+func TestLiveApplyRefusalMetricsMatchCheckTime(t *testing.T) {
+	for _, tc := range []struct {
+		refusal firewall.BlockRefusal
+		want    float64
+	}{
+		{firewall.BlockRefusedFull, 0},
+		{firewall.BlockRefusedPending, 0},
+		{firewall.BlockRefusedExpired, 1},
+	} {
+		t.Run(string(tc.refusal), func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: tc.refusal}
+			o := f.start(executeOptions(f, blocks))
+			queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			const name = `csm_firewall_block_outcome_total{outcome="noop",source="scan"}`
+			before := blockMetric(t, name)
+			turn(t, o)
+			if _, applied := blocks.calls(); len(applied) != 1 {
+				t.Fatalf("applies = %d", len(applied))
+			}
+			if got := blockMetric(t, name) - before; got != tc.want {
+				t.Errorf("delta = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

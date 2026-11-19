@@ -35,7 +35,12 @@ func observeBlockBatch(picks []execPick, run []int, results []firewall.BlockResu
 	}
 }
 
+// observeBlockRefusal counts a refusal that ends live work. Work it defers
+// is counted once it ends, so a retried pick is not counted twice.
 func observeBlockRefusal(entry admission.Entry, refusal firewall.BlockRefusal) {
+	if reason, known := refusalReasons[refusal]; known && reason.Disposition() == admission.DispositionDeferred {
+		return
+	}
 	outcome := firewall.BlockOutcomeNoop
 	var err error
 	switch refusal {

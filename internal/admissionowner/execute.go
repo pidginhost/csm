@@ -141,9 +141,9 @@ func (o *Owner) execute(picks []execPick) error {
 		}
 		members[i] = m
 	}
-	checks, err := engine.CheckBlockBatchEffects(members)
-	if err == nil && len(checks) != len(members) {
-		err = fmt.Errorf("%d answers for %d members", len(checks), len(members))
+	answers, err := engine.CheckBlockBatchEffects(members)
+	if err == nil && len(answers) != len(members) {
+		err = fmt.Errorf("%d answers for %d members", len(answers), len(members))
 		o.probeCheck = true
 	}
 	if err != nil {
@@ -157,7 +157,7 @@ func (o *Owner) execute(picks []execPick) error {
 	var run []int
 	var stopped error
 	for i, p := range picks {
-		refused, endErr := o.endRefused(p, checks[i])
+		refused, endErr := o.endRefused(p, answers[i])
 		if endErr != nil {
 			stopped = endErr
 			break
@@ -432,7 +432,7 @@ func (o *Owner) endRefused(p execPick, check firewall.BlockCheck) (bool, error) 
 				return true, o.endPick(p, reason)
 			}
 			err := o.endCounted(p, reason, 0)
-			if err == nil && reason.Disposition() != admission.DispositionDeferred {
+			if err == nil {
 				observeBlockRefusal(p.c.Entry, check.Refusal)
 			}
 			return true, err
@@ -837,12 +837,12 @@ func (o *Owner) proveExisting(member firewall.BlockMember) (admission.EffectLink
 	if engine == nil {
 		return admission.EffectLink{}, errNoEngine
 	}
-	checks, err := engine.CheckBlockBatchEffects([]firewall.BlockMember{member})
+	answers, err := engine.CheckBlockBatchEffects([]firewall.BlockMember{member})
 	if err != nil {
 		return admission.EffectLink{}, err
 	}
-	if len(checks) != 1 {
-		return admission.EffectLink{}, fmt.Errorf("%d answers for one existing effect", len(checks))
+	if len(answers) != 1 {
+		return admission.EffectLink{}, fmt.Errorf("%d answers for one existing effect", len(answers))
 	}
-	return linkOf(checks[0].Existing), nil
+	return linkOf(answers[0].Existing), nil
 }
