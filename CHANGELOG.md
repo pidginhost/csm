@@ -21,17 +21,22 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Added
 
 - Signs of a stolen mailbox now add up per mailbox: CSM suspends it once they do and sends one alert listing the evidence, rather than one per sign.
+- `csm stalwart setup` takes the admin password from stdin with `--password-stdin`, and on a terminal asks for a missing login without echoing it.
 - Admission status now lists which automatic IP block sources the host's settings let it run.
 
 ### Changed
 
 - Mail logins from a new country now go to the daily summary as compromise evidence instead of raising an alert each.
+- The Email page Rejects, Sending accounts and Suspended tabs now share the Held mail layout, with a search box and larger pages.
+- On a host without PHP, the Web UI hides the PHP settings and the Performance page's PHP cards; PHP running in a container counts.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
 
 ### Fixed
 
 - Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
 - Knot DNS servers no longer raise connection alerts for their own zone transfers.
+- chrony no longer raises connection alerts when it reaches Network Time Security servers.
+- A package upgrade that loads the kernel's crypto socket modules now raises a warning instead of a HIGH incident.
 - Debian and Ubuntu package upgrades no longer stop to ask whether to replace the CSM configuration file.
 - Package upgrades stop with a clear error when the main configuration file is missing.
 

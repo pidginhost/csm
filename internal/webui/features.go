@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/phpshield"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -17,10 +18,11 @@ const featureTTL = 5 * time.Minute
 // API backends and the UI flags share it so a tab never shows without its API.
 func cpanelMailBackend(info platform.Info) bool { return info.IsCPanel() }
 
-// uiFeatures maps the detected panel and mail server to the named features
-// the Web UI renders. Templates, the settings schema and the page scripts
-// all read these names instead of testing the platform themselves.
-func uiFeatures(info platform.Info, mta platform.MTAKind) map[string]bool {
+// uiFeatures maps the detected panel, mail server and PHP install to the
+// named features the Web UI renders. Templates, the settings schema and the
+// page scripts all read these names instead of testing the platform
+// themselves.
+func uiFeatures(info platform.Info, mta platform.MTAKind, php phpPresence) map[string]bool {
 	cp := cpanelMailBackend(info)
 	return map[string]bool{
 		"cpanel":          info.IsCPanel(),
@@ -33,6 +35,8 @@ func uiFeatures(info platform.Info, mta platform.MTAKind) map[string]bool {
 		"emailAV":         cp,
 		"cphulk":          info.IsCPanel(),
 		"stalwartFilter":  mta == platform.MTAStalwart,
+		"php":             php.php,
+		"phpShield":       php.shield,
 	}
 }
 
@@ -48,9 +52,24 @@ var hostPlatform = func() (platform.Info, platform.MTAKind) {
 	return platform.Detect(), platform.DetectMTA()
 }
 
+// phpPresence says whether this host runs PHP and whether PHP Shield can
+// reach it.
+type phpPresence struct{ php, shield bool }
+
+// hostPHP finds PHP on the host, or else PHP running in a container. PHP can
+// be installed after CSM starts, so it is re-checked with the platform.
+var hostPHP = func() phpPresence {
+	if platform.DetectPHP() {
+		return phpPresence{php: true, shield: true}
+	}
+	running, shielded := scanPHPProcesses("/proc", phpshield.ScriptPath)
+	return phpPresence{php: running, shield: shielded}
+}
+
 type featureState struct {
-	// detectPlatform and featureNow are nil outside tests.
+	// detectPlatform, detectPHP and featureNow are nil outside tests.
 	detectPlatform func() (platform.Info, platform.MTAKind)
+	detectPHP      func() phpPresence
 	featureNow     func() time.Time
 	featureMu      sync.Mutex
 	featureCache   featureSnapshot
@@ -81,7 +100,13 @@ func (s *Server) platformSnapshot() featureSnapshot {
 	} else {
 		info, mta = hostPlatform()
 	}
-	snap := featureSnapshot{at: now, features: uiFeatures(info, mta)}
+	var php phpPresence
+	if s.detectPHP != nil {
+		php = s.detectPHP()
+	} else {
+		php = hostPHP()
+	}
+	snap := featureSnapshot{at: now, features: uiFeatures(info, mta, php)}
 	s.featureMu.Lock()
 	s.featureCache = snap
 	s.featureRefreshing = false
