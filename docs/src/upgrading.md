@@ -170,6 +170,10 @@ the work waits for that block to end. For Critical work the wait raises a
 capacity notice with reason `pending_recovery`; the legacy block keeps the
 address blocked meanwhile.
 
+The automatic block counter now also counts the challenge, central and
+incident blocks admission applies, so block rates on dashboards can rise
+after the upgrade.
+
 To stop admission applying blocks without changing the binary, set
 `auto_response.dry_run: true` and run `systemctl reload csm`. Dry run stops
 every automatic IP block, legacy ones included; blocks already applied stay
@@ -194,7 +198,8 @@ For a rollback:
 1. Set `auto_response.dry_run: true` in the effective configuration, reload,
    and confirm `csm status --json` reports `auto_response_dry_run: true`.
    A drop-in may override the main config. Confirm admission has stopped
-   executing before proceeding; a failed reload is not a successful stop.
+   executing (`snapshot.admission.owner.executing` is false) before
+   proceeding; a failed reload is not a successful stop.
 2. Note the installed version, the `csm doctor` result and the current
    timed blocks, then stop `csm.service` and confirm it is inactive.
    Keep a consistent backup of the stopped database and firewall state.
@@ -220,3 +225,9 @@ workflow. Rehash if required, start and repeat the health and block checks.
 Keep current state in place; recover a damaged state backup only through
 the documented backup/restore procedure. Do not re-enable automatic blocks
 on a failed health check.
+
+Admission starts live once per ledger. Upgrading again after a rollback
+does not repeat that start: blocks the legacy path applied in the meantime
+stay until they expire, and the legacy path's hour is not carried over
+into admission's hourly ceiling. To compare a dry-run window again before
+admission blocks, keep `auto_response.dry_run: true` through the upgrade.

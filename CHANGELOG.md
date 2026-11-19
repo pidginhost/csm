@@ -32,6 +32,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - The Email page Rejects, Sending accounts and Suspended tabs now share the Held mail layout, with a search box and larger pages.
 - On a host without PHP, the Web UI hides the PHP settings and the Performance page's PHP cards; PHP running in a container counts.
 - With `auto_response.dry_run: false` and the firewall on outside observe mode, admission now applies automatic IP blocks, within the hourly ceiling and free temporary slots.
+- Automatic block metrics now include the challenge, central and incident IP blocks admission applies, not only scan blocks.
 - Temporary blocks that admission applies are never promoted to permanent blocks by repeat-offense escalation.
 - Once admission has applied blocks, roll back no further than 4.14.0; older builds keep admission stopped and leave blocking to the legacy path.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
