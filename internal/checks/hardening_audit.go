@@ -355,6 +355,7 @@ func auditOS() []store.AuditResult {
 	// exploit chains through. Blacklisting it neutralises the attack on
 	// unpatched kernels.
 	results = append(results, auditAlgifAEAD())
+	results = append(results, auditSCTP())
 
 	// Sysctl checks (table-driven)
 	sysctlChecks := []struct {
@@ -397,25 +398,23 @@ func auditOS() []store.AuditResult {
 	return results
 }
 
-// algifAEADBlacklisted reports whether any of the supplied modprobe.d files
-// contain a non-comment directive that prevents algif_aead from loading.
+// modprobeBlocks reports whether any of the supplied modprobe.d files
+// contain a non-comment directive that prevents one of modules from loading.
 // Either of the following blocks is sufficient:
 //
-//	blacklist algif_aead
-//	install algif_aead /bin/false
-//	blacklist af_alg                 (parent — algif_aead depends on it)
-//	install af_alg /bin/false        (parent — same reason)
+//	blacklist <module>
+//	install <module> /bin/false
 //
-// The dependency relationship matters for hand-hardened images: a sysadmin
-// who blocked only the parent `af_alg` has correctly mitigated Copy Fail
-// without needing to also block the AEAD submodule. Reporting "no blacklist
-// exists" on such hosts would be a false-fail alert.
+// For Copy Fail the caller passes the parent `af_alg` too: a sysadmin who
+// blocked only the parent has correctly mitigated it without also blocking
+// the AEAD submodule, and reporting "no blacklist exists" on such hosts
+// would be a false-fail alert.
 //
 // `install <module> /sbin/modprobe --ignore-install <module>` is the
 // idiomatic re-load form and explicitly does NOT block the module — we
 // detect that by skipping any install replacement whose first token's
 // basename is "modprobe".
-func algifAEADBlacklisted(confs map[string]string) bool {
+func modprobeBlocks(confs map[string]string, modules ...string) bool {
 	for _, body := range confs {
 		for _, line := range strings.Split(body, "\n") {
 			line = strings.TrimSpace(line)
@@ -426,7 +425,7 @@ func algifAEADBlacklisted(confs map[string]string) bool {
 			if len(fields) < 2 {
 				continue
 			}
-			if fields[1] != "algif_aead" && fields[1] != "af_alg" {
+			if !slices.Contains(modules, fields[1]) {
 				continue
 			}
 			switch fields[0] {
@@ -468,7 +467,7 @@ const (
 // check. `loaded` reports whether algif_aead currently shows up in
 // /proc/modules; `confs` is a map of modprobe.d file path → contents.
 func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
-	blocked := algifAEADBlacklisted(confs)
+	blocked := modprobeBlocks(confs, "algif_aead", "af_alg")
 	switch {
 	case !loaded && blocked:
 		msg := "algif_aead is blacklisted and not loaded"
@@ -556,31 +555,98 @@ func auditAlgifAEAD() store.AuditResult {
 		}
 	}
 
-	loaded := false
-	for _, mod := range loadModuleList() {
-		if mod == "algif_aead" {
-			loaded = true
-			break
-		}
-	}
-
-	confs := make(map[string]string)
-	matches, err := osFS.Glob("/etc/modprobe.d/*.conf")
-	if err == nil {
-		for _, p := range matches {
-			data, err := osFS.ReadFile(p)
-			if err != nil {
-				return store.AuditResult{
-					Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
-					Status:  "warn",
-					Message: fmt.Sprintf("Cannot read %s: %v — blacklist state undetermined", p, err),
-				}
-			}
-			confs[p] = string(data)
+	loaded := moduleLoaded("algif_aead")
+	confs, err := readModprobeConfs()
+	if err != nil {
+		return store.AuditResult{
+			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
+			Status:  "warn",
+			Message: "Cannot " + err.Error() + " — blacklist state undetermined",
 		}
 	}
 
 	return evaluateAlgifAEAD(loaded, confs)
+}
+
+// readModprobeConfs returns /etc/modprobe.d/*.conf keyed by path. An
+// unreadable file is an error naming it, so a caller never reports a module
+// as loadable or blocked from a partial view.
+func readModprobeConfs() (map[string]string, error) {
+	confs := make(map[string]string)
+	// Glob fails only on a malformed pattern, and this one is constant.
+	matches, _ := osFS.Glob("/etc/modprobe.d/*.conf")
+	for _, p := range matches {
+		data, err := osFS.ReadFile(p)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", p, err)
+		}
+		confs[p] = string(data)
+	}
+	return confs, nil
+}
+
+func moduleLoaded(name string) bool {
+	return slices.Contains(loadModuleList(), name)
+}
+
+const (
+	sctpAuditID    = "os_sctp_blocked"
+	sctpAuditTitle = "SCTP Kernel Module Blocked"
+	sctpBlockCmd   = "echo 'install sctp /bin/false' > /etc/modprobe.d/csm-disable-sctp.conf"
+)
+
+// evaluateSCTP is the pure core of the SCTP check. Web hosts never use
+// SCTP, and the kernel loads the module for any user that opens an SCTP
+// socket, which turns a kernel SCTP bug into root for any foothold such as
+// a webshell. kconfig is CONFIG_IP_SCTP from the running kernel's config:
+// "y", "m", "n" (not built), or "" when the config is unreadable.
+func evaluateSCTP(kconfig string, loaded bool, confs map[string]string) store.AuditResult {
+	r := store.AuditResult{Category: "os", Name: sctpAuditID, Title: sctpAuditTitle, Status: "fail"}
+	switch {
+	case kconfig == "y":
+		r.Message = "SCTP is built into the kernel (CONFIG_IP_SCTP=y); a modprobe block has no effect and any local user can reach SCTP kernel code"
+		r.Fix = "Install a kernel with SCTP built as a module, or one carrying the current SCTP security fixes"
+	case loaded:
+		r.Message = "SCTP module is loaded; any local user can reach SCTP kernel code"
+		r.Fix = sctpBlockCmd + " && modprobe -r sctp"
+	case kconfig == "n":
+		r.Status, r.Message = "pass", "Kernel has no SCTP support"
+	case modprobeBlocks(confs, "sctp"):
+		r.Status, r.Message = "pass", "SCTP module is blocked and not loaded"
+	default:
+		r.Message = "SCTP module is not blocked and is loaded on demand when any local user opens an SCTP socket"
+		r.Fix = sctpBlockCmd
+	}
+	return r
+}
+
+// auditSCTP reads the kernel config, /proc/modules and modprobe.d for
+// evaluateSCTP. An unreadable config counts as modular, so it never hides a
+// loadable module.
+func auditSCTP() store.AuditResult {
+	confs, err := readModprobeConfs()
+	if err != nil {
+		return store.AuditResult{
+			Category: "os", Name: sctpAuditID, Title: sctpAuditTitle,
+			Status: "warn", Message: "Cannot " + err.Error() + "; SCTP block state undetermined",
+		}
+	}
+	kconfig := ""
+	if cfg, ok := readKernelConfigText(); ok {
+		kconfig = kernelConfigOption(cfg, "CONFIG_IP_SCTP")
+	}
+	return evaluateSCTP(kconfig, moduleLoaded("sctp"), confs)
+}
+
+// kernelConfigOption returns "y" or "m" for a set kernel config option and
+// "n" for one that is unset or absent.
+func kernelConfigOption(cfg, name string) string {
+	for _, line := range strings.Split(cfg, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), name+"="); ok && (v == "y" || v == "m") {
+			return v
+		}
+	}
+	return "n"
 }
 
 // distroEOLPolicy encodes the oldest supported major version per known OS.
