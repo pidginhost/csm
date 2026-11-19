@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -77,9 +78,17 @@ func auditSCTPModulePolicy(r store.AuditResult) store.AuditResult {
 
 	// Ask kmod for the named module: an alias blacklist alone still permits
 	// dependency loads. --show-depends never inserts modules or runs commands.
-	plan, err := querySCTPModprobe("--show-depends")
+	plan, err := querySCTPHost("modprobe", "--show-depends", "sctp")
 	if err != nil {
-		r.Message = "Cannot determine the SCTP installation plan with modprobe."
+		dir := sctpMissingModuleDir(string(plan), err)
+		switch {
+		case dir == "":
+			r.Message = "Cannot determine the SCTP installation plan with modprobe."
+		case sctpAbsentFromTree(dir):
+			r.Status, r.Message = "pass", "SCTP module is not installed for the running kernel."
+		default:
+			r.Message = "Cannot confirm SCTP is absent from the running kernel's module tree."
+		}
 		return r
 	}
 	switch sctpInstallPlan(string(plan)) {
@@ -88,7 +97,7 @@ func auditSCTPModulePolicy(r store.AuditResult) store.AuditResult {
 		r.Fix = sctpBlockFix
 	case "block":
 		// A local alias can redirect even a lookup of the literal name.
-		names, err := querySCTPModprobe("--resolve-alias")
+		names, err := querySCTPHost("modprobe", "--resolve-alias", "sctp")
 		if err != nil || strings.TrimSpace(string(names)) != "sctp" {
 			r.Message = "Cannot resolve the blocked install command to the SCTP module."
 			return r
@@ -100,15 +109,45 @@ func auditSCTPModulePolicy(r store.AuditResult) store.AuditResult {
 	return r
 }
 
+func sctpMissingModuleDir(plan string, err error) string {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		return ""
+	}
+	dir, ok := strings.CutPrefix(strings.TrimSuffix(plan, "\n"), "modprobe: FATAL: Module sctp not found in directory ")
+	if !ok {
+		return ""
+	}
+	release, err := readKernelRelease()
+	if err != nil || !filepath.IsLocal(release) || release == "." || filepath.Base(release) != release {
+		return ""
+	}
+	if dir == "/lib/modules/"+release || dir == "/usr/lib/modules/"+release {
+		return dir
+	}
+	return ""
+}
+
+func sctpAbsentFromTree(dir string) bool {
+	// A missing or stale kmod index can hide an installed module. Follow
+	// symlinks because distributions link modules across kernel releases.
+	// kmod takes the module name up to the first dot in a module filename.
+	out, err := querySCTPHost("find", "-L", dir,
+		"-name", "modules.dep.bin", "-type", "f", "-o", "-name", "sctp.*", "-type", "f",
+		"(", "-name", "*.ko", "-o", "-name", "*.ko.gz", "-o", "-name", "*.ko.xz", "-o", "-name", "*.ko.zst", ")")
+	// Seeing the index distinguishes a visible module tree from an empty mount.
+	return err == nil && string(out) == filepath.Join(dir, "modules.dep.bin")+"\n"
+}
+
 // ProtectKernelModules hides the module indexes from csm.service. The
 // transient query needs to read host policy even when its mode is restrictive.
-func querySCTPModprobe(option string) ([]byte, error) {
+func querySCTPHost(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), auditCmdTimeout)
 	defer cancel()
 	return systemdrun.Run(ctx, cmdExec.LookPath, cmdExec.RunContext, systemdrun.Options{
 		Pipe: true, RuntimeMax: auditCmdTimeout,
 		Properties: []string{"CapabilityBoundingSet=CAP_DAC_READ_SEARCH", "NoNewPrivileges=yes", "ProtectSystem=strict"},
-	}, "modprobe", option, "sctp")
+	}, name, args...)
 }
 
 // kmod can silently skip a file it cannot open. Check the visible files
