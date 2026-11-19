@@ -338,7 +338,7 @@ separate from the Web UI configuration rollback timer.
 ### Automatic response admission
 
 `status.admission.v1` advertises the `admission` object on status responses.
-The same view appears under `snapshot.admission` in `csm status --json` and as
+The same view appears under `admission` in `csm status --json` and as
 `admission` rows in `csm doctor`. The daemon reads it on a timer, so
 `checked_at` says how old it is. Every automatic response the blocking
 paths select is also handed to the ledger, which refuses disabled
