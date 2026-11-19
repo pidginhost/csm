@@ -589,66 +589,6 @@ func moduleLoaded(name string) bool {
 	return slices.Contains(loadModuleList(), name)
 }
 
-const (
-	sctpAuditID    = "os_sctp_blocked"
-	sctpAuditTitle = "SCTP Kernel Module Blocked"
-	sctpBlockCmd   = "echo 'install sctp /bin/false' > /etc/modprobe.d/csm-disable-sctp.conf"
-)
-
-// evaluateSCTP is the pure core of the SCTP check. Web hosts never use
-// SCTP, and the kernel loads the module for any user that opens an SCTP
-// socket, which turns a kernel SCTP bug into root for any foothold such as
-// a webshell. kconfig is CONFIG_IP_SCTP from the running kernel's config:
-// "y", "m", "n" (not built), or "" when the config is unreadable.
-func evaluateSCTP(kconfig string, loaded bool, confs map[string]string) store.AuditResult {
-	r := store.AuditResult{Category: "os", Name: sctpAuditID, Title: sctpAuditTitle, Status: "fail"}
-	switch {
-	case kconfig == "y":
-		r.Message = "SCTP is built into the kernel (CONFIG_IP_SCTP=y); a modprobe block has no effect and any local user can reach SCTP kernel code"
-		r.Fix = "Install a kernel with SCTP built as a module, or one carrying the current SCTP security fixes"
-	case loaded:
-		r.Message = "SCTP module is loaded; any local user can reach SCTP kernel code"
-		r.Fix = sctpBlockCmd + " && modprobe -r sctp"
-	case kconfig == "n":
-		r.Status, r.Message = "pass", "Kernel has no SCTP support"
-	case modprobeBlocks(confs, "sctp"):
-		r.Status, r.Message = "pass", "SCTP module is blocked and not loaded"
-	default:
-		r.Message = "SCTP module is not blocked and is loaded on demand when any local user opens an SCTP socket"
-		r.Fix = sctpBlockCmd
-	}
-	return r
-}
-
-// auditSCTP reads the kernel config, /proc/modules and modprobe.d for
-// evaluateSCTP. An unreadable config counts as modular, so it never hides a
-// loadable module.
-func auditSCTP() store.AuditResult {
-	confs, err := readModprobeConfs()
-	if err != nil {
-		return store.AuditResult{
-			Category: "os", Name: sctpAuditID, Title: sctpAuditTitle,
-			Status: "warn", Message: "Cannot " + err.Error() + "; SCTP block state undetermined",
-		}
-	}
-	kconfig := ""
-	if cfg, ok := readKernelConfigText(); ok {
-		kconfig = kernelConfigOption(cfg, "CONFIG_IP_SCTP")
-	}
-	return evaluateSCTP(kconfig, moduleLoaded("sctp"), confs)
-}
-
-// kernelConfigOption returns "y" or "m" for a set kernel config option and
-// "n" for one that is unset or absent.
-func kernelConfigOption(cfg, name string) string {
-	for _, line := range strings.Split(cfg, "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), name+"="); ok && (v == "y" || v == "m") {
-			return v
-		}
-	}
-	return "n"
-}
-
 // distroEOLPolicy encodes the oldest supported major version per known OS.
 // Anything below the minimum is considered EOL by this check.
 var distroEOLPolicy = map[platform.OSFamily]int{

@@ -3,135 +3,179 @@ package checks
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-func TestEvaluateSCTP(t *testing.T) {
-	blocked := map[string]string{"/etc/modprobe.d/csm-disable-sctp.conf": "install sctp /bin/false\n"}
-	cases := []struct {
-		name      string
-		kconfig   string
-		loaded    bool
-		confs     map[string]string
-		want      string
-		msgHas    string
-		fixHas    string
-		fixHasNot string
+func TestAuditSCTP(t *testing.T) {
+	const (
+		modular  = "CONFIG_IP_SCTP=m\n"
+		builtin  = "CONFIG_IP_SCTP=y\n"
+		disabled = "# CONFIG_IP_SCTP is not set\n"
+		loaded   = "sctp 1 0 - Live 0x0\n"
+		insert   = "insmod /lib/modules/example/sctp.ko.zst\n"
+		block    = "install /bin/false \n"
+	)
+	for _, tc := range []struct {
+		name, config, modules, modulesDisabled string
+		modulesErr, policyErr, probeErr        error
+		plan, resolvesTo                       string
+		want, message, fix                     string
 	}{
-		{name: "module blocked and unloaded", kconfig: "m", confs: blocked, want: "pass"},
-		{name: "blacklist directive counts", kconfig: "m", confs: map[string]string{"/etc/modprobe.d/local.conf": "blacklist sctp\n"}, want: "pass"},
-		{name: "config unknown, blocked", kconfig: "", confs: blocked, want: "pass"},
-		{name: "kernel without sctp", kconfig: "n", want: "pass", msgHas: "no SCTP support"},
-		{name: "loadable on demand", kconfig: "m", want: "fail", msgHas: "loaded on demand", fixHas: "install sctp /bin/false", fixHasNot: "modprobe -r"},
-		{name: "loaded", kconfig: "m", loaded: true, confs: blocked, want: "fail", msgHas: "loaded", fixHas: "modprobe -r sctp"},
-		{name: "built in", kconfig: "y", confs: blocked, want: "fail", msgHas: "built into the kernel", fixHasNot: "modprobe.d"},
-		{name: "reload form does not block", kconfig: "m", confs: map[string]string{"/etc/modprobe.d/x.conf": "install sctp /sbin/modprobe --ignore-install sctp\n"}, want: "fail"},
-		{name: "commented directive does not block", kconfig: "m", confs: map[string]string{"/etc/modprobe.d/x.conf": "# install sctp /bin/false\n"}, want: "fail"},
-		{name: "other module's block does not count", kconfig: "m", confs: map[string]string{"/etc/modprobe.d/x.conf": "install algif_aead /bin/false\nblacklist sctp_diag\n"}, want: "fail"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			r := evaluateSCTP(c.kconfig, c.loaded, c.confs)
-			if r.Name != "os_sctp_blocked" || r.Category != "os" {
-				t.Fatalf("name/category = %q/%q", r.Name, r.Category)
+		{name: "built in", config: builtin, policyErr: os.ErrPermission, modulesErr: os.ErrPermission, want: "fail", message: "built into", fix: "kernel"},
+		{name: "loaded with unreadable policy", modules: loaded, policyErr: os.ErrPermission, want: "fail", message: "loaded", fix: "modprobe -r sctp"},
+		{name: "loaded despite disabled loading", config: modular, modules: loaded, modulesDisabled: "1", want: "fail", message: "loaded", fix: "reboot"},
+		{name: "disabled without proc modules", config: disabled, policyErr: os.ErrPermission, modulesErr: os.ErrNotExist, want: "pass", message: "no SCTP support"},
+		{name: "kernel without INET", config: "# CONFIG_INET is not set\n", want: "pass", message: "no SCTP support"},
+		{name: "unknown kernel", want: "warn", message: "CONFIG_IP_SCTP"},
+		{name: "truncated kernel config", config: "CONFIG_IP_SCTP_DIAG=m\n", want: "warn", message: "CONFIG_IP_SCTP"},
+		{name: "unknown loaded state", config: modular, modulesErr: os.ErrPermission, want: "warn", message: "/proc/modules"},
+		{name: "unreadable policy", config: modular, policyErr: os.ErrPermission, want: "warn", message: "local.conf"},
+		{name: "kernel module loading disabled", config: modular, modules: "sctp_diag 1 0 - Live 0x0\n", modulesDisabled: "1\n", want: "pass", message: "module loading is disabled"},
+		{name: "effective block after dependencies", config: modular, plan: "insmod /lib/modules/example/libcrc32c.ko.xz\n" + block, resolvesTo: "sctp", want: "pass", message: "blocked"},
+		{name: "true replacement", config: modular, plan: "install /usr/bin/true", resolvesTo: "sctp", want: "pass", message: "blocked"},
+		{name: "blacklist permits dependency load", config: modular, plan: insert, want: "fail", message: "can load", fix: "install sctp /bin/false"},
+		{name: "different module blocked", config: modular, plan: block + insert, want: "fail", message: "can load", fix: "install sctp /bin/false"},
+		{name: "custom install command", config: modular, plan: "install /bin/true && /usr/local/sbin/load-module", want: "warn", message: "cannot confirm"},
+		{name: "reload command", config: modular, plan: "install /sbin/modprobe --ignore-install sctp", want: "fail", message: "can load", fix: "install sctp /bin/false"},
+		{name: "alias redirects name", config: modular, plan: block, resolvesTo: "another_module", want: "warn", message: "resolve"},
+		{name: "missing modprobe", config: modular, probeErr: os.ErrNotExist, want: "warn", message: "modprobe"},
+		{name: "empty plan", config: modular, plan: " ", want: "warn", message: "cannot confirm"},
+		{name: "kmod diagnostic with successful exit", config: modular, plan: "libkmod: ERROR could not read configuration\n" + block, want: "warn", message: "cannot confirm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "local.conf"), nil, 0o600); err != nil {
+				t.Fatal(err)
 			}
-			if r.Status != c.want {
-				t.Fatalf("status = %q, want %q (msg: %s)", r.Status, c.want, r.Message)
+			observedDisabled := false
+			withMockOS(t, &mockOS{
+				readDir: func(path string) ([]os.DirEntry, error) {
+					if path == "/etc/modprobe.d" {
+						return os.ReadDir(dir)
+					}
+					return nil, os.ErrNotExist
+				},
+				readFile: func(path string) ([]byte, error) {
+					switch path {
+					case "/proc/sys/kernel/osrelease":
+						return []byte("example"), nil
+					case "/boot/config-example":
+						return []byte(tc.config), nil
+					case "/proc/modules":
+						if tc.modulesDisabled != "" && !observedDisabled {
+							t.Fatal("must verify loaded state after observing the module loading lock")
+						}
+						return []byte(tc.modules), tc.modulesErr
+					case "/proc/sys/kernel/modules_disabled":
+						observedDisabled = true
+						return []byte(tc.modulesDisabled), nil
+					case "/etc/modprobe.d/local.conf":
+						return nil, tc.policyErr
+					}
+					return nil, os.ErrNotExist
+				},
+			})
+			withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+				if name != "modprobe" {
+					t.Fatalf("unexpected command %q", name)
+				}
+				switch {
+				case slices.Equal(args, []string{"--show-depends", "sctp"}):
+					if tc.plan == "" && tc.probeErr == nil {
+						t.Fatal("consulted modprobe despite decisive or unreadable kernel state")
+					}
+					return []byte(tc.plan), tc.probeErr
+				case slices.Equal(args, []string{"--resolve-alias", "sctp"}):
+					return []byte(tc.resolvesTo + "\n"), nil
+				default:
+					t.Fatalf("unexpected modprobe arguments %q", args)
+					return nil, nil
+				}
+			}})
+			r := auditSCTP()
+			if r.Name != "os_sctp_blocked" || r.Category != "os" || r.Status != tc.want ||
+				!strings.Contains(r.Message, tc.message) || !strings.Contains(r.Fix, tc.fix) {
+				t.Fatalf("got %+v, want %s containing %q and fix containing %q", r, tc.want, tc.message, tc.fix)
 			}
-			if c.msgHas != "" && !strings.Contains(r.Message, c.msgHas) {
-				t.Errorf("message %q lacks %q", r.Message, c.msgHas)
-			}
-			if c.fixHas != "" && !strings.Contains(r.Fix, c.fixHas) {
-				t.Errorf("fix %q lacks %q", r.Fix, c.fixHas)
-			}
-			if c.fixHasNot != "" && strings.Contains(r.Fix, c.fixHasNot) {
-				t.Errorf("fix %q must not contain %q", r.Fix, c.fixHasNot)
-			}
-			if c.want == "fail" && r.Fix == "" {
-				t.Error("a fail must carry a Fix")
+			if tc.want == "pass" && r.Fix != "" || tc.modules != loaded && strings.Contains(r.Fix, "modprobe -r") {
+				t.Errorf("unexpected remediation %q", r.Fix)
 			}
 		})
 	}
 }
 
-func TestKernelConfigOption(t *testing.T) {
-	cfg := "CONFIG_IP_SCTP=m\n# CONFIG_IP_DCCP is not set\nCONFIG_INET=y\nCONFIG_IP_SCTP_DIAG=m\n"
-	for opt, want := range map[string]string{"CONFIG_IP_SCTP": "m", "CONFIG_INET": "y", "CONFIG_IP_DCCP": "n", "CONFIG_MISSING": "n"} {
-		if got := kernelConfigOption(cfg, opt); got != want {
-			t.Errorf("kernelConfigOption(%s) = %q, want %q", opt, got, want)
-		}
-	}
-}
-
-// sctpMockOS serves /proc/modules, one modprobe.d file and an optional
-// kernel config through the osFS injector.
-func sctpMockOS(t *testing.T, modules, kconfig string, confReadErr error) {
-	t.Helper()
-	conf := filepath.Join(t.TempDir(), "csm-disable-sctp.conf")
-	if err := os.WriteFile(conf, []byte("install sctp /bin/false\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	withMockOS(t, &mockOS{
-		open: func(name string) (*os.File, error) {
-			if name != "/proc/modules" {
-				return nil, os.ErrNotExist
-			}
-			f, err := os.CreateTemp(t.TempDir(), "modules")
-			if err != nil {
-				return nil, err
-			}
-			_, _ = f.WriteString(modules)
-			_, _ = f.Seek(0, 0)
-			return f, nil
-		},
-		glob: func(pattern string) ([]string, error) {
-			if pattern == "/etc/modprobe.d/*.conf" {
-				return []string{conf}, nil
-			}
+func TestSCTPQueriesHostModuleIndexes(t *testing.T) {
+	withMockOS(t, &mockOS{readFile: func(path string) ([]byte, error) {
+		switch path {
+		case "/proc/sys/kernel/osrelease":
+			return []byte("example"), nil
+		case "/boot/config-example":
+			return []byte("CONFIG_IP_SCTP=m"), nil
+		case "/proc/modules":
 			return nil, nil
-		},
-		readFile: func(name string) ([]byte, error) {
-			switch name {
-			case conf:
-				if confReadErr != nil {
-					return nil, confReadErr
-				}
-				return os.ReadFile(name)
-			case "/proc/sys/kernel/osrelease":
-				return []byte("6.1.0-test\n"), nil
-			case "/boot/config-6.1.0-test":
-				if kconfig != "" {
-					return []byte(kconfig), nil
-				}
+		}
+		return nil, os.ErrNotExist
+	}})
+	withMockCmd(t, &mockCmd{
+		lookPath: func(name string) (string, error) {
+			if name == "systemd-run" {
+				return "/usr/bin/systemd-run", nil
 			}
-			return nil, os.ErrNotExist
+			return "", os.ErrNotExist
+		},
+		run: func(name string, args ...string) ([]byte, error) {
+			split := slices.Index(args, "--")
+			if name != "/usr/bin/systemd-run" || split < 0 ||
+				!slices.Contains(args, "--pipe") || !slices.Contains(args, "--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH") {
+				t.Fatalf("query did not run in the read-only host service: %s %q", name, args)
+			}
+			switch strings.Join(args[split+1:], " ") {
+			case "/bin/true":
+				return nil, nil
+			case "modprobe --show-depends sctp":
+				return []byte("install /bin/false"), nil
+			case "modprobe --resolve-alias sctp":
+				return []byte("sctp"), nil
+			default:
+				t.Fatalf("unexpected host query %q", args)
+				return nil, nil
+			}
 		},
 	})
+	if got := auditSCTP(); got.Status != "pass" {
+		t.Fatalf("host block not recognized: %+v", got)
+	}
 }
 
-func TestAuditSCTP_HostState(t *testing.T) {
-	cases := []struct {
-		name, modules, kconfig string
-		readErr                error
-		want, msgHas           string
-	}{
-		{name: "blocked, unloaded, no config", modules: "bridge 1 0 - Live 0x0\n", want: "pass"},
-		{name: "loaded despite block", modules: "sctp 1 0 - Live 0x0\n", kconfig: "CONFIG_IP_SCTP=m\n", want: "fail", msgHas: "loaded"},
-		{name: "built in", modules: "", kconfig: "CONFIG_IP_SCTP=y\n", want: "fail", msgHas: "built into the kernel"},
-		{name: "unreadable modprobe.d file", modules: "", kconfig: "CONFIG_IP_SCTP=m\n", readErr: os.ErrPermission, want: "warn", msgHas: "Cannot read"},
+func TestSCTPReadsOnlyEffectivePolicyFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"local.conf", ".ignored.conf", "backup.conf~"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			sctpMockOS(t, c.modules, c.kconfig, c.readErr)
-			r := auditSCTP()
-			if r.Status != c.want {
-				t.Fatalf("status = %q, want %q (msg: %s)", r.Status, c.want, r.Message)
+	var reads []string
+	withMockOS(t, &mockOS{
+		readDir: func(path string) ([]os.DirEntry, error) {
+			switch path {
+			case "/etc/modprobe.d", "/usr/lib/modprobe.d":
+				return os.ReadDir(dir)
+			default:
+				return nil, os.ErrNotExist
 			}
-			if !strings.Contains(r.Message, c.msgHas) {
-				t.Errorf("message %q lacks %q", r.Message, c.msgHas)
-			}
-		})
+		},
+		readFile: func(path string) ([]byte, error) {
+			reads = append(reads, path)
+			return nil, nil
+		},
+	})
+	if err := checkModprobePolicyReadable(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reads, []string{"/etc/modprobe.d/local.conf"}) {
+		t.Fatalf("read policy files %q", reads)
 	}
 }
 
