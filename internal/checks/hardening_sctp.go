@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
+
+// kmod messages are not translated.
+var sctpModuleMissing = regexp.MustCompile(`(?m)^modprobe: FATAL: Module sctp not found in directory /`)
 
 const sctpBlockFix = "Set the effective modprobe install directive to 'install sctp /bin/false' if this host does not need SCTP."
 
@@ -79,6 +83,13 @@ func auditSCTPModulePolicy(r store.AuditResult) store.AuditResult {
 	// dependency loads. --show-depends never inserts modules or runs commands.
 	plan, err := querySCTPModprobe("--show-depends")
 	if err != nil {
+		// EL8 builds SCTP as a module but ships it in kernel-modules-extra.
+		// The kernel's on-demand load fails the same lookup, so a missing
+		// module cannot load.
+		if sctpModuleMissing.Match(plan) {
+			r.Status, r.Message = "pass", "SCTP module is not installed for the running kernel."
+			return r
+		}
 		r.Message = "Cannot determine the SCTP installation plan with modprobe."
 		return r
 	}

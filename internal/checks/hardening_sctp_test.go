@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,6 +42,9 @@ func TestAuditSCTP(t *testing.T) {
 		{name: "reload command", config: modular, plan: "install /sbin/modprobe --ignore-install sctp", want: "fail", message: "can load", fix: "install sctp /bin/false"},
 		{name: "alias redirects name", config: modular, plan: block, resolvesTo: "another_module", want: "warn", message: "resolve"},
 		{name: "missing modprobe", config: modular, probeErr: os.ErrNotExist, want: "warn", message: "modprobe"},
+		{name: "module not installed", config: modular, plan: "modprobe: FATAL: Module sctp not found in directory /lib/modules/example\n", probeErr: errors.New("exit status 1"), want: "pass", message: "not installed"},
+		{name: "other module missing", config: modular, plan: "modprobe: FATAL: Module sctp_diag not found in directory /lib/modules/example\n", probeErr: errors.New("exit status 1"), want: "warn", message: "modprobe"},
+		{name: "not-found text with success", config: modular, plan: "modprobe: FATAL: Module sctp not found in directory /lib/modules/example\n", want: "warn", message: "cannot confirm"},
 		{name: "empty plan", config: modular, plan: " ", want: "warn", message: "cannot confirm"},
 		{name: "kmod diagnostic with successful exit", config: modular, plan: "libkmod: ERROR could not read configuration\n" + block, want: "warn", message: "cannot confirm"},
 	} {
