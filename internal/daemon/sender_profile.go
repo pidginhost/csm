@@ -150,25 +150,118 @@ func recentSenderIPs(events []senderEvent, n int) []string {
 	return ips
 }
 
-// parseSenderProfileFinding evaluates one authenticated Exim arrival against
-// the sender's own history. It returns at most one email_compromised_account
-// finding and never acts on its own; the caller responds to Critical ones.
-func parseSenderProfileFinding(line string, cfg *config.Config, now time.Time) (findings []alert.Finding) {
+// observeEximSend resolves the origin once for both the profile and the
+// ledger. Each ledger observation runs after the profile releases its lock.
+func observeEximSend(line string, cfg *config.Config, now time.Time) []alert.Finding {
+	user, ip, ok := authenticatedSend(line)
+	if !ok {
+		return nil
+	}
+	at, _ := eximlog.LineTime(line, now.Location()) // authenticatedSend validated the arrival prefix
+	country, login := sendCountry(cfg, user, ip, at)
+	recipients := eximlog.Recipients(line)
+	var findings []alert.Finding
+	if ip != "" && !isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+		findings = senderProfileAtCountry(cfg, user, ip, country, recipients, now)
+		for _, f := range findings {
+			if f.Severity == alert.Critical {
+				respondToMailboxCompromise(cfg, user, "email_compromised_account", "authenticated sends outside the mailbox's own source and recipient history", f.Timestamp)
+			}
+		}
+	}
+	findings = append(findings, observeSendCountry(cfg, user, ip, country, login, at)...)
+	findings = append(findings, observeBulkRecipients(cfg, user, recipients, at)...)
+	id, sender, _ := eximlog.Arrival(line)
+	authSends.note(id, store.MailboxEvidenceKey(user))
+	return append(findings, observeForgedSender(cfg, user, sender, at)...)
+}
+
+// authenticatedSend reads the login and client address of an authenticated
+// Exim arrival.
+func authenticatedSend(line string) (user, ip string, ok bool) {
 	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
-		return nil
+		return "", "", false
 	}
-	user := extractAuthUser(line)
+	user = extractAuthUser(line)
 	if user == "" {
-		return nil
+		return "", "", false
 	}
-	ip := eximlog.ClientIP(line)
-	if ip == "" {
-		return nil
-	}
+	ip = eximlog.ClientIP(line)
 	if parsed := net.ParseIP(ip); parsed != nil {
 		ip = parsed.String()
 	}
-	return senderProfileObserve(cfg, user, ip, eximlog.Recipients(line), now)
+	return user, ip, true
+}
+
+// webmailSendWindow is how long after a webmail login the mailbox's
+// loopback sends are placed in that login's country.
+const webmailSendWindow = 2 * time.Hour
+
+// sendCountry places an authenticated send. Webmail submits over loopback,
+// so a loopback send takes the country of the mailbox's recent webmail
+// login, which it also returns.
+func sendCountry(cfg *config.Config, user, ip string, now time.Time) (string, *store.WebmailLogin) {
+	if ip == "" {
+		return "", nil
+	}
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+		db := store.Global()
+		if db == nil {
+			return "", nil
+		}
+		h, _ := db.GetGeoHistory(user)
+		if h.Webmail == nil || now.Before(h.Webmail.At) || now.Sub(h.Webmail.At) > webmailSendWindow {
+			return "", nil
+		}
+		return h.Webmail.Country, h.Webmail
+	}
+	if isPrivateOrLoopback(ip) || isInfraIPDaemon(ip, cfg.InfraIPs) {
+		return "", nil
+	}
+	return geoLookup(ip).Country, nil
+}
+
+// observeSendCountry records an authenticated send from a country new for
+// the mailbox as compromise evidence. A direct send is judged against the
+// mailbox's login history; a webmail send inherits its login's verdict.
+func observeSendCountry(cfg *config.Config, user, ip, country string, webmail *store.WebmailLogin, now time.Time) []alert.Finding {
+	if country == "" || countryTrusted(country, cfg.Suppressions.TrustedCountries) {
+		return nil
+	}
+	var detail string
+	if webmail != nil {
+		if !webmail.New {
+			return nil
+		}
+		detail = fmt.Sprintf("webmail send from %s (login from %s)", country, webmail.IP)
+	} else {
+		db := store.Global()
+		if db == nil {
+			return nil
+		}
+		h, _ := db.GetGeoHistory(user)
+		seen, known := h.Countries[country]
+		if (known && seen >= now.Unix()-geoHistoryMaxAge) || h.LoginCount < geoMinLoginCount {
+			return nil
+		}
+		detail = fmt.Sprintf("authenticated send from %s (%s)", country, ip)
+	}
+	source := ip
+	if webmail != nil {
+		source = webmail.IP
+	}
+	mailbox, domain, _ := splitMailAccount(user)
+	summary := []alert.Finding{{
+		Severity:  alert.High,
+		Check:     "email_suspicious_geo",
+		Message:   fmt.Sprintf("Suspicious email for %s: %s", user, detail),
+		SourceIP:  source,
+		Mailbox:   mailbox,
+		Domain:    domain,
+		Timestamp: now,
+	}}
+	stampMailAccountOwner(summary, user)
+	return observeMailboxSignal(cfg, user, mailboxSignal{kind: signalNewCountry, key: country, at: now, detail: detail, summary: summary[0]})
 }
 
 // senderProfileObserve judges one authenticated send by user against the
@@ -179,10 +272,11 @@ func senderProfileObserve(cfg *config.Config, user, ip string, recipients []stri
 	if user == "" || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
 		return nil
 	}
-	country := ""
-	if ip != "" && !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
-		country = geoLookup(ip).Country
-	}
+	country, _ := sendCountry(cfg, user, ip, now)
+	return senderProfileAtCountry(cfg, user, ip, country, recipients, now)
+}
+
+func senderProfileAtCountry(cfg *config.Config, user, ip, country string, recipients []string, now time.Time) (findings []alert.Finding) {
 	db := store.Global()
 
 	// Registered before the unlock defer so owner I/O runs after it.
@@ -467,6 +561,7 @@ func evictSenderWindows(now time.Time) {
 		w.mu.Unlock()
 		return true
 	})
+	evictBulkRecipientWindows(now)
 	pruneSenderHistory(now)
 }
 
@@ -490,6 +585,11 @@ func pruneSenderHistory(now time.Time) {
 	oldest := senderDayKey(now.UTC().AddDate(0, 0, -senderBaselineDays))
 	if err := db.PruneSenderProfiles(oldest); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Warning: failed to expire sender history: %v\n",
+			now.Format("2006-01-02 15:04:05"), err)
+		return
+	}
+	if err := pruneMailboxEvidence(db, now); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: failed to expire mailbox evidence: %v\n",
 			now.Format("2006-01-02 15:04:05"), err)
 		return
 	}

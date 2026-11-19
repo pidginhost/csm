@@ -871,11 +871,12 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 	// so the new source is inventoried instead of waiting a full audit interval.
 	// Explicit account scans also bypass the host-wide throttle; they write only
 	// their per-file hashes and never establish either shared baseline below.
-	if !ForceAll && AccountFromContext(ctx) == "" && db.GetMetaString("email:mailsieve_last_refresh") != "" {
+	sieveRefresh := db.GetMetaString("email:mailsieve_last_refresh")
+	if !ForceAll && AccountFromContext(ctx) == "" && sieveRefresh != "" {
 		if last := db.GetMetaString("email:mailfilter_last_refresh"); last != "" {
 			if ts, err := time.Parse(time.RFC3339, last); err == nil {
 				interval := time.Duration(cfg.EmailProtection.PasswordCheckIntervalMin) * time.Minute
-				if time.Since(ts) < interval {
+				if time.Since(ts) < interval && !sieveChangedSince(ctx, sieveRefresh) {
 					return nil
 				}
 			}
@@ -885,6 +886,8 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 		return nil
 	}
 
+	// Edits made after a script is read must be visible on the next tick.
+	scanStarted := time.Now()
 	localDomains := loadLocalDomains()
 
 	var files []string
@@ -946,13 +949,59 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 	// complete would make the next full scan treat every other account's
 	// existing filters as newly created.
 	baselineExists := db.GetMetaString("email:mailfilter_last_refresh") != ""
-	if AccountFromContext(ctx) == "" && (sieveComplete || db.GetMetaString("email:mailsieve_last_refresh") != "") {
-		_ = db.SetMetaString("email:mailsieve_last_refresh", time.Now().Format(time.RFC3339))
+	if AccountFromContext(ctx) == "" && sieveComplete {
+		_ = db.SetMetaString("email:mailsieve_last_refresh", scanStarted.Format(time.RFC3339Nano))
 	}
 	if AccountFromContext(ctx) == "" && (baselineComplete || baselineExists) {
 		_ = db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339))
 	}
 	return findingsFromPending(collected)
+}
+
+// sieveChangedSince reports whether a Sieve script or active-script link
+// changed after the last Sieve audit. Webmail writes a planted redirect
+// there, so it must not wait for the next full audit. Only file times are
+// read.
+func sieveChangedSince(ctx context.Context, last string) bool {
+	since, err := time.Parse(time.RFC3339, last)
+	if err != nil {
+		return true
+	}
+	var paths []string
+	for _, pattern := range [][]string{{"mail", "*", "*", "sieve", "*.sieve"}, {"mail", "*", "*", ".dovecot.sieve"}} {
+		matches, err := homeGlob(ctx, pattern...)
+		if err != nil {
+			return true
+		}
+		paths = append(paths, matches...)
+	}
+	for _, path := range paths {
+		if ctx.Err() != nil {
+			return false
+		}
+		info, err := osFS.Lstat(path)
+		if err != nil || info.ModTime().After(since) {
+			return true
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := osFS.Stat(path)
+			if err == nil && target.ModTime().After(since) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// MailFilterDestination is the outside address a mail filter finding sends
+// mail to, or "" when it names none.
+func MailFilterDestination(f alert.Finding) string {
+	for _, line := range strings.Split(f.Details, "\n") {
+		if dest, ok := strings.CutPrefix(line, "Destination: "); ok {
+			return dest
+		}
+	}
+	return ""
 }
 
 // mailFilterPendings scores one parsed filter/sieve file and turns each

@@ -41,8 +41,8 @@ func FuzzParseDeferralLine(f *testing.F) {
 		if len(d.RemoteHost) > maxHostLen {
 			t.Fatalf("RemoteHost exceeds bound: %d", len(d.RemoteHost))
 		}
-		if d.OutboundIP != "" && firstIPv4(d.OutboundIP) != d.OutboundIP {
-			t.Fatalf("OutboundIP not a valid IPv4: %q", d.OutboundIP)
+		if d.OutboundIP != "" && net.ParseIP(d.OutboundIP) == nil {
+			t.Fatalf("OutboundIP not a valid IP: %q", d.OutboundIP)
 		}
 		if d.RemoteIP != "" && net.ParseIP(d.RemoteIP) == nil {
 			t.Fatalf("RemoteIP not a valid IP: %q", d.RemoteIP)

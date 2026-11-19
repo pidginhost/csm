@@ -41,6 +41,7 @@ var bucketNames = []string{
 	"email:geo",
 	"email:fwd",
 	senderProfileBucket,
+	mailboxEvidenceBucket,
 	"db_object_backups",
 	"sig_watch",
 	bucketStatsDaily,
@@ -74,8 +75,9 @@ var bucketNames = []string{
 
 // DB wraps a bbolt database.
 type DB struct {
-	bolt *bolt.DB
-	path string
+	bolt          *bolt.DB
+	path          string
+	legacyGeoKeys map[string][]string // immutable after Open
 }
 
 var (
@@ -139,6 +141,7 @@ func Open(statePath string) (*DB, error) {
 		return nil, fmt.Errorf("opening bbolt: %w", err)
 	}
 
+	db := &DB{bolt: bdb, path: dbPath}
 	// Create all buckets
 	err = bdb.Update(func(tx *bolt.Tx) error {
 		// No time-index buckets means this database cannot contain legacy
@@ -168,14 +171,12 @@ func Open(statePath string) (*DB, error) {
 				return fmt.Errorf("init UTC time-key marker: %w", markerErr)
 			}
 		}
-		return nil
+		return db.indexLegacyGeoKeys(tx)
 	})
 	if err != nil {
 		_ = bdb.Close()
 		return nil, err
 	}
-
-	db := &DB{bolt: bdb, path: dbPath}
 
 	// Run migration if needed. A failed migration does not set the "migrated"
 	// sentinel, so proceeding would boot the daemon on partial security state

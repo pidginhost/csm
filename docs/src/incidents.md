@@ -743,6 +743,7 @@ Attribution gaps:
 | `email_av_scanner_panic` | ignored | self-health |  |
 | `email_av_source_backlog` | ignored | self-health |  |
 | `email_av_timeout` | ignored | self-health |  |
+| `email_bulk_recipients` | security event |  |  |
 | `email_cloud_relay_abuse` | security event |  |  |
 | `email_compromised_account` | security event |  |  |
 | `email_credential_leak` | security event |  |  |
@@ -752,9 +753,12 @@ Attribution gaps:
 | `email_filter_exfil` | security event |  |  |
 | `email_filter_forwarder` | security event |  |  |
 | `email_filter_pipe` | security event |  |  |
+| `email_forged_sender` | security event |  |  |
 | `email_mail_filters` | ignored | self-health |  |
+| `email_mailbox_compromise` | security event |  |  |
 | `email_mailbox_response` | ignored | response |  |
 | `email_malware` | ignored | attacker-side |  |
+| `email_outbound_reputation` | security event |  |  |
 | `email_password_audit_incomplete` | ignored | self-health |  |
 | `email_phishing_content` | ignored | attacker-side |  |
 | `email_php_form_relay` | ignored | attacker-side |  |

@@ -1756,6 +1756,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// A Critical login after brute force suspends the cracked mailbox; the
 	// outcome finding tells staff what was done and what is left to them.
 	responseFindings = append(responseFindings, stolenLoginResponses(cfg, remediableFindings)...)
+	// A redirect the mail filter audit reports is evidence for its mailbox.
+	responseFindings = append(responseFindings, mailFilterEvidence(cfg, remediableFindings)...)
 
 	if len(responseFindings) == 0 {
 		// A scan applies its own blocks and hands them over as findings,
@@ -1878,6 +1880,14 @@ func (d *Daemon) respondToInitialScan(cfg *config.Config, initialFindings []aler
 		for _, f := range alert.Deduplicate(responseFindings) {
 			_, _, _ = co.OnFinding(f)
 		}
+	}
+	// As in dispatchBatch, every reported redirect is mailbox evidence, seen
+	// before the restart or not.
+	evidence := mailFilterEvidence(cfg, filterUnsuppressedFindings(d.store, initialFindings, suppressions))
+	responseFindings = append(responseFindings, evidence...)
+	newFindings = append(newFindings, evidence...)
+	for _, f := range evidence {
+		_, _, _ = IncidentCorrelator().OnFinding(f)
 	}
 	// The baseline scan applied its own blocks; they are in initialFindings.
 	d.observeBlocks(slices.Concat(initialFindings, blockActions))

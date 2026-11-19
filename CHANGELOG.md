@@ -9,13 +9,24 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- Webmail logins from a new country are now checked like IMAP and POP3 logins.
+- Provider refusals of an outbound address for its reputation now go to the daily summary, naming the mailbox that sent most of the refused mail as compromise evidence.
+- A new Sieve redirect is now found within the hour instead of at the next daily audit, and counts as compromise evidence for its mailbox.
+- An authenticated send as a domain the mailbox's hosting account does not own now counts as compromise evidence.
+- An authenticated message to many recipients, or many recipients within an hour, now counts as compromise evidence for the mailbox.
+- Mail sent through webmail can now be traced to a recent login, and sends from a new country count as compromise evidence.
+
 ### Added
 
+- Signs of a stolen mailbox now add up per mailbox: CSM suspends it once they do and sends one alert listing the evidence, rather than one per sign.
 - `csm stalwart setup` takes the admin password from stdin with `--password-stdin`, and on a terminal asks for a missing login without echoing it.
 - Admission status now lists which automatic IP block sources the host's settings let it run.
 
 ### Changed
 
+- Mail logins from a new country now go to the daily summary as compromise evidence instead of raising an alert each.
 - The Email page Rejects, Sending accounts and Suspended tabs now share the Held mail layout, with a search box and larger pages.
 - On a host without PHP, the Web UI hides the PHP settings and the Performance page's PHP cards; PHP running in a container counts.
 - `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.

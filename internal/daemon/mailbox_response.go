@@ -177,7 +177,7 @@ func (cpanelMailBackend) active(recs []store.MailboxSuspension) (map[string]bool
 			continue
 		}
 		for _, r := range rows {
-			f, listed := flags[strings.ToLower(r.Subject)]
+			f, listed := flags[store.MailboxEvidenceKey(r.Subject)]
 			live[r.ID] = live[r.ID] || listed && f.stillApplied(r.Applied)
 		}
 	}
@@ -248,7 +248,7 @@ func cpanelMailboxFlags(account string) (map[string]mailboxFlags, error) {
 		if m.Email == "" || m.SuspendedLogin == nil || m.SuspendedOutgoing == nil {
 			return nil, errors.New("mailbox listing has incomplete restrictions")
 		}
-		flags[strings.ToLower(m.Email)] = mailboxFlags{login: bool(*m.SuspendedLogin), outgoing: bool(*m.SuspendedOutgoing)}
+		flags[store.MailboxEvidenceKey(m.Email)] = mailboxFlags{login: bool(*m.SuspendedLogin), outgoing: bool(*m.SuspendedOutgoing)}
 	}
 	return flags, nil
 }
@@ -338,7 +338,7 @@ func suspendCPanelMailbox(c mailboxCompromise) (store.MailboxSuspension, error) 
 	var applied []string
 	var errs []error
 	flags, statusErr := cpanelMailboxFlags(user)
-	before := flags[strings.ToLower(c.Subject)]
+	before := flags[store.MailboxEvidenceKey(c.Subject)]
 	if statusErr != nil {
 		// Protection comes first: an unreadable state must not leave a
 		// cracked mailbox open. CSM then records the suspension as its own,

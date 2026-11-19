@@ -414,9 +414,13 @@
     ],
     "reason": "Post-authentication mail abuse; a bare hosting-user identity still belongs to mail takeover.",
     "checks": [
+      "email_bulk_recipients",
       "email_cloud_relay_abuse",
       "email_compromised_account",
       "email_credential_leak",
+      "email_forged_sender",
+      "email_mailbox_compromise",
+      "email_outbound_reputation",
       "email_rate_critical",
       "email_rate_warning",
       "email_spam_outbreak",

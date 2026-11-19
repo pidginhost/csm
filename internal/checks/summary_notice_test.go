@@ -14,12 +14,23 @@ import (
 
 // The summary set reports applied automatic responses and observations that
 // never act. A check that can block on its own belongs to the outcome rule,
-// not to this list.
+// not to this list. A correlated security event belongs here only as
+// evidence for a combined response that reports it urgently, and never
+// blocks or challenges on its own.
 func TestSummaryRegistryChecks(t *testing.T) {
 	want := []string{
 		"auto_block", "challenge_route",
+		"email_bulk_recipients", "email_forged_sender", "email_outbound_reputation",
 		"email_php_form_relay_observed", "email_php_relay_action_dry_run", "email_php_relay_rate_limit_hit",
+		"email_suspicious_geo",
 		"mail_bruteforce_suspected",
+	}
+	// Each evidence check names the check that reports the combined response.
+	evidenceFor := map[string]string{
+		"email_bulk_recipients":     "email_mailbox_compromise",
+		"email_forged_sender":       "email_mailbox_compromise",
+		"email_outbound_reputation": "email_mailbox_compromise",
+		"email_suspicious_geo":      "email_mailbox_compromise",
 	}
 	var got []string
 	for _, c := range checkRegistry {
@@ -27,6 +38,18 @@ func TestSummaryRegistryChecks(t *testing.T) {
 			continue
 		}
 		got = append(got, c.Name)
+		if combined, ok := evidenceFor[c.Name]; ok {
+			info, registered := LookupCheck(combined)
+			switch {
+			case c.Correlation != CorrelationSecurityEvent:
+				t.Errorf("%s is evidence but not a correlated security event", c.Name)
+			case c.Response.Block != BlockNever || c.Response.ChallengeFirst:
+				t.Errorf("%s is evidence but responds to its source on its own", c.Name)
+			case !registered || info.Summary:
+				t.Errorf("%s reports through %s, which must be a registered immediate check", c.Name, combined)
+			}
+			continue
+		}
 		switch c.CorrelationReason {
 		case reasonResponse:
 		case reasonAttackerSide:

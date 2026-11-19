@@ -16,13 +16,17 @@ type emailCheck struct {
 var emailChecks = []emailCheck{
 	{"email_compromised_account", "compromised_account"},
 	{"email_credential_leak", "compromised_account"},
+	{"email_forged_sender", "compromised_account"},
 	{"email_weak_password", "compromised_account"},
 	{"mail_account_compromised", "compromised_account"},
+	{"email_mailbox_compromise", "compromised_account"},
 	{"email_mailbox_response", "compromised_account"},
 	{"email_pipe_forwarder", "compromised_account"},
 	{"email_suspicious_forwarder", "compromised_account"},
 
 	{"email_spam_outbreak", "spam_outbreak"},
+	{"email_bulk_recipients", "spam_outbreak"},
+	{"email_outbound_reputation", "spam_outbreak"},
 	{"email_rate_critical", "spam_outbreak"},
 	{"email_rate_warning", "spam_outbreak"},
 	{"email_php_relay_abuse", "spam_outbreak"},
