@@ -198,7 +198,7 @@ For a rollback:
 1. Set `auto_response.dry_run: true` in the effective configuration, reload,
    and confirm `csm status --json` reports `auto_response_dry_run: true`.
    A drop-in may override the main config. Confirm admission has stopped
-   executing (`snapshot.admission.owner.executing` is false) before
+   executing (`admission.owner.executing` is false) before
    proceeding; a failed reload is not a successful stop.
 2. Note the installed version, the `csm doctor` result and the current
    timed blocks, then stop `csm.service` and confirm it is inactive.
