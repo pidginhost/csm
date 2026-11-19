@@ -1,8 +1,9 @@
 package checks
 
 import (
-	"errors"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -17,11 +18,19 @@ func TestAuditSCTP(t *testing.T) {
 		loaded   = "sctp 1 0 - Live 0x0\n"
 		insert   = "insmod /lib/modules/example/sctp.ko.zst\n"
 		block    = "install /bin/false \n"
+		missing  = "modprobe: FATAL: Module sctp not found in directory "
+		tree     = "/lib/modules/example"
+		index    = tree + "/modules.dep.bin\n"
 	)
+	refused := exec.Command("/usr/bin/false").Run()
+	if refused == nil {
+		t.Fatal("expected false to exit with failure")
+	}
 	for _, tc := range []struct {
 		name, config, modules, modulesDisabled string
 		modulesErr, policyErr, probeErr        error
-		plan, resolvesTo                       string
+		plan, resolvesTo, treeOutput           string
+		treeErr                                error
 		want, message, fix                     string
 	}{
 		{name: "built in", config: builtin, policyErr: os.ErrPermission, modulesErr: os.ErrPermission, want: "fail", message: "built into", fix: "kernel"},
@@ -42,9 +51,17 @@ func TestAuditSCTP(t *testing.T) {
 		{name: "reload command", config: modular, plan: "install /sbin/modprobe --ignore-install sctp", want: "fail", message: "can load", fix: "install sctp /bin/false"},
 		{name: "alias redirects name", config: modular, plan: block, resolvesTo: "another_module", want: "warn", message: "resolve"},
 		{name: "missing modprobe", config: modular, probeErr: os.ErrNotExist, want: "warn", message: "modprobe"},
-		{name: "module not installed", config: modular, plan: "modprobe: FATAL: Module sctp not found in directory /lib/modules/example\n", probeErr: errors.New("exit status 1"), want: "pass", message: "not installed"},
-		{name: "other module missing", config: modular, plan: "modprobe: FATAL: Module sctp_diag not found in directory /lib/modules/example\n", probeErr: errors.New("exit status 1"), want: "warn", message: "modprobe"},
-		{name: "not-found text with success", config: modular, plan: "modprobe: FATAL: Module sctp not found in directory /lib/modules/example\n", want: "warn", message: "cannot confirm"},
+		{name: "module not installed", config: modular, plan: missing + tree + "\n", probeErr: refused, treeOutput: index, want: "pass", message: "not installed"},
+		{name: "usr module tree", config: modular, plan: missing + "/usr" + tree + "\n", probeErr: refused, treeOutput: "/usr" + index, want: "pass", message: "not installed"},
+		{name: "other module missing", config: modular, plan: "modprobe: FATAL: Module sctp_diag not found in directory " + tree, probeErr: refused, want: "warn", message: "modprobe"},
+		{name: "not-found text with success", config: modular, plan: missing + tree, want: "warn", message: "cannot confirm"},
+		{name: "index error before not-found", config: modular, plan: "libkmod: ERROR could not read module index\n" + missing + tree, probeErr: refused, want: "warn", message: "modprobe"},
+		{name: "partial plan after not-found", config: modular, plan: missing + tree + "\n" + insert, probeErr: refused, want: "warn", message: "modprobe"},
+		{name: "wrong kernel tree", config: modular, plan: missing + tree + "-old", probeErr: refused, want: "warn", message: "modprobe"},
+		{name: "interrupted lookup", config: modular, plan: missing + tree, probeErr: context.DeadlineExceeded, want: "warn", message: "modprobe"},
+		{name: "hidden module tree", config: modular, plan: missing + tree, probeErr: refused, treeErr: os.ErrPermission, want: "warn", message: "module tree"},
+		{name: "no module index", config: modular, plan: missing + tree, probeErr: refused, want: "warn", message: "module tree"},
+		{name: "unindexed SCTP", config: modular, plan: missing + tree, probeErr: refused, treeOutput: index + tree + "/updates/sctp.ko.xz\n", want: "warn", message: "module tree"},
 		{name: "empty plan", config: modular, plan: " ", want: "warn", message: "cannot confirm"},
 		{name: "kmod diagnostic with successful exit", config: modular, plan: "libkmod: ERROR could not read configuration\n" + block, want: "warn", message: "cannot confirm"},
 	} {
@@ -82,6 +99,9 @@ func TestAuditSCTP(t *testing.T) {
 				},
 			})
 			withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+				if name == "find" {
+					return []byte(tc.treeOutput), tc.treeErr
+				}
 				if name != "modprobe" {
 					t.Fatalf("unexpected command %q", name)
 				}
@@ -150,6 +170,42 @@ func TestSCTPQueriesHostModuleIndexes(t *testing.T) {
 	})
 	if got := auditSCTP(); got.Status != "pass" {
 		t.Fatalf("host block not recognized: %+v", got)
+	}
+}
+
+func TestSCTPAbsentFromTree(t *testing.T) {
+	withMockCmd(t, &mockCmd{runContext: realCmd{}.RunContext})
+	for _, tc := range []struct {
+		name, module, link string
+		index, absent      bool
+	}{
+		{name: "empty mount"},
+		{name: "different module", module: "sctp_diag.ko", link: "weak-updates", index: true, absent: true},
+		{name: "backup copy", module: "sctp.ko.old", link: "updates", index: true, absent: true},
+		{name: "uncompressed SCTP", module: "sctp.ko", link: "build", index: true},
+		{name: "compressed SCTP", module: "sctp.ko.zst", link: "weak-updates", index: true},
+		{name: "versioned SCTP", module: "sctp.vendor.ko.xz", link: "updates", index: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tree := t.TempDir()
+			if tc.index {
+				if err := os.WriteFile(filepath.Join(tree, "modules.dep.bin"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.module != "" {
+				target := t.TempDir()
+				if err := os.WriteFile(filepath.Join(target, tc.module), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(tree, tc.link)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := sctpAbsentFromTree(tree); got != tc.absent {
+				t.Fatalf("absence confirmed = %t, want %t", got, tc.absent)
+			}
+		})
 	}
 }
 

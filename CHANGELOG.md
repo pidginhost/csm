@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Server Hardening warns when it cannot confirm that SCTP is absent from the running kernel's modules.
 - Server Hardening now flags hosts where local users can get the kernel SCTP module loaded, a path to root on unpatched kernels.
 - Webmail logins from a new country are now checked like IMAP and POP3 logins.
 - Provider refusals of an outbound address for its reputation now go to the daily summary, naming the mailbox that sent most of the refused mail as compromise evidence.
