@@ -66,9 +66,10 @@ func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 }
 
 // LiteSpeed applies forwarding headers from the host itself, so any local
-// user chooses the address it logs: there a rewritten-address refusal is
-// final like any other, and in an unknown state too. Apache and nginx keep
-// the legacy block until the address can be verified.
+// user chooses the address it logs, and a log format that writes request
+// data where CSM reads the client lets any client choose it: there a
+// rewritten-address refusal is final like any other. Apache and nginx
+// header handling keeps the legacy block until the address can be verified.
 func TestRewrittenRefusalIsFinalOnLiteSpeed(t *testing.T) {
 	f := alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.90"}
 	for _, tc := range []struct {
@@ -77,6 +78,8 @@ func TestRewrittenRefusalIsFinalOnLiteSpeed(t *testing.T) {
 		taken bool
 	}{
 		{"litespeed", HTTPRewrite{State: RewriteActive, Server: platform.WSLiteSpeed}, true},
+		{"apache client format", HTTPRewrite{State: RewriteActive, Server: platform.WSApache, Format: true}, true},
+		{"nginx client format", HTTPRewrite{State: RewriteActive, Server: platform.WSNginx, Format: true}, true},
 		{"litespeed unknown", HTTPRewrite{State: RewriteUnknown, Server: platform.WSLiteSpeed}, true},
 		{"apache", HTTPRewrite{State: RewriteActive, Server: platform.WSApache}, false},
 		{"nginx", HTTPRewrite{State: RewriteActive, Server: platform.WSNginx}, false},

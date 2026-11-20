@@ -37,6 +37,9 @@ type HTTPRewrite struct {
 	Directive string
 	File      string
 	Reason    string
+	// Format marks an active rewrite found in a log format that writes
+	// request data where CSM reads the client: any client chooses it.
+	Format bool
 }
 
 func (s RewriteState) String() string {
@@ -114,7 +117,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 		directive, err := lswsClientAddressRewrite(src.lswsConfig)
 		switch {
 		case directive != "":
-			r.State, r.Directive, r.File = RewriteActive, directive, src.lswsConfig
+			r.State, r.Directive, r.File, r.Format = RewriteActive, directive, src.lswsConfig, formatDirective(directive)
 			return r
 		case err != nil:
 			unknown = err.Error()
@@ -123,7 +126,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	if src.apacheConfig != "" {
 		directive, file, complete := apacheClientAddressRewrite(src.apacheConfig, src.server == platform.WSLiteSpeed)
 		if directive != "" {
-			r.State, r.Directive, r.File = RewriteActive, directive, file
+			r.State, r.Directive, r.File, r.Format = RewriteActive, directive, file, formatDirective(directive)
 			return r
 		}
 		if !complete && unknown == "" {
@@ -135,7 +138,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	if src.nginxConfig != "" {
 		directive, file, complete := nginxClientAddressRewrite(src.nginxConfig)
 		if directive != "" {
-			r.State, r.Directive, r.File = RewriteActive, directive, file
+			r.State, r.Directive, r.File, r.Format = RewriteActive, directive, file, formatDirective(directive)
 			return r
 		}
 		if !complete {
@@ -148,6 +151,18 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	}
 	r.State = RewriteNone
 	return r
+}
+
+// formatDirective reports whether an active rewrite's directive is a log
+// format or a log using one, rather than the server's own proxy-header
+// handling. These are the only format directives the detectors return.
+func formatDirective(directive string) bool {
+	name, _, _ := strings.Cut(directive, " ")
+	switch strings.ToLower(name) {
+	case "logformat", "customlog", "globallog", "transferlog", "errorlogformat", "log_format", "access_log":
+		return true
+	}
+	return false
 }
 
 // apacheClientAddressRewrite returns the first directive that replaces the

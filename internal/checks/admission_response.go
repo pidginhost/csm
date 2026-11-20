@@ -99,9 +99,8 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 // path. Two answers leave the block to legacy: an address Apache or nginx
 // may have rewritten from a proxy header, which this build cannot verify
 // yet, and an error that is not an admission answer or a closed ingress,
-// where admission could not answer at all. LiteSpeed applies forwarding
-// headers from the host itself, so any local user chooses the address it
-// logs: its rewritten addresses are refused for good.
+// where admission could not answer at all. A rewritten address anyone can
+// choose is refused for good: see forgeableRewrite.
 func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 	if !executes || kind != admission.KindBlockIP {
 		return false
@@ -114,16 +113,23 @@ func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 		return true
 	}
 	if admission.CauseOf(err) == admission.CauseRewrittenLog {
-		return localRewrite(err)
+		return forgeableRewrite(err)
 	}
 	reason, answered := admission.ReasonOf(err)
 	return answered && reason != admission.ReasonEngineUnavailable
 }
 
-// localRewrite reports whether err refuses an address the web server
-// rewrote on LiteSpeed, where any local user can choose it.
-func localRewrite(err error) bool {
-	return admission.CauseOf(err) == admission.CauseRewrittenLog && CurrentHTTPRewrite().Server == platform.WSLiteSpeed
+// forgeableRewrite reports whether err refuses a rewritten address someone
+// other than the sender can choose: LiteSpeed applies forwarding headers to
+// requests from the host itself, so any local user chooses it, and a log
+// format that writes request data where CSM reads the client lets any
+// client choose it.
+func forgeableRewrite(err error) bool {
+	if admission.CauseOf(err) != admission.CauseRewrittenLog {
+		return false
+	}
+	r := CurrentHTTPRewrite()
+	return r.Server == platform.WSLiteSpeed || r.Format
 }
 
 // respondSpray asks admission to block a spray's prefix through the mail
@@ -157,9 +163,8 @@ func respondSpray(f alert.Finding, cidr string) {
 // with legacy until admission can apply one. A block asked to last longer
 // than lease, which admission would cut to lease, keeps its legacy block
 // while admission executes; a previewing admission still sees it. It still
-// never blocks a CDN edge, an unreachable client or an address any local
-// user can choose. A LiteSpeed rewrite refusal also survives a permanent
-// incident escalation.
+// never blocks a CDN edge, an unreachable client or an address someone else
+// can choose, whatever the lifetime, permanent incident escalation included.
 func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	a := getResponseAdmission()
 	if a == nil {
@@ -168,8 +173,8 @@ func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	defer timeHandoff(time.Now())
 	executes := a.ExecutesBlocks()
 	// Incident retries can escalate to a permanent lifetime. That must not
-	// discard a refusal of an address any local user can choose.
-	if executes && localRewrite(req.RootErr) {
+	// discard a refusal of an address someone else can choose.
+	if executes && forgeableRewrite(req.RootErr) {
 		a.Refuse(admission.KindBlockIP, req.RootFinding, req.Entry, req.RootErr)
 		return true
 	}
