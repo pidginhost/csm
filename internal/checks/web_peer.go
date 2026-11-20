@@ -46,6 +46,12 @@ const (
 	// webPeerSkew lets a finding be judged a little before the lines it
 	// rests on were read.
 	webPeerSkew = 2 * time.Minute
+	// webPeerRetention is how long a client outlives its newest line. A
+	// finding is judged minutes after its lines while traffic keeps
+	// arriving, so pruning keeps a second window: routine pruning then never
+	// reaches a live verdict window, and the loss mark it leaves only covers
+	// findings judged over a window late.
+	webPeerRetention = 2 * webPeerWindow
 	// webPeerPruneEvery amortizes pruning over observations.
 	webPeerPruneEvery = 4096
 	// webPeerMaxLine bounds the line a parser reads.
@@ -197,9 +203,10 @@ func (x *webPeerIndex) observe(at time.Time, client netip.Addr, class PeerVerdic
 	}
 }
 
-// pruneLocked forgets clients no line named within a window of the newest.
+// pruneLocked forgets clients no line named within the retention of the
+// newest line.
 func (x *webPeerIndex) pruneLocked() {
-	cutoff := x.newest.Add(-webPeerWindow)
+	cutoff := x.newest.Add(-webPeerRetention)
 	for c, s := range x.clients {
 		if s.direct.last.Before(cutoff) && s.proxied.last.Before(cutoff) && s.forged.last.Before(cutoff) {
 			for _, at := range []time.Time{s.direct.last, s.proxied.last, s.forged.last, s.lostThrough} {

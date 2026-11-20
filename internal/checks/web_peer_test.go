@@ -182,7 +182,7 @@ func TestWebPeerVerdictPrunedEvidence(t *testing.T) {
 	t0 := time.Unix(1795200000, 0)
 	x.observe(t0, client, PeerForged)
 	for range webPeerPruneEvery - 1 {
-		x.observe(t0.Add(2*time.Hour), other, PeerDirect)
+		x.observe(t0.Add(3*time.Hour), other, PeerDirect)
 	}
 	if _, retained := x.clients[client]; retained {
 		t.Fatal("expired client was not pruned")
@@ -191,7 +191,7 @@ func TestWebPeerVerdictPrunedEvidence(t *testing.T) {
 	if got := x.verdict(client, t0); got != PeerUnknown {
 		t.Fatalf("direct replay after pruning forged evidence = %v", got)
 	}
-	if got := x.verdict(other, t0.Add(2*time.Hour)); got != PeerDirect {
+	if got := x.verdict(other, t0.Add(3*time.Hour)); got != PeerDirect {
 		t.Fatalf("pruning expired evidence tainted the current window: %v", got)
 	}
 }
@@ -359,5 +359,24 @@ func TestWebPeerIndexOverflowOutOfOrder(t *testing.T) {
 	webPeers.observe(later, clients[0], PeerDirect)
 	if got := WebPeerVerdict(clients[0], later); got != PeerDirect {
 		t.Fatalf("after the lost evidence expires = %v, want direct", got)
+	}
+}
+
+// Routine pruning on a busy host must not reach a live verdict window: a
+// finding is judged minutes after its lines while traffic keeps arriving.
+func TestWebPeerVerdictBusyIndexStaysUsable(t *testing.T) {
+	x := newWebPeerIndex()
+	t0 := time.Unix(1795200000, 0)
+	for i := range 4000 {
+		x.observe(t0.Add(time.Duration(i)*time.Second), netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 14: byte(i >> 8), 15: byte(i)}), PeerDirect)
+	}
+	target := netip.MustParseAddr("203.0.113.50")
+	x.observe(t0.Add(2*time.Hour), target, PeerDirect)
+	other := netip.MustParseAddr("203.0.113.51")
+	for x.observed%webPeerPruneEvery != 0 {
+		x.observe(t0.Add(2*time.Hour+10*time.Minute), other, PeerDirect)
+	}
+	if got := x.verdict(target, t0.Add(2*time.Hour)); got != PeerDirect {
+		t.Fatalf("a direct client judged ten minutes behind the newest line = %v, want direct", got)
 	}
 }
