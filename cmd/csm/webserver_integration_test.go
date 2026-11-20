@@ -16,7 +16,25 @@ func TestWebserverIntegrationConfigFailureStillInstallsPeerLog(t *testing.T) {
 		t.Run(verb, func(t *testing.T) {
 			root := t.TempDir()
 			h := &fakeWebserverHandler{snippet: filepath.Join(root, "challenge.conf")}
-			inst := &webserver.Installer{Handler: h, ReadAt: os.ReadFile, WriteAt: os.WriteFile, RemoveAt: os.Remove, StatAt: os.Stat, MkdirAll: os.MkdirAll, ChmodAt: os.Chmod, ChownAt: os.Chown, Stderr: io.Discard, PeerLogPath: filepath.Join(root, "peer.conf"), PeerLogDir: filepath.Join(root, "logs")}
+			inst := &webserver.Installer{
+				Handler:  h,
+				ReadAt:   os.ReadFile,
+				WriteAt:  os.WriteFile,
+				RemoveAt: os.Remove,
+				StatAt:   os.Stat,
+				LstatAt:  os.Lstat,
+				MkdirAll: os.MkdirAll,
+				ChmodAt:  os.Chmod,
+				ChownAt: func(path string, uid, gid int) error {
+					if path != filepath.Join(root, "logs") || uid != 0 || gid != 0 {
+						t.Errorf("unexpected directory ownership: %s %d:%d", path, uid, gid)
+					}
+					return nil
+				},
+				Stderr:      io.Discard,
+				PeerLogPath: filepath.Join(root, "peer.conf"),
+				PeerLogDir:  filepath.Join(root, "logs"),
+			}
 			failure := errors.New("config unavailable")
 			res, err := runWebserverIntegrationWithConfig(inst, verb, func() (*config.Config, error) { return nil, failure })
 			if !errors.Is(err, failure) || res.Status != "fail" || res.Message != failure.Error() {

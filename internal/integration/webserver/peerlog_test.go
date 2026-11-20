@@ -20,6 +20,19 @@ func newPeerLogInstaller(t *testing.T, h *fakeHandler) *Installer {
 	dir := t.TempDir()
 	i.PeerLogPath = filepath.Join(dir, "conf.d", "csm-peer-log.conf")
 	i.PeerLogDir = filepath.Join(dir, "log", "csm")
+	i.LstatAt = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		return peerDirectoryInfo{FileInfo: info}, nil
+	}
+	i.ChownAt = func(path string, uid, gid int) error {
+		if path != i.PeerLogDir || uid != 0 || gid != 0 {
+			t.Errorf("unexpected directory ownership: %s %d:%d", path, uid, gid)
+		}
+		return nil
+	}
 	return i
 }
 
@@ -174,7 +187,7 @@ func TestPeerLogTemplateBody(t *testing.T) {
 	for _, kind := range []string{"apache", "lsws"} {
 		i := &Installer{PeerLogDir: peerLogDir, Handler: &fakeHandler{kind: kind}}
 		got, err := i.peerLogBody()
-		want := "# csm-managed-version: 2\n" +
+		want := "# csm-managed-version: 3\n" +
 			"LogFormat \"%{%s}t %v %{c}a %a\" csmpeer\n" +
 			"<IfModule LiteSpeed>\nCustomLog /var/log/csm-web/peer.log csmpeer\n</IfModule>\n" +
 			"<IfModule !LiteSpeed>\n<IfFile \"/var/log/csm-web/\">\nGlobalLog /var/log/csm-web/peer.log csmpeer\n</IfFile>\n</IfModule>\n"
@@ -422,10 +435,13 @@ func TestPeerLogInstallRestrictsTheLogDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(i.PeerLogDir)
-	if err != nil || info.Mode().Perm() != 0o750 {
-		t.Fatalf("log directory mode = %v, %v; want 0750", info.Mode().Perm(), err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if want := fmt.Sprintf("%s -1 %d", i.PeerLogDir, os.Getgid()); len(chowned) != 1 || chowned[0] != want {
+	if info.Mode().Perm() != 0o750 {
+		t.Fatalf("log directory mode = %v; want 0750", info.Mode().Perm())
+	}
+	if want := fmt.Sprintf("%s 0 %d", i.PeerLogDir, os.Getgid()); len(chowned) != 1 || chowned[0] != want {
 		t.Fatalf("chown calls = %q, want [%q]", chowned, want)
 	}
 }

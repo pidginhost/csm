@@ -106,6 +106,9 @@ func (i *Installer) InstallPeerLog() (Result, error) {
 		res.Status, res.Message = "fail", err.Error()
 		return res, err
 	}
+	// The optional ReadWritePaths grant cannot take effect in a daemon
+	// namespace that predates the directory, even after a web server reload.
+	res.Message = "If CSM was running before the peer log directory was created, run systemctl restart csm.service to activate its log access."
 	// Never downgrade a snippet a newer CSM wrote.
 	if v := parseHeaderVersion(prev); existed && v >= PeerLogTemplateVersion {
 		res.Status, res.OnDiskVer = "no-op", v
@@ -143,11 +146,14 @@ func (i *Installer) InstallPeerLog() (Result, error) {
 // so its workers can open the log and other local users cannot, and reports
 // whether it changed anything the running server may have missed.
 func (i *Installer) preparePeerLogDir() (bool, error) {
-	info, err := i.StatAt(i.PeerLogDir)
+	info, err := i.LstatAt(i.PeerLogDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	gid := -1
+	if info != nil && !info.IsDir() {
+		return false, fmt.Errorf("peer log directory %s is not a directory", i.PeerLogDir)
+	}
+	gid := 0
 	if i.PeerLogGroup != "" {
 		g, lookupErr := user.LookupGroup(i.PeerLogGroup)
 		if lookupErr != nil {
@@ -157,26 +163,30 @@ func (i *Installer) preparePeerLogDir() (bool, error) {
 			return false, fmt.Errorf("web server group %s: %w", i.PeerLogGroup, err)
 		}
 	}
-	changed := info == nil || info.Mode().Perm() != 0o750 || (gid >= 0 && fileGID(info) != gid)
-	if err := i.MkdirAll(i.PeerLogDir, 0o750); err != nil {
+	changed := info == nil || info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0o750 || !peerLogDirOwner(info, gid)
+	if !changed {
+		return false, nil
+	}
+	// The parent is root-owned /var/log. Close access before replacing the
+	// owner and group so a failed chown cannot expose logs to the old group.
+	if err := i.MkdirAll(i.PeerLogDir, 0o700); err != nil {
+		return false, err
+	}
+	if err := i.ChmodAt(i.PeerLogDir, 0o700); err != nil {
+		return false, err
+	}
+	if err := i.ChownAt(i.PeerLogDir, 0, gid); err != nil {
 		return false, err
 	}
 	if err := i.ChmodAt(i.PeerLogDir, 0o750); err != nil {
 		return false, err
 	}
-	if gid >= 0 {
-		if err := i.ChownAt(i.PeerLogDir, -1, gid); err != nil {
-			return false, err
-		}
-	}
-	return changed, nil
+	return true, nil
 }
 
-func fileGID(info os.FileInfo) int {
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		return int(st.Gid)
-	}
-	return -1
+func peerLogDirOwner(info os.FileInfo, gid int) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == 0 && int(st.Gid) == gid
 }
 
 // RemovePeerLog removes a managed peer log snippet and reloads.

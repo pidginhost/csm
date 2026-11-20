@@ -849,12 +849,19 @@ web findings; see [auto-response](auto-response.md).
 `csm webserver-integration install` or `upgrade` sets up the peer log on
 Apache and on cPanel with LiteSpeed, and `csm doctor` shows whether it is
 active. The web server writes it to `/var/log/csm-web/peer.log`. On cPanel
-that directory belongs to the web server's `nobody` group, because LiteSpeed's
-workers open the log themselves; other local users cannot read it. On Apache
+that directory is `0750 root:nobody`, because LiteSpeed's workers open the
+log themselves. Elsewhere it is `0750 root:root`. Install and upgrade enforce
+that ownership and mode before reloading, and refuse a symlink in place of
+the directory; other local users cannot read it. On Apache
 the log also covers virtual hosts with their own access logs, and Apache
 skips it rather than failing to start when the directory is missing. Run
-`install` again to recreate the directory. `csm doctor` warns when the peer
-log has not been written for 15 minutes while an access log has.
+`install` again to recreate the directory. Run `csm webserver-integration
+upgrade` to move an older managed snippet to the current log destination.
+After first installation or directory recreation, run
+`systemctl restart csm.service`: the daemon's sandbox grants write access
+only to directories present when it starts. Without that restart CSM can
+read the new log but cannot empty it when full. `csm doctor` warns when the
+peer log has not been written for 15 minutes while an access log has.
 
 On cPanel hosts with nginx in front, every peer is the server itself: CSM
 keeps the log bounded but takes no verdict or alert from it, and

@@ -11,6 +11,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Web peer logs are private to root and the web server. Run `csm webserver-integration upgrade` to apply.
+- Web peer verification now uses the expected log destination. Restart CSM after installing or recreating the peer log directory.
 - `csm webserver-integration install` and `upgrade` now also set up the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With the CSM web peer log, web attackers on proxy-header hosts that connect directly are blocked again; proxied clients are only challenged and forged addresses never blocked.
 - With the CSM web peer log, CSM alerts when the web server logs a client address chosen by a local process or an untrusted peer.

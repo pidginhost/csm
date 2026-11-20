@@ -114,8 +114,9 @@ type Installer struct {
 	PeerLogPath string
 	PeerLogDir  string
 	// PeerLogGroup is the group whose web server workers open the peer log;
-	// "" leaves the directory's group alone.
+	// "" restricts the directory to root's group.
 	PeerLogGroup string
+	LstatAt      func(path string) (os.FileInfo, error)
 	ChmodAt      func(path string, mode os.FileMode) error
 	ChownAt      func(path string, uid, gid int) error
 	hostInfo     platform.Info
@@ -159,6 +160,7 @@ func New(info platform.Info, cfg *config.Config) (*Installer, error) {
 		PeerLogPath:       PeerLogPathFor(info),
 		PeerLogDir:        peerLogDir,
 		PeerLogGroup:      peerLogGroupFor(info),
+		LstatAt:           os.Lstat,
 		ChmodAt:           os.Chmod,
 		ChownAt:           os.Chown,
 		hostInfo:          info,

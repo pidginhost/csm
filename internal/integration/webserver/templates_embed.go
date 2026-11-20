@@ -21,8 +21,8 @@ var nginxTemplate string
 var siteTemplate string
 
 // PeerLogTemplateVersion is the peer log snippet's own version, bumped on
-// every change to templates/peerlog.conf.
-const PeerLogTemplateVersion = 2
+// every change to the rendered snippet, including its log destination.
+const PeerLogTemplateVersion = 3
 
 //go:embed templates/peerlog.conf
 var peerLogTemplate string
