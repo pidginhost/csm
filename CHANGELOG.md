@@ -9,15 +9,25 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+## [4.15.0] - 2026-11-20
+
+### Highlights
+
+- With dry run off and the firewall outside observe mode, admission now applies automatic IP blocks. Once it has, roll back no further than 4.14.0.
+- Signs of a stolen mailbox now add up per mailbox: CSM suspends it once they do and sends one alert listing the evidence.
+- Server Hardening flags hosts where local users can get the kernel SCTP module loaded, a path to root on unpatched kernels.
+- The Server Hardening page can apply safe fixes one section at a time.
+- Debian and Ubuntu package upgrades no longer stop to ask whether to replace the CSM configuration file.
+
 ### Security
 
 - Server Hardening now flags hosts where local users can get the kernel SCTP module loaded, a path to root on unpatched kernels.
+- Server Hardening flags password hashes readable by an unrelated group and removes that access when you apply the fix.
 - Webmail logins from a new country are now checked like IMAP and POP3 logins.
+- Mail sent through webmail can now be traced to a recent login, and sends from a new country count as compromise evidence.
 - Provider refusals of an outbound address for its reputation now go to the daily summary, naming the mailbox that sent most of the refused mail as compromise evidence.
 - A new Sieve redirect is now found within the hour instead of at the next daily audit, and counts as compromise evidence for its mailbox.
-- An authenticated send as a domain the mailbox's hosting account does not own now counts as compromise evidence.
-- An authenticated message to many recipients, or many recipients within an hour, now counts as compromise evidence for the mailbox.
-- Mail sent through webmail can now be traced to a recent login, and sends from a new country count as compromise evidence.
+- Authenticated sends as a domain the mailbox's account does not own, or to many recipients at once or within an hour, now count as compromise evidence.
 
 ### Added
 
@@ -28,24 +38,28 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- With `auto_response.dry_run: false` and the firewall on outside observe mode, admission now applies automatic IP blocks, within the hourly ceiling and free temporary slots.
+- Once admission has applied blocks, roll back no further than 4.14.0; older builds keep admission stopped and leave blocking to the legacy path.
+- Temporary blocks that admission applies are never promoted to permanent blocks by repeat-offense escalation.
+- Automatic block metrics now include the challenge, central and incident IP blocks admission applies, not only scan blocks.
+- `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
 - Mail logins from a new country now go to the daily summary as compromise evidence instead of raising an alert each.
 - The Email page Rejects, Sending accounts and Suspended tabs now share the Held mail layout, with a search box and larger pages.
 - On a host without PHP, the Web UI hides the PHP settings and the Performance page's PHP cards; PHP running in a container counts.
-- With `auto_response.dry_run: false` and the firewall on outside observe mode, admission now applies automatic IP blocks, within the hourly ceiling and free temporary slots.
-- Automatic block metrics now include the challenge, central and incident IP blocks admission applies, not only scan blocks.
-- Temporary blocks that admission applies are never promoted to permanent blocks by repeat-offense escalation.
-- Once admission has applied blocks, roll back no further than 4.14.0; older builds keep admission stopped and leave blocking to the legacy path.
-- `finding-stream compare` now reports each daemon run apart and passes the current run once it covers every block source the host's `csm status` lists.
-
-### Security
-
-- Server Hardening flags password hashes readable by an unrelated group and removes that access when you apply the fix.
 
 ### Fixed
 
+#### Automatic response
+
 - Admission dry-run status no longer reports the comparison as incomplete after every daemon restart; only lost records mark it incomplete now.
+
+#### Connection alerts
+
 - Knot DNS servers no longer raise connection alerts for their own zone transfers.
 - chrony no longer raises connection alerts when it reaches Network Time Security servers.
+
+#### Packages and upgrades
+
 - A package upgrade that loads the kernel's crypto socket modules now raises a warning instead of a HIGH incident.
 - Debian and Ubuntu package upgrades no longer stop to ask whether to replace the CSM configuration file.
 - Package upgrades stop with a clear error when the main configuration file is missing.
