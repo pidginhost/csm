@@ -48,6 +48,15 @@ type logWatchSpec struct {
 	handlerForPath func(string) LogLineHandler
 	observed       ObservedLineHandler
 	producer       admission.ProducerID
+	// optional marks a log a host may not have; its absence is not a
+	// warning.
+	optional bool
+	// truncateAt, when positive, lets the daemon empty a log it owns once
+	// it has read past that size and caught up.
+	truncateAt int64
+	// reset, when set, is told whenever lines may have been skipped: the
+	// watcher started at the end, or the log was truncated or rotated.
+	reset func()
 }
 
 // LogWatcher tails a log file using inotify and processes new lines.
@@ -75,6 +84,9 @@ type LogWatcher struct {
 	// unframed is set while the offset is inside a line that began before
 	// this watcher read the file: that remainder names no observation.
 	unframed bool
+	// truncateAt and onReset come from the spec; see logWatchSpec.
+	truncateAt int64
+	onReset    func()
 }
 
 type logFileID struct {
@@ -185,7 +197,36 @@ func newObservedLogWatcher(spec logWatchSpec, cfg *config.Config, alertCh chan<-
 	}
 	w.producer = spec.producer
 	w.observed = spec.observed
+	w.truncateAt, w.onReset = spec.truncateAt, spec.reset
+	// The watcher starts at the end: anything before it was never read.
+	w.reset()
 	return w, nil
+}
+
+// reset tells the spec's hook that lines may have been skipped.
+func (w *LogWatcher) reset() {
+	if w.onReset != nil {
+		w.onReset()
+	}
+}
+
+// truncateIfFull empties a log the daemon owns once it has read past
+// truncateAt and caught up with its writer. A line appended between the
+// size check and the truncation is lost, so the reset hook is told.
+func (w *LogWatcher) truncateIfFull() {
+	if w.truncateAt <= 0 || w.offset < w.truncateAt || w.file == nil {
+		return
+	}
+	info, err := w.file.Stat()
+	if err != nil || info.Size() != w.offset {
+		return
+	}
+	if err := os.Truncate(w.path, 0); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: could not empty %s: %v\n", ts(), w.path, err)
+		return
+	}
+	w.offset, w.marker, w.unframed = 0, nil, false
+	w.reset()
 }
 
 // observation names the line that starts at lineStart in the current file
@@ -299,6 +340,7 @@ func (w *LogWatcher) readNewLines() {
 		w.offset = 0
 		w.marker = nil
 		w.unframed = false
+		w.reset()
 	}
 
 	// No new data
@@ -372,6 +414,7 @@ func (w *LogWatcher) readNewLines() {
 
 	w.offset = committedOffset
 	w.refreshOffsetMarker()
+	w.truncateIfFull()
 }
 
 func readBoundedWatcherLine(r *bufio.Reader, maxBytes int) (string, bool, error) {
@@ -424,6 +467,7 @@ func (w *LogWatcher) reopen() {
 
 	w.file = f
 	id := fileID(info)
+	prevOffset, prevID := w.offset, w.fileID
 	switch {
 	case w.fileID.known && id.known && !w.fileID.same(id):
 		// Rotated by rename+create: new file, read from the start regardless
@@ -440,6 +484,9 @@ func (w *LogWatcher) reopen() {
 	if w.offset == 0 {
 		w.marker = nil
 		w.unframed = false
+		if prevOffset != 0 || (prevID.known && id.known && !prevID.same(id)) {
+			w.reset()
+		}
 	} else {
 		w.refreshOffsetMarker()
 	}

@@ -836,6 +836,26 @@ A verified crawler is dropped from the scan before any counter increments: a sou
 
 Per-IP findings roll up per vhost, so a confirmed scanner that sprays a few probes across many vhosts still feeds the distributed rollup. Full threshold reference and tuning notes are in [Configuration](configuration.md).
 
+## Web Peer Log and Forged Client Addresses
+
+On Apache and LiteSpeed hosts with the CSM web peer log, the daemon reads one
+line per request: when it started, the virtual host, the connection's peer
+and the client address the web server logged. When the web server rewrites
+client addresses from a proxy header, these lines tell CSM which addresses
+connected for themselves, which came through a trusted proxy or a known CDN
+edge, and which another peer chose. Automatic responses use that verdict for
+web findings; see [auto-response](auto-response.md).
+
+A request logged with a client address chosen by a peer that is neither the
+client nor a trusted proxy raises `http_client_forged` (Critical), at most once
+an hour per virtual host. The alert names whether the peer was this server
+itself, such as a site's script, or a remote host. CSM never blocks an address
+chosen this way.
+
+The daemon empties the peer log once it has read it past 256 MB. After a
+restart, a truncation or a rotation, verdicts for the hour before it are
+unknown, and web findings keep the responses they get without the peer log.
+
 ## Direct SMTP Egress
 
 Outbound connections to SMTP ports from non-MTA local processes

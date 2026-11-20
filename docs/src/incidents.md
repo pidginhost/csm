@@ -822,6 +822,7 @@ Attribution gaps:
 | `htaccess_user_agent_cloak` | security event |  |  |
 | `http_asn_crawl` | ignored | attacker-side |  |
 | `http_claimed_bot_unverified` | ignored | attacker-side |  |
+| `http_client_forged` | ignored | attacker-side |  |
 | `http_distributed_flood` | ignored | attacker-side |  |
 | `http_request_flood` | ignored | attacker-side |  |
 | `http_scanner_profile` | ignored | attacker-side |  |

@@ -255,3 +255,27 @@ func webPeerDirect(ip string, at time.Time) bool {
 	client, err := netip.ParseAddr(strings.TrimSpace(ip))
 	return err == nil && WebPeerVerdict(client, at) == PeerDirect
 }
+
+// MarkWebPeerLoss records that peer log lines up to at may be missing: the
+// reader started late, or the log was truncated or rotated. A verdict whose
+// window reaches that point, or the newest line already read, is unknown.
+func MarkWebPeerLoss(at time.Time) { webPeers.markLoss(at) }
+
+func (x *webPeerIndex) markLoss(at time.Time) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.newest.After(at) {
+		at = x.newest
+	}
+	if at.After(x.lostThrough) {
+		x.lostThrough = at
+	}
+}
+
+// ResetWebPeersForTest gives a test an empty peer index and returns the
+// function that restores the previous one.
+func ResetWebPeersForTest() func() {
+	prev := webPeers
+	webPeers = newWebPeerIndex()
+	return func() { webPeers = prev }
+}

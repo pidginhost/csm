@@ -471,6 +471,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "modsec_block_realtime", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "modsec_classifier_gap", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "modsec_csm_block_escalation", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal, Attribution: attributedByHTTP}},
+	{Name: "http_client_forged", Category: CategoryWeb, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "modsec_low_confidence_burst", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "modsec_warning_realtime", Category: CategoryWAF, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	// The WAF already denied repeated attacks; keep containment direct.

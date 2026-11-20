@@ -380,3 +380,23 @@ func TestWebPeerVerdictBusyIndexStaysUsable(t *testing.T) {
 		t.Fatalf("a direct client judged ten minutes behind the newest line = %v, want direct", got)
 	}
 }
+
+// A reader that started late or a log that was truncated or rotated may
+// have lost lines: a verdict whose window reaches that point is unknown,
+// and a later window is judged normally.
+func TestMarkWebPeerLossMakesEarlierWindowsUnknown(t *testing.T) {
+	restore := ResetWebPeersForTest()
+	t.Cleanup(restore)
+	t0 := time.Unix(1795200000, 0)
+	client := netip.MustParseAddr("203.0.113.60")
+	ObserveWebPeer(t0, client, client, &config.Config{})
+	MarkWebPeerLoss(t0.Add(time.Minute))
+	if got := WebPeerVerdict(client, t0); got != PeerUnknown {
+		t.Fatalf("a window reaching the loss = %v, want unknown", got)
+	}
+	later := t0.Add(2 * time.Hour)
+	ObserveWebPeer(later, client, client, &config.Config{})
+	if got := WebPeerVerdict(client, later); got != PeerDirect {
+		t.Fatalf("a window after the loss = %v, want direct", got)
+	}
+}

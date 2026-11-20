@@ -77,6 +77,7 @@ type Daemon struct {
 
 	logWatchers      []*LogWatcher
 	logWatchersMu    sync.Mutex
+	webPeer          *webPeerLog
 	fileMonitor      *FileMonitor
 	fileMonitorMu    sync.RWMutex
 	hijackDetector   *PasswordHijackDetector
@@ -332,6 +333,7 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 
 		mailStats:    mailstats.New(time.Now),
 		mailStatsNow: time.Now,
+		webPeer:      newWebPeerLog(),
 	}
 	d.phpEscalations = make(chan alert.Finding, cap(d.alertCh))
 	// Remediation records what it wrote here, so the sensitive-file detectors
@@ -2930,6 +2932,10 @@ func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, exim ObservedLineHandler,
 		specs = append(specs, logWatchSpec{path: eximMainlogPath, producer: checks.ProducerEximLog, observed: exim,
 			handler: func(line string, cfg *config.Config) []alert.Finding { return exim(line, alert.Observation{}, cfg) }})
 	}
+	// Apache and LiteSpeed write the peer log through the CSM snippet.
+	if hostInfo.WebServer == platform.WSApache || hostInfo.WebServer == platform.WSLiteSpeed {
+		specs = append(specs, d.webPeer.spec(webPeerLogPath))
+	}
 	return specs
 }
 
@@ -2947,7 +2953,11 @@ func shouldWatchEximMainlog(hostInfo platform.Info, stat func(string) (os.FileIn
 }
 
 func (d *Daemon) retryLogWatcherNamed(spec logWatchSpec) {
-	csmlog.Warn("log not found, will retry every 60s", "path", spec.path)
+	if spec.optional {
+		csmlog.Info("optional log not found, will retry every 60s", "path", spec.path)
+	} else {
+		csmlog.Warn("log not found, will retry every 60s", "path", spec.path)
+	}
 	d.retryLogWatcherCandidates([]string{spec.path}, spec)
 }
 
