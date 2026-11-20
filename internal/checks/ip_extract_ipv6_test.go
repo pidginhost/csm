@@ -20,8 +20,8 @@ func TestExtractIPAfterKeywordKeepsTrailingIPv6Groups(t *testing.T) {
 }
 
 func TestExtractIPFromFindingKeepsTrailingIPv6Groups(t *testing.T) {
-	f := alert.Finding{Check: "wp_login_bruteforce", Message: "WordPress brute force from 2a01:4f8:1c17:abcd::"}
-	if got := extractIPFromFinding(f); got != "2a01:4f8:1c17:abcd::" {
-		t.Fatalf("message fallback = %q, want the full address", got)
+	f := alert.Finding{Check: "wp_login_bruteforce", SourceIP: "2001:db8:1c17:abcd::"}
+	if got := extractIPFromFinding(f); got != "2001:db8:1c17:abcd::" {
+		t.Fatalf("structured address = %q, want the full address", got)
 	}
 }

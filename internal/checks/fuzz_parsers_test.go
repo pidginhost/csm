@@ -229,6 +229,28 @@ func FuzzExtractIPAfterKeyword(f *testing.F) {
 	})
 }
 
+// A recording's message is attacker-influenced text. Whatever it holds, the
+// recovered address is canonical, never loopback or unspecified, and the
+// live extractor reads nothing from the message.
+func FuzzRecordedSourceIP(f *testing.F) {
+	f.Add("SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s")
+	f.Add("WordPress brute force from [2001:db8::5]:443")
+	f.Add("injected from 198.51.100.7 from 127.0.0.1")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, msg string) {
+		got := RecordedSourceIP(alert.Finding{Message: msg})
+		if got != "" {
+			addr, err := netip.ParseAddr(got)
+			if err != nil || addr.String() != got || addr.IsLoopback() || addr.IsUnspecified() {
+				t.Fatalf("RecordedSourceIP(%q) = %q, not a canonical routable address", msg, got)
+			}
+		}
+		if live := extractIPFromFinding(alert.Finding{Message: msg}); live != "" {
+			t.Fatalf("live extraction read %q from message %q", live, msg)
+		}
+	})
+}
+
 func FuzzFTPPeerPosition(f *testing.F) {
 	for _, user := range []string{"alice", "x 198.51.100.7 y", "x (a@198.51.100.7) y", "", ") (?@2001:db8::7)"} {
 		f.Add(user)

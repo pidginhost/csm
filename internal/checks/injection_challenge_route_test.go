@@ -61,8 +61,8 @@ func TestChallengeRouteIPsDedupesSameIPInBatch(t *testing.T) {
 	// Same attacker IP appearing in three findings — only one challenge
 	// action should be produced.
 	findings := []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "brute force from 203.0.113.7"},
-		{Check: "xmlrpc_abuse", Message: "xmlrpc abuse from 203.0.113.7"},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.7", Message: "brute force from 203.0.113.7"},
+		{Check: "xmlrpc_abuse", SourceIP: "203.0.113.7", Message: "xmlrpc abuse from 203.0.113.7"},
 		{Check: "ip_reputation", Message: "bad reputation 203.0.113.7"},
 	}
 	actions := ChallengeRouteIPs(cfg, findings)

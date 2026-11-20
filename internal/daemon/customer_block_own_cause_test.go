@@ -222,7 +222,7 @@ func TestCustomerBlockConcurrentCauseObservers(t *testing.T) {
 				SourceIP: ip, Mailbox: account, Timestamp: time.Now(), Message: "Mail account compromise: " + account + " from " + ip}
 			d.observeBlocks([]alert.Finding{cause})
 			id := alert.FindingID(cause)
-			notice := alert.Finding{Check: "auto_block", Severity: alert.Critical,
+			notice := alert.Finding{Check: "auto_block", Severity: alert.Critical, SourceIP: ip,
 				Message: "AUTO-BLOCK: " + ip + " blocked", Cause: &alert.Cause{FindingID: id}}
 			other := notice
 			other.Cause = &alert.Cause{FindingID: id, Check: "smtp_bruteforce"}

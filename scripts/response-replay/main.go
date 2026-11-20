@@ -253,7 +253,7 @@ func newClassifier(o options) (responsereplay.Classifier, *int) {
 		Blockable:      func(f responsereplay.Finding) bool { return checks.BlockableFinding(cfg, toAlert(f)) },
 		ChallengeFirst: func(f responsereplay.Finding) bool { return checks.ChallengeRoutesFinding(cfg, toAlert(f)) },
 		SourceIP: func(f responsereplay.Finding) string {
-			if ip := checks.ExtractIPFromFinding(toAlert(f)); ip != "" || !o.reconstructReputation {
+			if ip := checks.RecordedSourceIP(toAlert(f)); ip != "" || !o.reconstructReputation {
 				return ip
 			}
 			ip := checks.ReputationMessageSourceIP(toAlert(f))

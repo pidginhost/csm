@@ -24,10 +24,10 @@ func TestChallengeRouteSkipsFirewallInfraIPs(t *testing.T) {
 	cfg.Firewall = &firewall.FirewallConfig{InfraIPs: []string{"203.0.113.0/28", "2001:db8::/64"}}
 
 	findings := []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "brute force from 198.51.100.20"},
-		{Check: "wp_login_bruteforce", Message: "brute force from 203.0.113.5"},
-		{Check: "wp_login_bruteforce", Message: "brute force from 2001:db8::5"},
-		{Check: "wp_login_bruteforce", Message: "brute force from 192.0.2.44"},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.20", Message: "brute force from 198.51.100.20"},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.5", Message: "brute force from 203.0.113.5"},
+		{Check: "wp_login_bruteforce", SourceIP: "2001:db8::5", Message: "brute force from 2001:db8::5"},
+		{Check: "wp_login_bruteforce", SourceIP: "192.0.2.44", Message: "brute force from 192.0.2.44"},
 	}
 	actions := ChallengeRouteIPs(cfg, findings)
 	if len(actions) != 1 || !mock.ips["192.0.2.44"] || len(mock.ips) != 1 {

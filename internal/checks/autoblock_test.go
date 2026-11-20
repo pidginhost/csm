@@ -137,8 +137,8 @@ func TestAutoBlockIPs_ThreatEntryExpiresWithBlock(t *testing.T) {
 	before := time.Now()
 	AutoBlockIPs(cfg, []alert.Finding{
 		{
-			Check:     "wp_login_bruteforce",
-			Message:   "WordPress brute force from 192.0.2.55",
+			Check:    "wp_login_bruteforce",
+			SourceIP: "192.0.2.55", Message: "WordPress brute force from 192.0.2.55",
 			Timestamp: time.Now(),
 		},
 	})
@@ -321,8 +321,8 @@ func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{
 		{
-			Check:     "wp_login_bruteforce",
-			Message:   "WordPress brute force from 5.6.7.8",
+			Check:    "wp_login_bruteforce",
+			SourceIP: "203.0.113.68", Message: "WordPress brute force from 203.0.113.68",
 			Timestamp: time.Now(),
 		},
 	})
@@ -347,8 +347,8 @@ func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
 	if len(state.Pending) != 1 {
 		t.Fatalf("saved pending IP count = %d, want 1", len(state.Pending))
 	}
-	if state.Pending[0].IP != "5.6.7.8" {
-		t.Fatalf("pending IP = %q, want %q", state.Pending[0].IP, "5.6.7.8")
+	if state.Pending[0].IP != "203.0.113.68" {
+		t.Fatalf("pending IP = %q, want %q", state.Pending[0].IP, "203.0.113.68")
 	}
 }
 
@@ -417,8 +417,8 @@ func TestAutoBlockIPs_NetBlockHandlesIPv6(t *testing.T) {
 	})
 
 	AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::10"},
-		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::20"},
+		{Check: "wp_login_bruteforce", SourceIP: "2001:db8:1::10", Message: "WP brute from 2001:db8:1::10"},
+		{Check: "wp_login_bruteforce", SourceIP: "2001:db8:1::20", Message: "WP brute from 2001:db8:1::20"},
 	})
 
 	if len(blocker.blockedSubnet) != 1 {
@@ -456,7 +456,7 @@ func TestAutoBlockIPs_ProgrammaticConfigUsesDefaultNetblockThreshold(t *testing.
 
 			findings := make([]alert.Finding, 0, len(tc.findingIPs))
 			for _, ip := range tc.findingIPs {
-				findings = append(findings, alert.Finding{Check: "wp_login_bruteforce", Message: "WP brute from " + ip})
+				findings = append(findings, alert.Finding{Check: "wp_login_bruteforce", SourceIP: ip, Message: "WP brute from " + ip})
 			}
 			AutoBlockIPs(cfg, findings)
 			if len(blocker.blockedSubnet) != tc.wantBlocks {
@@ -490,8 +490,8 @@ func TestAutoBlockIPs_NetBlockUsesConfiguredExpiry(t *testing.T) {
 	})
 
 	AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.10"},
-		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.20"},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.10", Message: "WP brute from 198.51.100.10"},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.20", Message: "WP brute from 198.51.100.20"},
 	})
 
 	if len(blocker.subnetCalls) != 1 {
@@ -596,8 +596,8 @@ func TestAutoBlockIPs_BlocksGenericModSecEscalation(t *testing.T) {
 	})
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
-		Check:   "modsec_block_escalation",
-		Message: "ModSecurity escalation: 3+ denies from 203.0.113.200 within 10m0s",
+		Check:    "modsec_block_escalation",
+		SourceIP: "203.0.113.200", Message: "ModSecurity escalation: 3+ denies from 203.0.113.200 within 10m0s",
 	}})
 
 	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.200" {
@@ -831,14 +831,14 @@ func TestAutoBlockIPs_RateLimitWarningThrottledWithinHour(t *testing.T) {
 	})
 
 	first := AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 5.6.7.8", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.68", Message: "WordPress brute force from 203.0.113.68", Timestamp: time.Now()},
 	})
 	if got := countRateLimitWarnings(first); got != 1 {
 		t.Fatalf("first scan rate-limit warnings = %d, want 1", got)
 	}
 
 	second := AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 9.10.11.12", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.112", Message: "WordPress brute force from 198.51.100.112", Timestamp: time.Now()},
 	})
 	if got := countRateLimitWarnings(second); got != 0 {
 		t.Fatalf("second scan within same hour rate-limit warnings = %d, want 0 (throttled)", got)
@@ -886,8 +886,8 @@ func TestAutoBlockIPs_RateLimitWarningReemitsAfterHourRollover(t *testing.T) {
 	// the second hits the cap of 1 and must re-emit the warning because the
 	// last warning belongs to a prior hour.
 	actions := AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 5.6.7.8", Timestamp: time.Now()},
-		{Check: "xmlrpc_abuse", Message: "XML-RPC abuse from 9.10.11.12: 40 requests", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.78", Message: "WordPress brute force from 203.0.113.78", Timestamp: time.Now()},
+		{Check: "xmlrpc_abuse", SourceIP: "198.51.100.12", Message: "XML-RPC abuse from 198.51.100.12: 40 requests", Timestamp: time.Now()},
 	})
 
 	if got := countRateLimitWarnings(actions); got != 1 {
@@ -899,7 +899,7 @@ func TestAutoBlockIPs_RateLimitWarningReemitsAfterHourRollover(t *testing.T) {
 	}
 
 	again := AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 13.14.15.16", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.16", Message: "WordPress brute force from 203.0.113.16", Timestamp: time.Now()},
 	})
 	if got := countRateLimitWarnings(again); got != 0 {
 		t.Fatalf("second same-hour scan warnings = %d, want 0", got)
@@ -967,19 +967,27 @@ func TestAutoBlockIPs_PendingQueueCappedUnderFlood(t *testing.T) {
 	}
 }
 
-func TestAutoBlock_SMTPBruteForceMessageFormatIsExtractable(t *testing.T) {
-	msg := "SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s"
-	got := extractIPFromFinding(alert.Finding{Message: msg})
-	if got != "203.0.113.5" {
-		t.Errorf("extractIPFromFinding(%q) = %q, want 203.0.113.5", msg, got)
+// A recording keeps a finding's message but not its parsed address, so a
+// replay recovers the address the producer wrote at the message's tail. The
+// live path never does.
+func TestRecordedSourceIPReadsTheProducerMessageTail(t *testing.T) {
+	for msg, want := range map[string]string{
+		"SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s":      "203.0.113.5",
+		"High local threat score: 203.0.113.5 (score 75/100, 50 attacks)": "203.0.113.5",
+		"WordPress brute force from 2001:db8:1c17:abcd::":                 "2001:db8:1c17:abcd::",
+		"request from 127.0.0.1":                                          "",
+		"a message with no separator":                                     "",
+	} {
+		f := alert.Finding{Check: "smtp_bruteforce", Message: msg}
+		if got := RecordedSourceIP(f); got != want {
+			t.Errorf("RecordedSourceIP(%q) = %q, want %q", msg, got, want)
+		}
+		if got := extractIPFromFinding(f); got != "" {
+			t.Errorf("live extraction read %q from the message %q", got, msg)
+		}
 	}
-}
-
-func TestAutoBlock_LocalThreatScoreMessageFormatIsExtractable(t *testing.T) {
-	msg := "High local threat score: 203.0.113.5 (score 75/100, 50 attacks)"
-	got := extractIPFromFinding(alert.Finding{Check: "local_threat_score", Message: msg})
-	if got != "203.0.113.5" {
-		t.Errorf("extractIPFromFinding(%q) = %q, want 203.0.113.5", msg, got)
+	if got := RecordedSourceIP(alert.Finding{SourceIP: "198.51.100.9", Message: "from 203.0.113.5"}); got != "198.51.100.9" {
+		t.Errorf("a recorded structured address = %q, want it before the message", got)
 	}
 }
 
@@ -1023,8 +1031,9 @@ func TestAutoBlock_SMTPBruteForceIsInAlwaysBlock(t *testing.T) {
 	})
 
 	findings := []alert.Finding{{
-		Check:   "smtp_bruteforce",
-		Message: "SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s",
+		Check:    "smtp_bruteforce",
+		SourceIP: "203.0.113.5",
+		Message:  "SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s",
 	}}
 	AutoBlockIPs(cfg, findings)
 
@@ -1097,7 +1106,7 @@ func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 
 	tracker := &permBlockTracker{
 		IPs: map[string][]time.Time{
-			"4.3.2.1": {time.Now().Add(-1 * time.Hour)},
+			"198.51.100.43": {time.Now().Add(-1 * time.Hour)},
 		},
 	}
 	savePermBlockTracker(cfg.StatePath, tracker)
@@ -1117,8 +1126,8 @@ func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{
 		{
-			Check:     "wp_login_bruteforce",
-			Message:   "WordPress brute force from 4.3.2.1",
+			Check:    "wp_login_bruteforce",
+			SourceIP: "198.51.100.43", Message: "WordPress brute force from 198.51.100.43",
 			Timestamp: time.Now(),
 		},
 	})
@@ -1126,11 +1135,11 @@ func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 	if len(blocker.calls) != 2 {
 		t.Fatalf("BlockIP call count = %d, want 2", len(blocker.calls))
 	}
-	if blocker.calls[0].ip != "4.3.2.1" || blocker.calls[0].timeout != time.Hour {
-		t.Fatalf("temporary block call = %+v, want IP 4.3.2.1 with 1h timeout", blocker.calls[0])
+	if blocker.calls[0].ip != "198.51.100.43" || blocker.calls[0].timeout != time.Hour {
+		t.Fatalf("temporary block call = %+v, want IP 198.51.100.43 with 1h timeout", blocker.calls[0])
 	}
-	if blocker.calls[1].ip != "4.3.2.1" || blocker.calls[1].timeout != 0 {
-		t.Fatalf("permanent block call = %+v, want IP 4.3.2.1 with zero timeout", blocker.calls[1])
+	if blocker.calls[1].ip != "198.51.100.43" || blocker.calls[1].timeout != 0 {
+		t.Fatalf("permanent block call = %+v, want IP 198.51.100.43 with zero timeout", blocker.calls[1])
 	}
 	if !strings.Contains(blocker.calls[1].reason, "PERMBLOCK") {
 		t.Fatalf("permanent block reason = %q, want PERMBLOCK marker", blocker.calls[1].reason)
@@ -1190,7 +1199,7 @@ func TestAutoBlockIPs_PromotesViaUpgradeWhenAlreadyBlockedThisCycle(t *testing.T
 
 	tracker := &permBlockTracker{
 		IPs: map[string][]time.Time{
-			"4.3.2.1": {time.Now().Add(-1 * time.Hour)},
+			"198.51.100.43": {time.Now().Add(-1 * time.Hour)},
 		},
 	}
 	savePermBlockTracker(cfg.StatePath, tracker)
@@ -1206,8 +1215,8 @@ func TestAutoBlockIPs_PromotesViaUpgradeWhenAlreadyBlockedThisCycle(t *testing.T
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{
 		{
-			Check:     "wp_login_bruteforce",
-			Message:   "WordPress brute force from 4.3.2.1",
+			Check:    "wp_login_bruteforce",
+			SourceIP: "198.51.100.43", Message: "WordPress brute force from 198.51.100.43",
 			Timestamp: time.Now(),
 		},
 	})
@@ -1215,8 +1224,8 @@ func TestAutoBlockIPs_PromotesViaUpgradeWhenAlreadyBlockedThisCycle(t *testing.T
 	if len(blocker.tempCalls) != 1 {
 		t.Fatalf("temp block count = %d, want 1", len(blocker.tempCalls))
 	}
-	if len(blocker.promotions) != 1 || blocker.promotions[0].ip != "4.3.2.1" {
-		t.Fatalf("promotions = %+v, want one upgrade of 4.3.2.1", blocker.promotions)
+	if len(blocker.promotions) != 1 || blocker.promotions[0].ip != "198.51.100.43" {
+		t.Fatalf("promotions = %+v, want one upgrade of 198.51.100.43", blocker.promotions)
 	}
 	if !strings.Contains(blocker.promotions[0].reason, "PERMBLOCK") {
 		t.Fatalf("promotion reason = %q, want PERMBLOCK marker", blocker.promotions[0].reason)
@@ -1311,8 +1320,9 @@ func TestAutoBlock_MailBruteForceTriggersBlockIP(t *testing.T) {
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
 	findings := []alert.Finding{{
-		Check:   "mail_bruteforce",
-		Message: "Mail auth brute force from 203.0.113.5: 5 failed auths in 10m0s",
+		Check:    "mail_bruteforce",
+		SourceIP: "203.0.113.5",
+		Message:  "Mail auth brute force from 203.0.113.5: 5 failed auths in 10m0s",
 	}}
 	AutoBlockIPs(cfg, findings)
 
@@ -1335,7 +1345,7 @@ func TestAutoBlock_MailAccountCompromisedTriggersBlockIP(t *testing.T) {
 	findings := []alert.Finding{{
 		Check:    "mail_account_compromised",
 		Severity: alert.Critical,
-		Message:  "Mail account compromise: successful login for alice@example.com from 203.0.113.5 after recent auth failures",
+		SourceIP: "203.0.113.5", Message: "Mail account compromise: successful login for alice@example.com from 203.0.113.5 after recent auth failures",
 	}}
 	AutoBlockIPs(cfg, findings)
 
@@ -1407,8 +1417,9 @@ func TestAutoBlock_AdminPanelBruteForceTriggersBlockIP(t *testing.T) {
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
 	findings := []alert.Finding{{
-		Check:   "admin_panel_bruteforce",
-		Message: "Admin panel brute force from 203.0.113.5: 10 POSTs in 5m0s (real-time)",
+		Check:    "admin_panel_bruteforce",
+		SourceIP: "203.0.113.5",
+		Message:  "Admin panel brute force from 203.0.113.5: 10 POSTs in 5m0s (real-time)",
 	}}
 	AutoBlockIPs(cfg, findings)
 

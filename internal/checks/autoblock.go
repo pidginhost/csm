@@ -19,7 +19,6 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/mailranges"
-	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -1078,7 +1077,8 @@ func isSubnetAlreadyBlocked(b IPBlocker, cidr string) bool {
 	return ok && sb.IsSubnetBlocked(cidr)
 }
 
-// ExtractIPFromFinding extracts an IP address from a finding.
+// ExtractIPFromFinding is the address a finding's parser read, the one the
+// automatic responses act on.
 func ExtractIPFromFinding(f alert.Finding) string {
 	return extractIPFromFinding(f)
 }
@@ -1095,32 +1095,10 @@ func ManualBlockIP(f alert.Finding) string {
 	return extractIPFromFinding(f)
 }
 
+// extractIPFromFinding is the address a finding's parser read. Message text
+// is never read for one: it can carry log-injected content.
 func extractIPFromFinding(f alert.Finding) string {
-	if strings.TrimSpace(f.SourceIP) != "" {
-		return normalizeBlockIP(f.SourceIP)
-	}
-
-	msg := f.Message
-
-	// Fallback for detectors that have not yet adopted the structured SourceIP
-	// field. Only findings whose Check is auto-block-eligible reach this path,
-	// and those detectors format their own messages with a CSM-parsed IP at the
-	// tail. Use LastIndex so the rightmost (CSM-appended) IP wins over any
-	// log-injected content earlier in the message.
-	for _, sep := range []string{" from ", ": "} {
-		if idx := strings.LastIndex(msg, sep); idx >= 0 {
-			rest := msg[idx+len(sep):]
-			fields := strings.Fields(rest)
-			if len(fields) > 0 {
-				if candidate, ok := netutil.ParseIPToken(fields[0]); ok {
-					if ip := normalizeBlockIP(candidate); ip != "" {
-						return ip
-					}
-				}
-			}
-		}
-	}
-	return ""
+	return normalizeBlockIP(f.SourceIP)
 }
 
 func normalizeBlockIP(raw string) string {

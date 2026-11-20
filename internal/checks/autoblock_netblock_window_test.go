@@ -73,7 +73,7 @@ func netblockWindowConfig(t *testing.T) *config.Config {
 }
 
 func bruteForceFrom(ip string) []alert.Finding {
-	return []alert.Finding{{Check: "wp_login_bruteforce", Message: "WordPress brute force from " + ip}}
+	return []alert.Finding{{Check: "wp_login_bruteforce", SourceIP: ip, Message: "WordPress brute force from " + ip}}
 }
 
 // An attacker rotating through one /24 with a single address blocked at a

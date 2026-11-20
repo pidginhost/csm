@@ -66,8 +66,8 @@ func TestAutoBlockIPs_DryRunOutcome_DoesNotMutateState(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
-		Check:     "wp_login_bruteforce",
-		Message:   "WordPress brute force from 192.0.2.10",
+		Check:    "wp_login_bruteforce",
+		SourceIP: "192.0.2.10", Message: "WordPress brute force from 192.0.2.10",
 		Timestamp: time.Now(),
 	}})
 
@@ -133,8 +133,8 @@ func TestAutoBlockIPs_AllowlistedOutcome_DoesNotMutateState(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
-		Check:     "wp_login_bruteforce",
-		Message:   "WordPress brute force from 192.0.2.22",
+		Check:    "wp_login_bruteforce",
+		SourceIP: "192.0.2.22", Message: "WordPress brute force from 192.0.2.22",
 		Timestamp: time.Now(),
 	}})
 
@@ -200,8 +200,8 @@ func TestAutoBlockIPs_UnknownOutcome_DoesNotMutateState(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
-		Check:     "wp_login_bruteforce",
-		Message:   "WordPress brute force from 192.0.2.25",
+		Check:    "wp_login_bruteforce",
+		SourceIP: "192.0.2.25", Message: "WordPress brute force from 192.0.2.25",
 		Timestamp: time.Now(),
 	}})
 
@@ -230,8 +230,8 @@ func TestAutoBlockIPs_LiveOutcome_MutatesState(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
-		Check:     "wp_login_bruteforce",
-		Message:   "WordPress brute force from 192.0.2.30",
+		Check:    "wp_login_bruteforce",
+		SourceIP: "192.0.2.30", Message: "WordPress brute force from 192.0.2.30",
 		Timestamp: time.Now(),
 	}})
 
@@ -349,8 +349,8 @@ func TestAutoBlockIPs_ReblocksWhenLiveSetLostCachedBlock(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
-		Check:     "wp_login_bruteforce",
-		Message:   "WordPress brute force from 192.0.2.57",
+		Check:    "wp_login_bruteforce",
+		SourceIP: "192.0.2.57", Message: "WordPress brute force from 192.0.2.57",
 		Timestamp: time.Now(),
 	}})
 
@@ -377,10 +377,10 @@ func TestAutoBlockIPs_MaxBlocksPerHourHonorsConfigOverride(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	findings := []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.71", Timestamp: time.Now()},
-		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.72", Timestamp: time.Now()},
-		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.73", Timestamp: time.Now()},
-		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.74", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "192.0.2.71", Message: "WP brute from 192.0.2.71", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "192.0.2.72", Message: "WP brute from 192.0.2.72", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "192.0.2.73", Message: "WP brute from 192.0.2.73", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", SourceIP: "192.0.2.74", Message: "WP brute from 192.0.2.74", Timestamp: time.Now()},
 	}
 	actions := AutoBlockIPs(cfg, findings)
 
@@ -411,8 +411,8 @@ func TestAutoBlockIPs_LegacyBlockerStillSupported(t *testing.T) {
 	swapBlocker(t, blocker)
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
-		Check:     "wp_login_bruteforce",
-		Message:   "WordPress brute force from 192.0.2.40",
+		Check:    "wp_login_bruteforce",
+		SourceIP: "192.0.2.40", Message: "WordPress brute force from 192.0.2.40",
 		Timestamp: time.Now(),
 	}})
 

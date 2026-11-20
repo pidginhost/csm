@@ -124,14 +124,14 @@ func TestChallengeRouteIPsRoutesEligible(t *testing.T) {
 	cfg.Challenge.Enabled = true
 
 	findings := []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "brute force from 1.2.3.4"},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.34", Message: "brute force from 203.0.113.34"},
 	}
 	actions := ChallengeRouteIPs(cfg, findings)
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 challenge action, got %d", len(actions))
 	}
-	if !mock.ips["1.2.3.4"] {
-		t.Error("1.2.3.4 should be on challenge list")
+	if !mock.ips["203.0.113.34"] {
+		t.Error("203.0.113.34 should be on challenge list")
 	}
 }
 

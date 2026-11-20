@@ -104,8 +104,8 @@ func TestFormRelayObservedReplayAimsNoResponse(t *testing.T) {
 	h := newReplayHarness(t, 10, replayT0, blockState{}, nil)
 	h.cfg.EmailProtection.PHPRelay.IPRecipientMode = "enforce"
 	step := h.run(replayT0,
-		alert.Finding{Check: "email_php_form_relay_observed", Severity: alert.High, Message: "client: 203.0.113.10"},
-		alert.Finding{Check: "email_php_form_relay", Severity: alert.High, Message: "client: 203.0.113.11"},
+		alert.Finding{Check: "email_php_form_relay_observed", Severity: alert.High, SourceIP: "203.0.113.10", Message: "client: 203.0.113.10"},
+		alert.Finding{Check: "email_php_form_relay", Severity: alert.High, SourceIP: "203.0.113.11", Message: "client: 203.0.113.11"},
 	)
 	if len(step.live) != 0 || len(step.model.BlockedIPs) != 0 || step.model.ChallengeSkipped != 1 || !slices.Equal(step.challenged, []string{"203.0.113.11"}) {
 		t.Fatalf("replay response = %+v, want only the enforce client challenged", step)
@@ -129,7 +129,7 @@ func TestFormRelayReplayMatchesMode(t *testing.T) {
 				h := newReplayHarness(t, 10, replayT0, blockState{}, nil)
 				h.cfg.EmailProtection.PHPRelay.IPRecipientMode = mode
 				h.cfg.Challenge.Enabled = challenge
-				step := h.run(replayT0, alert.Finding{Check: "email_php_form_relay", Severity: alert.High, Message: "client: 203.0.113.10"})
+				step := h.run(replayT0, alert.Finding{Check: "email_php_form_relay", Severity: alert.High, SourceIP: "203.0.113.10", Message: "client: 203.0.113.10"})
 				wantBlock, wantChallenge := 0, 0
 				if mode == "enforce" {
 					if challenge {

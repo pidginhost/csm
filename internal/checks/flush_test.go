@@ -319,6 +319,7 @@ func TestFlushAutoBlockStateSerializesConcurrentReblock(t *testing.T) {
 		AutoBlockIPs(cfg, []alert.Finding{{
 			Severity: alert.Critical,
 			Check:    "wp_login_bruteforce",
+			SourceIP: ip,
 			Message:  "WordPress brute force from " + ip,
 		}})
 		close(autoDone)
