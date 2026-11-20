@@ -26,11 +26,15 @@ func TestWebRewriteDoctorCheck(t *testing.T) {
 		{"no web server", checks.HTTPRewrite{State: checks.RewriteNone}, "ok", []string{"no web server"}, nil},
 		{"direct", checks.HTTPRewrite{State: checks.RewriteNone, Server: "nginx"}, "ok", []string{"nginx configuration sets no client address rewriting"}, nil},
 		{"rewritten", checks.HTTPRewrite{State: checks.RewriteActive, Server: "litespeed", Directive: "useIpInProxyHeader 2", File: "/usr/local/lsws/conf/httpd_config.xml"}, "ok",
-			[]string{"litespeed", "replaced client address", "useIpInProxyHeader 2", "/usr/local/lsws/conf/httpd_config.xml", "no automatic response", "existing blocking is unchanged"}, nil},
+			[]string{"litespeed", "replaced client address", "useIpInProxyHeader 2", "/usr/local/lsws/conf/httpd_config.xml", "no automatic response", "refused IP blocks stay refused"}, nil},
 		{"proxy protocol", checks.HTTPRewrite{State: checks.RewriteActive, Server: "apache", Directive: "RemoteIPProxyProtocol On", File: "/etc/apache2/conf.d/proxy.conf"}, "ok",
 			[]string{"apache logs a replaced client address", "RemoteIPProxyProtocol On", "/etc/apache2/conf.d/proxy.conf"}, nil},
 		{"unknown", checks.HTTPRewrite{State: checks.RewriteUnknown, Server: "apache", Reason: "no Apache configuration file was found"}, "warn",
 			[]string{"no Apache configuration file was found", "no automatic response"}, []string{"root", "web server configuration"}},
+		{"apache format", checks.HTTPRewrite{State: checks.RewriteActive, Server: "apache", Format: true}, "ok",
+			[]string{"refused IP blocks stay refused"}, nil},
+		{"nginx format", checks.HTTPRewrite{State: checks.RewriteActive, Server: "nginx", Format: true}, "ok",
+			[]string{"refused IP blocks stay refused"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := webRewriteDoctorCheck(tc.in)
@@ -49,6 +53,12 @@ func TestWebRewriteDoctorCheck(t *testing.T) {
 			}
 			if len(tc.fix) == 0 && got.Fix != "" {
 				t.Errorf("an accepted state offers a fix: %q", got.Fix)
+			}
+			if tc.in.State == checks.RewriteActive {
+				final := tc.in.Server == platform.WSLiteSpeed || tc.in.Format
+				if strings.Contains(got.Message, "existing blocking is unchanged") == final {
+					t.Errorf("message misstates the legacy block policy: %q", got.Message)
+				}
 			}
 			if strings.Contains(got.Message, "request header") {
 				t.Errorf("message %q claims a request header for every rewrite", got.Message)

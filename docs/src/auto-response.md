@@ -558,9 +558,12 @@ still leave the block to them: a client address Apache or nginx may have
 rewritten from a proxy header, which CSM cannot verify yet, and a ledger that
 could not take new work at all. LiteSpeed also applies those headers to
 requests from the host itself, so any local user can choose the address it
-logs: on LiteSpeed that refusal is final as well, and so is one whose access
-log format writes request data where CSM reads the client. A challenge whose evidence
-the ledger refused keeps that refusal, so its timeout follows the same rule.
+logs: on LiteSpeed that refusal is final as well, and so is one whose
+log format writes request data where CSM reads the client, even when the same
+configuration also enables proxy-header rewriting. `csm doctor` distinguishes
+these final refusals from the Apache and nginx header-only exception.
+A challenge whose evidence the ledger refused keeps that refusal, so its
+timeout follows the same rule.
 Permanent blocks, mail spray blocks and derived blocks longer than
 `auto_response.block_expiry` stay on the existing paths, even when their
 evidence was refused, except that those final rewrite refusals hold for

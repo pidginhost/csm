@@ -177,7 +177,7 @@ func TestHTTPRewriteNginxMapEntries(t *testing.T) {
 }
 
 // A format defined in an included file and used elsewhere names its
-// definition; set_real_ip_from still names itself first.
+// definition, even when set_real_ip_from is also configured.
 func TestHTTPRewriteNginxLogFormatAcrossFiles(t *testing.T) {
 	dir := t.TempDir()
 	formats := writeRewriteFile(t, dir, "conf.d/formats.conf", "log_format proxy '$http_x_forwarded_for [$time_local]';\n")
@@ -187,7 +187,7 @@ func TestHTTPRewriteNginxLogFormatAcrossFiles(t *testing.T) {
 
 	both := writeRewriteFile(t, dir, "both.conf", "http {\n  log_format proxy '$http_x_forwarded_for';\n  access_log /var/log/nginx/access.log proxy;\n  set_real_ip_from 192.0.2.0/24;\n}\n")
 	requireRewrite(t, detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: both}),
-		RewriteActive, "set_real_ip_from 192.0.2.0/24", both)
+		RewriteActive, "log_format proxy $http_x_forwarded_for", both)
 
 	streamFormat := writeRewriteFile(t, dir, "stream-format.conf", "log_format combined '$proxy_protocol_addr';\n")
 	writeRewriteFile(t, dir, "stream-use.conf", "server { access_log logs/stream combined; }\n")

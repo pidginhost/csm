@@ -82,8 +82,9 @@ type rewriteSources struct {
 // DetectHTTPRewrite reads the host web server's configuration from disk: an
 // Apache RemoteIPHeader or RemoteIPProxyProtocol, mod_cloudflare or
 // mod_rpaf, an nginx set_real_ip_from, or LiteSpeed's client IP from
-// header, in any scope; failing those, a log format that writes a request
-// value where CSM reads the client.
+// header, in any scope, or a log format that writes a request value where
+// CSM reads the client. Apache and nginx formats take precedence because
+// their refusals must not fall back to legacy blocking.
 func DetectHTTPRewrite(info platform.Info) HTTPRewrite {
 	src := rewriteSources{server: info.WebServer}
 	switch info.WebServer {
@@ -168,18 +169,14 @@ func formatDirective(directive string) bool {
 // apacheClientAddressRewrite returns the first directive that replaces the
 // client address, its file, and whether the whole tree was read: a
 // mod_remoteip header or PROXY protocol, a loaded or configured
-// mod_cloudflare, or an enabled mod_rpaf (0.6 or 0.8 names); failing
-// those, a log format that writes a request value where CSM reads the
-// client. A rewrite or format directive Apache would refuse leaves the
-// tree unknown.
+// mod_cloudflare, or an enabled mod_rpaf (0.6 or 0.8 names). A log format
+// that writes a request value where CSM reads the client takes precedence.
+// A rewrite or format directive Apache would refuse leaves the tree unknown.
 func apacheClientAddressRewrite(path string, liteSpeed bool) (directive, file string, complete bool) {
 	lines, complete := assembleApacheConfigWithStatus(path)
 	malformed := false
 	logs := apacheLogFormats{liteSpeed: liteSpeed}
 	valid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, ctx apacheLineContext) {
-		if directive != "" {
-			return
-		}
 		fields, resolved := apacheMacroFields(fields, ctx)
 		if !resolved {
 			// A macro parameter can name any directive.
@@ -187,6 +184,9 @@ func apacheClientAddressRewrite(path string, liteSpeed bool) (directive, file st
 			return
 		}
 		logs.add(line, fields, ctx)
+		if directive != "" {
+			return
+		}
 		is := func(names ...string) bool {
 			for _, n := range names {
 				if strings.EqualFold(fields[0], n) {
@@ -244,10 +244,8 @@ func apacheClientAddressRewrite(path string, liteSpeed bool) (directive, file st
 			}
 		}
 	})
-	if directive == "" {
-		if f := logs.clientValue(); f != nil {
-			directive, file = f.directive, f.file
-		}
+	if f := logs.clientValue(); f != nil {
+		directive, file = f.directive, f.file
 	}
 	return directive, file, complete && valid && !malformed && !logs.malformed
 }
@@ -293,8 +291,8 @@ func apacheCloudflareProxyKnown(value string) bool {
 
 // nginxClientAddressRewrite returns the first set_real_ip_from, which
 // turns on nginx's realip rewrite from real_ip_header or its X-Real-IP
-// default; failing that, the first log_format an access_log writes that
-// logs a request value where CSM reads the client. It also returns the
+// default. The first log_format an access_log writes that logs a request
+// value where CSM reads the client takes precedence. It also returns the
 // file and whether the tree and its format framing could be read. HTTP
 // and stream have separate namespaces; only HTTP has built-in combined.
 func nginxClientAddressRewrite(path string) (directive, file string, complete bool) {
@@ -351,7 +349,10 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 	}
 	for _, d := range directives {
 		if d.Name == "set_real_ip_from" {
-			return strings.Join(append([]string{d.Name}, d.Args...), " "), d.File, complete
+			if directive == "" {
+				directive, file = strings.Join(append([]string{d.Name}, d.Args...), " "), d.File
+			}
+			continue
 		}
 		if nginxDataContext(d.Context) {
 			continue
@@ -426,7 +427,7 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete
 		}
 	}
-	return "", "", complete
+	return directive, file, complete
 }
 
 // These blocks use their own entry handlers, not nginx directive lookup.
