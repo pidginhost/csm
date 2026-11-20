@@ -1,7 +1,10 @@
 package checks
 
 import (
+	"math/rand/v2"
 	"net/netip"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,8 +32,14 @@ func TestParseWebPeerLine(t *testing.T) {
 		"1795204579 site.example 203.0.113.5 203.0.113.5 extra",
 		"1795204579 site.example peer.example 203.0.113.5",
 		"1795204579 site.example 203.0.113.5 client.example",
-		"1795204579 site.example fe80::1%eth0 203.0.113.5",
+		"1795204579 site.example 2001:db8::1%eth0 203.0.113.5",
 		"0 site.example 203.0.113.5 203.0.113.5",
+		"-1 site.example 203.0.113.5 203.0.113.5",
+		"1795204579 site.example [2001:db8::5%eth0]:443 203.0.113.5",
+		"1795204579 site.example 203.0.113.5 2001:db8::5%eth0",
+		"1795204579 site.example 203.0.113.5:65536 203.0.113.5",
+		"1795204579 site.example 203.0.113.5 203.0.113.5:443",
+		"1795204579 site.example [2001:db8::5 2001:db8::5",
 		"",
 	} {
 		if _, _, _, _, ok := ParseWebPeerLine(line); ok {
@@ -41,6 +50,8 @@ func TestParseWebPeerLine(t *testing.T) {
 
 func TestParseWebPeerLineCanonicalizes(t *testing.T) {
 	for _, tc := range []struct{ line, peer, client string }{
+		{"1795204579 site.example [2001:db8::5] 2001:db8::5", "2001:db8::5", "2001:db8::5"},
+		{"1795204579 site.example [::ffff:192.0.2.7]:443 192.0.2.7", "192.0.2.7", "192.0.2.7"},
 		{"1795204579 site.example [2001:db8::5]:443 2001:db8::5", "2001:db8::5", "2001:db8::5"},
 		{"1795204579 site.example 192.0.2.7:51234 ::ffff:192.0.2.7", "192.0.2.7", "192.0.2.7"},
 		{"1795204579 site.example ::ffff:192.0.2.7 192.0.2.7", "192.0.2.7", "192.0.2.7"},
@@ -65,8 +76,8 @@ func TestWebPeerVerdictClasses(t *testing.T) {
 	if got := ObserveWebPeer(t0, netip.MustParseAddr("198.51.100.200"), proxied, cfg); got != PeerProxied {
 		t.Fatalf("trusted proxy line classed %v", got)
 	}
-	if got := ObserveWebPeer(t0, netip.MustParseAddr("127.0.0.1"), forged, cfg); got != PeerForged {
-		t.Fatalf("loopback line classed %v", got)
+	if got := ObserveWebPeer(t0, netip.MustParseAddr("198.51.100.9"), forged, cfg); got != PeerForged {
+		t.Fatalf("untrusted peer line classed %v", got)
 	}
 	for client, want := range map[netip.Addr]PeerVerdict{direct: PeerDirect, proxied: PeerProxied, forged: PeerForged, netip.MustParseAddr("203.0.113.99"): PeerUnknown} {
 		if got := WebPeerVerdict(client, t0.Add(time.Minute)); got != want {
@@ -137,10 +148,216 @@ func TestWebPeerVerdictOutOfOrderLines(t *testing.T) {
 	cfg := &config.Config{}
 	t0 := time.Unix(1795200000, 0)
 	victim := netip.MustParseAddr("203.0.113.40")
-	ObserveWebPeer(t0.Add(10*time.Minute), netip.MustParseAddr("127.0.0.1"), victim, cfg)
-	ObserveWebPeer(t0, netip.MustParseAddr("127.0.0.1"), victim, cfg)
+	ObserveWebPeer(t0.Add(10*time.Minute), netip.MustParseAddr("198.51.100.9"), victim, cfg)
+	ObserveWebPeer(t0, netip.MustParseAddr("198.51.100.9"), victim, cfg)
 	ObserveWebPeer(t0, victim, victim, cfg)
 	if got := WebPeerVerdict(victim, t0); got != PeerForged {
 		t.Errorf("an earlier forged line read later gave %v, want forged", got)
+	}
+}
+
+func TestWebPeerVerdictRunReplacement(t *testing.T) {
+	for _, class := range []PeerVerdict{PeerProxied, PeerForged} {
+		t.Run(class.String(), func(t *testing.T) {
+			x := newWebPeerIndex()
+			client := netip.MustParseAddr("203.0.113.40")
+			t0 := time.Unix(1795200000, 0)
+			x.observe(t0, client, class)
+			x.observe(t0.Add(2*time.Hour), client, class)
+			x.observe(t0, client, PeerDirect)
+			if got := x.verdict(client, t0); got != class && got != PeerUnknown {
+				t.Fatalf("replacing %v evidence allowed %v", class, got)
+			}
+			if got := x.verdict(client, t0.Add(2*time.Hour)); got != class {
+				t.Fatalf("new run = %v, want %v", got, class)
+			}
+		})
+	}
+}
+
+func TestWebPeerVerdictPrunedEvidence(t *testing.T) {
+	x := newWebPeerIndex()
+	client := netip.MustParseAddr("203.0.113.40")
+	other := netip.MustParseAddr("203.0.113.41")
+	t0 := time.Unix(1795200000, 0)
+	x.observe(t0, client, PeerForged)
+	for range webPeerPruneEvery - 1 {
+		x.observe(t0.Add(2*time.Hour), other, PeerDirect)
+	}
+	if _, retained := x.clients[client]; retained {
+		t.Fatal("expired client was not pruned")
+	}
+	x.observe(t0, client, PeerDirect)
+	if got := x.verdict(client, t0); got != PeerUnknown {
+		t.Fatalf("direct replay after pruning forged evidence = %v", got)
+	}
+	if got := x.verdict(other, t0.Add(2*time.Hour)); got != PeerDirect {
+		t.Fatalf("pruning expired evidence tainted the current window: %v", got)
+	}
+}
+
+func TestWebPeerVerdictOutOfOrderGap(t *testing.T) {
+	for _, class := range []PeerVerdict{PeerDirect, PeerProxied, PeerForged} {
+		t.Run(class.String(), func(t *testing.T) {
+			x := newWebPeerIndex()
+			client := netip.MustParseAddr("203.0.113.40")
+			t0 := time.Unix(1795200000, 0)
+			x.observe(t0.Add(3*time.Hour), client, class)
+			x.observe(t0, client, class)
+			if got := x.verdict(client, t0.Add(2*time.Hour)); got != PeerUnknown {
+				t.Fatalf("window without any observations = %v", got)
+			}
+			if got := x.verdict(client, t0.Add(3*time.Hour)); got != class {
+				t.Fatalf("old line displaced current evidence: %v", got)
+			}
+		})
+	}
+}
+
+func TestObserveWebPeerCanonicalizes(t *testing.T) {
+	for _, tc := range []struct {
+		peer, client string
+		want         PeerVerdict
+	}{
+		{"::ffff:192.0.2.7", "192.0.2.7", PeerDirect},
+		{"192.0.2.7", "::ffff:192.0.2.7", PeerDirect},
+		{"::ffff:192.0.2.7", "::ffff:192.0.2.7", PeerDirect},
+		{"198.51.100.8", "::ffff:192.0.2.7", PeerForged},
+	} {
+		t.Run(tc.peer+"/"+tc.client, func(t *testing.T) {
+			withWebPeers(t, 500000)
+			t0 := time.Unix(1795200000, 0)
+			peer, client := netip.MustParseAddr(tc.peer), netip.MustParseAddr(tc.client)
+			if got := ObserveWebPeer(t0, peer, client, nil); got != tc.want {
+				t.Fatalf("observation = %v, want %v", got, tc.want)
+			}
+			if got := WebPeerVerdict(client, t0); got != tc.want {
+				t.Fatalf("lookup = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Every non-unknown verdict must agree with the full, unbounded history.
+// Unknown is permitted when bounded storage has discarded evidence.
+func TestWebPeerVerdictMatchesHistory(t *testing.T) {
+	type observation struct {
+		at    time.Time
+		class PeerVerdict
+	}
+	rng := rand.New(rand.NewPCG(1, 2))
+	client := netip.MustParseAddr("203.0.113.40")
+	t0 := time.Unix(1795200000, 0)
+	for range 100 {
+		x := newWebPeerIndex()
+		var history []observation
+		for range 30 {
+			o := observation{t0.Add(time.Duration(rng.IntN(240)) * time.Minute), PeerVerdict(1 + rng.IntN(3))}
+			x.observe(o.at, client, o.class)
+			history = append(history, o)
+			for minute := -5; minute <= 305; minute += 5 {
+				at := t0.Add(time.Duration(minute) * time.Minute)
+				want := PeerUnknown
+				for _, h := range history {
+					if !h.at.Before(at.Add(-webPeerWindow)) && !h.at.After(at.Add(webPeerSkew)) && h.class > want {
+						want = h.class
+					}
+				}
+				if got := x.verdict(client, at); got != PeerUnknown && got != want {
+					t.Fatalf("verdict at minute %d = %v, history says %v: %+v", minute, got, want, history)
+				}
+			}
+		}
+	}
+}
+
+func TestWebPeerVerdictConcurrent(t *testing.T) {
+	x := newWebPeerIndex()
+	client := netip.MustParseAddr("203.0.113.40")
+	t0 := time.Unix(1795200000, 0)
+	var wg sync.WaitGroup
+	for _, class := range []PeerVerdict{PeerDirect, PeerProxied, PeerForged} {
+		wg.Go(func() {
+			for i := range 100 {
+				x.observe(t0.Add(time.Duration(i)*time.Second), client, class)
+				got := x.verdict(client, t0.Add(2*time.Minute))
+				if got < class {
+					t.Errorf("after observing %v, verdict = %v", class, got)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := x.verdict(client, t0.Add(2*time.Minute)); got != PeerForged {
+		t.Fatalf("concurrent observations = %v, want forged", got)
+	}
+}
+
+func TestWebPeerVerdictRunIncludesSkew(t *testing.T) {
+	x := newWebPeerIndex()
+	client := netip.MustParseAddr("203.0.113.40")
+	t0 := time.Unix(1795200000, 0)
+	x.observe(t0, client, PeerDirect)
+	x.observe(t0.Add(webPeerWindow+webPeerSkew), client, PeerDirect)
+	for _, at := range []time.Time{t0, t0.Add(webPeerWindow), t0.Add(webPeerWindow + time.Nanosecond)} {
+		if got := x.verdict(client, at); got != PeerDirect {
+			t.Errorf("continuous window coverage at %v = %v, want direct", at, got)
+		}
+	}
+}
+
+func TestParseWebPeerLineBound(t *testing.T) {
+	line := "1795204579 site.example 203.0.113.5 203.0.113.5"
+	line += strings.Repeat(" ", webPeerMaxLine-len(line))
+	if _, _, _, _, ok := ParseWebPeerLine(line); !ok {
+		t.Fatal("rejected a valid line at the length bound")
+	}
+	if _, _, _, _, ok := ParseWebPeerLine(line + " "); ok {
+		t.Fatal("accepted a line over the length bound")
+	}
+}
+
+func TestWebPeerVerdictKnownProxy(t *testing.T) {
+	withWebPeers(t, 500000)
+	previous := knownProxyPrefixes
+	knownProxyPrefixes = []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
+	t.Cleanup(func() { knownProxyPrefixes = previous })
+	t0 := time.Unix(1795200000, 0)
+	client := netip.MustParseAddr("203.0.113.40")
+	if got := ObserveWebPeer(t0, netip.MustParseAddr("198.51.100.9"), client, nil); got != PeerProxied {
+		t.Fatalf("known proxy observation = %v, want proxied", got)
+	}
+	if got := WebPeerVerdict(client, t0); got != PeerProxied {
+		t.Fatalf("known proxy verdict = %v, want proxied", got)
+	}
+}
+
+func TestWebPeerIndexOverflowOutOfOrder(t *testing.T) {
+	withWebPeers(t, 2)
+	t0 := time.Unix(1795200000, 0)
+	clients := []netip.Addr{
+		netip.MustParseAddr("203.0.113.30"),
+		netip.MustParseAddr("203.0.113.31"),
+		netip.MustParseAddr("203.0.113.32"),
+	}
+	newest := t0.Add(2 * time.Hour)
+	webPeers.observe(newest, clients[0], PeerForged)
+	webPeers.observe(t0, clients[1], PeerDirect)
+	webPeers.observe(t0, clients[2], PeerDirect)
+	for _, client := range clients {
+		webPeers.observe(newest, client, PeerDirect)
+		for _, at := range []time.Time{t0, newest, newest.Add(webPeerWindow)} {
+			if got := WebPeerVerdict(client, at); got != PeerUnknown {
+				t.Fatalf("overflow allowed %v for %v at %v", got, client, at)
+			}
+		}
+		if len(webPeers.clients) > webPeerMaxClients {
+			t.Fatal("client bound exceeded")
+		}
+	}
+	later := newest.Add(webPeerWindow + time.Nanosecond)
+	webPeers.observe(later, clients[0], PeerDirect)
+	if got := WebPeerVerdict(clients[0], later); got != PeerDirect {
+		t.Fatalf("after the lost evidence expires = %v, want direct", got)
 	}
 }

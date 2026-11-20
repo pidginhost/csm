@@ -94,20 +94,29 @@ func parseWebPeerAddr(s string, withPort bool) (netip.Addr, bool) {
 	return a.Unmap(), true
 }
 
-// peerRun is the first and last time one class of line named a client.
+// peerRun bounds observations of one class with no gap wider than a verdict
+// window (including skew). Any verdict window overlapping it contains a line.
 type peerRun struct{ first, last time.Time }
 
-// add extends the run to at. Lines arrive out of order, so an earlier line
-// moves the start back; a line over a window after the run starts anew.
-func (r *peerRun) add(at time.Time) {
+// add returns the latest discarded observation, if any. Disjoint runs cannot
+// be joined: their empty gap could otherwise prove a client direct without data.
+func (r *peerRun) add(at time.Time) (lostThrough time.Time) {
+	span := webPeerWindow + webPeerSkew
 	switch {
-	case r.first.IsZero() || at.After(r.last.Add(webPeerWindow)):
+	case r.first.IsZero():
 		r.first, r.last = at, at
+	case at.After(r.last.Add(span)):
+		lostThrough = r.last
+		r.first, r.last = at, at
+	case at.Before(r.first.Add(-span)):
+		// Keep the newer run, but remember that older verdicts are incomplete.
+		lostThrough = at
 	case at.Before(r.first):
 		r.first = at
 	case at.After(r.last):
 		r.last = at
 	}
+	return
 }
 
 // within reports whether the run overlaps [from, to].
@@ -115,13 +124,16 @@ func (r peerRun) within(from, to time.Time) bool {
 	return !r.first.IsZero() && !r.first.After(to) && !r.last.Before(from)
 }
 
-type peerSeen struct{ direct, proxied, forged peerRun }
+type peerSeen struct {
+	direct, proxied, forged peerRun
+	lostThrough             time.Time
+}
 
 type webPeerIndex struct {
 	mu      sync.Mutex
 	clients map[netip.Addr]*peerSeen
-	// lostThrough is the newest line time when the index last dropped
-	// lines: a window that reaches it is unknown.
+	// lostThrough covers discarded clients, including pruning. Delayed
+	// lines must not recreate a client as direct after its other classes vanish.
 	lostThrough time.Time
 	newest      time.Time
 	observed    int
@@ -137,6 +149,7 @@ var webPeers = newWebPeerIndex()
 // class: the same address is a direct peer; a trusted proxy or a known CDN
 // edge forwarded a client behind it; any other peer chose the address.
 func ObserveWebPeer(at time.Time, peer, client netip.Addr, cfg *config.Config) PeerVerdict {
+	peer, client = peer.Unmap(), client.Unmap()
 	class := PeerForged
 	switch {
 	case peer == client:
@@ -170,13 +183,17 @@ func (x *webPeerIndex) observe(at time.Time, client netip.Addr, class PeerVerdic
 		seen = &peerSeen{}
 		x.clients[client] = seen
 	}
+	var lostThrough time.Time
 	switch class {
 	case PeerDirect:
-		seen.direct.add(at)
+		lostThrough = seen.direct.add(at)
 	case PeerProxied:
-		seen.proxied.add(at)
+		lostThrough = seen.proxied.add(at)
 	default:
-		seen.forged.add(at)
+		lostThrough = seen.forged.add(at)
+	}
+	if lostThrough.After(seen.lostThrough) {
+		seen.lostThrough = lostThrough
 	}
 }
 
@@ -185,6 +202,11 @@ func (x *webPeerIndex) pruneLocked() {
 	cutoff := x.newest.Add(-webPeerWindow)
 	for c, s := range x.clients {
 		if s.direct.last.Before(cutoff) && s.proxied.last.Before(cutoff) && s.forged.last.Before(cutoff) {
+			for _, at := range []time.Time{s.direct.last, s.proxied.last, s.forged.last, s.lostThrough} {
+				if at.After(x.lostThrough) {
+					x.lostThrough = at
+				}
+			}
 			delete(x.clients, c)
 		}
 	}
@@ -207,6 +229,8 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 	seen := x.clients[client]
 	switch {
 	case seen == nil:
+		return PeerUnknown
+	case !seen.lostThrough.IsZero() && !from.After(seen.lostThrough):
 		return PeerUnknown
 	case seen.forged.within(from, to):
 		return PeerForged
