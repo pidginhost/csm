@@ -67,6 +67,8 @@ func newTestInstaller(t *testing.T, h *fakeHandler) *Installer {
 		ReadAt:   os.ReadFile,
 		StatAt:   os.Stat,
 		RemoveAt: os.Remove,
+		ChmodAt:  os.Chmod,
+		ChownAt:  os.Chown,
 		Stderr:   io.Discard,
 	}
 }

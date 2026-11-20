@@ -417,6 +417,16 @@ var operations = []Op{
 		DisableValue:     "false",
 		WithoutPrivilege: "PHP runtime events are not collected",
 	},
+	{
+		ID:               "state.web_peer_log",
+		Risk:             RiskObserve,
+		Subsystem:        "csm state",
+		Summary:          "read the web peer log the web server writes and empty it past its size cap",
+		Privileges:       []Privilege{Root},
+		Trigger:          Automatic,
+		Writes:           []string{"/var/log/csm-web"},
+		WithoutPrivilege: "rewritten web client addresses stay unverified and the peer log grows without bound",
+	},
 
 	// --- Automatic response ---
 	{
@@ -815,6 +825,24 @@ var operations = []Op{
 			"service:web server reload",
 		},
 		WithoutPrivilege: "suspicious visitors are blocked outright instead of being offered a challenge",
+	},
+
+	{
+		ID:   "integrate.web_peer_log",
+		Risk: RiskDestructive,
+		Contract: &SafetyContract{
+			Authority: "only the explicit integration commands install, upgrade or remove the peer log snippet; the daemon never writes it",
+			Identity:  "the snippet carries a managed version header; files without it are never changed and a newer snippet is never downgraded",
+			Recovery:  "a failed configtest or reload restores the previous snippet bytes or removes a new file; after a failed reload the restored configuration is reloaded only when its configtest passes",
+			Limit:     "Apache skips the log while its directory is missing; there is no reload pacing",
+		},
+		Subsystem:        "host integration",
+		Summary:          "add a server-level access log recording each request's connecting peer beside the client address the web server logged, and reload the web server",
+		Privileges:       []Privilege{Root},
+		Trigger:          Operator,
+		Unsandboxed:      true,
+		Writes:           []string{"/etc/apache2/conf.d", "/etc/apache2/conf-enabled", "/etc/httpd/conf.d", "/var/log/csm-web", "service:web server reload"},
+		WithoutPrivilege: "rewritten web client addresses stay unverified",
 	},
 
 	// --- Operator commands ---

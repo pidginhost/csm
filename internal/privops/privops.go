@@ -146,6 +146,7 @@ var csmOwnedPrefixes = []string{
 	"/opt/csm",
 	"/var/log/csm",
 	"/var/log/csm-php-shield",
+	"/var/log/csm-web",
 	"/etc/csm",
 	"/var/cache/csm",
 	"/var/run/csm",

@@ -430,13 +430,9 @@ func (inst *Installer) Uninstall(purge bool) error {
 		if err := purgeStateDirContents(inst.StatePath, ops.removeAll); err != nil {
 			return err
 		}
-		purgeDirs := []string{inst.ConfigDir}
-		if snippetsGone {
-			purgeDirs = append(purgeDirs, filepath.Dir(inst.LogPath))
-		} else {
-			fmt.Printf("  Logs kept at %s while webserver integration remains\n", filepath.Dir(inst.LogPath))
-		}
-		for _, target := range purgeDirs {
+		// A remaining peer log snippet tolerates its missing directory, and a
+		// kept one would grow with no daemon left to empty it.
+		for _, target := range []string{filepath.Dir(inst.LogPath), filepath.Dir(webserver.PeerLogFile), inst.ConfigDir} {
 			if target == "" {
 				continue
 			}
@@ -452,11 +448,7 @@ func (inst *Installer) Uninstall(purge bool) error {
 				return err
 			}
 		}
-		if snippetsGone {
-			fmt.Println("  Config, state, and logs purged")
-		} else {
-			fmt.Println("  Config and state purged")
-		}
+		fmt.Println("  Config, state, and logs purged")
 	} else {
 		fmt.Printf("  Config preserved at %s\n", inst.ConfigPath)
 		fmt.Printf("  State preserved at %s\n", inst.StatePath)

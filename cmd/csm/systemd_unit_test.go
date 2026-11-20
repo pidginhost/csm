@@ -64,6 +64,8 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"-/etc/modprobe.d",
 		"/var/log/csm",
 		"-/var/log/csm-php-shield",
+		// The web server writes the peer log; the daemon empties it.
+		"-/var/log/csm-web",
 		"/etc/csm",
 		"/opt/csm/quarantine",
 		"/opt/csm/rules",
@@ -120,6 +122,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	allowedVarLogWritePaths := map[string]bool{
 		"/var/log/csm":             true,
 		"-/var/log/csm-php-shield": true,
+		"-/var/log/csm-web":        true,
 	}
 	for path := range rwPaths {
 		cleanPath := strings.TrimPrefix(path, "-")

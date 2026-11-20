@@ -109,6 +109,7 @@ below and the current contracts in the JSON inventory. The TIER column of
 | `state.sign_config`<br>rewrite CSM's own integrity hashes into csm.yaml after an approved change | root | operator | 0 | /etc/csm | do not run the command | no | the integrity hashes cannot be re-recorded, so the next restart refuses to start after any config edit |
 | `state.update_forge`<br>download and verify YARA Forge rules independently of YAML updates | root | automatic | 0 | /opt/csm/rules | `signatures.yara_forge.enabled: false` | no | YARA Forge rules are not refreshed |
 | `state.update_signatures`<br>download and signature-verify YAML malware rule updates | root | automatic | 0 | /opt/csm/rules | `signatures.update_url: ""` | no | detection freezes at the ruleset shipped with the installed package |
+| `state.web_peer_log`<br>read the web peer log the web server writes and empty it past its size cap | root | automatic | 0 | /var/log/csm-web | not configurable | no | rewritten web client addresses stay unverified and the peer log grows without bound |
 | `state.write_logs`<br>write the daemon log and the audit-log sinks that feed a SIEM | root | automatic | 0 | /var/log/csm | not configurable | no | no local record of findings or actions |
 | `state.write_store`<br>write the bbolt state database, baselines, incidents and scan reports | root | automatic | 0 | /var/lib/csm, /opt/csm/state | not configurable | no | CSM cannot run: without state there is no baseline, no dedup and no incident history |
 | `detect.account_databases`<br>read account MySQL credentials and scan databases for injected content and stored objects | root | automatic | 0 | nothing (read-only) | not configurable: db_object_scanning only stops stored-object scans; content and requested scans remain | no | no database detection: injected admin users, poisoned options and malicious triggers stay invisible |
@@ -145,6 +146,7 @@ below and the current contracts in the JSON inventory. The TIER column of
 | `integrate.panel_plugin`<br>deploy the WHM plugin CGI and its AppConfig entry, and register it with the panel | root | automatic | 4 | /usr/local/cpanel/whostmgr/docroot/cgi, /var/cpanel | `mode: observe` | no | no panel plugin; the web UI is still reachable on its own port |
 | `integrate.php_shield`<br>install the PHP runtime hook and register its shared event directory for an operator-scheduled CageFS remount | root | operator | 4 | /opt/csm, /var/log/csm-php-shield, /etc/cagefs, /etc/csm, /opt/cpanel, /opt/alt, /usr/local/lsws, php:runtime configuration (outside the systemd sandbox) | do not run the command | no | no PHP runtime blocking of uploads and temp-directory execution |
 | `integrate.waf_vendor_rules`<br>ask the panel to update stale ModSecurity vendor rulesets when a periodic check finds them out of date | root | automatic | 4 | /etc/apache2/conf.d, /usr/local/apache/conf, /var/cpanel, service:web server reload | `mode: observe` | no | stale WAF rules are reported but not refreshed |
+| `integrate.web_peer_log`<br>add a server-level access log recording each request's connecting peer beside the client address the web server logged, and reload the web server | root | operator | 4 | /etc/apache2/conf.d, /etc/apache2/conf-enabled, /etc/httpd/conf.d, /var/log/csm-web, service:web server reload (outside the systemd sandbox) | do not run the command | no | rewritten web client addresses stay unverified |
 | `operate.apply_hardening`<br>apply the hardening audit's mechanical fixes for one section on an admin's web UI request, in a root worker started outside the sandbox, then reload the services that read them | root | operator | 4 | /etc/ssh/sshd_config, /etc/ssh/sshd_config.csm-bak, /etc/sysctl.d, kernel:sysctl values, /etc/shadow, /tmp, /var/tmp, /etc/cpupdate.conf, /usr/bin, cpanel:tweak settings, /opt/cpanel, /etc/php, /etc/php.d, /usr/local/lsws/admin/tmp, service:sshd, PHP-FPM and Apache reload (outside the systemd sandbox) | do not run the command | no | each fix is applied by hand from the audit's suggested fix |
 | `operate.clear_stalwart_ban`<br>lift Stalwart's own automatic bans of an address unblocked, allowed or unbanned in CSM or allowed through a DynDNS name, through the Stalwart API; other Stalwart bans stay | root | operator | 2 | stalwart:blocked address list (outside the systemd sandbox) | do not run the command | yes | Stalwart keeps refusing the address until its ban ends or is lifted in Stalwart |
 | `operate.delete_forwarder`<br>delete one destination of a mail forwarder through uapi, as the account that owns it, on an admin's web UI request | root | operator | 4 | cpanel:mail forwarders (outside the systemd sandbox) | do not run the command | no | forwarders are deleted in cPanel |
@@ -192,11 +194,11 @@ inventory, so a release never ships one. The tier is the operation's maximum
 live effect on a wrong target. It is not the severity of the finding that
 triggered the operation.
 
-Eight operations carry a safety contract in the JSON inventory:
+Nine operations carry a safety contract in the JSON inventory:
 `respond.block_ip`, `operate.manual_firewall`, `integrate.firewall_ruleset`,
 `integrate.challenge_port_gate`, `integrate.challenge_snippet`,
-`integrate.antispam_ip_map`, `respond.quarantine_file` and
-`respond.clean_file`. Each states the authority it
+`integrate.web_peer_log`, `integrate.antispam_ip_map`,
+`respond.quarantine_file` and `respond.clean_file`. Each states the authority it
 needs, how the target is revalidated before the change, how the change is
 reversed, and the limit that bounds it. The contracts describe current
 behaviour, including what it does not cover. Every other operation that changes

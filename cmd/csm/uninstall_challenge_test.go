@@ -111,14 +111,20 @@ func TestUninstallRemovesPeerLogDespiteChallengeFailure(t *testing.T) {
 	}
 }
 
-func TestUninstallPurgeKeepsLogsWhenIntegrationRemains(t *testing.T) {
+// Purge removes CSM's log directory and the peer log directory even when a
+// snippet could not be removed: no snippet references CSM's own logs, Apache
+// skips the peer log while its directory is missing and LiteSpeed starts
+// without it, while a kept peer directory would grow with nothing to bound it.
+func TestUninstallPurgeRemovesLogDirectoriesWhenIntegrationRemains(t *testing.T) {
 	var events []string
 	inst := uninstallRecorder(&events, func() error { return errors.New("snippet remains") })
 	inst.StatePath = t.TempDir()
 	if err := inst.Uninstall(true); err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(events, "removeAll "+filepath.Dir(inst.LogPath)) {
-		t.Fatal("purge removed directory still used by the web server")
+	for _, dir := range []string{filepath.Dir(inst.LogPath), filepath.Dir(webserver.PeerLogFile)} {
+		if !slices.Contains(events, "removeAll "+dir) {
+			t.Errorf("purge kept %s", dir)
+		}
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,7 +36,7 @@ func TestPeerLogInstallWritesValidatesReloads(t *testing.T) {
 	data, err := os.ReadFile(i.PeerLogPath)
 	if err != nil || parseHeaderVersion(data) != PeerLogTemplateVersion ||
 		!strings.Contains(string(data), `LogFormat "%{%s}t %v %{c}a %a" csmpeer`) ||
-		!strings.Contains(string(data), "GlobalLog "+filepath.Join(i.PeerLogDir, "web-peer.log")+" csmpeer") {
+		!strings.Contains(string(data), "GlobalLog "+filepath.Join(i.PeerLogDir, filepath.Base(PeerLogFile))+" csmpeer") {
 		t.Fatalf("snippet = %q, %v", data, err)
 	}
 	if info, err := os.Stat(i.PeerLogDir); err != nil || !info.IsDir() {
@@ -174,10 +176,10 @@ func TestPeerLogTemplateBody(t *testing.T) {
 		got, err := i.peerLogBody()
 		want := "# csm-managed-version: 2\n" +
 			"LogFormat \"%{%s}t %v %{c}a %a\" csmpeer\n" +
-			"<IfModule LiteSpeed>\nCustomLog /var/log/csm/web-peer.log csmpeer\n</IfModule>\n" +
-			"<IfModule !LiteSpeed>\n<IfFile \"/var/log/csm/\">\nGlobalLog /var/log/csm/web-peer.log csmpeer\n</IfFile>\n</IfModule>\n"
+			"<IfModule LiteSpeed>\nCustomLog /var/log/csm-web/peer.log csmpeer\n</IfModule>\n" +
+			"<IfModule !LiteSpeed>\n<IfFile \"/var/log/csm-web/\">\nGlobalLog /var/log/csm-web/peer.log csmpeer\n</IfFile>\n</IfModule>\n"
 
-		if err != nil || string(got) != want || PeerLogFile != "/var/log/csm/web-peer.log" {
+		if err != nil || string(got) != want || PeerLogFile != "/var/log/csm-web/peer.log" {
 			t.Fatalf("%s peer snippet = %q, %v; want %q", kind, got, err, want)
 		}
 	}
@@ -187,7 +189,7 @@ func TestPeerLogTemplateBody(t *testing.T) {
 func TestPeerLogInstallKeepsANewerSnippet(t *testing.T) {
 	h := &fakeHandler{kind: "apache"}
 	i := newPeerLogInstaller(t, h)
-	newer := templateHeaderPrefix + "99\nCustomLog /var/log/csm/web-peer.log csmpeer\n"
+	newer := templateHeaderPrefix + "99\nCustomLog /var/log/csm-web/peer.log csmpeer\n"
 	if err := os.MkdirAll(i.PeerLogDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +319,7 @@ func TestPeerLogApacheCoversVirtualHostsAndMissingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "<IfModule !LiteSpeed>\n<IfFile \"" + i.PeerLogDir + "/\">\nGlobalLog " + filepath.Join(i.PeerLogDir, "web-peer.log") + " csmpeer\n</IfFile>\n</IfModule>\n"
+	want := "<IfModule !LiteSpeed>\n<IfFile \"" + i.PeerLogDir + "/\">\nGlobalLog " + filepath.Join(i.PeerLogDir, filepath.Base(PeerLogFile)) + " csmpeer\n</IfFile>\n</IfModule>\n"
 	if !strings.HasSuffix(string(body), want) {
 		t.Fatalf("Apache must guard the directory and log all virtual hosts: %s", body)
 	}
@@ -391,5 +393,54 @@ func TestRunReportsChallengeFailureForEveryPeerVerb(t *testing.T) {
 				t.Fatal(statErr)
 			}
 		})
+	}
+}
+
+// LiteSpeed's workers open the log by path as nobody, so on cPanel the
+// directory carries the web server's group; other local users never reach
+// it. An existing directory with a looser mode or another group is corrected.
+func TestPeerLogInstallRestrictsTheLogDirectory(t *testing.T) {
+	h := &fakeHandler{kind: "lsws"}
+	i := newPeerLogInstaller(t, h)
+	group, err := user.LookupGroupId(strconv.Itoa(os.Getgid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i.PeerLogGroup = group.Name
+	var chowned []string
+	i.ChownAt = func(path string, uid, gid int) error {
+		chowned = append(chowned, fmt.Sprintf("%s %d %d", path, uid, gid))
+		return nil
+	}
+	if err = os.MkdirAll(i.PeerLogDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(i.PeerLogDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = i.InstallPeerLog(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(i.PeerLogDir)
+	if err != nil || info.Mode().Perm() != 0o750 {
+		t.Fatalf("log directory mode = %v, %v; want 0750", info.Mode().Perm(), err)
+	}
+	if want := fmt.Sprintf("%s -1 %d", i.PeerLogDir, os.Getgid()); len(chowned) != 1 || chowned[0] != want {
+		t.Fatalf("chown calls = %q, want [%q]", chowned, want)
+	}
+}
+
+func TestPeerLogGroupFor(t *testing.T) {
+	for _, tc := range []struct {
+		info platform.Info
+		want string
+	}{
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed}, "nobody"},
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache}, "nobody"},
+		{platform.Info{OS: platform.OSDebian, WebServer: platform.WSApache}, ""},
+	} {
+		if got := peerLogGroupFor(tc.info); got != tc.want {
+			t.Errorf("peerLogGroupFor(%+v) = %q, want %q", tc.info, got, tc.want)
+		}
 	}
 }

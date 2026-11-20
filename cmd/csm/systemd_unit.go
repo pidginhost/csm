@@ -207,7 +207,7 @@ ProtectHome=no
 # dir (the package ships every other /opt/csm grant but not this one), and an
 # unprefixed grant makes systemd fail the namespace setup (226/NAMESPACE) so
 # the daemon cannot start.
-ReadWritePaths=/var/lib/csm -/opt/csm/state /var/log/csm -/var/log/csm-php-shield /etc/csm /opt/csm/quarantine
+ReadWritePaths=/var/lib/csm -/opt/csm/state /var/log/csm -/var/log/csm-php-shield -/var/log/csm-web /etc/csm /opt/csm/quarantine
 ReadWritePaths=/opt/csm/rules -/home /tmp /var/tmp -/dev/shm
 # Configuration writes stay within managed subsystem directories. Exim's
 # atomic config update and rebuild run together in a fixed-purpose transient

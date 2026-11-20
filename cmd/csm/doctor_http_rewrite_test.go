@@ -178,12 +178,12 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 	}
 	fresh := map[string]time.Time{
 		"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
-		"/var/log/csm/web-peer.log":             now.Add(-time.Minute),
+		"/var/log/csm-web/peer.log":             now.Add(-time.Minute),
 		"/usr/local/apache/logs/access_log":     now.Add(-time.Minute),
 	}
 	stale := map[string]time.Time{
 		"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
-		"/var/log/csm/web-peer.log":             now.Add(-time.Hour),
+		"/var/log/csm-web/peer.log":             now.Add(-time.Hour),
 		"/usr/local/apache/logs/access_log":     now.Add(-time.Minute),
 	}
 	fronted := cpanel
@@ -205,12 +205,12 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 		{"active", cpanel, active, fresh, "ok", "active"},
 		{"peer still recent", cpanel, active, map[string]time.Time{
 			"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
-			"/var/log/csm/web-peer.log":             now.Add(-14 * time.Minute),
+			"/var/log/csm-web/peer.log":             now.Add(-14 * time.Minute),
 			"/usr/local/apache/logs/access_log":     now,
 		}, "ok", "active"},
 		{"quiet host", cpanel, active, map[string]time.Time{
 			"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
-			"/var/log/csm/web-peer.log":             now.Add(-time.Hour),
+			"/var/log/csm-web/peer.log":             now.Add(-time.Hour),
 			"/usr/local/apache/logs/access_log":     now.Add(-time.Hour),
 		}, "ok", "active"},
 	} {

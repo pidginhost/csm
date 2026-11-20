@@ -113,7 +113,12 @@ type Installer struct {
 	// server does not support it. PeerLogDir is the directory it logs to.
 	PeerLogPath string
 	PeerLogDir  string
-	hostInfo    platform.Info
+	// PeerLogGroup is the group whose web server workers open the peer log;
+	// "" leaves the directory's group alone.
+	PeerLogGroup string
+	ChmodAt      func(path string, mode os.FileMode) error
+	ChownAt      func(path string, uid, gid int) error
+	hostInfo     platform.Info
 }
 
 // LegacySnippetPath is where the package installer used to deploy a
@@ -153,6 +158,9 @@ func New(info platform.Info, cfg *config.Config) (*Installer, error) {
 		LegacySnippetPath: legacySnippetFor(h),
 		PeerLogPath:       PeerLogPathFor(info),
 		PeerLogDir:        peerLogDir,
+		PeerLogGroup:      peerLogGroupFor(info),
+		ChmodAt:           os.Chmod,
+		ChownAt:           os.Chown,
 		hostInfo:          info,
 	}, nil
 }

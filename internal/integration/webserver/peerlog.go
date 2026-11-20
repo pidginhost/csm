@@ -5,19 +5,32 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"text/template"
 
 	"github.com/pidginhost/csm/internal/platform"
 )
 
 // peerLogDir holds PeerLogFile, the log the snippet makes the web server
-// write and the daemon read.
+// write and the daemon read. It is not /var/log/csm: LiteSpeed's workers
+// open the log by path, and CSM's own log directory admits root only.
 const (
-	peerLogDir  = "/var/log/csm"
-	PeerLogFile = peerLogDir + "/web-peer.log"
+	peerLogDir  = "/var/log/csm-web"
+	PeerLogFile = peerLogDir + "/peer.log"
 )
+
+// peerLogGroupFor is the group whose web server workers open the peer log by
+// path: nobody on cPanel, where LiteSpeed runs them; elsewhere only Apache's
+// root parent opens it and the directory stays root's.
+func peerLogGroupFor(info platform.Info) string {
+	if info.IsCPanel() {
+		return "nobody"
+	}
+	return ""
+}
 
 // PeerLogPathFor is where the peer log snippet goes on hosts whose web
 // server supports Apache log directives: Apache, and LiteSpeed reading
@@ -86,21 +99,17 @@ func (i *Installer) InstallPeerLog() (Result, error) {
 		res.Status, res.Message = "fail", err.Error()
 		return res, err
 	}
-	// Recreate the directory even for a current or newer snippet. The server
-	// may have skipped its guarded logging directives while it was absent.
-	_, dirErr := i.StatAt(i.PeerLogDir)
-	if dirErr != nil && !errors.Is(dirErr, os.ErrNotExist) {
-		res.Status, res.Message = "fail", dirErr.Error()
-		return res, dirErr
-	}
-	if mkdirErr := i.MkdirAll(i.PeerLogDir, 0o750); mkdirErr != nil {
-		res.Status, res.Message = "fail", mkdirErr.Error()
-		return res, mkdirErr
+	// Prepare the directory even for a current or newer snippet: the server
+	// skips or cannot open the log while it is missing or closed to it.
+	dirChanged, err := i.preparePeerLogDir()
+	if err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
 	}
 	// Never downgrade a snippet a newer CSM wrote.
 	if v := parseHeaderVersion(prev); existed && v >= PeerLogTemplateVersion {
 		res.Status, res.OnDiskVer = "no-op", v
-		if dirErr != nil {
+		if dirChanged {
 			if applyErr := i.applyPeerLog(prev, true); applyErr != nil {
 				res.Status, res.Message = "fail", applyErr.Error()
 				return res, applyErr
@@ -128,6 +137,46 @@ func (i *Installer) InstallPeerLog() (Result, error) {
 	}
 	res.Status, res.OnDiskVer = "ok", PeerLogTemplateVersion
 	return res, nil
+}
+
+// preparePeerLogDir makes the log directory 0750 with the web server's group,
+// so its workers can open the log and other local users cannot, and reports
+// whether it changed anything the running server may have missed.
+func (i *Installer) preparePeerLogDir() (bool, error) {
+	info, err := i.StatAt(i.PeerLogDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	gid := -1
+	if i.PeerLogGroup != "" {
+		g, lookupErr := user.LookupGroup(i.PeerLogGroup)
+		if lookupErr != nil {
+			return false, fmt.Errorf("web server group %s: %w", i.PeerLogGroup, lookupErr)
+		}
+		if gid, err = strconv.Atoi(g.Gid); err != nil {
+			return false, fmt.Errorf("web server group %s: %w", i.PeerLogGroup, err)
+		}
+	}
+	changed := info == nil || info.Mode().Perm() != 0o750 || (gid >= 0 && fileGID(info) != gid)
+	if err := i.MkdirAll(i.PeerLogDir, 0o750); err != nil {
+		return false, err
+	}
+	if err := i.ChmodAt(i.PeerLogDir, 0o750); err != nil {
+		return false, err
+	}
+	if gid >= 0 {
+		if err := i.ChownAt(i.PeerLogDir, -1, gid); err != nil {
+			return false, err
+		}
+	}
+	return changed, nil
+}
+
+func fileGID(info os.FileInfo) int {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return int(st.Gid)
+	}
+	return -1
 }
 
 // RemovePeerLog removes a managed peer log snippet and reloads.
