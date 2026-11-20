@@ -180,3 +180,62 @@ func TestFrontProxiedHostDisablesPeerVerdicts(t *testing.T) {
 		}
 	}
 }
+
+func TestFrontProxiedPeerWatcherBoundsLog(t *testing.T) {
+	for _, server := range []platform.WebServer{platform.WSApache, platform.WSLiteSpeed, platform.WSNginx} {
+		for _, backlog := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/backlog=%v", server, backlog), func(t *testing.T) {
+				t.Cleanup(checks.ResetWebPeersForTest())
+				d := &Daemon{webPeer: newWebPeerLog()}
+				var spec *logWatchSpec
+				for _, s := range d.fixedLogSpecs(platform.Info{Panel: platform.PanelCPanel, WebServer: server, FrontProxied: true}, nil, false) {
+					if s.path == webPeerLogPath {
+						spec = &s
+					}
+				}
+				if spec == nil {
+					t.Fatal("front-proxied host has no peer log watcher")
+				}
+				path := filepath.Join(t.TempDir(), "web-peer.log")
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				spec.path, spec.truncateAt = path, 1<<30
+				// A future window avoids startup loss hiding an accidental observation.
+				at := time.Now().Add(3 * time.Hour)
+				appendRecords := func() {
+					appendLine(t, path, peerLine(at, "site.example", "203.0.113.80", "203.0.113.80"))
+					appendLine(t, path, peerLine(at, "site.example", "192.0.2.10", "192.0.2.60"))
+				}
+				if backlog {
+					appendRecords()
+				}
+				findings := make(chan alert.Finding, 4)
+				w, err := newObservedLogWatcher(*spec, &config.Config{}, findings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(w.Stop)
+				if !backlog {
+					appendRecords()
+				}
+				w.readNewLines()
+				if len(findings) != 0 {
+					t.Fatalf("front-proxied log emitted %d findings", len(findings))
+				}
+				for _, ip := range []string{"203.0.113.80", "192.0.2.60"} {
+					if got := checks.WebPeerVerdict(netip.MustParseAddr(ip), at); got != checks.PeerUnknown {
+						t.Fatalf("unexpected verdict %v for %s", got, ip)
+					}
+				}
+
+				// Check evidence before truncation can mask a recorded verdict.
+				w.truncateAt = 1
+				w.readNewLines()
+				if st, err := os.Stat(path); err != nil || st.Size() != 0 {
+					t.Fatalf("log not bounded: %v, %v", st, err)
+				}
+			})
+		}
+	}
+}

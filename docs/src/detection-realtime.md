@@ -849,7 +849,21 @@ web findings; see [auto-response](auto-response.md).
 `csm webserver-integration install` or `upgrade` sets up the peer log on
 Apache and on cPanel with LiteSpeed, and `csm doctor` shows whether it is
 active. On cPanel hosts with nginx in front, every peer is the server itself:
-CSM keeps the log bounded but takes no verdict or alert from it.
+CSM keeps the log bounded but takes no verdict or alert from it, including
+when only nginx is detected at startup. On front-proxied Apache and
+LiteSpeed hosts, `csm webserver-integration remove` can still remove a
+previously installed snippet.
+
+The same snippet works when switching between Apache and LiteSpeed. On
+Apache, the peer log also covers virtual hosts with their own access logs.
+If `/var/log/csm` is removed, the peer snippet skips logging on the next
+Apache startup or reload instead of preventing startup. Run
+`csm webserver-integration install` to recreate the directory and reload
+logging, even when the snippet is already current. Installation never
+downgrades a newer snippet. A failed configtest or reload restores the
+previous snippet, and a failed reload also attempts a validated recovery
+reload. `csm doctor` warns when the peer log has not been written for 15
+minutes while an access log has.
 
 A request logged with a client address chosen by a peer that is neither the
 client nor a trusted proxy raises `http_client_forged` (Critical), at most once

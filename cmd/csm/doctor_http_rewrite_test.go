@@ -198,9 +198,21 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 	}{
 		{"direct host", cpanel, checks.HTTPRewrite{State: checks.RewriteNone}, nil, "ok", "not needed"},
 		{"fronted", fronted, active, fresh, "warn", "nginx"},
+		{"fronted without rewrite", fronted, checks.HTTPRewrite{State: checks.RewriteNone}, fresh, "warn", "nginx"},
+		{"unsupported", platform.Info{WebServer: platform.WSNginx}, checks.HTTPRewrite{State: checks.RewriteNone}, nil, "ok", "not used"},
 		{"not installed", cpanel, active, nil, "warn", "csm webserver-integration install"},
 		{"not written", cpanel, active, stale, "warn", "not writing"},
 		{"active", cpanel, active, fresh, "ok", "active"},
+		{"peer still recent", cpanel, active, map[string]time.Time{
+			"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
+			"/var/log/csm/web-peer.log":             now.Add(-14 * time.Minute),
+			"/usr/local/apache/logs/access_log":     now,
+		}, "ok", "active"},
+		{"quiet host", cpanel, active, map[string]time.Time{
+			"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
+			"/var/log/csm/web-peer.log":             now.Add(-time.Hour),
+			"/usr/local/apache/logs/access_log":     now.Add(-time.Hour),
+		}, "ok", "active"},
 	} {
 		got := webPeerLogDoctorCheck(tc.info, tc.r, files(tc.files), now)
 		if got.Name != "web peer log" || got.Status != tc.status || !strings.Contains(got.Message, tc.says) {

@@ -60,15 +60,15 @@ func webPeerLogDoctorCheck(info platform.Info, r checks.HTTPRewrite, stat func(s
 	check := DoctorCheck{Name: "web peer log", Status: "ok"}
 	snippet := webserver.PeerLogPathFor(info)
 	switch {
-	case r.State == checks.RewriteNone:
-		check.Message = "not needed: the web server logs the connecting address"
-		return check
 	case info.FrontProxied:
 		check.Status = "warn"
 		check.Message = "nginx runs in front of the web server, so the peer log cannot tell clients apart; rewritten web client addresses stay unverified"
 		return check
 	case snippet == "":
 		check.Message = "not used with this web server"
+		return check
+	case r.State == checks.RewriteNone:
+		check.Message = "not needed: the web server logs the connecting address"
 		return check
 	}
 	if _, err := stat(snippet); err != nil {

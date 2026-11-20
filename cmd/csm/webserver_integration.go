@@ -65,19 +65,7 @@ func runWebserverIntegration() {
 		fmt.Fprintf(os.Stderr, "webserver-integration: %v\n", err)
 		os.Exit(1)
 	}
-	if cfg := loadWebserverIntegrationConfig(verb); cfg != nil {
-		inst, err = webserver.New(info, cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "webserver-integration: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	// Only these explicit commands may regenerate httpd.conf so HTTPS sites
-	// read the per-site snippet; the daemon's own refresh never does.
-	inst.RebuildSiteIncludes = verb == "install" || verb == "upgrade"
-
-	res, op := inst.Run(verb)
+	res, op := runWebserverIntegrationWithConfig(inst, verb, tryLoadConfigLite)
 
 	emitResult(asJSON, res)
 	if op != nil {
@@ -94,13 +82,20 @@ func validWebserverIntegrationVerb(verb string) bool {
 	}
 }
 
-func loadWebserverIntegrationConfig(verb string) *config.Config {
-	switch verb {
-	case "install", "upgrade":
-		return loadConfigLite()
-	default:
-		return nil
+// Config loading can fail before challenge installation; peer logging needs
+// none of those settings and must still get its own result.
+func runWebserverIntegrationWithConfig(inst *webserver.Installer, verb string, load func() (*config.Config, error)) (webserver.Result, error) {
+	if verb == "install" || verb == "upgrade" {
+		cfg, err := load()
+		if err != nil {
+			peer, peerErr := inst.InstallPeerLog()
+			return webserver.Result{Action: verb, Webserver: inst.Handler.Kind(), Status: "fail", Message: err.Error(), PeerLog: &peer}, errors.Join(err, peerErr)
+		}
+		inst.Config = webserver.RenderConfigFromConfig(cfg)
+		// Only explicit installation may rebuild the cPanel site includes.
+		inst.RebuildSiteIncludes = true
 	}
+	return inst.Run(verb)
 }
 
 func emitResult(asJSON bool, res webserver.Result) {

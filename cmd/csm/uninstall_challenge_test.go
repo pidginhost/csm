@@ -2,11 +2,14 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/challenge"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integration/webserver"
 )
 
 func uninstallRecorder(events *[]string, removeIntegration func() error) *Installer {
@@ -83,5 +86,39 @@ func TestInstallerUninstallKeepsChallengeMapsWhenASnippetRemains(t *testing.T) {
 	}
 	if !slices.Contains(events, "remove "+inst.BinaryPath) {
 		t.Fatalf("binary was not removed: %v", events)
+	}
+}
+
+func TestUninstallRemovesPeerLogDespiteChallengeFailure(t *testing.T) {
+	root := t.TempDir()
+	h := &fakeWebserverHandler{snippet: filepath.Join(root, "challenge.conf")}
+	peer := filepath.Join(root, "peer.conf")
+	for path, body := range map[string]string{h.snippet: "# operator challenge\n", peer: "# csm-managed-version: 1\n"} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := newWebserverIntegration
+	newWebserverIntegration = func(*config.Config) (*webserver.Installer, error) {
+		return &webserver.Installer{Handler: h, ReadAt: os.ReadFile, WriteAt: os.WriteFile, RemoveAt: os.Remove, PeerLogPath: peer}, nil
+	}
+	t.Cleanup(func() { newWebserverIntegration = old })
+	if err := removeWebserverIntegrationSnippet(); !errors.Is(err, webserver.ErrManualEdits) {
+		t.Fatalf("challenge failure lost: %v", err)
+	}
+	if _, err := os.Stat(peer); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("peer snippet survived: %v", err)
+	}
+}
+
+func TestUninstallPurgeKeepsLogsWhenIntegrationRemains(t *testing.T) {
+	var events []string
+	inst := uninstallRecorder(&events, func() error { return errors.New("snippet remains") })
+	inst.StatePath = t.TempDir()
+	if err := inst.Uninstall(true); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(events, "removeAll "+filepath.Dir(inst.LogPath)) {
+		t.Fatal("purge removed directory still used by the web server")
 	}
 }

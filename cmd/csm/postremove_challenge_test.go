@@ -325,3 +325,31 @@ func TestPostremoveRemovesThePeerLogSnippet(t *testing.T) {
 		}
 	}
 }
+
+func TestPostremoveKeepsOperatorPeerLog(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "build", "packaging", "scripts", "postremove.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(body)
+	start := strings.Index(script, "remove_peer_log_snippets() {")
+	fn := script[start : start+strings.Index(script[start:], "\n}\n")+2]
+	root := t.TempDir()
+	for _, prefix := range []string{"/etc/apache2", "/etc/httpd"} {
+		fn = strings.ReplaceAll(fn, prefix, root+prefix)
+	}
+	path := root + "/etc/apache2/conf.d/csm-peer-log.conf"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := "# operator log configuration\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runPostremoveChallengeFunction(t, fn, "remove_peer_log_snippets"); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != original {
+		t.Fatalf("operator snippet changed: %q, %v", got, err)
+	}
+}

@@ -382,8 +382,9 @@ func (w *LogWatcher) readNewLines() {
 		w.reset()
 	}
 
-	// No new data
+	// A watcher attaches at EOF, which may already be past the cap.
 	if info.Size() == w.offset {
+		w.truncateIfFull()
 		return
 	}
 

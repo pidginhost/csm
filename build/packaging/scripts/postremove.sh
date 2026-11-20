@@ -42,13 +42,22 @@ remove_csm_modsec_sections() {
 # The peer log snippet makes the web server write under /var/log/csm, which
 # nothing keeps bounded once CSM is gone.
 remove_peer_log_snippets() {
-    local snippet
+    local snippet header failed=0
     for snippet in \
         /etc/apache2/conf.d/csm-peer-log.conf \
         /etc/apache2/conf-enabled/csm-peer-log.conf \
         /etc/httpd/conf.d/csm-peer-log.conf; do
-        rm -f -- "$snippet" 2>/dev/null || echo "WARNING: could not remove $snippet" >&2
+        [ -e "$snippet" ] || [ -L "$snippet" ] || continue
+        if [ -f "$snippet" ] && [ ! -L "$snippet" ] && IFS= read -r header < "$snippet" && [[ "$header" =~ ^\#\ csm-managed-version:\ [1-9][0-9]*$ ]]; then
+            if ! rm -f -- "$snippet" 2>/dev/null; then
+                echo "WARNING: could not remove $snippet" >&2
+                failed=1
+            fi
+        else
+            echo "WARNING: $snippet is not a managed regular file; leaving it in place" >&2
+        fi
     done
+    return "$failed"
 }
 
 # Remove the challenge snippets before the map files they reference. A

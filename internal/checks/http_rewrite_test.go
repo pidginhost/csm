@@ -768,3 +768,22 @@ func TestPeerLogSnippetIsNotARewrite(t *testing.T) {
 		}
 	}
 }
+
+func TestApachePeerGlobalLogIsNotARewrite(t *testing.T) {
+	dir := t.TempDir()
+	conf := writeRewriteFile(t, dir, "httpd.conf", `LogFormat "%a %l %u %t \"%r\" %>s %b" combined
+CustomLog logs/access_log combined
+LogFormat "%{%s}t %v %{c}a %a" csmpeer
+<IfModule LiteSpeed>
+CustomLog /var/log/csm/web-peer.log csmpeer
+</IfModule>
+<IfModule !LiteSpeed>
+<IfFile "/var/log/csm/">
+GlobalLog /var/log/csm/web-peer.log csmpeer
+</IfFile>
+</IfModule>
+`)
+	if got := detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: conf}); got.State != RewriteNone {
+		t.Fatalf("peer GlobalLog changed rewrite detection: %+v", got)
+	}
+}

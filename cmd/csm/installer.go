@@ -23,7 +23,6 @@ import (
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/phpshield"
-	"github.com/pidginhost/csm/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -66,18 +65,15 @@ var challengeMapDir = filepath.Dir(challenge.DefaultMapPath)
 // detected webserver. Hosts without a supported webserver have nothing to
 // remove.
 func removeWebserverIntegrationSnippet() error {
-	inst, err := webserver.New(platform.Detect(), nil)
+	inst, err := newWebserverIntegration(nil)
 	if err != nil {
 		if errors.Is(err, webserver.ErrUnknownWebserver) {
 			return nil
 		}
 		return err
 	}
-	res, err := inst.Remove()
-	if err != nil {
-		return fmt.Errorf("%s: %s", res.SnippetPath, res.Message)
-	}
-	return nil
+	_, err = inst.Run("remove")
+	return err
 }
 
 func (inst *Installer) ops() installerOperations {
@@ -434,7 +430,13 @@ func (inst *Installer) Uninstall(purge bool) error {
 		if err := purgeStateDirContents(inst.StatePath, ops.removeAll); err != nil {
 			return err
 		}
-		for _, target := range []string{filepath.Dir(inst.LogPath), inst.ConfigDir} {
+		purgeDirs := []string{inst.ConfigDir}
+		if snippetsGone {
+			purgeDirs = append(purgeDirs, filepath.Dir(inst.LogPath))
+		} else {
+			fmt.Printf("  Logs kept at %s while webserver integration remains\n", filepath.Dir(inst.LogPath))
+		}
+		for _, target := range purgeDirs {
 			if target == "" {
 				continue
 			}
@@ -450,7 +452,11 @@ func (inst *Installer) Uninstall(purge bool) error {
 				return err
 			}
 		}
-		fmt.Println("  Config, state, and logs purged")
+		if snippetsGone {
+			fmt.Println("  Config, state, and logs purged")
+		} else {
+			fmt.Println("  Config and state purged")
+		}
 	} else {
 		fmt.Printf("  Config preserved at %s\n", inst.ConfigPath)
 		fmt.Printf("  State preserved at %s\n", inst.StatePath)

@@ -348,7 +348,10 @@ csm webserver-integration remove      # uninstall the snippet
 on Apache and on cPanel with LiteSpeed, `status` reports it and `remove` takes
 it away. The peer log does not need `challenge.public_url`: when the challenge
 part fails, the peer log is still installed and the command reports the
-failure.
+failure, including when CSM configuration cannot be loaded. Uninstall also
+removes the peer log snippet. If integration removal fails, purge keeps the
+log directory so a remaining snippet cannot prevent web server startup.
+Package removal leaves operator-owned peer snippets untouched.
 
 The installer auto-detects the active webserver via
 `internal/platform`. Supported stacks and snippet paths:

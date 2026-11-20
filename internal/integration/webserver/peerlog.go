@@ -20,13 +20,10 @@ const (
 )
 
 // PeerLogPathFor is where the peer log snippet goes on hosts whose web
-// server applies server-level Apache log directives to every site: Apache,
-// and LiteSpeed reading cPanel's Apache tree. Hosts where nginx fronts the
-// web server would log only nginx as the peer. Elsewhere it is "".
+// server supports Apache log directives: Apache, and LiteSpeed reading
+// cPanel's Apache tree. Keep the path on front-proxied hosts for removal
+// of snippets installed before nginx was enabled. Elsewhere it is "".
 func PeerLogPathFor(info platform.Info) string {
-	if info.FrontProxied {
-		return ""
-	}
 	switch {
 	case info.IsCPanel() && (info.WebServer == platform.WSApache || info.WebServer == platform.WSLiteSpeed):
 		return "/etc/apache2/conf.d/csm-peer-log.conf"
@@ -40,7 +37,8 @@ func PeerLogPathFor(info platform.Info) string {
 
 // peerLogBody is the snippet: one line per request with its start time,
 // the virtual host, the connection's peer and the client address the
-// server logged.
+// server logged. Apache needs GlobalLog for vhosts with their own logs;
+// IfFile keeps a removed log directory from preventing server startup.
 func (i *Installer) peerLogBody() ([]byte, error) {
 	tpl, err := template.New("peerlog").Parse(peerLogTemplate)
 	if err != nil {
@@ -48,7 +46,10 @@ func (i *Installer) peerLogBody() ([]byte, error) {
 	}
 	var b bytes.Buffer
 	b.WriteString(templateHeaderPrefix + strconv.Itoa(PeerLogTemplateVersion) + "\n")
-	err = tpl.Execute(&b, struct{ LogFile string }{filepath.Join(i.PeerLogDir, filepath.Base(PeerLogFile))})
+	err = tpl.Execute(&b, struct {
+		LogDir  string
+		LogFile string
+	}{i.PeerLogDir, filepath.Join(i.PeerLogDir, filepath.Base(PeerLogFile))})
 	return b.Bytes(), err
 }
 
@@ -76,7 +77,7 @@ func (i *Installer) readPeerLog() ([]byte, bool, error) {
 // needs no challenge settings.
 func (i *Installer) InstallPeerLog() (Result, error) {
 	res := i.peerLogResult("install")
-	if i.PeerLogPath == "" {
+	if i.PeerLogPath == "" || i.hostInfo.FrontProxied {
 		res.Status, res.Message = "skipped", "the web peer log is not supported on this web server"
 		return res, nil
 	}
@@ -85,19 +86,31 @@ func (i *Installer) InstallPeerLog() (Result, error) {
 		res.Status, res.Message = "fail", err.Error()
 		return res, err
 	}
+	// Recreate the directory even for a current or newer snippet. The server
+	// may have skipped its guarded logging directives while it was absent.
+	_, dirErr := i.StatAt(i.PeerLogDir)
+	if dirErr != nil && !errors.Is(dirErr, os.ErrNotExist) {
+		res.Status, res.Message = "fail", dirErr.Error()
+		return res, dirErr
+	}
+	if mkdirErr := i.MkdirAll(i.PeerLogDir, 0o750); mkdirErr != nil {
+		res.Status, res.Message = "fail", mkdirErr.Error()
+		return res, mkdirErr
+	}
 	// Never downgrade a snippet a newer CSM wrote.
 	if v := parseHeaderVersion(prev); existed && v >= PeerLogTemplateVersion {
 		res.Status, res.OnDiskVer = "no-op", v
+		if dirErr != nil {
+			if applyErr := i.applyPeerLog(prev, true); applyErr != nil {
+				res.Status, res.Message = "fail", applyErr.Error()
+				return res, applyErr
+			}
+			res.Status = "ok"
+		}
 		return res, nil
 	}
 	body, err := i.peerLogBody()
 	if err != nil {
-		res.Status, res.Message = "fail", err.Error()
-		return res, err
-	}
-	// The web server opens the log when it reloads: a missing directory
-	// would fail that reload.
-	if err := i.MkdirAll(i.PeerLogDir, 0o750); err != nil {
 		res.Status, res.Message = "fail", err.Error()
 		return res, err
 	}
@@ -191,7 +204,11 @@ func (i *Installer) applyPeerLog(prev []byte, existed bool) error {
 	if err := i.Handler.Reload(); err != nil {
 		rollback := restore()
 		if rollback == nil {
-			rollback = i.Handler.Reload()
+			if validateErr := i.Handler.Validate(); validateErr != nil {
+				rollback = fmt.Errorf("rollback configtest: %w", validateErr)
+			} else if reloadErr := i.Handler.Reload(); reloadErr != nil {
+				rollback = fmt.Errorf("recovery reload: %w", reloadErr)
+			}
 		}
 		return errors.Join(fmt.Errorf("reload after the peer log change failed: %w", err), rollback)
 	}
