@@ -251,6 +251,27 @@ func FuzzRecordedSourceIP(f *testing.F) {
 	})
 }
 
+// The peer log is written by the web server, but its lines pass through a
+// file any root process can append to. Whatever a line holds, a parsed
+// address is valid, zoneless and unmapped.
+func FuzzParseWebPeerLine(f *testing.F) {
+	f.Add("1795204579 site.example 203.0.113.5 203.0.113.5")
+	f.Add("1795204579 site.example [2001:db8::5]:443 2001:db8::5")
+	f.Add("1795204579 site.example ::ffff:192.0.2.7 192.0.2.7")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		_, _, peer, client, ok := ParseWebPeerLine(line)
+		if !ok {
+			return
+		}
+		for _, a := range []netip.Addr{peer, client} {
+			if !a.IsValid() || a.Zone() != "" || a.Is4In6() {
+				t.Fatalf("ParseWebPeerLine(%q) returned %v", line, a)
+			}
+		}
+	})
+}
+
 func FuzzFTPPeerPosition(f *testing.F) {
 	for _, user := range []string{"alice", "x 198.51.100.7 y", "x (a@198.51.100.7) y", "", ") (?@2001:db8::7)"} {
 		f.Add(user)
