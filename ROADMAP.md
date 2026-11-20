@@ -104,9 +104,9 @@ test; withheld Critical responses stay visible under overload.
 
 Design: [durable action lifecycle](docs/src/design/durable-action-lifecycle.md).
 
-**Problem:** `internal/actionlog` records eight operations; the privops
-inventory has 70, 52 of them tier 2 to 4, so the other 44 leave only a
-daemon log line, and a JSONL outcome cannot tell a refused request from a
+**Problem:** `internal/actionlog` records only some of the privops
+inventory's tier 2 to 4 operations; the rest leave only a daemon log line,
+and a JSONL outcome cannot tell a refused request from a
 mutation applied just before a crash. The durable firewall action service
 exists behind engine injection. The admission ledger records each automatic
 IP response's intent before execution, settles attempts left by a crash and
@@ -287,7 +287,7 @@ finally, no handler performs a host mutation directly.
 
 ### Parser and input hardening
 
-**Problem:** 96 test files carry fuzz targets, and YARA-X scanning, PHP
+**Problem:** many parsers carry fuzz targets, and YARA-X scanning, PHP
 parsing, mail extraction and phishing-kit archive listing run in unprivileged
 workers, but no inventory maps every parser of external input (archives,
 logs, configuration, CMS state, PHP, JavaScript, mail, challenge and control
@@ -337,14 +337,6 @@ copy is current, so an operator cannot tell the check ran.
 operator copy is refreshed on upgrade.
 
 **Size:** S.
-
-### Runner capacity for the release pipeline
-
-**Problem:** a tag pipeline runs every job at once on the shared runner and
-lint package loading has reached its time cap under that load; the cap was
-raised, and whether the runner needs more headroom is undecided.
-
-**Acceptance:** to be defined. **Size:** S.
 
 ## Priority 4 -- correlation
 
@@ -615,8 +607,8 @@ noise per platform feeds the clean corpus calibration.
 ### Resource and performance budgets
 
 **Problem:** overload has been found by operators (out-of-memory restarts, a
-copy-on-write regression) rather than by tests; 43 test files contain
-benchmarks and no budget is written down.
+copy-on-write regression) rather than by tests; benchmarks exist but no
+budget is written down.
 
 **Acceptance:** written CPU, memory, I/O and event-latency budgets for a
 reference server; benchmarks for large account and file counts, mail volume
