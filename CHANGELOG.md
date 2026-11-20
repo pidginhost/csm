@@ -9,6 +9,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Changed
+
+- Go dependencies are updated to their current releases; JavaScript scans now parse import attributes and a few syntax forms they used to misread.
+
 ## [4.15.0] - 2026-11-20
 
 ### Highlights
