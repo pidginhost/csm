@@ -316,8 +316,8 @@ func TestAdmissionUsesTheLegacySelectedAddress(t *testing.T) {
 		for _, tc := range []struct {
 			name, source, message, want string
 		}{
-			{"message address", "", "WordPress login brute force from 192.0.2.20: 100 attempts", "192.0.2.20"},
-			{"message IPv6", "", "WordPress login brute force from [2001:db8::20]: 100 attempts", "2001:db8::20"},
+			{"message address", "", "WordPress login brute force from 192.0.2.20: 100 attempts", ""},
+			{"message IPv6", "", "WordPress login brute force from [2001:db8::20]: 100 attempts", ""},
 			{"structured port", "[2001:db8::20]:443", "WordPress login brute force from 192.0.2.21", "2001:db8::20"},
 			{"structured precedence", "192.0.2.20", "WordPress login brute force from 192.0.2.21", "192.0.2.20"},
 		} {
@@ -331,6 +331,12 @@ func TestAdmissionUsesTheLegacySelectedAddress(t *testing.T) {
 				f := wpBruteForce(tc.source)
 				f.Message = tc.message
 				challenges, blocks := ChallengeThenBlock(cfg, []alert.Finding{f})
+				if tc.want == "" {
+					if len(challenges) != 0 || len(blocks) != 0 || len(b.calls) != 0 || len(list.ips) != 0 || len(a.responses()) != 0 {
+						t.Fatalf("a message address was acted on: challenges=%+v blocks=%+v calls=%+v responses=%+v", challenges, blocks, b.calls, a.responses())
+					}
+					return
+				}
 				kind := admission.KindBlockIP
 				if challenged {
 					kind = admission.KindChallenge

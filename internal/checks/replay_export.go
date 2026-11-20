@@ -5,6 +5,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // BlockableFinding reports whether the scan admission path may block the
@@ -18,6 +19,29 @@ func BlockableFinding(cfg *config.Config, f alert.Finding) bool {
 // challenge instead of blocking it.
 func ChallengeRoutesFinding(cfg *config.Config, f alert.Finding) bool {
 	return CheckResponseEnabled(cfg, f.Check) && responseActionForFinding(cfg, f) == responseChallenge
+}
+
+// RecordedSourceIP recovers the address a recorded finding's parser read.
+// A recording keeps the message but not the structured address, so the
+// address its producer wrote at the message's tail stands in for it, the
+// rightmost after " from " or ": ". Only a replay of a recording reads
+// message text; the live responses never do.
+func RecordedSourceIP(f alert.Finding) string {
+	if strings.TrimSpace(f.SourceIP) != "" {
+		return normalizeBlockIP(f.SourceIP)
+	}
+	for _, sep := range []string{" from ", ": "} {
+		if idx := strings.LastIndex(f.Message, sep); idx >= 0 {
+			if fields := strings.Fields(f.Message[idx+len(sep):]); len(fields) > 0 {
+				if candidate, ok := netutil.ParseIPToken(fields[0]); ok {
+					if ip := normalizeBlockIP(candidate); ip != "" {
+						return ip
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // ReputationMessageSourceIP recovers the address an ip_reputation finding

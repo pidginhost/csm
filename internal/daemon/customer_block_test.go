@@ -215,7 +215,7 @@ func TestCustomerBlockAlertEveryBlockPath(t *testing.T) {
 				// finding's identity and check.
 				f := alert.Finding{Severity: alert.High, Check: "wp_login_bruteforce", Message: "WordPress brute force from " + ip, SourceIP: ip, Timestamp: time.Now()}
 				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
-				d.ipList.AddWithRoot(ip, f.Message, -time.Minute, alert.FindingID(f), f.Check, admission.Evidence{})
+				d.ipList.AddWithRoot(ip, f.Message, -time.Minute, alert.FindingID(f), f.Check, admission.Evidence{}, nil)
 				d.escalateExpiredChallenges(time.Hour)
 			}},
 		{name: "central intelligence", wantCheck: "smtp_bruteforce",
@@ -712,7 +712,7 @@ func TestCustomerBlockDerivedCause(t *testing.T) {
 				}
 			case "challenge root":
 				d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
-				d.ipList.AddWithRoot(ip, "wp brute", -time.Minute, root.FindingID(), root.Check(), root)
+				d.ipList.AddWithRoot(ip, "wp brute", -time.Minute, root.FindingID(), root.Check(), root, nil)
 				d.escalateExpiredChallenges(time.Hour)
 			}
 			if !blocker.IsBlocked(ip) {

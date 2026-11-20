@@ -80,9 +80,8 @@ func TestFunnelHandsTheOwnerCanonicalAddressEvidence(t *testing.T) {
 	}
 }
 
-// A victim named only in the message never becomes an admission target:
-// the legacy path still reads the message, but
-// admission refuses the finding its parser vouched for no address in.
+// A victim named only in the message reaches neither admission nor the
+// legacy response paths because the parser supplied no address.
 func TestFunnelNeverAimsAdmissionAtMessageText(t *testing.T) {
 	fixture := newOwnerFixture(t)
 	opts := respondOptions(fixture)
@@ -107,14 +106,14 @@ func TestFunnelNeverAimsAdmissionAtMessageText(t *testing.T) {
 	if err := o.do(o.drain); err != nil {
 		t.Fatal(err)
 	}
-	if len(blocker.addresses) != 1 || blocker.addresses[0] != "198.51.100.66" {
-		t.Fatalf("legacy blocks=%v; the test lost its premise", blocker.addresses)
+	if len(blocker.addresses) != 0 {
+		t.Fatalf("legacy blocked addresses from message text: %v", blocker.addresses)
 	}
 	if queued := queuedCandidates(t, o); len(queued) != 0 {
 		t.Fatalf("admission queued %+v from message text", queued)
 	}
-	if n := o.ingress.Stats().Counters.Count(admission.CountKey{Event: admission.EventRefused, Reason: admission.ReasonAttribution}); n != 1 {
-		t.Fatalf("attribution refusals = %d, want 1", n)
+	if n := o.ingress.Stats().Counters.Count(admission.CountKey{Event: admission.EventRefused, Reason: admission.ReasonAttribution}); n != 0 {
+		t.Fatalf("attribution refusals = %d, want no handoff for an addressless finding", n)
 	}
 }
 

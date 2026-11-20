@@ -563,7 +563,7 @@ func TestAutoBlockIPs_CpanelLoginBlockEnabled(t *testing.T) {
 	cfg.AutoResponse.BlockExpiry = "1h"
 	// cpanel_multi_ip_login is a thresholded brute signal so the block_cpanel_logins
 	// branch is the right gate; single-event cpanel_login is intentionally not blockable.
-	findings := []alert.Finding{{Check: "cpanel_multi_ip_login", Severity: alert.Critical, Message: "Multi-IP cPanel brute-force from 203.0.113.50"}}
+	findings := []alert.Finding{{Check: "cpanel_multi_ip_login", Severity: alert.Critical, SourceIP: "203.0.113.50", Message: "Multi-IP cPanel brute-force from 203.0.113.50"}}
 	actions := AutoBlockIPs(cfg, findings)
 	if len(actions) == 0 {
 		t.Fatal("expected at least 1 auto-block action for cpanel_multi_ip_login")
@@ -583,7 +583,7 @@ func TestAutoBlockIPs_NilBlockerSkipsBlocking(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.BlockExpiry = "1h"
-	findings := []alert.Finding{{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 10.0.0.1"}}
+	findings := []alert.Finding{{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: "192.0.2.1", Message: "Brute force from 192.0.2.1"}}
 	actions := AutoBlockIPs(cfg, findings)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions with nil fwBlocker, got %d", len(actions))
@@ -605,9 +605,9 @@ func TestAutoBlockIPs_SubnetBlockingTriggered(t *testing.T) {
 	cfg.AutoResponse.NetBlockThreshold = 2
 	setAutoResponseLive(cfg)
 	findings := []alert.Finding{
-		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 198.51.100.10"},
-		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 198.51.100.20"},
-		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 198.51.100.30"},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: "198.51.100.10", Message: "Brute force from 198.51.100.10"},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: "198.51.100.20", Message: "Brute force from 198.51.100.20"},
+		{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: "198.51.100.30", Message: "Brute force from 198.51.100.30"},
 	}
 	actions := AutoBlockIPs(cfg, findings)
 	hasNetblock := false
@@ -635,7 +635,7 @@ func TestAutoBlockIPs_PermBlockEscalation(t *testing.T) {
 	cfg.AutoResponse.PermBlock = true
 	cfg.AutoResponse.PermBlockCount = 2
 	cfg.AutoResponse.PermBlockInterval = "24h"
-	findings1 := []alert.Finding{{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 198.51.100.99"}}
+	findings1 := []alert.Finding{{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: "198.51.100.99", Message: "Brute force from 198.51.100.99"}}
 	_ = AutoBlockIPs(cfg, findings1)
 
 	blocker.blocked = make(map[string]bool)

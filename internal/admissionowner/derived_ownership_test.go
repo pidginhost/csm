@@ -17,7 +17,8 @@ import (
 
 // An executing owner takes an incident block that carries its root, so the
 // legacy block is skipped; a rung that kept no root is refused as policy,
-// and legacy still applies it.
+// and that refusal is final, so neither path blocks it. A permanent rung
+// stays with legacy.
 func TestExecutingOwnerTakesOnlyRootedDerivedBlocks(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -54,13 +55,13 @@ func TestExecutingOwnerTakesOnlyRootedDerivedBlocks(t *testing.T) {
 	if _, err = checks.ApplyBlock(cfg, checks.ApplyBlockRequest{
 		IP: "198.51.100.70", EngineReason: "CSM incident: brute force", Reason: "incident brute force",
 		TTL: time.Hour, Source: checks.BlockSourceIncident, Entry: admission.EntryIncident,
-	}); err != nil || len(blocker.addresses) != 1 || blocker.addresses[0] != "198.51.100.70" {
-		t.Fatalf("rootless incident block: err %v, legacy blocks %v; want the legacy block", err, blocker.addresses)
+	}); !errors.Is(err, checks.ErrBlockTakenByAdmission) || len(blocker.addresses) != 0 {
+		t.Fatalf("rootless incident block: err %v, legacy blocks %v; want it blocked by neither path", err, blocker.addresses)
 	}
 	if _, err = checks.ApplyBlock(cfg, checks.ApplyBlockRequest{
 		IP: targetOf(root), EngineReason: "CSM incident: permanent", Reason: "incident permanent",
 		TTL: 0, Source: checks.BlockSourceIncident, Root: root, Entry: admission.EntryIncident,
-	}); err != nil || len(blocker.addresses) != 2 || blocker.addresses[1] != targetOf(root) {
+	}); err != nil || len(blocker.addresses) != 1 || blocker.addresses[0] != targetOf(root) {
 		t.Fatalf("permanent incident block: err %v, legacy blocks %v; want the legacy block", err, blocker.addresses)
 	}
 	if o.ingress.Len() != 1 {

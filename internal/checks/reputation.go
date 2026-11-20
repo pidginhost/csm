@@ -184,7 +184,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	var findings []alert.Finding
 
 	supplementalAgg := newSupplementalThreatAggregator(cfg)
-	ips, sightings := collectRecentSightings(cfg, now)
+	ips, sightings, rewritten := collectRecentSightings(cfg, now)
 	if len(ips) == 0 {
 		return reputationHealthFindings(ctx, cfg, sdb, scanState, now, quotaExhausted)
 	}
@@ -445,7 +445,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	for _, work := range cacheWork {
 		work.finish(saved)
 	}
-	stampReputationSightings(findings, sightings)
+	stampReputationSightings(findings, sightings, rewritten)
 	healthNow := time.Now()
 	quotaExhausted = quotaErrorObserved || !abuseQuotaReady(sdb, healthNow)
 	findings = append(findings, reputationHealthFindings(ctx, cfg, sdb, scanState, healthNow, quotaExhausted)...)
@@ -731,7 +731,7 @@ func abuseQuotaReady(sdb *store.DB, now time.Time) bool {
 // collectRecentIPs gathers non-infra IPs from multiple log sources.
 // Returns map of IP → source description (e.g. "SSH login", "Dovecot IMAP auth failure").
 func collectRecentIPs(cfg *config.Config) map[string]string {
-	ips, _ := collectRecentSightings(cfg, time.Now())
+	ips, _, _ := collectRecentSightings(cfg, time.Now())
 	return ips
 }
 
@@ -741,10 +741,11 @@ const reputationSightingWindow = 24 * time.Hour
 
 // collectRecentSightings keeps the legacy surface choice and, separately,
 // the strongest surface that can supply evidence. Rewritten HTTP logs can
-// report an address without displacing a direct sighting from another log.
+// report an address without displacing a direct sighting from another log;
+// rewritten names the addresses such a log reported.
 // The kept record is that surface's newest within the sighting window.
-func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]string, records map[string]scanRecord) {
-	ips, records = make(map[string]string), make(map[string]scanRecord)
+func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]string, records map[string]scanRecord, rewritten map[string]bool) {
+	ips, records, rewritten = make(map[string]string), make(map[string]scanRecord), make(map[string]bool)
 	surfaces := make(map[string]string)
 	add := func(ip, source string, r scanRecord) {
 		addIfNotInfra(ips, ip, source, cfg)
@@ -785,6 +786,7 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 			if ip := firstField(rec.text); ip != "" {
 				if CurrentHTTPRewrite().State != RewriteNone {
 					addIfNotInfra(ips, ip, "HTTP request", cfg)
+					rewritten[ip] = true
 					continue
 				}
 				add(ip, "HTTP request", accessLogSighting(rec, ip, cfg))
@@ -843,7 +845,7 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		}
 	}
 
-	return ips, records
+	return ips, records, rewritten
 }
 
 // accessLogSighting is the record of an access-log line its parser reads as
@@ -861,8 +863,9 @@ func accessLogSighting(rec syslogRecord, ip string, cfg *config.Config) scanReco
 // stampReputationSightings names each reputation finding's local sighting
 // as its observation: intel plus a recent local record of the address make
 // derived evidence. A finding without such a record names none and mints
-// nothing.
-func stampReputationSightings(findings []alert.Finding, records map[string]scanRecord) {
+// nothing. One a rewritten web log reported is read as that log's client,
+// so admission refuses it for the rewrite rather than for a missing record.
+func stampReputationSightings(findings []alert.Finding, records map[string]scanRecord, rewritten map[string]bool) {
 	for i := range findings {
 		if findings[i].Check != "ip_reputation" {
 			continue
@@ -870,6 +873,8 @@ func stampReputationSightings(findings []alert.Finding, records map[string]scanR
 		if r, ok := records[findings[i].SourceIP]; ok {
 			r.kind = admission.AttributionDerived
 			r.stamp(&findings[i], ProducerReputationScan)
+		} else if rewritten[findings[i].SourceIP] {
+			findings[i].Attribution = admission.AttributionHTTPPeer
 		}
 	}
 }

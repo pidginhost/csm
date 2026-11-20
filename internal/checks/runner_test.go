@@ -451,6 +451,7 @@ func TestRunParallelDryRunSkipsAutoResponse(t *testing.T) {
 			return []alert.Finding{{
 				Check:    "wp_login_bruteforce",
 				Severity: alert.Critical,
+				SourceIP: "203.0.113.77",
 				Message:  "WordPress brute force from 203.0.113.77",
 			}}
 		},
@@ -490,7 +491,7 @@ func TestRunParallelLiveInvokesAutoResponse(t *testing.T) {
 			return []alert.Finding{{
 				Check:    "wp_login_bruteforce",
 				Severity: alert.Critical,
-				Message:  "WordPress brute force from 203.0.113.78",
+				SourceIP: "203.0.113.78", Message: "WordPress brute force from 203.0.113.78",
 			}}
 		},
 	}}

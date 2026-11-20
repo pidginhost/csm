@@ -166,6 +166,8 @@ func TestAdmissionEvidenceRefusesEveryHTTPProducer(t *testing.T) {
 	}
 	chain := httpPeerFinding("198.51.100.7")
 	chain.Attribution = admission.AttributionTrustedHTTPChain
+	requireKnownProxyGateOutcome(t, chain, admission.CauseProxyPeer)
+	chain.SourceIP = "203.0.113.9"
 	requireKnownProxyGateOutcome(t, chain, admission.CauseUnreachable)
 }
 

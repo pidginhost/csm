@@ -19,7 +19,6 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/mailranges"
-	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -438,8 +437,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 	// An address admission accepted a block for has one enforcer: legacy
 	// drops its queued retry and every other finding for that address this
-	// scan. An address admission refused as an edge or a proxied client has
-	// no admission block, so its other findings keep theirs.
+	// scan. A refusal ends only a retry of that finding; independent evidence
+	// and legacy-only spray retries keep their blocks.
 	takenIPs := make(map[string]bool)
 	for _, f := range findings {
 		work.progress()
@@ -464,12 +463,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// legacy block, whose lifetime and budget admission does not model,
 		// so an executing admission is not handed it.
 		if !challengeSelected(cfg, f) {
-			if _, taken, accepted := respond(admission.KindBlockIP, f, ip, 0); taken {
-				if !accepted {
-					continue
+			if taken, accepted := respond(admission.KindBlockIP, f, ip, 0); taken {
+				if accepted {
+					takenIPs[ip] = true
 				}
-				takenIPs[ip] = true
-				if p, ok := ipsToBlock[ip]; ok {
+				if p, ok := ipsToBlock[ip]; ok && (accepted || !p.LoginSpray && p.FindingID == alert.FindingID(f)) {
 					work.candidateOutcome(p.queueCandidate, nil)
 					work.finishCandidate(p.queueCandidate)
 					delete(ipsToBlock, ip)
@@ -1079,7 +1077,8 @@ func isSubnetAlreadyBlocked(b IPBlocker, cidr string) bool {
 	return ok && sb.IsSubnetBlocked(cidr)
 }
 
-// ExtractIPFromFinding extracts an IP address from a finding.
+// ExtractIPFromFinding is the address a finding's parser read, the one the
+// automatic responses act on.
 func ExtractIPFromFinding(f alert.Finding) string {
 	return extractIPFromFinding(f)
 }
@@ -1096,32 +1095,10 @@ func ManualBlockIP(f alert.Finding) string {
 	return extractIPFromFinding(f)
 }
 
+// extractIPFromFinding is the address a finding's parser read. Message text
+// is never read for one: it can carry log-injected content.
 func extractIPFromFinding(f alert.Finding) string {
-	if strings.TrimSpace(f.SourceIP) != "" {
-		return normalizeBlockIP(f.SourceIP)
-	}
-
-	msg := f.Message
-
-	// Fallback for detectors that have not yet adopted the structured SourceIP
-	// field. Only findings whose Check is auto-block-eligible reach this path,
-	// and those detectors format their own messages with a CSM-parsed IP at the
-	// tail. Use LastIndex so the rightmost (CSM-appended) IP wins over any
-	// log-injected content earlier in the message.
-	for _, sep := range []string{" from ", ": "} {
-		if idx := strings.LastIndex(msg, sep); idx >= 0 {
-			rest := msg[idx+len(sep):]
-			fields := strings.Fields(rest)
-			if len(fields) > 0 {
-				if candidate, ok := netutil.ParseIPToken(fields[0]); ok {
-					if ip := normalizeBlockIP(candidate); ip != "" {
-						return ip
-					}
-				}
-			}
-		}
-	}
-	return ""
+	return normalizeBlockIP(f.SourceIP)
 }
 
 func normalizeBlockIP(raw string) string {

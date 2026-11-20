@@ -282,22 +282,24 @@ func TestParseMemoryLimitInvalid(t *testing.T) {
 // --- extractIPFromFinding / ExtractIPFromFinding (autoblock.go) -------
 
 func TestExtractIPFromFindingExportedCallsInternal(t *testing.T) {
-	f := alert.Finding{Message: "brute from 203.0.113.5"}
+	f := alert.Finding{SourceIP: "203.0.113.5", Message: "brute force"}
 	if got := ExtractIPFromFinding(f); got != "203.0.113.5" {
 		t.Errorf("got %q", got)
 	}
 }
 
 // The Web UI offers Block on a finding only when the check reports an
-// attacker address, the same evidence auto-block trusts. An address quoted
-// from a log line in any other check may be a victim or a customer.
+// attacker address, the same evidence auto-block trusts: the address its
+// parser read. An address quoted in any message may be a victim or a
+// customer, and a message is never read for one.
 func TestManualBlockIPFollowsTheAutoBlockEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		f    alert.Finding
 		want string
 	}{
-		{alert.Finding{Check: "wp_login_bruteforce", Message: "WordPress brute force from 203.0.113.5"}, "203.0.113.5"},
-		{alert.Finding{Check: "api_auth_failure", Message: "cPanel API auth failures from 198.51.100.7"}, "198.51.100.7"},
+		{alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.5", Message: "WordPress brute force from 203.0.113.5"}, "203.0.113.5"},
+		{alert.Finding{Check: "api_auth_failure", SourceIP: "198.51.100.7", Message: "cPanel API auth failures from 198.51.100.7"}, "198.51.100.7"},
+		{alert.Finding{Check: "wp_login_bruteforce", Message: "WordPress brute force from 203.0.113.4"}, ""},
 		{alert.Finding{Check: "email_php_relay_abuse", SourceIP: "192.0.2.9"}, ""},
 		{alert.Finding{Check: "webshell", Message: "shell uploaded from 203.0.113.6"}, ""},
 		{alert.Finding{Check: "cpanel_login", Message: "cPanel login from 203.0.113.8"}, ""},
@@ -309,38 +311,37 @@ func TestManualBlockIPFollowsTheAutoBlockEvidence(t *testing.T) {
 	}
 }
 
-func TestExtractIPFromFindingColonSeparator(t *testing.T) {
-	f := alert.Finding{Message: "threat: 198.51.100.1"}
-	if got := extractIPFromFinding(f); got != "198.51.100.1" {
-		t.Errorf("got %q", got)
+// The live path never reads an address out of message text, whatever
+// separator precedes it: message text can carry log-injected content.
+func TestExtractIPFromFindingIgnoresMessageText(t *testing.T) {
+	for _, msg := range []string{
+		"threat: 198.51.100.1",
+		"brute from 203.0.113.5",
+		"SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s",
+		"WordPress brute force from 2001:db8:1c17:abcd::",
+		"a message with no separator",
+	} {
+		if got := extractIPFromFinding(alert.Finding{Check: "wp_login_bruteforce", Message: msg}); got != "" {
+			t.Errorf("extractIPFromFinding(%q) = %q, want empty", msg, got)
+		}
 	}
 }
 
 func TestExtractIPFromFindingRejectsLoopback(t *testing.T) {
-	f := alert.Finding{Message: "request from 127.0.0.1"}
-	if got := extractIPFromFinding(f); got != "" {
+	if got := extractIPFromFinding(alert.Finding{SourceIP: "127.0.0.1"}); got != "" {
 		t.Errorf("loopback should be rejected, got %q", got)
 	}
 }
 
 func TestExtractIPFromFindingRejectsUnspecified(t *testing.T) {
-	f := alert.Finding{Message: "from 0.0.0.0"}
-	if got := extractIPFromFinding(f); got != "" {
+	if got := extractIPFromFinding(alert.Finding{SourceIP: "0.0.0.0"}); got != "" {
 		t.Errorf("unspecified should be rejected, got %q", got)
 	}
 }
 
 func TestExtractIPFromFindingInvalidIP(t *testing.T) {
-	f := alert.Finding{Message: "from not-an-ip"}
-	if got := extractIPFromFinding(f); got != "" {
+	if got := extractIPFromFinding(alert.Finding{SourceIP: "not-an-ip"}); got != "" {
 		t.Errorf("invalid IP should yield empty, got %q", got)
-	}
-}
-
-func TestExtractIPFromFindingNoSeparator(t *testing.T) {
-	f := alert.Finding{Message: "a message with no separator"}
-	if got := extractIPFromFinding(f); got != "" {
-		t.Errorf("got %q, want empty", got)
 	}
 }
 

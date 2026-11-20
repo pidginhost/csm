@@ -114,7 +114,6 @@ func TestChallengeRouteDirectPeerUsesResolvedAddress(t *testing.T) {
 		{"IPv4 port", "203.0.113.51", "203.0.113.51:443", ""},
 		{"expanded IPv6", "2001:db8::abcd", "2001:0DB8:0:0:0:0:0:ABCD", ""},
 		{"IPv6 port", "2001:db8::abcd", "[2001:db8::abcd]:443", ""},
-		{"message address", "203.0.113.51", "", "User enumeration from 203.0.113.51"},
 	} {
 		for _, directFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/directFirst=%v", tc.name, directFirst), func(t *testing.T) {
@@ -137,6 +136,25 @@ func TestChallengeRouteDirectPeerUsesResolvedAddress(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// An address only a message names is no direct peer: a proxied client's
+// challenge stays one that cannot escalate.
+func TestChallengeRouteMessageAddressIsNoDirectPeer(t *testing.T) {
+	const ip = "203.0.113.51"
+	mock := &mockIPList{ips: make(map[string]bool)}
+	old := challengeIPList
+	SetChallengeIPList(mock)
+	t.Cleanup(func() { SetChallengeIPList(old) })
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	actions := ChallengeRouteIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", SourceIP: ip, ProxiedClient: true},
+		{Check: "wp_user_enumeration", Message: "User enumeration from " + ip},
+	})
+	if len(actions) != 1 || len(mock.ips) != 1 || !mock.ips[ip] || !mock.nonEscalating[ip] {
+		t.Fatalf("actions=%d, listed=%v, non-escalating=%v; want one non-escalating challenge for %s", len(actions), mock.ips, mock.nonEscalating, ip)
 	}
 }
 

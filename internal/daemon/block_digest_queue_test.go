@@ -26,7 +26,7 @@ func TestDaemonReportsActualBlockDigestQueue(t *testing.T) {
 		t.Fatalf("actual constructed collector not registered: found=%v row=%+v", ok, row)
 	}
 	d.blockDigest = collector
-	d.observeBlocks([]alert.Finding{{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 192.0.2.61 blocked (expires in 24h)", Details: "Reason: fixture customer block", Timestamp: time.Now()}})
+	d.observeBlocks([]alert.Finding{{Check: "auto_block", Severity: alert.Critical, SourceIP: "192.0.2.61", Message: "AUTO-BLOCK: 192.0.2.61 blocked (expires in 24h)", Details: "Reason: fixture customer block", Timestamp: time.Now()}})
 	if row := d.QueueStatuses()["block_digest.records"]; row.Depth != 1 || row.DroppedTotal != 0 {
 		t.Fatalf("real auto-block observation missing: %+v", row)
 	}

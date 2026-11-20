@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // ResponseAdmission is the admission owner as the response funnels see it.
@@ -68,43 +69,67 @@ func timeHandoff(start time.Time) {
 }
 
 // respond asks admission for a response of kind to the address or prefix
-// f names, through via when it is set, and returns the minted evidence for
-// a derived response to answer later, whether legacy must leave the block
-// to admission, and whether admission accepted it to apply.
-func respond(kind admission.Kind, f alert.Finding, target string, via admission.Entry) (admission.Evidence, bool, bool) {
+// f names, through via when it is set, and returns whether legacy must
+// leave the block to admission and whether admission accepted it to apply.
+func respond(kind admission.Kind, f alert.Finding, target string, via admission.Entry) (bool, bool) {
 	a := getResponseAdmission()
 	if a == nil {
-		return admission.Evidence{}, false, false
+		return false, false
 	}
 	defer timeHandoff(time.Now())
 	executes := a.ExecutesBlocks()
 	// Spray lifetime and budget stay with legacy. Use the handoff's owner
 	// and execution snapshot so a concurrent publication cannot take it.
 	if kind == admission.KindBlockIP && f.BlockTTL > 0 && executes {
-		return admission.Evidence{}, false, false
+		return false, false
 	}
 	e, err := a.Mint(f)
 	if err != nil {
 		a.Refuse(kind, f, via, err)
-		return admission.Evidence{}, taken(executes, kind, err, nil), false
+		return taken(executes, kind, err, nil), false
 	}
-	t := taken(executes, kind, nil, a.Respond(kind, target, e, via))
-	return e, t, t
+	err = a.Respond(kind, target, e, via)
+	accepted := err == nil && executes && kind == admission.KindBlockIP
+	return taken(executes, kind, nil, err), accepted
 }
 
-// taken reports whether legacy must leave a response of kind to admission:
-// admission applies block picks and accepted this one, or refused it as a
-// client behind a trusted proxy or a CDN edge, which no block contains.
-// Any other refusal leaves the legacy block in place.
+// taken reports whether legacy must leave a response of kind to admission.
+// While admission applies block picks its answer is final: a block it
+// accepted is its own to apply, and one it refused is applied by neither
+// path. Two answers leave the block to legacy: an address Apache or nginx
+// may have rewritten from a proxy header, which this build cannot verify
+// yet, and an error that is not an admission answer or a closed ingress,
+// where admission could not answer at all. A rewritten address anyone can
+// choose is refused for good: see forgeableRewrite.
 func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 	if !executes || kind != admission.KindBlockIP {
 		return false
 	}
-	if mintErr != nil {
-		c := admission.CauseOf(mintErr)
-		return c == admission.CauseUnreachable || c == admission.CauseProxyPeer
+	err := mintErr
+	if err == nil {
+		err = respondErr
 	}
-	return respondErr == nil
+	if err == nil {
+		return true
+	}
+	if admission.CauseOf(err) == admission.CauseRewrittenLog {
+		return forgeableRewrite(err)
+	}
+	reason, answered := admission.ReasonOf(err)
+	return answered && reason != admission.ReasonEngineUnavailable
+}
+
+// forgeableRewrite reports whether err refuses a rewritten address someone
+// other than the sender can choose: LiteSpeed applies forwarding headers to
+// requests from the host itself, so any local user chooses it, and a log
+// format that writes request data where CSM reads the client lets any
+// client choose it.
+func forgeableRewrite(err error) bool {
+	if admission.CauseOf(err) != admission.CauseRewrittenLog {
+		return false
+	}
+	r := CurrentHTTPRewrite()
+	return r.Server == platform.WSLiteSpeed || r.Format
 }
 
 // respondSpray asks admission to block a spray's prefix through the mail
@@ -134,11 +159,12 @@ func respondSpray(f alert.Finding, cidr string) {
 // respondDerived hands admission the block a derived path applies, with the
 // root it carries, through its entry, and reports whether legacy must leave
 // it to admission. A permanent block is never asked for implicitly: it is
-// handed over without a root, as a path that kept none is, and admission
-// refuses it. A block asked to last longer than lease, which admission would
-// cut to lease, keeps its legacy block while admission executes; a
-// previewing admission still sees it. A root refusal is answered first, so
-// an edge or a proxied client is still blocked by neither path.
+// handed over without a root, as a path that kept none is, and it stays
+// with legacy until admission can apply one. A block asked to last longer
+// than lease, which admission would cut to lease, keeps its legacy block
+// while admission executes; a previewing admission still sees it. It still
+// never blocks a CDN edge, an unreachable client or an address someone else
+// can choose, whatever the lifetime, permanent incident escalation included.
 func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	a := getResponseAdmission()
 	if a == nil {
@@ -146,10 +172,23 @@ func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	}
 	defer timeHandoff(time.Now())
 	executes := a.ExecutesBlocks()
-	if req.TTL == 0 {
-		return answerRoot(a, executes, admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
+	// Incident retries can escalate to a permanent lifetime. That must not
+	// discard a refusal of an address someone else can choose.
+	if executes && forgeableRewrite(req.RootErr) {
+		a.Refuse(admission.KindBlockIP, req.RootFinding, req.Entry, req.RootErr)
+		return true
 	}
-	if executes && lease > 0 && req.TTL > lease && req.RootErr == nil {
+	if req.TTL == 0 {
+		answerRoot(a, executes, admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
+		return false
+	}
+	if executes && lease > 0 && req.TTL > lease {
+		// These legacy-only lifetimes retain their safety refusals, without
+		// submitting a block that admission would shorten.
+		if c := admission.CauseOf(req.RootErr); c == admission.CauseProxyPeer || c == admission.CauseUnreachable {
+			a.Refuse(admission.KindBlockIP, req.RootFinding, req.Entry, req.RootErr)
+			return true
+		}
 		return false
 	}
 	return answerPreparedRoot(a, executes, admission.KindBlockIP, req.IP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)

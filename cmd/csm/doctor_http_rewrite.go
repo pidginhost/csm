@@ -34,7 +34,11 @@ func webRewriteDoctorCheck(r checks.HTTPRewrite) DoctorCheck {
 			check.Message = string(r.Server) + " configuration sets no client address rewriting"
 		}
 	case checks.RewriteActive:
-		check.Message = fmt.Sprintf("%s logs a replaced client address (%s in %s): web findings get no automatic response from admission; existing blocking is unchanged", r.Server, r.Directive, r.File)
+		blocking := "existing blocking is unchanged"
+		if r.Server == platform.WSLiteSpeed || r.Format {
+			blocking = "while admission executes blocks, refused IP blocks stay refused; challenges still apply"
+		}
+		check.Message = fmt.Sprintf("%s logs a replaced client address (%s in %s): web findings get no automatic response from admission; %s", r.Server, r.Directive, r.File, blocking)
 	default:
 		check.Status = "warn"
 		check.Message = "CSM cannot tell whether the web server rewrites client addresses: " + r.Reason + "; web findings get no automatic response from admission"

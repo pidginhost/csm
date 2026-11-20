@@ -517,6 +517,11 @@ Admission applies `auto_response.max_blocks_per_hour` to scan, challenge,
 central, and incident IP blocks. On the legacy path that budget applies to
 scan-driven blocks only.
 
+Challenge notices keep the address sent to the challenge, so daily summaries
+count it among their source addresses. Blocks, challenges and the Web UI Block
+button use the structured address supplied by the check, never an address
+quoted in its message.
+
 Mail login spray blocks use a separate hourly budget of the same size. They
 reserve credit before the firewall attempt. An uncertain result keeps that
 credit; a confirmed non-block releases it. Retries wait when the spray budget
@@ -546,8 +551,26 @@ blocking paths select is also handed to the ledger. With
 `auto_response.dry_run` false, the firewall on and outside observe mode,
 the ledger applies automatic IP blocks itself within this ceiling and the
 free slots of the temporary block set, and the existing paths leave those
-blocks to it. In dry run it forecasts them. With the firewall disabled or
-in observe mode it previews them; neither applies them. While a configured
+blocks to it. A block the ledger refuses is final too: the existing paths do
+not apply it either, including a queued retry of the same finding.
+Independent evidence for the address keeps its own response. Two refusals
+still leave the block to them: a client address Apache or nginx may have
+rewritten from a proxy header, which CSM cannot verify yet, and a ledger that
+could not take new work at all. LiteSpeed also applies those headers to
+requests from the host itself, so any local user can choose the address it
+logs: on LiteSpeed that refusal is final as well, and so is one whose
+log format writes request data where CSM reads the client, even when the same
+configuration also enables proxy-header rewriting. `csm doctor` distinguishes
+these final refusals from the Apache and nginx header-only exception.
+A challenge whose evidence the ledger refused keeps that refusal, so its
+timeout follows the same rule.
+Permanent blocks, mail spray blocks and derived blocks longer than
+`auto_response.block_expiry` stay on the existing paths, even when their
+evidence was refused, except that those final rewrite refusals hold for
+every block lifetime, including permanent incident escalation. Longer
+derived blocks still never block a known CDN edge or a client behind a trusted
+proxy. In dry run the ledger forecasts them. With the firewall
+disabled or in observe mode it previews them; neither applies them. While a configured
 firewall engine is starting or unavailable, queued live blocks wait and
 new responses remain on the legacy path. Work the set has
 no room for waits as `set_full` until a slot frees: the slots operator,

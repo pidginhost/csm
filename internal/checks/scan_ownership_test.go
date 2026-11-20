@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -9,10 +10,10 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// While admission applies block picks, a scan block it takes leaves no
-// legacy work: no engine call, no queued retry, no tracker row and no
-// hourly charge. A refusal legacy does not share keeps the legacy block;
-// a CDN edge or a proxied client is blocked by neither; a previewing
+// While admission applies block picks, a scan block it takes or refuses
+// leaves no legacy work: no engine call, no queued retry, no tracker row and
+// no hourly charge. An address the web server may have rewritten and an
+// admission that could not answer keep the legacy block; a previewing
 // admission changes nothing.
 func TestScanLeavesTakenBlocksToAdmission(t *testing.T) {
 	const ip = "203.0.113.95"
@@ -24,7 +25,10 @@ func TestScanLeavesTakenBlocksToAdmission(t *testing.T) {
 	}{
 		{"taken", true, nil, false},
 		{"rewritten log", true, attributionRefusal(admission.CauseRewrittenLog), true},
-		{"no observation", true, attributionRefusal(admission.CauseNoObservation), true},
+		{"no observation", true, attributionRefusal(admission.CauseNoObservation), false},
+		{"kind not allowed", true, attributionRefusal(admission.CauseKindNotAllowed), false},
+		{"unregistered producer", true, &admission.Error{Reason: admission.ReasonPolicy}, false},
+		{"admission not running", true, errors.New("admission is not running"), true},
 		{"proxy edge", true, attributionRefusal(admission.CauseProxyPeer), false},
 		{"proxied client", true, attributionRefusal(admission.CauseUnreachable), false},
 		{"previewing", false, nil, true},
@@ -136,11 +140,20 @@ func TestScanSprayUsesOneAdmissionSnapshot(t *testing.T) {
 	}
 }
 
-// Exhausting legacy's budget must not queue a taken finding for a later
-// duplicate block. A refused finding must still enter that queue.
+// Exhausting legacy's budget must not queue a taken or refused finding for
+// a later duplicate block. One a closed ingress could not answer must still
+// enter that queue.
 func TestScanOwnershipWithExhaustedLegacyBudget(t *testing.T) {
-	for _, accepted := range []bool{true, false} {
-		t.Run(map[bool]string{true: "taken", false: "refused"}[accepted], func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		respondErr error
+		queued     bool
+	}{
+		{"taken", nil, false},
+		{"refused", &admission.Error{Reason: admission.ReasonQueueOverflow}, false},
+		{"unanswered", &admission.Error{Reason: admission.ReasonEngineUnavailable}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			cfg := pendingTestConfig(t)
 			setAutoBlockNow(t, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 			cfg.AutoResponse.MaxBlocksPerHour = 1
@@ -149,9 +162,7 @@ func TestScanOwnershipWithExhaustedLegacyBudget(t *testing.T) {
 			saveBlockState(cfg.StatePath, &blockState{BlocksThisHour: 1, HourKey: autoBlockNow().Format("2006-01-02T15")})
 			a := withAdmission(t)
 			a.executes = true
-			if !accepted {
-				a.respondErr = &admission.Error{Reason: admission.ReasonQueueOverflow}
-			}
+			a.respondErr = tc.respondErr
 			const ip = "203.0.113.95"
 			AutoBlockIPs(cfg, []alert.Finding{{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: ip, Message: "WordPress brute force from " + ip, Timestamp: autoBlockNow()}})
 			if len(a.responses()) != 1 {
@@ -161,12 +172,12 @@ func TestScanOwnershipWithExhaustedLegacyBudget(t *testing.T) {
 			if len(blocker.calls) != 0 || len(state.IPs) != 0 || state.BlocksThisHour != 1 {
 				t.Fatalf("exhausted budget changed: engine %+v, tracker %+v, hour %d", blocker.calls, state.IPs, state.BlocksThisHour)
 			}
-			if accepted {
+			if !tc.queued {
 				if len(state.Pending) != 0 {
-					t.Fatalf("taken block queued by legacy: %+v", state.Pending)
+					t.Fatalf("block admission answered queued by legacy: %+v", state.Pending)
 				}
 			} else if len(state.Pending) != 1 || state.Pending[0].IP != ip {
-				t.Fatalf("refused block missing from legacy queue: %+v", state.Pending)
+				t.Fatalf("unanswered block missing from legacy queue: %+v", state.Pending)
 			}
 		})
 	}

@@ -43,11 +43,11 @@ func TestObserveBlocksFeedsCollector(t *testing.T) {
 	})
 	actions := []alert.Finding{
 		{Check: "auto_block", Severity: alert.Critical,
-			Message:   "AUTO-BLOCK: 203.0.113.20 blocked (expires in 24h)",
+			SourceIP: "203.0.113.20", Message: "AUTO-BLOCK: 203.0.113.20 blocked (expires in 24h)",
 			Details:   "Reason: rule escalation: 5+ denies",
 			Timestamp: time.Unix(0, 0)},
 		{Check: "auto_block", Severity: alert.Critical, // PERMBLOCK: no Details -> skipped
-			Message:   "AUTO-PERMBLOCK: 203.0.113.20 promoted to permanent block (4 temp blocks)",
+			SourceIP: "203.0.113.20", Message: "AUTO-PERMBLOCK: 203.0.113.20 promoted to permanent block (4 temp blocks)",
 			Timestamp: time.Unix(0, 0)},
 		{Check: "wp_login_bruteforce", Severity: alert.Critical, // not auto_block -> skipped
 			Message: "noise", Timestamp: time.Unix(0, 0)},
@@ -73,9 +73,9 @@ func TestObserveBlocksCategorizesWAFAttackerBlock(t *testing.T) {
 		CountryOf: func(string) string { return "RO" },
 	})
 	d.observeBlocks([]alert.Finding{{
-		Check:     "auto_block",
-		Severity:  alert.Critical,
-		Message:   "AUTO-BLOCK: 203.0.113.55 blocked (expires in 24h)",
+		Check:    "auto_block",
+		Severity: alert.Critical,
+		SourceIP: "203.0.113.55", Message: "AUTO-BLOCK: 203.0.113.55 blocked (expires in 24h)",
 		Details:   "Reason: WAF blocking high-volume attacker: 203.0.113.55 (42 blocked requests)",
 		Timestamp: time.Unix(0, 0),
 	}})
@@ -100,9 +100,9 @@ func TestObserveBlocksIgnoresCloudflareWarningWhenClassifying(t *testing.T) {
 		CountryOf: func(string) string { return "RO" },
 	})
 	d.observeBlocks([]alert.Finding{{
-		Check:     "auto_block",
-		Severity:  alert.Critical,
-		Message:   "AUTO-BLOCK: 203.0.113.56 blocked (expires in 24h)",
+		Check:    "auto_block",
+		Severity: alert.Critical,
+		SourceIP: "203.0.113.56", Message: "AUTO-BLOCK: 203.0.113.56 blocked (expires in 24h)",
 		Details:   "Reason: rule escalation: repeated denies (warning: IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted)",
 		Timestamp: time.Unix(0, 0),
 	}})
@@ -138,7 +138,7 @@ func TestObserveBlocksCloudflareWarningDoesNotReplaceMissingReason(t *testing.T)
 
 func TestObserveBlocksNilCollectorIsNoop(t *testing.T) {
 	block := []alert.Finding{{Check: "auto_block", Severity: alert.Critical,
-		Details: "Reason: x", Message: "AUTO-BLOCK: 203.0.113.58 blocked", Timestamp: time.Unix(0, 0)}}
+		Details: "Reason: x", SourceIP: "203.0.113.58", Message: "AUTO-BLOCK: 203.0.113.58 blocked", Timestamp: time.Unix(0, 0)}}
 
 	d := &Daemon{} // blockDigest nil (feature disabled)
 	d.observeBlocks(block)
@@ -409,12 +409,12 @@ func TestNoteSummaryMapsFindings(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Alerts.Email.DisabledChecks = []string{" challenge_route ", "ftp_login"}
 	d.noteSummary(cfg, []alert.Finding{
-		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: 203.0.113.20 blocked (expires in 24h)",
+		{Check: "auto_block", Severity: alert.Critical, SourceIP: "203.0.113.20", Message: "AUTO-BLOCK: 203.0.113.20 blocked (expires in 24h)",
 			Details: "Reason: ModSecurity escalation: 5+ denies (warning: " + firewall.CloudflareCoverageWarning + ")"},
 		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-PERMBLOCK: 203.0.113.20 promoted to permanent block (4 temp blocks)", SourceIP: "203.0.113.20"},
 		{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-NETBLOCK: 198.51.100.0/24 blocked (5 IPs from same subnet)"},
 		{Check: "auto_block", Severity: alert.Warning, Message: "AUTO-BLOCK-SUBNET [dry-run]: 198.51.100.0/24 would be blocked", Details: "Reason: mail auth brute force"},
-		{Check: "challenge_route", Severity: alert.Warning, Message: "CHALLENGE: 198.51.100.7 sent to PoW challenge (expires in 30m0s)"},
+		{Check: "challenge_route", Severity: alert.Warning, SourceIP: "198.51.100.7", Message: "CHALLENGE: 198.51.100.7 sent to PoW challenge (expires in 30m0s)"},
 		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "WordPress login brute force from 203.0.113.20", SourceIP: "203.0.113.20"},
 		{Check: "ftp_login_realtime", Severity: alert.High, Message: "FTP login", SourceIP: "192.0.2.30"},
 	})

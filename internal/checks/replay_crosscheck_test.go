@@ -219,7 +219,7 @@ func newReplayHarness(t *testing.T, capacity int, start time.Time, initial block
 			return BlockableFinding(cfg, fromReplay(f))
 		},
 		ChallengeFirst: func(f responsereplay.Finding) bool { return ChallengeRoutesFinding(cfg, fromReplay(f)) },
-		SourceIP:       func(f responsereplay.Finding) string { return ExtractIPFromFinding(fromReplay(f)) },
+		SourceIP:       func(f responsereplay.Finding) string { return RecordedSourceIP(fromReplay(f)) },
 		ExemptBlock:    exempt,
 	}
 	state := responsereplay.LegacyState{HourKey: initial.HourKey, BlocksThisHour: initial.BlocksThisHour}
@@ -318,7 +318,7 @@ func modelPendingIPs(ps []responsereplay.PendingEntry) []string {
 }
 
 func smtpFrom(ip string) alert.Finding {
-	return alert.Finding{Check: "smtp_bruteforce", Severity: alert.Critical, Message: "SMTP brute force from " + ip}
+	return alert.Finding{Check: "smtp_bruteforce", Severity: alert.Critical, SourceIP: ip, Message: "SMTP brute force from " + ip}
 }
 
 func docIPs(n int) []string {
@@ -341,9 +341,9 @@ func TestLegacyModelMatchesRealPathUnderCap(t *testing.T) {
 	h := newReplayHarness(t, 10, replayT0, blockState{}, nil)
 	findings := []alert.Finding{
 		smtpFrom("203.0.113.1"), smtpFrom("203.0.113.2"), smtpFrom("203.0.113.3"),
-		{Check: "wp_login_bruteforce", Severity: alert.High, Message: "WordPress login brute force from 203.0.113.4"},
-		{Check: "wp_login_bruteforce", Severity: alert.High, Message: "WordPress login brute force from 203.0.113.5"},
-		{Check: "unregistered_check", Severity: alert.Critical, Message: "noise from 203.0.113.6"},
+		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.4", Message: "WordPress login brute force from 203.0.113.4"},
+		{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.5", Message: "WordPress login brute force from 203.0.113.5"},
+		{Check: "unregistered_check", Severity: alert.Critical, SourceIP: "203.0.113.6", Message: "noise from 203.0.113.6"},
 	}
 	hardCount, challengeCount := 0, 0
 	for _, f := range findings {
@@ -482,7 +482,7 @@ func TestLegacyModelMatchesRealPathRequeueRefresh(t *testing.T) {
 	queued := pendingIP{IP: "203.0.113.30", Check: "smtp_bruteforce", Severity: alert.Critical, Reason: "SMTP brute force from 203.0.113.30", QueuedAt: replayT0}
 	at := replayT0.Add(30 * time.Minute)
 	h := newReplayHarness(t, 10, at, blockState{HourKey: at.Format("2006-01-02T15"), BlocksThisHour: 10, Pending: []pendingIP{queued}}, nil)
-	fresh := alert.Finding{Check: "ftp_bruteforce", Severity: alert.Critical, Message: "FTP brute force from 203.0.113.30"}
+	fresh := alert.Finding{Check: "ftp_bruteforce", Severity: alert.Critical, SourceIP: "203.0.113.30", Message: "FTP brute force from 203.0.113.30"}
 	if !BlockableFinding(h.cfg, fresh) || ChallengeRoutesFinding(h.cfg, fresh) {
 		t.Fatal("refresh fixture is not a hard-block finding")
 	}
@@ -528,7 +528,7 @@ func TestLegacyModelMatchesRealPathExpiryAndReblock(t *testing.T) {
 func TestLegacyModelMatchesRealPathPendingIsNotRerouted(t *testing.T) {
 	queued := pendingIP{IP: "203.0.113.50", Check: "wp_login_bruteforce", Severity: alert.High, Reason: "WordPress login brute force from 203.0.113.50", QueuedAt: replayT0}
 	h := newReplayHarness(t, 10, replayT0, blockState{Pending: []pendingIP{queued}}, nil)
-	fresh := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.High, Message: "WordPress login brute force from 203.0.113.51"}
+	fresh := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.High, SourceIP: "203.0.113.51", Message: "WordPress login brute force from 203.0.113.51"}
 	s := h.run(replayT0.Add(time.Minute), fresh)
 	if !reflect.DeepEqual(s.live, []string{"203.0.113.50"}) || !reflect.DeepEqual(s.model.BlockedIPs, []string{"203.0.113.50"}) {
 		t.Fatalf("queued entry: real %v, model %v", s.live, s.model.BlockedIPs)
@@ -541,7 +541,7 @@ func TestLegacyModelMatchesRealPathPendingIsNotRerouted(t *testing.T) {
 // Blocks from outside the scan path share the firewall but not the budget.
 func TestLegacyModelMatchesRealPathExemptBlocks(t *testing.T) {
 	const ip = "203.0.113.60"
-	observed := alert.Finding{Check: "auto_block", Severity: alert.Critical, Message: "AUTO-BLOCK: " + ip + " blocked (expires in 30m0s)", Details: "Reason: challenge timeout: no solve"}
+	observed := alert.Finding{Check: "auto_block", Severity: alert.Critical, SourceIP: ip, Message: "AUTO-BLOCK: " + ip + " blocked (expires in 30m0s)", Details: "Reason: challenge timeout: no solve"}
 	exempt := func(f responsereplay.Finding) (responsereplay.ObservedBlock, bool) {
 		if f.Check != "auto_block" || !strings.HasPrefix(f.Details, "Reason: challenge timeout: ") {
 			return responsereplay.ObservedBlock{}, false

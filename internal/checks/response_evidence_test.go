@@ -83,6 +83,7 @@ var notAddressEvidence = map[string]string{
 	"backdoor_port":                 "peer of a local backdoor listener; contained by the process response, no address policy",
 	"backdoor_port_outbound":        "destination address of an outbound connection",
 	"bad_asn_outbound":              "destination address of an outbound connection",
+	"challenge_route":               "record of a response already taken",
 	"cpanel_file_upload_realtime":   "authenticated customer activity",
 	"cpanel_login":                  "authenticated customer login",
 	"cpanel_login_realtime":         "authenticated customer login",
@@ -380,8 +381,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding.
-	if len(producers) != 76 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 76 producers", len(producers))
+	if len(producers) != 77 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 77 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

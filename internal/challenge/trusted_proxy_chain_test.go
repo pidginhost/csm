@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -83,7 +82,7 @@ func TestDoctorGateRequestIsReadOnly(t *testing.T) {
 						t.Fatal("probe issued a cookie")
 					}
 				}
-				if list.Contains(visitor) != pending || !reflect.DeepEqual(beforeEntry, list.ips[visitor]) {
+				if list.Contains(visitor) != pending || !sameChallengeEntry(beforeEntry, list.ips[visitor]) {
 					t.Fatal("probe changed pending challenge state")
 				}
 				afterMap, err := os.ReadFile(list.path)
@@ -327,4 +326,11 @@ func TestGateRejectsProxyFallbackWithoutChallengeList(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("unidentified visitor without a challenge list: status = %d, want 400", rec.Code)
 	}
+}
+
+// sameChallengeEntry compares every field of two entries; the refusal is
+// compared by identity, as the list stores what it was given.
+func sameChallengeEntry(a, b challengeEntry) bool {
+	return a.FindingID == b.FindingID && a.Check == b.Check && a.ExpiresAt.Equal(b.ExpiresAt) &&
+		a.Reason == b.Reason && a.NonEscalating == b.NonEscalating && a.Root.Equal(b.Root) && a.RootErr == b.RootErr
 }

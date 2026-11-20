@@ -712,3 +712,41 @@ func TestDetectHTTPRewriteUsesPlatformSources(t *testing.T) {
 		})
 	}
 }
+
+// A rewrite found in a log format writes request data where CSM reads the
+// client, so any client chooses the logged address; a rewrite from a
+// server's own proxy-header handling is not a format.
+func TestDetectHTTPRewriteMarksFormatRewrites(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		src    func() rewriteSources
+		format bool
+	}{
+		{"apache header", func() rewriteSources {
+			return rewriteSources{server: platform.WSApache, apacheConfig: writeRewriteFile(t, dir, "a1.conf", "RemoteIPHeader CF-Connecting-IP\n")}
+		}, false},
+		{"apache format", func() rewriteSources {
+			return rewriteSources{server: platform.WSApache, apacheConfig: writeRewriteFile(t, dir, "a2.conf", "CustomLog logs/access_log \"%{X-Real-IP}i %t\"\n")}
+		}, true},
+		{"nginx header", func() rewriteSources {
+			return rewriteSources{server: platform.WSNginx, nginxConfig: writeRewriteFile(t, dir, "n1.conf", "http {\n  set_real_ip_from 192.0.2.0/24;\n}\n")}
+		}, false},
+		{"nginx format", func() rewriteSources {
+			return rewriteSources{server: platform.WSNginx, nginxConfig: writeRewriteFile(t, dir, "n2.conf", "http {\n  log_format peer '$http_x_real_ip $time_local';\n  access_log /var/log/nginx/site.log peer;\n}\n")}
+		}, true},
+		{"litespeed header", func() rewriteSources {
+			return rewriteSources{server: platform.WSLiteSpeed, lswsConfig: writeRewriteFile(t, dir, "l1.xml", "<httpServerConfig><useIpInProxyHeader>2</useIpInProxyHeader></httpServerConfig>")}
+		}, false},
+		{"litespeed format", func() rewriteSources {
+			return rewriteSources{server: platform.WSLiteSpeed, lswsConfig: writeRewriteFile(t, dir, "l2.xml", "<httpServerConfig><logFormat>%{X-Real-IP}i %t</logFormat></httpServerConfig>")}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectHTTPRewrite(tc.src())
+			if got.State != RewriteActive || got.Format != tc.format {
+				t.Fatalf("rewrite = %+v, want active with format %v", got, tc.format)
+			}
+		})
+	}
+}

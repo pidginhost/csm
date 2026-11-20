@@ -223,8 +223,9 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		}
 
 		// Admission judges existing effects itself; the list's state is
-		// the legacy path's.
-		root, _, _ := respond(admission.KindChallenge, f, ip, 0)
+		// the legacy path's. A refusal is kept for the timeout to answer.
+		root, rootErr := PrepareAdmissionRoot(f)
+		AnswerPreparedRoot(admission.KindChallenge, ip, root, 0, f, rootErr, 0)
 
 		if routed[ip] || challengeIPList.Contains(ip) {
 			continue
@@ -234,7 +235,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		// the challenge map matches the connecting address, so its challenge
 		// can only time out: that timeout is no reason to block it.
 		nonEscalating := f.Check == "http_claimed_bot_unverified" || f.ProxiedClient && !escalates[ip]
-		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root, nonEscalating)
+		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root, rootErr, nonEscalating)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -245,6 +246,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "challenge_route",
+			SourceIP:  ip,
 			Message:   fmt.Sprintf("CHALLENGE: %s sent to PoW challenge (expires in %s)", ip, ChallengeDuration),
 			Details:   fmt.Sprintf("Reason: %s", f.Message),
 			Timestamp: time.Now(),
@@ -254,15 +256,15 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	return actions
 }
 
-func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence, nonEscalating bool) {
+func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence, rootErr error, nonEscalating bool) {
 	if nonEscalating {
 		challengeIPList.AddNonEscalating(ip, reason, duration)
 		return
 	}
 	if list, ok := challengeIPList.(interface {
-		AddWithRoot(string, string, time.Duration, string, string, admission.Evidence)
+		AddWithRoot(string, string, time.Duration, string, string, admission.Evidence, error)
 	}); ok {
-		list.AddWithRoot(ip, reason, duration, findingID, check, root)
+		list.AddWithRoot(ip, reason, duration, findingID, check, root, rootErr)
 		return
 	}
 	if list, ok := challengeIPList.(interface {

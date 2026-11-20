@@ -144,8 +144,8 @@ func TestAdmissionEvidenceTargetsOnlyTheAttributedAddress(t *testing.T) {
 	if admission.CauseOf(err) != admission.CauseKindNotAllowed {
 		t.Fatalf("an unvouched message address: %v", err)
 	}
-	if ExtractIPFromFinding(injected) != "198.51.100.66" {
-		t.Fatal("the legacy path no longer reads the message; this test lost its premise")
+	if ExtractIPFromFinding(injected) != "" {
+		t.Fatal("the legacy path read an address out of the message")
 	}
 	for name, raw := range map[string]string{
 		"empty": "", "port": "192.0.2.7:22", "prefix": "192.0.2.0/24", "malformed": "peer.example",

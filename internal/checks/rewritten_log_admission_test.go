@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -107,9 +108,10 @@ func TestHTTPRewriteStartsUnknown(t *testing.T) {
 }
 
 // A web log whose server replaced the client address mints nothing for any
-// HTTP producer, before the trusted-chain and known-edge checks, whether
-// rewriting is detected or cannot be ruled out. Session and cpsrvd peers
-// are read by their own servers and keep their evidence.
+// HTTP producer, before the trusted-chain check, whether rewriting is
+// detected or cannot be ruled out. A known edge is refused as an edge
+// first, so no path blocks it. Session and cpsrvd peers are read by their
+// own servers and keep their evidence.
 func TestAdmissionEvidenceRefusesRewrittenLogs(t *testing.T) {
 	withKnownProxyPrefixes(t, "198.51.100.0/24")
 	SetASNLookup(nil)
@@ -128,7 +130,7 @@ func TestAdmissionEvidenceRefusesRewrittenLogs(t *testing.T) {
 			f.Check, f.Observation.Producer = tc.check, string(tc.producer)
 			requireKnownProxyGateOutcome(t, f, admission.CauseRewrittenLog)
 			f.SourceIP = "198.51.100.7"
-			requireKnownProxyGateOutcome(t, f, admission.CauseRewrittenLog)
+			requireKnownProxyGateOutcome(t, f, admission.CauseProxyPeer)
 		}
 		chain := httpPeerFinding("203.0.113.9")
 		chain.Attribution = admission.AttributionTrustedHTTPChain
@@ -182,8 +184,9 @@ func TestDomlogScanFindingFromARewrittenLogIsRefused(t *testing.T) {
 }
 
 // An access-log line from a rewriting web server, or one whose rewriting is
-// unknown, is not a sighting of the address it names; a cPanel access line
-// still is in every state. The legacy finding stays either way.
+// unknown, is not a sighting of the address it names: the finding is
+// refused for the rewrite, not for a missing record. A cPanel access line
+// is a sighting in every state. The legacy finding stays either way.
 func TestReputationIgnoresRewrittenAccessLogSightings(t *testing.T) {
 	at := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
 	lines := sightingLines("203.0.113.60", at)
@@ -193,8 +196,8 @@ func TestReputationIgnoresRewrittenAccessLogSightings(t *testing.T) {
 		http admission.Cause
 	}{
 		{"direct", HTTPRewrite{State: RewriteNone}, 0},
-		{"rewritten", activeRewrite, admission.CauseNoObservation},
-		{"unknown", HTTPRewrite{State: RewriteUnknown, Reason: "unreadable"}, admission.CauseNoObservation},
+		{"rewritten", activeRewrite, admission.CauseRewrittenLog},
+		{"unknown", HTTPRewrite{State: RewriteUnknown, Reason: "unreadable"}, admission.CauseRewrittenLog},
 		{"direct again", HTTPRewrite{State: RewriteNone}, 0},
 	} {
 		for kind, want := range map[string]admission.Cause{"HTTP request": step.http, "cPanel access": 0} {
@@ -240,5 +243,68 @@ func TestReputationRewrittenLogKeepsIndependentSighting(t *testing.T) {
 				t.Fatalf("legacy finding changed: %+v", f)
 			}
 		})
+	}
+}
+
+// An HTTP finding a rewriting web server's log named is refused for the
+// rewrite even when no observation was kept for it, so the response can
+// tell the rewrite from a missing record. On a direct host the missing
+// record is the refusal. A known CDN edge is refused as an edge first, in
+// every state: no path blocks it.
+func TestAdmissionEvidenceRefusesRewrittenBeforeMissingRecord(t *testing.T) {
+	withKnownProxyPrefixes(t, "198.51.100.0/24")
+	SetASNLookup(nil)
+	unstamped := alert.Finding{Check: "waf_attack_blocked", SourceIP: "203.0.113.64", Attribution: admission.AttributionHTTPPeer}
+	edge := unstamped
+	edge.SourceIP = "198.51.100.7"
+	chainEdge := edge
+	chainEdge.Attribution = admission.AttributionTrustedHTTPChain
+	for _, tc := range []struct {
+		name string
+		rw   HTTPRewrite
+		f    alert.Finding
+		want admission.Cause
+	}{
+		{"rewritten", activeRewrite, unstamped, admission.CauseRewrittenLog},
+		{"unknown", HTTPRewrite{State: RewriteUnknown, Reason: "unreadable"}, unstamped, admission.CauseRewrittenLog},
+		{"direct", HTTPRewrite{State: RewriteNone}, unstamped, admission.CauseNoObservation},
+		{"edge on a rewriting host", activeRewrite, edge, admission.CauseProxyPeer},
+		{"edge on a direct host", HTTPRewrite{State: RewriteNone}, edge, admission.CauseProxyPeer},
+		{"forwarded edge on a rewriting host", activeRewrite, chainEdge, admission.CauseProxyPeer},
+		{"forwarded edge on an unknown host", HTTPRewrite{State: RewriteUnknown}, chainEdge, admission.CauseProxyPeer},
+		{"forwarded edge on a direct host", HTTPRewrite{State: RewriteNone}, chainEdge, admission.CauseProxyPeer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHTTPRewrite(t, tc.rw)
+			if _, _, err := AdmissionEvidence(tc.f); admission.CauseOf(err) != tc.want {
+				t.Fatalf("AdmissionEvidence = %v, want cause %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// A reputation finding with a recorded sighting is derived evidence even
+// when a rewritten web log also named its address; one only a rewritten web
+// log named is read as that log's client, so admission refuses it for the
+// rewrite; one with neither names nothing.
+func TestReputationStampPrefersARecordOverARewrittenLog(t *testing.T) {
+	at := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	record := scanRecord{stream: "f:1:2", cursor: "o=1", at: at}
+	findings := []alert.Finding{
+		{Check: "ip_reputation", SourceIP: "203.0.113.65"},
+		{Check: "ip_reputation", SourceIP: "203.0.113.66"},
+		{Check: "ip_reputation", SourceIP: "203.0.113.67"},
+	}
+	stampReputationSightings(findings,
+		map[string]scanRecord{"203.0.113.65": record},
+		map[string]bool{"203.0.113.65": true, "203.0.113.66": true})
+	if f := findings[0]; f.Attribution != admission.AttributionDerived || f.Observation.Stream != record.stream {
+		t.Fatalf("recorded sighting = %+v, want derived evidence on its record", f)
+	}
+	if f := findings[1]; f.Attribution != admission.AttributionHTTPPeer || f.Observation != (alert.Observation{}) {
+		t.Fatalf("rewritten-only sighting = %+v, want an HTTP client with no observation", f)
+	}
+	if f := findings[2]; f.Attribution != admission.AttributionUnknown || f.Observation != (alert.Observation{}) {
+		t.Fatalf("unseen address = %+v, want nothing", f)
 	}
 }

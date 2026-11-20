@@ -76,6 +76,31 @@ func TestCompareMatchesSprayBlocksThroughTheirEntries(t *testing.T) {
 	}
 }
 
+// Both older rootless-policy rows and retained attribution refusals explain
+// challenge timeouts. Recordings can contain either form across upgrades.
+func TestCompareExplainsChallengeTimeoutAttributionRefusals(t *testing.T) {
+	fid := "fid-" + strings.Repeat("7", 32)
+	findings := map[string]string{fid: "wp_user_enumeration"}
+	timeout := legacyBlock(fid, 10*time.Minute, "challenge_timeout")
+	last := summary(4*time.Hour, "wp_user_enumeration", "queued", "", 1)
+	for _, tc := range []struct{ check, reason string }{
+		{"unknown", "policy"},
+		{"wp_user_enumeration", "attribution"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			refused := summary(time.Hour, tc.check, "refused", tc.reason, 1)
+			refused.Entry = "challenge_timeout"
+			report, err := compareReport(findings, []anonAction{timeout, refused, last})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(report, "explained by a designed refusal: 1 ("+tc.reason+" 1)") || !strings.Contains(report, "unexplained: 0: pass") {
+				t.Fatalf("a challenge timeout refusal was not explained:\n%s", report)
+			}
+		})
+	}
+}
+
 // A legacy scan block can land from the pending queue, after its hourly
 // budget refills, until the queued retry ages out. The preview observed the
 // finding when it was first selected, so that earlier step explains the

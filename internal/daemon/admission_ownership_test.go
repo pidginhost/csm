@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
@@ -72,6 +73,56 @@ func TestTakenTimeoutLeavesNoLegacyEscalation(t *testing.T) {
 	d.escalateExpiredChallenges(time.Hour)
 	if len(a.got()) != 1 {
 		t.Fatal("taken timeout was handed off again")
+	}
+}
+
+// A challenge routed without a root keeps the refusal that left it
+// rootless, so its timeout is answered by the same rule as a direct block:
+// an address Apache or nginx may have rewritten still gets the legacy block,
+// and any other refusal, LiteSpeed's included, is final, counted once more
+// for the timeout.
+func TestChallengeTimeoutAnswersTheRoutingRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server platform.WebServer
+		cause  admission.Cause
+		legacy bool
+	}{
+		{"rewritten", platform.WSApache, admission.CauseRewrittenLog, true},
+		{"rewritten by litespeed", platform.WSLiteSpeed, admission.CauseRewrittenLog, false},
+		{"no observation", platform.WSApache, admission.CauseNoObservation, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteActive, Server: tc.server})
+			t.Cleanup(func() { checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteNone}) })
+			cfg, b := applyWiringSetup(t)
+			a := withRecordingAdmission(t)
+			a.executes = true
+			d := New(cfg, nil, nil, "")
+			d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+			const ip = "203.0.113.73"
+			refusal := &admission.Error{Reason: admission.ReasonAttribution, Cause: tc.cause}
+			d.ipList.AddWithRoot(ip, "wp brute", -time.Minute, "fid", "wp_login_bruteforce", admission.Evidence{}, refusal)
+			output := captureAppliedBlockStderr(t, func() { d.escalateExpiredChallenges(time.Hour) })
+			if len(a.got()) != 0 {
+				t.Fatalf("a refused root was answered again: %+v", a.got())
+			}
+			a.mu.Lock()
+			refusals := append([]derivedRefusal(nil), a.refusals...)
+			a.mu.Unlock()
+			if len(refusals) != 1 || refusals[0] != (derivedRefusal{admission.KindBlockIP, "wp_login_bruteforce", admission.EntryChallengeTimeout, admission.ReasonAttribution}) {
+				t.Fatalf("timeout refusals = %+v, want one for the routed check", refusals)
+			}
+			if tc.legacy {
+				if len(b.calls) != 1 || b.calls[0].ip != ip {
+					t.Fatalf("legacy calls = %+v, want the block of %s", b.calls, ip)
+				}
+				return
+			}
+			if len(b.calls) != 0 || len(blockedTrackerIPs(t, cfg.StatePath)) != 0 || output != "" {
+				t.Fatalf("a refused timeout left legacy work: calls %+v, log %q", b.calls, output)
+			}
+		})
 	}
 }
 

@@ -829,8 +829,8 @@ func TestAPIFindingsEnrichedBlockIP(t *testing.T) {
 	s := newTestServer(t, "tok")
 	now := time.Now()
 	s.store.SetLatestFindings([]alert.Finding{
-		{Severity: alert.High, Check: "wp_login_bruteforce", Message: "WordPress brute force from 203.0.113.5", Timestamp: now},
-		{Severity: alert.High, Check: "webshell", Message: "shell uploaded from 203.0.113.6", FilePath: "/home/alice/public_html/s.php", Timestamp: now},
+		{Severity: alert.High, Check: "wp_login_bruteforce", SourceIP: "203.0.113.5", Message: "WordPress brute force from 203.0.113.5", Timestamp: now},
+		{Severity: alert.High, Check: "webshell", SourceIP: "203.0.113.6", Message: "shell uploaded from 203.0.113.6", FilePath: "/home/alice/public_html/s.php", Timestamp: now},
 	})
 	w := httptest.NewRecorder()
 	s.apiFindingsEnriched(w, httptest.NewRequest("GET", "/", nil))

@@ -19,6 +19,7 @@ func TestAutoBlockIPs_ConcurrentSetIPBlockerIsRaceSafe(t *testing.T) {
 	cfg := newAutoBlockTestConfig(t)
 	old := getIPBlocker()
 	t.Cleanup(func() { SetIPBlocker(old) })
+	SetIPBlocker(&recordingIPBlocker{})
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -39,10 +40,14 @@ func TestAutoBlockIPs_ConcurrentSetIPBlockerIsRaceSafe(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 50; i++ {
 			_ = AutoBlockIPs(cfg, []alert.Finding{{
-				Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.99", Timestamp: time.Now(),
+				Check: "wp_login_bruteforce", SourceIP: "192.0.2.99", Message: "WP brute from 192.0.2.99", Timestamp: time.Now(),
 			}})
 		}
 	}()
 	time.AfterFunc(200*time.Millisecond, func() { close(stop) })
 	wg.Wait()
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 1 || state.IPs[0].IP != "192.0.2.99" {
+		t.Fatalf("tracked blocks = %+v, want the source blocked while swapping engines", state.IPs)
+	}
 }
