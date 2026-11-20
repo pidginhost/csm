@@ -113,3 +113,44 @@ func TestLongDerivedBlockOfALiteSpeedRewriteIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// Incident retries eventually request a permanent block. Its lifetime
+// must not turn a refused LiteSpeed address into a firewall target.
+func TestPermanentDerivedBlockKeepsLiteSpeedRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rewrite HTTPRewrite
+		refuse  bool
+	}{
+		{"litespeed active", HTTPRewrite{State: RewriteActive, Server: platform.WSLiteSpeed}, true},
+		{"litespeed unknown", HTTPRewrite{State: RewriteUnknown, Server: platform.WSLiteSpeed}, true},
+		{"apache", HTTPRewrite{State: RewriteActive, Server: platform.WSApache}, false},
+		{"nginx", HTTPRewrite{State: RewriteActive, Server: platform.WSNginx}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHTTPRewrite(t, tc.rewrite)
+			cfg := pendingTestConfig(t)
+			blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+			applyBlockTestSetup(t, blocker)
+			a := withAdmission(t)
+			a.executes = true
+			res, err := ApplyBlock(cfg, ApplyBlockRequest{
+				IP: "203.0.113.97", TTL: 0, Source: BlockSourceIncident, Entry: admission.EntryIncident,
+				RootFinding: alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.97"},
+				RootErr:     attributionRefusal(admission.CauseRewrittenLog),
+			})
+			if tc.refuse {
+				if !errors.Is(err, ErrBlockTakenByAdmission) || res.Outcome != firewall.BlockOutcomeNoop || len(blocker.calls) != 0 || len(res.Findings) != 0 || len(loadBlockState(cfg.StatePath).IPs) != 0 {
+					t.Fatalf("refused permanent block: result %+v, err %v, calls %+v", res, err, blocker.calls)
+				}
+				if len(a.refused) != 1 || len(a.responses()) != 0 {
+					t.Fatalf("refusals = %v, responses = %+v, want one preserved refusal", a.refused, a.responses())
+				}
+				return
+			}
+			if err != nil || res.Outcome != firewall.BlockOutcomeLive || len(blocker.calls) != 1 || blocker.calls[0].timeout != 0 || len(a.refused) != 0 {
+				t.Fatalf("legacy permanent block: result %+v, err %v, calls %+v, refusals %v", res, err, blocker.calls, a.refused)
+			}
+		})
+	}
+}

@@ -583,7 +583,7 @@ func TestAutoBlockIPs_NilBlockerSkipsBlocking(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.BlockExpiry = "1h"
-	findings := []alert.Finding{{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 10.0.0.1"}}
+	findings := []alert.Finding{{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: "192.0.2.1", Message: "Brute force from 192.0.2.1"}}
 	actions := AutoBlockIPs(cfg, findings)
 	if len(actions) != 0 {
 		t.Fatalf("expected 0 actions with nil fwBlocker, got %d", len(actions))

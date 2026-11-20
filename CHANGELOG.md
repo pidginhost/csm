@@ -9,10 +9,14 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Fixed
+
+- Daily summaries include challenged addresses in their top sources when challenges are enabled.
+
 ### Security
 
 - With `auto_response.dry_run` off, an address admission refuses is no longer blocked by the older path or its queued retry, except clients Apache or nginx read from a proxy header.
-- With `auto_response.dry_run` off, web findings on LiteSpeed hosts that read client addresses from a proxy header no longer firewall-block that address; challenges still apply.
+- With `auto_response.dry_run` off, LiteSpeed refuses blocks of rewritten web client addresses, including permanent incident escalation; challenges still apply.
 - A known CDN edge is never blocked automatically, including when a forwarded header names it or the web server rewrites client addresses.
 - Automatic blocks and the Web UI Block button now use only the address a check parsed from its log line, never one quoted in a finding's message.
 

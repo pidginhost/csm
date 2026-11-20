@@ -13,10 +13,8 @@ import (
 // alone was enough to open an incident on the IP that had just been blocked,
 // which the incident hand-off could then ask to block again.
 //
-// auto_response and challenge_route do not carry SourceIP today, so they are
-// inert by accident rather than by rule. Pin the rule, because adding
-// SourceIP to them later is an obvious-looking improvement that would
-// silently rebuild the loop.
+// Response notices may carry SourceIP for summaries. That address must
+// never turn the notice into evidence for another response.
 func TestKeyForIgnoresResponseFindings(t *testing.T) {
 	for _, check := range []string{
 		"auto_block",

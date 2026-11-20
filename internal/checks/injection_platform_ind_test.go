@@ -34,12 +34,16 @@ func TestAutoBlockIPsWithFindings(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	findings := []alert.Finding{
-		{Severity: alert.Critical, Check: "wp_login_bruteforce", Message: "Brute force from 203.0.113.5"},
+		{Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.5", Message: "Brute force from 203.0.113.5"},
 		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/alice/public_html/wso.php"},
 	}
 
+	blocker := &recordingIPBlocker{}
+	swapBlocker(t, blocker)
 	results := AutoBlockIPs(cfg, findings)
-	_ = results
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" || len(results) != 1 || results[0].Check != "auto_block" {
+		t.Fatalf("blocks = %v, findings = %+v, want only the brute-force address blocked", blocker.blocked, results)
+	}
 }
 
 // --- CheckDatabaseContent deeper — with wp-config + MySQL mock -------

@@ -158,7 +158,8 @@ func respondSpray(f alert.Finding, cidr string) {
 // than lease, which admission would cut to lease, keeps its legacy block
 // while admission executes; a previewing admission still sees it. It still
 // never blocks a CDN edge, an unreachable client or an address any local
-// user can choose.
+// user can choose. A LiteSpeed rewrite refusal also survives a permanent
+// incident escalation.
 func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	a := getResponseAdmission()
 	if a == nil {
@@ -166,6 +167,12 @@ func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	}
 	defer timeHandoff(time.Now())
 	executes := a.ExecutesBlocks()
+	// Incident retries can escalate to a permanent lifetime. That must not
+	// discard a refusal of an address any local user can choose.
+	if executes && localRewrite(req.RootErr) {
+		a.Refuse(admission.KindBlockIP, req.RootFinding, req.Entry, req.RootErr)
+		return true
+	}
 	if req.TTL == 0 {
 		answerRoot(a, executes, admission.KindBlockIP, req.IP, admission.Evidence{}, req.Entry)
 		return false
@@ -173,7 +180,7 @@ func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	if executes && lease > 0 && req.TTL > lease {
 		// These legacy-only lifetimes retain their safety refusals, without
 		// submitting a block that admission would shorten.
-		if c := admission.CauseOf(req.RootErr); c == admission.CauseProxyPeer || c == admission.CauseUnreachable || localRewrite(req.RootErr) {
+		if c := admission.CauseOf(req.RootErr); c == admission.CauseProxyPeer || c == admission.CauseUnreachable {
 			a.Refuse(admission.KindBlockIP, req.RootFinding, req.Entry, req.RootErr)
 			return true
 		}

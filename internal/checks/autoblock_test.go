@@ -179,7 +179,7 @@ func TestAutoBlockIPs_SkipsChallengeListedIPs(t *testing.T) {
 	oldChallengeList := GetChallengeIPList()
 	SetChallengeIPList(&staticChallengeIPList{
 		ips: map[string]bool{
-			"1.2.3.4": true,
+			"203.0.113.34": true,
 		},
 	})
 	t.Cleanup(func() {
@@ -189,7 +189,8 @@ func TestAutoBlockIPs_SkipsChallengeListedIPs(t *testing.T) {
 	actions := AutoBlockIPs(cfg, []alert.Finding{
 		{
 			Check:     "wp_login_bruteforce",
-			Message:   "WordPress brute force from 1.2.3.4",
+			SourceIP:  "203.0.113.34",
+			Message:   "WordPress brute force from 203.0.113.34",
 			Timestamp: time.Now(),
 		},
 	})
@@ -375,8 +376,8 @@ func TestAutoBlockIPs_SkipsAlreadyBlockedNetblock(t *testing.T) {
 	})
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 198.51.100.10"},
-		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 198.51.100.20"},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.10", Message: "WordPress brute force from 198.51.100.10"},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.20", Message: "WordPress brute force from 198.51.100.20"},
 	})
 
 	for _, action := range actions {
@@ -527,8 +528,8 @@ func TestAutoBlockIPs_NetBlockDryRunSkipsBlockSubnet(t *testing.T) {
 	})
 
 	AutoBlockIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.10"},
-		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.20"},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.10", Message: "WP brute from 198.51.100.10"},
+		{Check: "wp_login_bruteforce", SourceIP: "198.51.100.20", Message: "WP brute from 198.51.100.20"},
 	})
 
 	if len(blocker.subnetCalls) != 0 {
@@ -1370,6 +1371,7 @@ func TestAutoBlock_MailAccountCompromisedAdvisorySeverityNotBlocked(t *testing.T
 	findings := []alert.Finding{{
 		Check:    "mail_account_compromised",
 		Severity: alert.High,
+		SourceIP: "203.0.113.5",
 		Message:  "Mail account compromise: successful login for alice@example.com from 203.0.113.5 after recent auth failures (established multi-mailbox source)",
 	}}
 	AutoBlockIPs(cfg, findings)

@@ -246,6 +246,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "challenge_route",
+			SourceIP:  ip,
 			Message:   fmt.Sprintf("CHALLENGE: %s sent to PoW challenge (expires in %s)", ip, ChallengeDuration),
 			Details:   fmt.Sprintf("Reason: %s", f.Message),
 			Timestamp: time.Now(),

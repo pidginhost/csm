@@ -63,7 +63,7 @@ func TestChallengeRouteIPsDedupesSameIPInBatch(t *testing.T) {
 	findings := []alert.Finding{
 		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.7", Message: "brute force from 203.0.113.7"},
 		{Check: "xmlrpc_abuse", SourceIP: "203.0.113.7", Message: "xmlrpc abuse from 203.0.113.7"},
-		{Check: "ip_reputation", Message: "bad reputation 203.0.113.7"},
+		{Check: "ip_reputation", SourceIP: "203.0.113.7", Message: "bad reputation 203.0.113.7"},
 	}
 	actions := ChallengeRouteIPs(cfg, findings)
 	if len(actions) != 1 {
@@ -77,16 +77,16 @@ func TestChallengeRouteIPsSkipsInfraIP(t *testing.T) {
 	SetChallengeIPList(mock)
 	defer SetChallengeIPList(old)
 
-	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
+	cfg := &config.Config{InfraIPs: []string{"192.0.2.0/24"}}
 	cfg.Challenge.Enabled = true
 
 	actions := ChallengeRouteIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "brute from 10.0.0.5"},
+		{Check: "wp_login_bruteforce", SourceIP: "192.0.2.5", Message: "brute from 192.0.2.5"},
 	})
 	if len(actions) != 0 {
 		t.Errorf("infra IP should be skipped, got %+v", actions)
 	}
-	if mock.ips["10.0.0.5"] {
+	if mock.ips["192.0.2.5"] {
 		t.Errorf("infra IP must not be added to challenge list")
 	}
 }
@@ -118,7 +118,7 @@ func TestChallengeRouteIPsSkipsAlreadyOnList(t *testing.T) {
 	cfg.Challenge.Enabled = true
 
 	actions := ChallengeRouteIPs(cfg, []alert.Finding{
-		{Check: "wp_login_bruteforce", Message: "brute from 203.0.113.9"},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.9", Message: "brute from 203.0.113.9"},
 	})
 	if len(actions) != 0 {
 		t.Errorf("already-on-list IP should be skipped, got %+v", actions)

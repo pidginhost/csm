@@ -106,9 +106,13 @@ func TestAutoBlockIPs_VerdictAllowOutcome_DoesNotMutateState(t *testing.T) {
 
 	actions := AutoBlockIPs(cfg, []alert.Finding{{
 		Check:     "wp_login_bruteforce",
+		SourceIP:  "192.0.2.20",
 		Message:   "WordPress brute force from 192.0.2.20",
 		Timestamp: time.Now(),
 	}})
+	if blocker.outcomeHits != 1 || blocker.legacyHits != 0 {
+		t.Fatalf("outcome calls = %d, legacy calls = %d, want one verdict-allow outcome", blocker.outcomeHits, blocker.legacyHits)
+	}
 
 	state := loadBlockState(cfg.StatePath)
 	if len(state.IPs) != 0 {

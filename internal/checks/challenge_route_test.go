@@ -85,7 +85,7 @@ func TestChallengeRouteIPsDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = false
 
-	findings := []alert.Finding{{Check: "wp_login_bruteforce", Message: "brute force from 1.2.3.4"}}
+	findings := []alert.Finding{{Check: "wp_login_bruteforce", SourceIP: "203.0.113.34", Message: "brute force from 203.0.113.34"}}
 	actions := ChallengeRouteIPs(cfg, findings)
 	if len(actions) != 0 {
 		t.Error("should return nil when challenge disabled")
@@ -102,8 +102,8 @@ func TestChallengeRouteIPsSkipsHardBlock(t *testing.T) {
 	cfg.Challenge.Enabled = true
 
 	findings := []alert.Finding{
-		{Check: "webshell", Message: "webshell detected from 1.2.3.4"},
-		{Check: "signature_match_realtime", Message: "malware from 5.6.7.8"},
+		{Check: "webshell", SourceIP: "203.0.113.34", Message: "webshell detected from 203.0.113.34"},
+		{Check: "signature_match_realtime", SourceIP: "198.51.100.78", Message: "malware from 198.51.100.78"},
 	}
 	actions := ChallengeRouteIPs(cfg, findings)
 	if len(actions) != 0 {

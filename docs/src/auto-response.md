@@ -517,6 +517,11 @@ Admission applies `auto_response.max_blocks_per_hour` to scan, challenge,
 central, and incident IP blocks. On the legacy path that budget applies to
 scan-driven blocks only.
 
+Challenge notices keep the address sent to the challenge, so daily summaries
+count it among their source addresses. Blocks, challenges and the Web UI Block
+button use the structured address supplied by the check, never an address
+quoted in its message.
+
 Mail login spray blocks use a separate hourly budget of the same size. They
 reserve credit before the firewall attempt. An uncertain result keeps that
 credit; a confirmed non-block releases it. Retries wait when the spray budget
@@ -557,8 +562,10 @@ logs: on LiteSpeed that refusal is final as well. A challenge whose evidence
 the ledger refused keeps that refusal, so its timeout follows the same rule.
 Permanent blocks, mail spray blocks and derived blocks longer than
 `auto_response.block_expiry` stay on the existing paths, even when their
-evidence was refused; longer derived blocks still never block a known CDN
-edge, a client behind a trusted proxy or an address LiteSpeed rewrote. In dry run the ledger forecasts them. With the firewall
+evidence was refused, except that LiteSpeed rewrite refusals remain final
+for every block lifetime, including permanent incident escalation. Longer
+derived blocks still never block a known CDN edge or a client behind a trusted
+proxy. In dry run the ledger forecasts them. With the firewall
 disabled or in observe mode it previews them; neither applies them. While a configured
 firewall engine is starting or unavailable, queued live blocks wait and
 new responses remain on the legacy path. Work the set has
