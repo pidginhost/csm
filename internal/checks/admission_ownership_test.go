@@ -7,6 +7,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func attributionRefusal(c admission.Cause) error {
@@ -59,6 +60,38 @@ func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 			wantAccepted := tc.executes && tc.kind == admission.KindBlockIP && tc.mintErr == nil && tc.respondErr == nil
 			if accepted != wantAccepted {
 				t.Fatalf("respond accepted = %v, want %v", accepted, wantAccepted)
+			}
+		})
+	}
+}
+
+// LiteSpeed applies forwarding headers from the host itself, so any local
+// user chooses the address it logs: there a rewritten-address refusal is
+// final like any other, and in an unknown state too. Apache and nginx keep
+// the legacy block until the address can be verified.
+func TestRewrittenRefusalIsFinalOnLiteSpeed(t *testing.T) {
+	f := alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.90"}
+	for _, tc := range []struct {
+		name  string
+		rw    HTTPRewrite
+		taken bool
+	}{
+		{"litespeed", HTTPRewrite{State: RewriteActive, Server: platform.WSLiteSpeed}, true},
+		{"litespeed unknown", HTTPRewrite{State: RewriteUnknown, Server: platform.WSLiteSpeed}, true},
+		{"apache", HTTPRewrite{State: RewriteActive, Server: platform.WSApache}, false},
+		{"nginx", HTTPRewrite{State: RewriteActive, Server: platform.WSNginx}, false},
+		{"unknown server", HTTPRewrite{State: RewriteUnknown}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHTTPRewrite(t, tc.rw)
+			a := withAdmission(t)
+			a.executes, a.mintErr = true, attributionRefusal(admission.CauseRewrittenLog)
+			if taken, _ := respond(admission.KindBlockIP, f, f.SourceIP, 0); taken != tc.taken {
+				t.Fatalf("taken = %v, want %v", taken, tc.taken)
+			}
+			a.mintErr = nil
+			if got := AnswerPreparedRoot(admission.KindBlockIP, f.SourceIP, admission.Evidence{}, admission.EntryChallengeTimeout, f, attributionRefusal(admission.CauseRewrittenLog), time.Hour); got != tc.taken {
+				t.Fatalf("derived taken = %v, want %v", got, tc.taken)
 			}
 		})
 	}

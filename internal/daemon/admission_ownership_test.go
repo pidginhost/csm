@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
@@ -77,18 +78,23 @@ func TestTakenTimeoutLeavesNoLegacyEscalation(t *testing.T) {
 
 // A challenge routed without a root keeps the refusal that left it
 // rootless, so its timeout is answered by the same rule as a direct block:
-// an address the web server may have rewritten still gets the legacy block,
-// and any other refusal is final, counted once more for the timeout.
+// an address Apache or nginx may have rewritten still gets the legacy block,
+// and any other refusal, LiteSpeed's included, is final, counted once more
+// for the timeout.
 func TestChallengeTimeoutAnswersTheRoutingRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
+		server platform.WebServer
 		cause  admission.Cause
 		legacy bool
 	}{
-		{"rewritten", admission.CauseRewrittenLog, true},
-		{"no observation", admission.CauseNoObservation, false},
+		{"rewritten", platform.WSApache, admission.CauseRewrittenLog, true},
+		{"rewritten by litespeed", platform.WSLiteSpeed, admission.CauseRewrittenLog, false},
+		{"no observation", platform.WSApache, admission.CauseNoObservation, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteActive, Server: tc.server})
+			t.Cleanup(func() { checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteNone}) })
 			cfg, b := applyWiringSetup(t)
 			a := withRecordingAdmission(t)
 			a.executes = true

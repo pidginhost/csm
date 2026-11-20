@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // ResponseAdmission is the admission owner as the response funnels see it.
@@ -95,10 +96,12 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 // taken reports whether legacy must leave a response of kind to admission.
 // While admission applies block picks its answer is final: a block it
 // accepted is its own to apply, and one it refused is applied by neither
-// path. Two answers leave the block to legacy: an address the web server
+// path. Two answers leave the block to legacy: an address Apache or nginx
 // may have rewritten from a proxy header, which this build cannot verify
 // yet, and an error that is not an admission answer or a closed ingress,
-// where admission could not answer at all.
+// where admission could not answer at all. LiteSpeed applies forwarding
+// headers from the host itself, so any local user chooses the address it
+// logs: its rewritten addresses are refused for good.
 func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 	if !executes || kind != admission.KindBlockIP {
 		return false
@@ -111,10 +114,16 @@ func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 		return true
 	}
 	if admission.CauseOf(err) == admission.CauseRewrittenLog {
-		return false
+		return localRewrite(err)
 	}
 	reason, answered := admission.ReasonOf(err)
 	return answered && reason != admission.ReasonEngineUnavailable
+}
+
+// localRewrite reports whether err refuses an address the web server
+// rewrote on LiteSpeed, where any local user can choose it.
+func localRewrite(err error) bool {
+	return admission.CauseOf(err) == admission.CauseRewrittenLog && CurrentHTTPRewrite().Server == platform.WSLiteSpeed
 }
 
 // respondSpray asks admission to block a spray's prefix through the mail
@@ -147,8 +156,9 @@ func respondSpray(f alert.Finding, cidr string) {
 // handed over without a root, as a path that kept none is, and it stays
 // with legacy until admission can apply one. A block asked to last longer
 // than lease, which admission would cut to lease, keeps its legacy block
-// while admission executes; a previewing admission still sees it. Its
-// existing exclusions for CDN edges and unreachable clients still apply.
+// while admission executes; a previewing admission still sees it. It still
+// never blocks a CDN edge, an unreachable client or an address any local
+// user can choose.
 func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	a := getResponseAdmission()
 	if a == nil {
@@ -161,10 +171,9 @@ func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 		return false
 	}
 	if executes && lease > 0 && req.TTL > lease {
-		// These legacy-only lifetimes retain their earlier safety refusals,
-		// without submitting a block that admission would shorten.
-		switch admission.CauseOf(req.RootErr) {
-		case admission.CauseProxyPeer, admission.CauseUnreachable:
+		// These legacy-only lifetimes retain their safety refusals, without
+		// submitting a block that admission would shorten.
+		if c := admission.CauseOf(req.RootErr); c == admission.CauseProxyPeer || c == admission.CauseUnreachable || localRewrite(req.RootErr) {
 			a.Refuse(admission.KindBlockIP, req.RootFinding, req.Entry, req.RootErr)
 			return true
 		}

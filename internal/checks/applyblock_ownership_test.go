@@ -8,6 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // A derived block admission takes or refuses ends in ApplyBlock before the
@@ -72,6 +73,42 @@ func TestLongDerivedBlockKeepsLegacyLifetimeAfterRefusal(t *testing.T) {
 			}
 			if len(a.responses()) != 0 || len(a.refused) != 0 {
 				t.Fatalf("legacy-only block reached admission: responses %+v, refusals %v", a.responses(), a.refused)
+			}
+		})
+	}
+}
+
+// A long-lived derived block of an address LiteSpeed rewrote is refused for
+// good: any local user can choose that address. Elsewhere the rewritten
+// root keeps its legacy lifetime.
+func TestLongDerivedBlockOfALiteSpeedRewriteIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		server platform.WebServer
+		legacy bool
+	}{
+		{platform.WSLiteSpeed, false},
+		{platform.WSApache, true},
+	} {
+		t.Run(string(tc.server), func(t *testing.T) {
+			withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: tc.server})
+			cfg := pendingTestConfig(t)
+			cfg.AutoResponse.BlockExpiry = "1h"
+			blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+			applyBlockTestSetup(t, blocker)
+			a := withAdmission(t)
+			a.executes = true
+			_, err := ApplyBlock(cfg, ApplyBlockRequest{
+				IP: "203.0.113.97", TTL: 7 * 24 * time.Hour, Source: BlockSourceIncident, Entry: admission.EntryIncident,
+				RootFinding: alert.Finding{Check: "wp_login_bruteforce"}, RootErr: attributionRefusal(admission.CauseRewrittenLog),
+			})
+			if tc.legacy {
+				if err != nil || len(blocker.calls) != 1 || len(a.refused) != 0 {
+					t.Fatalf("err %v, calls %+v, refusals %v; want the legacy block", err, blocker.calls, a.refused)
+				}
+				return
+			}
+			if !errors.Is(err, ErrBlockTakenByAdmission) || len(blocker.calls) != 0 || len(a.refused) != 1 {
+				t.Fatalf("err %v, calls %+v, refusals %v; want one counted refusal and no block", err, blocker.calls, a.refused)
 			}
 		})
 	}
