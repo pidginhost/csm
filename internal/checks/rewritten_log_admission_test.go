@@ -395,3 +395,76 @@ func TestReputationVerifiedRewrittenSighting(t *testing.T) {
 		})
 	}
 }
+
+// The scan clock and newer traffic cannot change the peer window of a
+// request read by the scheduled domlog scan.
+func TestDomlogPeerVerdictUsesRequestTime(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, activeRewrite)
+	const ip = "203.0.113.74"
+	client := netip.MustParseAddr(ip)
+	cfg := &config.Config{}
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, domlogTestLine(ip, i, "POST", "/wp-login.php", 200, "Mozilla/5.0"))
+	}
+	ObserveWebPeer(domlogTestTime(19), netip.MustParseAddr("192.0.2.250"), client, cfg)
+	ObserveWebPeer(domlogTestTime(19).Add(90*time.Minute), client, client, cfg)
+	_, findings := scanDomlogFile(t, cfg, nopBotClassifier{}, lines)
+	f := oneScanFinding(t, findings, "wp_login_bruteforce")
+	if !f.Observation.ObservedAt.Equal(domlogTestTime(19)) {
+		t.Fatalf("observation time = %v, want request time", f.Observation.ObservedAt)
+	}
+	if _, _, err := AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseForgedClient {
+		t.Fatalf("admission = %v, want forged_client", err)
+	}
+}
+
+// Reputation must verify the line's time, not the scan time or the time
+// of another line from the same address.
+func TestReputationPeerVerdictUsesEachRequestTime(t *testing.T) {
+	const ip = "203.0.113.75"
+	client := netip.MustParseAddr(ip)
+	at := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
+	for _, direct := range []bool{true, false} {
+		t.Run(fmt.Sprintf("direct=%v", direct), func(t *testing.T) {
+			withWebPeers(t, 500000)
+			withHTTPRewrite(t, activeRewrite)
+			cfg := listIPs(t, ip)
+			other := netip.MustParseAddr("192.0.2.250")
+			oldPeer, recentPeer := other, client
+			if direct {
+				oldPeer, recentPeer = client, other
+			}
+			ObserveWebPeer(at, oldPeer, client, cfg)
+			ObserveWebPeer(time.Now(), recentPeer, client, cfg)
+			lines := sightingLines(ip, at)["HTTP request"] + "\n"
+			if direct {
+				// The newer forged request cannot supply a record or erase the
+				// independent older direct sighting.
+				lines += sightingLines(ip, time.Now().Add(-time.Second))["HTTP request"] + "\n"
+			}
+			sightingLogs(t, map[string]string{sightingAccessLog: lines})
+			f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), ip)
+			if direct {
+				if f.Attribution != admission.AttributionDerived || !f.Observation.ObservedAt.Equal(at) {
+					t.Fatalf("finding = %+v, want the older direct sighting", f)
+				}
+			} else if f.Attribution != admission.AttributionHTTPPeer || f.Observation != (alert.Observation{}) {
+				t.Fatalf("finding = %+v, want unverified rewritten client", f)
+			}
+		})
+	}
+}
+
+func TestAdmissionPeerVerdictKeepsCDNEdgeRefusalFirst(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, activeRewrite)
+	withKnownProxyPrefixes(t, "198.51.100.0/24")
+	f := httpPeerFinding("198.51.100.75")
+	client := netip.MustParseAddr(f.SourceIP)
+	ObserveWebPeer(f.Observation.ObservedAt, client, client, &config.Config{})
+	if _, _, err := AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseProxyPeer {
+		t.Fatalf("admission = %v, want proxy_peer before direct verdict", err)
+	}
+}

@@ -90,6 +90,7 @@ func TestChallengeTimeoutAnswersTheRoutingRefusal(t *testing.T) {
 	}{
 		{"rewritten", platform.WSApache, admission.CauseRewrittenLog, true},
 		{"rewritten by litespeed", platform.WSLiteSpeed, admission.CauseRewrittenLog, false},
+		{"forged client", platform.WSApache, admission.CauseForgedClient, false},
 		{"no observation", platform.WSApache, admission.CauseNoObservation, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

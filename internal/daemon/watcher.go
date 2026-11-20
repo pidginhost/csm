@@ -21,6 +21,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -191,6 +192,20 @@ func newObservedLogWatcher(spec logWatchSpec, cfg *config.Config, alertCh chan<-
 // by its offset and bytes; zero when the log feeds no producer.
 func (w *LogWatcher) observation(lineStart int64, line string, at time.Time) alert.Observation {
 	if w.producer == "" || !w.fileID.known {
+		return alert.Observation{}
+	}
+	// HTTP peer verification is anchored to the request, not to a delayed
+	// read. An undated request cannot borrow a later connection's verdict.
+	var dated bool
+	switch w.producer {
+	case checks.ProducerAccessLog:
+		at, dated = checks.AccessLogTime(line)
+	case checks.ProducerModSecLog:
+		at, dated = modsec.ErrorLogTime(line)
+	default:
+		dated = true
+	}
+	if !dated {
 		return alert.Observation{}
 	}
 	if w.stream == "" || w.streamOf != w.fileID {

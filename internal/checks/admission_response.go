@@ -174,7 +174,7 @@ func respondDerived(req ApplyBlockRequest, lease time.Duration) bool {
 	executes := a.ExecutesBlocks()
 	// Incident retries can escalate to a permanent lifetime. That must not
 	// discard a refusal of an address someone else can choose.
-	if executes && forgeableRewrite(req.RootErr) {
+	if executes && (admission.CauseOf(req.RootErr) == admission.CauseForgedClient || forgeableRewrite(req.RootErr)) {
 		a.Refuse(admission.KindBlockIP, req.RootFinding, req.Entry, req.RootErr)
 		return true
 	}

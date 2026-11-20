@@ -42,6 +42,7 @@ func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 		{"unknown mint refusal", true, admission.KindBlockIP, attributionRefusal(admission.Cause(255)), nil, true},
 		{"no observation", true, admission.KindBlockIP, attributionRefusal(admission.CauseNoObservation), nil, true},
 		{"kind not allowed", true, admission.KindBlockIP, attributionRefusal(admission.CauseKindNotAllowed), nil, true},
+		{"forged client", true, admission.KindBlockIP, attributionRefusal(admission.CauseForgedClient), nil, true},
 		{"rewritten log", true, admission.KindBlockIP, attributionRefusal(admission.CauseRewrittenLog), nil, false},
 		{"rewritten log at the ingress", true, admission.KindBlockIP, nil, attributionRefusal(admission.CauseRewrittenLog), false},
 		{"error admission does not name", true, admission.KindBlockIP, errors.New("admission is not running"), nil, false},

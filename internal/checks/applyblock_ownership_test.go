@@ -154,3 +154,38 @@ func TestPermanentDerivedBlockKeepsLiteSpeedRefusal(t *testing.T) {
 		})
 	}
 }
+
+// A preserved forgery refusal stays final even if an incident escalates
+// its block lifetime or the web server's rewrite configuration changes.
+func TestForgedClientRefusalSurvivesBlockLifetime(t *testing.T) {
+	for _, rw := range []HTTPRewrite{
+		{State: RewriteActive, Server: platform.WSApache},
+		{State: RewriteActive, Server: platform.WSLiteSpeed},
+		{State: RewriteActive, Server: platform.WSNginx},
+		{State: RewriteNone},
+	} {
+		for _, ttl := range []time.Duration{0, time.Hour, 7 * 24 * time.Hour} {
+			t.Run(string(rw.Server)+"/"+ttl.String(), func(t *testing.T) {
+				withHTTPRewrite(t, rw)
+				cfg := pendingTestConfig(t)
+				cfg.AutoResponse.BlockExpiry = "1h"
+				blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+				applyBlockTestSetup(t, blocker)
+				a := withAdmission(t)
+				a.executes = true
+				res, err := ApplyBlock(cfg, ApplyBlockRequest{
+					IP: "203.0.113.97", TTL: ttl, Source: BlockSourceIncident, Entry: admission.EntryIncident,
+					RootFinding: alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.97"},
+					RootErr:     attributionRefusal(admission.CauseForgedClient),
+				})
+				if !errors.Is(err, ErrBlockTakenByAdmission) || res.Outcome != firewall.BlockOutcomeNoop ||
+					len(blocker.calls) != 0 || len(res.Findings) != 0 || len(loadBlockState(cfg.StatePath).IPs) != 0 {
+					t.Fatalf("forged block: result %+v, err %v, calls %+v; want no block or tracker state", res, err, blocker.calls)
+				}
+				if len(a.refused) != 1 || len(a.responses()) != 0 {
+					t.Fatalf("refusals = %v, responses = %+v; want one preserved refusal", a.refused, a.responses())
+				}
+			})
+		}
+	}
+}

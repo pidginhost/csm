@@ -554,14 +554,16 @@ free slots of the temporary block set, and the existing paths leave those
 blocks to it. A block the ledger refuses is final too: the existing paths do
 not apply it either, including a queued retry of the same finding.
 Independent evidence for the address keeps its own response. Where the web
-server rewrites client addresses, the web peer log installed by
-`csm webserver-integration install` verifies each one: an address that
-connected for itself is blocked as on a direct host, a client behind a trusted
-proxy or a known CDN edge is only challenged, and an address another peer
-chose is refused as `forged_client`. Two refusals still leave the block to the
-existing paths: a client address Apache or nginx may have rewritten from a
-proxy header that the peer log does not cover, and a ledger that could not
-take new work at all. LiteSpeed also applies those headers to
+server rewrites client addresses, available web peer observations verify
+each one: an address that connected for itself is blocked as on a direct
+host, a client behind a trusted proxy or a known CDN edge is only challenged,
+and an address another peer chose is refused as `forged_client`.
+Verification uses the request time in the access or ModSecurity log,
+including delayed reads and scheduled scans. A request without a valid log
+time stays unverified. Two refusals still leave the block to the existing
+paths: a client address Apache or nginx may have rewritten from a proxy
+header that the peer log does not cover, and a ledger that could not take
+new work at all. LiteSpeed also applies those headers to
 requests from the host itself, so any local user can choose the address it
 logs: on LiteSpeed that refusal is final as well, and so is one whose
 log format writes request data where CSM reads the client, even when the same
@@ -571,8 +573,9 @@ A challenge whose evidence the ledger refused keeps that refusal, so its
 timeout follows the same rule.
 Permanent blocks, mail spray blocks and derived blocks longer than
 `auto_response.block_expiry` stay on the existing paths, even when their
-evidence was refused, except that those final rewrite refusals hold for
-every block lifetime, including permanent incident escalation. Longer
+evidence was refused, except that forged-client refusals and those final
+rewrite refusals hold for every block lifetime, including permanent incident
+escalation. Longer
 derived blocks still never block a known CDN edge or a client behind a trusted
 proxy. In dry run the ledger forecasts them. With the firewall
 disabled or in observe mode it previews them; neither applies them. While a configured
