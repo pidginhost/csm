@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- Go dependencies are updated to their current releases.
 - JavaScript scans now detect keystroke leaks in modules with import attributes, destructured arrow defaults, and statements with semicolons after newlines.
 
 ## [4.15.0] - 2026-11-20
