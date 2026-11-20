@@ -218,10 +218,34 @@ func (w *LogWatcher) truncateIfFull() {
 		return
 	}
 	info, err := w.file.Stat()
-	if err != nil || info.Size() != w.offset {
+	if err != nil || info.Size() < w.offset {
+		w.reset()
 		return
 	}
-	if err := os.Truncate(w.path, 0); err != nil {
+	if info.Size() != w.offset {
+		return
+	}
+	// Open without O_TRUNC and pin the identity before modifying anything:
+	// rotation may have replaced path since the reader opened it.
+	// #nosec G304 -- path is the daemon-owned log selected by the watch spec.
+	f, err := os.OpenFile(w.path, os.O_WRONLY, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: could not open %s for emptying: %v\n", ts(), w.path, err)
+		return
+	}
+	defer f.Close()
+	current, err := f.Stat()
+	if err != nil || !os.SameFile(info, current) || current.Size() < w.offset {
+		w.reset()
+		return
+	}
+	if current.Size() != w.offset {
+		return
+	}
+	// Publish uncertainty before destroying bytes, as verdict readers run
+	// concurrently. Repeat afterwards to cover appends during the syscall.
+	w.reset()
+	if err := f.Truncate(0); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Warning: could not empty %s: %v\n", ts(), w.path, err)
 		return
 	}
@@ -317,6 +341,19 @@ func (w *LogWatcher) closeFile() {
 }
 
 func (w *LogWatcher) readNewLines() {
+	// A loss-sensitive log cannot keep using an old inode until the periodic
+	// reopen: its replacement may already contain a forged-client record.
+	if w.onReset != nil && w.file != nil {
+		info, err := os.Stat(w.path)
+		if err != nil {
+			w.reset()
+			return
+		}
+		if !w.fileID.same(fileID(info)) {
+			w.reset()
+			w.reopen()
+		}
+	}
 	if w.file == nil {
 		w.reopen()
 		if w.file == nil {
@@ -326,12 +363,14 @@ func (w *LogWatcher) readNewLines() {
 
 	info, err := w.file.Stat()
 	if err != nil {
+		w.reset()
 		w.reopen()
 		return
 	}
 
 	// File was truncated or rotated (smaller than our offset)
 	if info.Size() < w.offset {
+		w.reset()
 		w.reopen()
 		return
 	}
@@ -351,15 +390,18 @@ func (w *LogWatcher) readNewLines() {
 	// Seek to where we left off
 	_, err = w.file.Seek(w.offset, io.SeekStart)
 	if err != nil {
+		w.reset()
 		return
 	}
 
 	reader := bufio.NewReaderSize(w.file, 64*1024)
 	committedOffset := w.offset
+	markerUnknown := false
 	for {
 		lineStart := committedOffset
 		rawLine, truncated, readErr := readBoundedWatcherLine(reader, logWatcherMaxLineBytes)
 		if len(rawLine) > 0 && readErr != nil {
+			w.reset()
 			break
 		}
 		framed := !w.unframed
@@ -369,13 +411,28 @@ func (w *LogWatcher) readNewLines() {
 			if current, seekErr := w.file.Seek(0, io.SeekCurrent); seekErr == nil {
 				committedOffset = current - int64(reader.Buffered())
 			}
+			if w.onReset != nil {
+				if truncated {
+					markerUnknown = true
+				} else {
+					// Save bytes actually read, not bytes a concurrent truncate
+					// and append may put at the same position afterwards.
+					w.marker = appendWatcherMarker(w.marker, rawLine)
+				}
+			}
 		}
 		if truncated {
+			w.reset()
 			fmt.Fprintf(os.Stderr, "[%s] Warning: skipped oversized log line from %s at %d bytes\n", ts(), w.path, logWatcherMaxLineBytes)
 		}
 		if len(rawLine) > 0 && !truncated {
+			if !framed && w.onReset != nil {
+				w.reset()
+				continue
+			}
 			line := trimWatcherLineEnding(rawLine)
 			if line == "" {
+				w.reset()
 				if readErr != nil {
 					break
 				}
@@ -408,13 +465,36 @@ func (w *LogWatcher) readNewLines() {
 			}
 		}
 		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				w.reset()
+			}
 			break
 		}
 	}
 
 	w.offset = committedOffset
-	w.refreshOffsetMarker()
+	switch {
+	case w.onReset == nil:
+		w.refreshOffsetMarker()
+	case markerUnknown:
+		// An oversized record has no complete saved bytes. Everything up to
+		// this read is unknown before accepting a fresh position marker.
+		w.reset()
+		w.refreshOffsetMarker()
+	case !w.offsetMarkerMatches(w.file):
+		w.reset()
+	}
 	w.truncateIfFull()
+}
+
+func appendWatcherMarker(marker []byte, line string) []byte {
+	if len(line) >= logWatcherOffsetMarkerBytes {
+		return append(marker[:0], line[len(line)-logWatcherOffsetMarkerBytes:]...)
+	}
+	if keep := logWatcherOffsetMarkerBytes - len(line); len(marker) > keep {
+		marker = marker[:copy(marker, marker[len(marker)-keep:])]
+	}
+	return append(marker, line...)
 }
 
 func readBoundedWatcherLine(r *bufio.Reader, maxBytes int) (string, bool, error) {
@@ -456,11 +536,13 @@ func (w *LogWatcher) reopen() {
 
 	f, err := w.openFile()
 	if err != nil {
+		w.reset()
 		return
 	}
 
 	info, err := f.Stat()
 	if err != nil {
+		w.reset()
 		_ = f.Close()
 		return
 	}
@@ -487,8 +569,6 @@ func (w *LogWatcher) reopen() {
 		if prevOffset != 0 || (prevID.known && id.known && !prevID.same(id)) {
 			w.reset()
 		}
-	} else {
-		w.refreshOffsetMarker()
 	}
 	// Same file, size >= offset, matching marker: keep w.offset so lines
 	// written since the last read tick are not skipped. readNewLines seeks

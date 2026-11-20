@@ -848,13 +848,20 @@ web findings; see [auto-response](auto-response.md).
 
 A request logged with a client address chosen by a peer that is neither the
 client nor a trusted proxy raises `http_client_forged` (Critical), at most once
-an hour per virtual host. The alert names whether the peer was this server
+an hour per virtual host, measured when CSM emits the alert rather than when
+the request started. The alert names whether the peer was this server
 itself, such as a site's script, or a remote host. CSM never blocks an address
 chosen this way.
 
+Alert deduplication retains at most 10,000 virtual hosts. If it fills, CSM
+logs a warning and suppresses alerts for additional hosts until entries expire.
+Peer classification continues, and existing entries keep their hourly limit.
+
 The daemon empties the peer log once it has read it past 256 MB. After a
-restart, a truncation or a rotation, verdicts for the hour before it are
-unknown, and web findings keep the responses they get without the peer log.
+restart, truncation, rotation, read failure or unreadable line, any verdict
+whose one-hour window reaches the gap is unknown. This includes verdicts
+for the hour after the gap. Web findings keep the responses they get without
+the peer log. Unchanged files can be reopened without invalidating verdicts.
 
 ## Direct SMTP Egress
 

@@ -41,6 +41,8 @@ func TestWebPeerLogHandlerAlertsForgeryOncePerVhostHour(t *testing.T) {
 	p := newWebPeerLog()
 	cfg := &config.Config{}
 	t0 := time.Unix(1795200000, 0)
+	now := t0
+	p.now = func() time.Time { return now }
 	first := p.handle(peerLine(t0, "site.example", "127.0.0.1", "192.0.2.90"), cfg)
 	if len(first) != 1 || first[0].Check != "http_client_forged" || first[0].Severity != alert.Critical ||
 		!strings.Contains(first[0].Message, "site.example") || !strings.Contains(first[0].Message, "local") || first[0].SourceIP != "" {
@@ -52,6 +54,7 @@ func TestWebPeerLogHandlerAlertsForgeryOncePerVhostHour(t *testing.T) {
 	if other := p.handle(peerLine(t0.Add(10*time.Minute), "other.example", "203.0.113.250", "192.0.2.92"), cfg); len(other) != 1 || !strings.Contains(other[0].Message, "remote") {
 		t.Fatalf("another vhost's forgery = %+v, want one remote alert", other)
 	}
+	now = t0.Add(61 * time.Minute)
 	if later := p.handle(peerLine(t0.Add(61*time.Minute), "site.example", "127.0.0.1", "192.0.2.93"), cfg); len(later) != 1 {
 		t.Fatalf("a forgery an hour later = %+v, want a new alert", later)
 	}

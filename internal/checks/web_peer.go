@@ -183,7 +183,9 @@ func (x *webPeerIndex) observe(at time.Time, client netip.Addr, class PeerVerdic
 			// Dropping one client could hide a forged line behind a
 			// direct one: drop the whole window instead.
 			x.clients = make(map[netip.Addr]*peerSeen)
-			x.lostThrough = x.newest
+			if x.newest.After(x.lostThrough) {
+				x.lostThrough = x.newest
+			}
 			return
 		}
 		seen = &peerSeen{}

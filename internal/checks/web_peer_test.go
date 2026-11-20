@@ -400,3 +400,18 @@ func TestMarkWebPeerLossMakesEarlierWindowsUnknown(t *testing.T) {
 		t.Fatalf("a window after the loss = %v, want direct", got)
 	}
 }
+
+// Overflow while reading an old backlog must not undo a reader's newer loss.
+func TestWebPeerOverflowPreservesReaderLoss(t *testing.T) {
+	withWebPeers(t, 1)
+	at := time.Unix(1795200000, 0)
+	MarkWebPeerLoss(at)
+	client := netip.MustParseAddr("192.0.2.10")
+	other := netip.MustParseAddr("192.0.2.11")
+	ObserveWebPeer(at.Add(-2*time.Hour), client, client, &config.Config{})
+	ObserveWebPeer(at.Add(-2*time.Hour), other, other, &config.Config{})
+	ObserveWebPeer(at, client, client, &config.Config{})
+	if got := WebPeerVerdict(client, at); got != PeerUnknown {
+		t.Fatalf("overflow rolled back loss: %v, want unknown", got)
+	}
+}
