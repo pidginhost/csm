@@ -17,10 +17,24 @@ import (
 // becomes a target. The caller supplies the inventory the owner resolves
 // claims against.
 func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.EvidenceInput, error) {
-	if f.Observation.Producer == "" {
+	producer := admission.ProducerID(f.Observation.Producer)
+	// A known CDN or website-firewall edge carries every visitor behind it:
+	// blocking it as one of them is never an automatic response, whatever
+	// else is wrong with the finding.
+	if mayBeProxyEdge(f.Attribution, producer) && KnownProxyPeer(f.SourceIP, config.Active()) {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
+	}
+	// This build reads no separate peer field when the web server replaces
+	// the logged address, so neither the peer nor a chain can be verified,
+	// with or without an observation. An unknown state is refused the same
+	// way.
+	if (f.Attribution == admission.AttributionHTTPPeer || f.Attribution == admission.AttributionTrustedHTTPChain) &&
+		CurrentHTTPRewrite().State != RewriteNone {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseRewrittenLog, Detail: "the web server may replace the client address it logs"}
+	}
+	if producer == "" {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseNoObservation, Detail: "finding has no observation"}
 	}
-	producer := admission.ProducerID(f.Observation.Producer)
 	parser, ok := ProducerParser(producer)
 	if !ok {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonPolicy, Detail: "finding names no registered producer"}
@@ -28,22 +42,10 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	if !f.Attribution.Valid() {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseKindNotAllowed, Detail: "no parser vouched for the finding's address"}
 	}
-	// This build reads no separate peer field when the web server replaces
-	// the logged address, so neither the peer nor a chain can be verified.
-	// An unknown state is refused the same way.
-	if (f.Attribution == admission.AttributionHTTPPeer || f.Attribution == admission.AttributionTrustedHTTPChain) &&
-		CurrentHTTPRewrite().State != RewriteNone {
-		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseRewrittenLog, Detail: "the web server may replace the client address it logs"}
-	}
 	// A client behind a trusted proxy sends no packets to this host, so no
 	// response this build applies can contain it.
 	if f.Attribution == admission.AttributionTrustedHTTPChain {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseUnreachable, Detail: "the address is a client behind a trusted proxy"}
-	}
-	// A known CDN or website-firewall edge carries every visitor behind it:
-	// blocking it as one of them is never an automatic response.
-	if mayBeProxyEdge(f.Attribution, producer) && KnownProxyPeer(f.SourceIP, config.Active()) {
-		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
 	}
 	target, err := admission.CanonicalAddress(f.SourceIP, admission.Caps{IPv6: true})
 	if err != nil {

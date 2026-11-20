@@ -53,8 +53,9 @@ func TestApplyBlockAsksAdmissionThroughItsEntry(t *testing.T) {
 }
 
 // A routed challenge keeps the root it was answered with, so its timeout
-// can answer the same observation again; a list without that capability,
-// or a finding admission could not mint, keeps none.
+// can answer the same observation again; a finding admission could not
+// mint keeps none, but keeps the refusal, counted once when routed, so the
+// timeout is answered by the same rule as a direct block.
 func TestChallengeRouteKeepsItsRootForTheTimeout(t *testing.T) {
 	a := withAdmission(t)
 	a.mint = func(f alert.Finding) admission.Evidence { return realRoot(t, f) }
@@ -65,14 +66,21 @@ func TestChallengeRouteKeepsItsRootForTheTimeout(t *testing.T) {
 	cfg.Challenge.Enabled = true
 	f := wpBruteForce("203.0.113.60")
 	ChallengeRouteIPs(cfg, []alert.Finding{f})
-	if root, ok := list.roots["203.0.113.60"]; !ok || !root.Equal(realRoot(t, f)) {
-		t.Fatalf("roots = %+v", list.roots)
+	if root, ok := list.roots["203.0.113.60"]; !ok || !root.Equal(realRoot(t, f)) || list.rootErrs["203.0.113.60"] != nil {
+		t.Fatalf("roots = %+v, refusals = %+v", list.roots, list.rootErrs)
 	}
-	a.refuse = true
+	rewritten := attributionRefusal(admission.CauseRewrittenLog)
+	a.mintErr = rewritten
 	g := wpBruteForce("203.0.113.61")
 	ChallengeRouteIPs(cfg, []alert.Finding{g})
 	if root, ok := list.roots["203.0.113.61"]; !ok || !root.Equal(admission.Evidence{}) {
 		t.Fatalf("an unminted finding kept a root: %+v", list.roots)
+	}
+	if err := list.rootErrs["203.0.113.61"]; err != rewritten {
+		t.Fatalf("an unminted finding kept refusal %v, want %v", err, rewritten)
+	}
+	if !slices.Equal(a.refused, []string{g.Check}) {
+		t.Fatalf("refusals counted = %v, want the routed finding's once", a.refused)
 	}
 	// Without a root the timeout block still names the routing check.
 	if list.checks["203.0.113.60"] != g.Check || list.checks["203.0.113.61"] != g.Check {
@@ -82,17 +90,22 @@ func TestChallengeRouteKeepsItsRootForTheTimeout(t *testing.T) {
 
 type rootedIPList struct {
 	mockIPList
-	roots  map[string]admission.Evidence
-	checks map[string]string
+	roots    map[string]admission.Evidence
+	rootErrs map[string]error
+	checks   map[string]string
 }
 
-func (l *rootedIPList) AddWithRoot(ip, reason string, d time.Duration, findingID, check string, root admission.Evidence) {
+func (l *rootedIPList) AddWithRoot(ip, reason string, d time.Duration, findingID, check string, root admission.Evidence, rootErr error) {
 	l.Add(ip, reason, d)
 	l.roots[ip] = root
 	if l.checks == nil {
 		l.checks = map[string]string{}
 	}
+	if l.rootErrs == nil {
+		l.rootErrs = map[string]error{}
+	}
 	l.checks[ip] = check
+	l.rootErrs[ip] = rootErr
 }
 
 // Each derived entry wraps the roots its path answers: a challenge timeout

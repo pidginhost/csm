@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -13,12 +14,13 @@ func attributionRefusal(c admission.Cause) error {
 }
 
 // A funnel leaves an automatic block to admission only while admission
-// applies block picks and took this one. A refusal legacy does not share
-// keeps the legacy block, so no detection stops blocking; a client behind
-// a trusted proxy or a CDN edge gets a block from neither.
+// applies block picks. Then every answer is final: an accepted block is
+// admission's to apply, and a refused one is applied by neither path. Two
+// answers keep the legacy block: an address the web server may have
+// rewritten from a proxy header, which this build cannot verify yet, and an
+// admission that could not answer at all.
 func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 	f := alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.90"}
-	overflow := &admission.Error{Reason: admission.ReasonQueueOverflow}
 	for _, tc := range []struct {
 		name                string
 		executes            bool
@@ -28,15 +30,20 @@ func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 	}{
 		{"not executing", false, admission.KindBlockIP, nil, nil, false},
 		{"taken", true, admission.KindBlockIP, nil, nil, true},
-		{"ingress refused", true, admission.KindBlockIP, nil, overflow, false},
+		{"queue overflow", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonQueueOverflow}, true},
 		{"closed ingress", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonEngineUnavailable}, false},
-		{"unsupported containment", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonUnsupportedContainment}, false},
-		{"rootless policy", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonPolicy}, false},
-		{"target mismatch", true, admission.KindBlockIP, nil, attributionRefusal(admission.CauseTargetMismatch), false},
-		{"unknown mint refusal", true, admission.KindBlockIP, attributionRefusal(admission.Cause(255)), nil, false},
-		{"no observation", true, admission.KindBlockIP, attributionRefusal(admission.CauseNoObservation), nil, false},
-		{"kind not allowed", true, admission.KindBlockIP, attributionRefusal(admission.CauseKindNotAllowed), nil, false},
+		{"unsupported containment", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonUnsupportedContainment}, true},
+		{"stale evidence", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonStale}, true},
+		{"invalid response", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonInvalid}, true},
+		{"rootless policy", true, admission.KindBlockIP, nil, &admission.Error{Reason: admission.ReasonPolicy}, true},
+		{"unregistered producer", true, admission.KindBlockIP, &admission.Error{Reason: admission.ReasonPolicy}, nil, true},
+		{"target mismatch", true, admission.KindBlockIP, nil, attributionRefusal(admission.CauseTargetMismatch), true},
+		{"unknown mint refusal", true, admission.KindBlockIP, attributionRefusal(admission.Cause(255)), nil, true},
+		{"no observation", true, admission.KindBlockIP, attributionRefusal(admission.CauseNoObservation), nil, true},
+		{"kind not allowed", true, admission.KindBlockIP, attributionRefusal(admission.CauseKindNotAllowed), nil, true},
 		{"rewritten log", true, admission.KindBlockIP, attributionRefusal(admission.CauseRewrittenLog), nil, false},
+		{"rewritten log at the ingress", true, admission.KindBlockIP, nil, attributionRefusal(admission.CauseRewrittenLog), false},
+		{"error admission does not name", true, admission.KindBlockIP, errors.New("admission is not running"), nil, false},
 		{"proxied client", true, admission.KindBlockIP, attributionRefusal(admission.CauseUnreachable), nil, true},
 		{"proxy edge", true, admission.KindBlockIP, attributionRefusal(admission.CauseProxyPeer), nil, true},
 		{"proxied client while previewing", false, admission.KindBlockIP, attributionRefusal(admission.CauseUnreachable), nil, false},
@@ -45,7 +52,7 @@ func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := withAdmission(t)
 			a.executes, a.mintErr, a.respondErr = tc.executes, tc.mintErr, tc.respondErr
-			_, taken, accepted := respond(tc.kind, f, f.SourceIP, 0)
+			taken, accepted := respond(tc.kind, f, f.SourceIP, 0)
 			if taken != tc.want {
 				t.Fatalf("respond taken = %v, want %v", taken, tc.want)
 			}
@@ -57,27 +64,50 @@ func TestRespondLeavesBlocksAdmissionTakes(t *testing.T) {
 	}
 }
 
-// A derived path answers the same rule: its kept root is accepted, or its
-// preserved mint refusal is one legacy does not share.
+// A derived path answers the same rule: its kept root is accepted, its
+// preserved mint refusal is final unless the web server may have rewritten
+// the address, and an ingress refusal is final too.
 func TestDerivedAnswersLeaveBlocksAdmissionTakes(t *testing.T) {
 	a := withAdmission(t)
 	a.executes = true
 	if !AnswerRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, time.Hour) {
 		t.Fatal("an accepted derived block was left to legacy")
 	}
-	if AnswerPreparedRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, alert.Finding{Check: "ftp_bruteforce"}, attributionRefusal(admission.CauseNoObservation), time.Hour) {
-		t.Fatal("an unobserved root was taken from legacy")
+	if !AnswerPreparedRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, alert.Finding{Check: "ftp_bruteforce"}, attributionRefusal(admission.CauseNoObservation), time.Hour) {
+		t.Fatal("an unobserved root was left to legacy")
+	}
+	if AnswerPreparedRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, alert.Finding{Check: "wp_login_bruteforce"}, attributionRefusal(admission.CauseRewrittenLog), time.Hour) {
+		t.Fatal("a rewritten address was taken from legacy")
 	}
 	if !AnswerPreparedRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, alert.Finding{Check: "wp_login_bruteforce"}, attributionRefusal(admission.CauseUnreachable), time.Hour) {
 		t.Fatal("a proxied client's derived block was left to legacy")
 	}
 	a.respondErr = &admission.Error{Reason: admission.ReasonQueueOverflow}
+	if !AnswerRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, time.Hour) {
+		t.Fatal("a derived block the ingress refused was left to legacy")
+	}
+	a.respondErr = &admission.Error{Reason: admission.ReasonEngineUnavailable}
 	if AnswerRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, time.Hour) {
-		t.Fatal("a derived block ingress refused was taken from legacy")
+		t.Fatal("a derived block a closed ingress could not answer was taken from legacy")
 	}
 	a.respondErr, a.executes = nil, false
 	if AnswerRoot(admission.KindBlockIP, "203.0.113.91", admission.Evidence{}, admission.EntryCentral, time.Hour) {
 		t.Fatal("a derived block was taken while admission previews")
+	}
+}
+
+// A permanent block stays with legacy until admission can apply one: it is
+// still handed over, so admission counts it, but no answer takes it.
+func TestPermanentDerivedBlockStaysLegacy(t *testing.T) {
+	for _, executes := range []bool{true, false} {
+		a := withAdmission(t)
+		a.executes = executes
+		if respondDerived(ApplyBlockRequest{IP: "203.0.113.92", Entry: admission.EntryPermblock}, time.Hour) {
+			t.Fatalf("executes %v: a permanent block was taken from legacy", executes)
+		}
+		if calls := a.responses(); len(calls) != 1 || calls[0].via != admission.EntryPermblock {
+			t.Fatalf("executes %v: permanent block hand-offs = %+v, want one through the permblock entry", executes, calls)
+		}
 	}
 }
 

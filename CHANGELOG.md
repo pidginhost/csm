@@ -9,6 +9,11 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Security
+
+- With `auto_response.dry_run` off, an address admission refuses to block is no longer blocked by the older path, except clients a web server reads from a proxy header.
+- A known CDN edge is never blocked automatically, including on hosts whose web server rewrites client addresses.
+
 ## [4.15.0] - 2026-11-20
 
 ### Highlights

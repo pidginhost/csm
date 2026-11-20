@@ -20,7 +20,7 @@ func TestCpanelProxyReputationDoesNotUseLoggedAddress(t *testing.T) {
 			t.Run(ip+"/"+name, func(t *testing.T) {
 				cfg := listIPs(t, ip)
 				sightingLogs(t, map[string]string{reputationWHMAccessLog: ip + " proxy " + suffix + "\n"})
-				ips, records := collectRecentSightings(cfg, time.Now())
+				ips, records, _ := collectRecentSightings(cfg, time.Now())
 				if len(ips) != 0 || len(records) != 0 {
 					t.Errorf("proxy record supplied reputation candidates: %v, sightings: %v", ips, records)
 				}
@@ -48,7 +48,7 @@ func TestCpanelProxyReputationPreservesDirectSightings(t *testing.T) {
 			direct := staleSessionAccessLine(ip, user, cpanelUTCStamp(at), "/execute/Themes/list", "401")
 			proxy := strings.Replace(direct, " - ", " proxy ", 1)
 			paths := sightingLogs(t, map[string]string{reputationWHMAccessLog: direct + "\n" + proxy + "\n"})
-			ips, records := collectRecentSightings(cfg, time.Now())
+			ips, records, _ := collectRecentSightings(cfg, time.Now())
 			if len(ips) != 1 || ips[ip] != "cPanel/WHM access" || len(records) != 1 {
 				t.Fatalf("direct sighting changed: %v, records: %v", ips, records)
 			}

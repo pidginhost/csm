@@ -142,7 +142,8 @@ func TestPath6_ObservedFindingCannotEscalateIncident(t *testing.T) {
 // The relay names its client from an X-PHP-Script header any local account
 // can write, so no parser vouches for the address: the response
 // reaches admission and is refused for attribution, while the legacy path
-// still acts. A later challenge timeout carries no root.
+// of a previewing admission still acts. A later challenge timeout answers
+// the same refusal again instead of a root.
 func TestPath6_AdmissionRefusesTheHeaderAddress(t *testing.T) {
 	for _, challengeEnabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("challenge=%v", challengeEnabled), func(t *testing.T) {
@@ -182,9 +183,9 @@ func TestPath6_AdmissionRefusesTheHeaderAddress(t *testing.T) {
 					}
 					time.Sleep(31 * time.Minute)
 					d.escalateExpiredChallenges(time.Hour)
-					got := a.got()
-					if len(got) != 1 || got[0].kind != admission.KindBlockIP || got[0].via != admission.EntryChallengeTimeout || got[0].root.Check() != "" {
-						t.Fatalf("challenge timeout = %+v, want a rootless block", got)
+					want = append(want, derivedRefusal{admission.KindBlockIP, path6Check, admission.EntryChallengeTimeout, admission.ReasonAttribution})
+					if got := a.got(); len(got) != 0 || !reflect.DeepEqual(a.refusals, want) {
+						t.Fatalf("challenge timeout responses = %+v, refusals = %+v, want %+v", got, a.refusals, want)
 					}
 				}
 				if len(blocker.calls) != 1 || blocker.calls[0].ip != path6IP {

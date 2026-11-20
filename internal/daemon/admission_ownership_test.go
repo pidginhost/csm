@@ -75,6 +75,51 @@ func TestTakenTimeoutLeavesNoLegacyEscalation(t *testing.T) {
 	}
 }
 
+// A challenge routed without a root keeps the refusal that left it
+// rootless, so its timeout is answered by the same rule as a direct block:
+// an address the web server may have rewritten still gets the legacy block,
+// and any other refusal is final, counted once more for the timeout.
+func TestChallengeTimeoutAnswersTheRoutingRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cause  admission.Cause
+		legacy bool
+	}{
+		{"rewritten", admission.CauseRewrittenLog, true},
+		{"no observation", admission.CauseNoObservation, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, b := applyWiringSetup(t)
+			a := withRecordingAdmission(t)
+			a.executes = true
+			d := New(cfg, nil, nil, "")
+			d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+			const ip = "203.0.113.73"
+			refusal := &admission.Error{Reason: admission.ReasonAttribution, Cause: tc.cause}
+			d.ipList.AddWithRoot(ip, "wp brute", -time.Minute, "fid", "wp_login_bruteforce", admission.Evidence{}, refusal)
+			output := captureAppliedBlockStderr(t, func() { d.escalateExpiredChallenges(time.Hour) })
+			if len(a.got()) != 0 {
+				t.Fatalf("a refused root was answered again: %+v", a.got())
+			}
+			a.mu.Lock()
+			refusals := append([]derivedRefusal(nil), a.refusals...)
+			a.mu.Unlock()
+			if len(refusals) != 1 || refusals[0] != (derivedRefusal{admission.KindBlockIP, "wp_login_bruteforce", admission.EntryChallengeTimeout, admission.ReasonAttribution}) {
+				t.Fatalf("timeout refusals = %+v, want one for the routed check", refusals)
+			}
+			if tc.legacy {
+				if len(b.calls) != 1 || b.calls[0].ip != ip {
+					t.Fatalf("legacy calls = %+v, want the block of %s", b.calls, ip)
+				}
+				return
+			}
+			if len(b.calls) != 0 || len(blockedTrackerIPs(t, cfg.StatePath)) != 0 || output != "" {
+				t.Fatalf("a refused timeout left legacy work: calls %+v, log %q", b.calls, output)
+			}
+		})
+	}
+}
+
 // The central queue finishes an admission-owned block without loss,
 // legacy evidence or a success/failure log.
 func TestTakenCentralBlockFinishesQueue(t *testing.T) {

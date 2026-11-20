@@ -464,7 +464,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// legacy block, whose lifetime and budget admission does not model,
 		// so an executing admission is not handed it.
 		if !challengeSelected(cfg, f) {
-			if _, taken, accepted := respond(admission.KindBlockIP, f, ip, 0); taken {
+			if taken, accepted := respond(admission.KindBlockIP, f, ip, 0); taken {
 				if !accepted {
 					continue
 				}

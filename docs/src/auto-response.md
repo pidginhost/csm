@@ -546,7 +546,14 @@ blocking paths select is also handed to the ledger. With
 `auto_response.dry_run` false, the firewall on and outside observe mode,
 the ledger applies automatic IP blocks itself within this ceiling and the
 free slots of the temporary block set, and the existing paths leave those
-blocks to it. In dry run it forecasts them. With the firewall disabled or
+blocks to it. A block the ledger refuses is final too: the existing paths do
+not apply it either. Two refusals still leave the block to them: a client
+address the web server may have rewritten from a proxy header, which CSM
+cannot verify yet, and a ledger that could not take new work at all. A
+challenge whose evidence the ledger refused keeps that refusal, so its timeout
+follows the same rule. Permanent blocks, mail spray blocks and derived blocks
+longer than `auto_response.block_expiry` stay on the existing paths. In dry
+run the ledger forecasts them. With the firewall disabled or
 in observe mode it previews them; neither applies them. While a configured
 firewall engine is starting or unavailable, queued live blocks wait and
 new responses remain on the legacy path. Work the set has

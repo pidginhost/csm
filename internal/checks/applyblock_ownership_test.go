@@ -10,9 +10,10 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// A derived block admission takes ends in ApplyBlock before the engine:
-// no kernel call, no tracker row, and a sentinel the callers treat as an
-// expected outcome. A root refusal legacy does not share still blocks.
+// A derived block admission takes or refuses ends in ApplyBlock before the
+// engine: no kernel call, no tracker row, and a sentinel the callers treat
+// as an expected outcome. A root the web server may have rewritten still
+// gets the legacy block.
 func TestApplyBlockLeavesTakenBlocksToAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -22,7 +23,8 @@ func TestApplyBlockLeavesTakenBlocksToAdmission(t *testing.T) {
 	}{
 		{"taken", true, nil, false},
 		{"previewing", false, nil, true},
-		{"unobserved root", true, attributionRefusal(admission.CauseNoObservation), true},
+		{"unobserved root", true, attributionRefusal(admission.CauseNoObservation), false},
+		{"rewritten root", true, attributionRefusal(admission.CauseRewrittenLog), true},
 		{"proxied client", true, attributionRefusal(admission.CauseUnreachable), false},
 		{"proxy edge", true, attributionRefusal(admission.CauseProxyPeer), false},
 	} {

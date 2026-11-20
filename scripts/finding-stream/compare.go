@@ -181,7 +181,7 @@ func listedRule(o anonAction, check, reason string) (string, bool) {
 		}
 		for _, derived := range checks.DerivedEntries() {
 			if derived.Entry.String() == entry && slices.Contains(derived.Checks, check) &&
-				(entry == "central" || entry == "incident" || entry == "incident_spray" || entry == "asn_crawl" || entry == "mail_subnet") {
+				(entry == "challenge_timeout" || entry == "central" || entry == "incident" || entry == "incident_spray" || entry == "asn_crawl" || entry == "mail_subnet") {
 				return check, true
 			}
 		}

@@ -38,19 +38,21 @@ type challengeEntry struct {
 	Reason        string
 	NonEscalating bool
 	// Root is the admission evidence the challenge answered; the zero
-	// value when it had none.
-	Root admission.Evidence
+	// value when it had none. RootErr is the refusal that left it none.
+	Root    admission.Evidence
+	RootErr error
 }
 
 // ExpiredEntry is returned by ExpiredEntries for escalation. Root is the
 // admission evidence its challenge answered, for the timeout to answer
-// again.
+// again; RootErr is the refusal that left it without one.
 type ExpiredEntry struct {
 	FindingID string
 	Check     string
 	IP        string
 	Reason    string
 	Root      admission.Evidence
+	RootErr   error
 }
 
 // PassStore keeps challenge passes across restarts.
@@ -158,28 +160,29 @@ func (l *IPList) SetNginxMap(path string, reload func() error) {
 
 // Add marks an IP for challenge with the given reason.
 func (l *IPList) Add(ip string, reason string, duration time.Duration) {
-	l.add(ip, reason, duration, false, "", "", admission.Evidence{})
+	l.add(ip, reason, duration, false, "", "", admission.Evidence{}, nil)
 }
 
 // AddNonEscalating marks an IP for challenge without timeout-to-block escalation.
 func (l *IPList) AddNonEscalating(ip string, reason string, duration time.Duration) {
-	l.add(ip, reason, duration, true, "", "", admission.Evidence{})
+	l.add(ip, reason, duration, true, "", "", admission.Evidence{}, nil)
 }
 
 // AddWithFindingID preserves the originating audit identity for timeout
 // escalation. It does not change challenge duration or escalation policy.
 func (l *IPList) AddWithFindingID(ip, reason string, duration time.Duration, findingID string) {
-	l.add(ip, reason, duration, false, findingID, "", admission.Evidence{})
+	l.add(ip, reason, duration, false, findingID, "", admission.Evidence{}, nil)
 }
 
 // AddWithRoot also keeps the check that routed the address and the
 // admission evidence the challenge answered, so a timeout escalation answers
-// the same observation again rather than a new one. root may be zero.
-func (l *IPList) AddWithRoot(ip, reason string, duration time.Duration, findingID, check string, root admission.Evidence) {
-	l.add(ip, reason, duration, false, findingID, check, root)
+// the same observation again rather than a new one. root may be zero, with
+// rootErr the refusal that left it so.
+func (l *IPList) AddWithRoot(ip, reason string, duration time.Duration, findingID, check string, root admission.Evidence, rootErr error) {
+	l.add(ip, reason, duration, false, findingID, check, root, rootErr)
 }
 
-func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscalating bool, findingID, check string, root admission.Evidence) {
+func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscalating bool, findingID, check string, root admission.Evidence, rootErr error) {
 	l.mu.Lock()
 	l.ips[ip] = challengeEntry{
 		ExpiresAt:     time.Now().Add(duration),
@@ -188,6 +191,7 @@ func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscala
 		FindingID:     findingID,
 		Check:         check,
 		Root:          root,
+		RootErr:       rootErr,
 	}
 	changed := l.flush()
 	gate := l.gate
@@ -278,7 +282,7 @@ func (l *IPList) ExpiredEntries() []ExpiredEntry {
 	for ip, entry := range l.ips {
 		if now.After(entry.ExpiresAt) {
 			if !entry.NonEscalating && !l.passes[ip].After(graceStart) {
-				expired = append(expired, ExpiredEntry{IP: ip, Reason: entry.Reason, FindingID: entry.FindingID, Check: entry.Check, Root: entry.Root})
+				expired = append(expired, ExpiredEntry{IP: ip, Reason: entry.Reason, FindingID: entry.FindingID, Check: entry.Check, Root: entry.Root, RootErr: entry.RootErr})
 			}
 			delete(l.ips, ip)
 			removed = true

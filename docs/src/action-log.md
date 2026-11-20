@@ -156,7 +156,10 @@ evidence does not attribute), `unreachable` (the address is a client behind a
 trusted proxy, which sends this host no packets of its own), `proxy_peer` (the
 address is a known CDN or website-firewall edge, which carries many visitors)
 or `rewritten_log` (the web server replaced the logged client address, or CSM
-could not read its configuration, so the connecting peer is unknown). Refusals
+could not read its configuration, so the connecting peer is unknown; it is
+named before `no_observation` for an HTTP finding, and `proxy_peer` before
+both). A `challenge_timeout` refusal names the check and cause that left its
+challenge without a root. Refusals
 at submission and queue placement keep the same cause as refusals at evidence
 minting. A queued response that a later check refuses (its revalidation, an
 inventory refresh, a configuration opt-out, a lost queue position after

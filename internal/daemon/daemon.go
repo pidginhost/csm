@@ -3413,7 +3413,7 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 	}
 	var recorded []alert.Finding
 	for _, e := range expired {
-		res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
+		req := checks.ApplyBlockRequest{
 			IP:           e.IP,
 			EngineReason: fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100)),
 			Reason:       challengeTimeoutReasonPrefix + truncateStr(e.Reason, 100),
@@ -3423,7 +3423,12 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			Root:         e.Root,
 			Entry:        admission.EntryChallengeTimeout,
 			Check:        e.Check,
-		})
+		}
+		// The timeout answers the refusal that left its challenge rootless.
+		if e.RootErr != nil {
+			req.RootFinding, req.RootErr = alert.Finding{Check: e.Check}, e.RootErr
+		}
+		res, err := checks.ApplyBlock(d.currentCfg(), req)
 		recorded = append(recorded, res.Findings...)
 		if err != nil {
 			// Own-interface / infra IPs are never blockable, a host

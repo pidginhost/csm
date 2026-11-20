@@ -39,7 +39,7 @@ func TestScanYieldsAnAddressAdmissionTakes(t *testing.T) {
 			saveBlockState(cfg.StatePath, &blockState{Pending: pending})
 			a := withAdmission(t)
 			a.executes = true
-			a.mintErrs = map[string]error{"smtp_bruteforce": attributionRefusal(admission.CauseNoObservation)}
+			a.mintErrs = map[string]error{"smtp_bruteforce": attributionRefusal(admission.CauseRewrittenLog)}
 			findings := make([]alert.Finding, len(tc.findings))
 			for i, f := range tc.findings {
 				f.Timestamp = time.Now()
@@ -69,7 +69,8 @@ func TestScanYieldsAnAddressAdmissionTakes(t *testing.T) {
 
 // A finding admission refuses as a CDN edge or a proxied client is not
 // enforced by admission, so the address keeps the legacy block another
-// finding asks for.
+// finding asks for, here one whose address the web server may have
+// rewritten.
 func TestScanKeepsLegacyBlocksBesideAnUncontainedRefusal(t *testing.T) {
 	const ip = "203.0.113.94"
 	for _, cause := range []admission.Cause{admission.CauseProxyPeer, admission.CauseUnreachable} {
@@ -81,7 +82,7 @@ func TestScanKeepsLegacyBlocksBesideAnUncontainedRefusal(t *testing.T) {
 			a.executes = true
 			a.mintErrs = map[string]error{
 				"wp_login_bruteforce": attributionRefusal(cause),
-				"smtp_bruteforce":     attributionRefusal(admission.CauseNoObservation),
+				"smtp_bruteforce":     attributionRefusal(admission.CauseRewrittenLog),
 			}
 			AutoBlockIPs(cfg, []alert.Finding{
 				{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: ip, Message: "WordPress brute force from " + ip, Timestamp: time.Now()},
@@ -95,7 +96,8 @@ func TestScanKeepsLegacyBlocksBesideAnUncontainedRefusal(t *testing.T) {
 }
 
 // A synchronous ingress refusal cannot cancel a retry or another finding
-// for the address, including an IPv6 address admission cannot contain.
+// legacy still blocks for the address, including an IPv6 address admission
+// cannot contain.
 func TestScanKeepsLegacyAfterSynchronousRefusal(t *testing.T) {
 	for _, reason := range []admission.Reason{
 		admission.ReasonQueueOverflow, admission.ReasonEngineUnavailable,
@@ -114,7 +116,7 @@ func TestScanKeepsLegacyAfterSynchronousRefusal(t *testing.T) {
 				a := withAdmission(t)
 				a.executes = true
 				a.respondErr = &admission.Error{Reason: reason}
-				a.mintErrs = map[string]error{"smtp_bruteforce": attributionRefusal(admission.CauseNoObservation)}
+				a.mintErrs = map[string]error{"smtp_bruteforce": attributionRefusal(admission.CauseRewrittenLog)}
 				kept := alert.Finding{Check: "smtp_bruteforce", Severity: alert.Critical, SourceIP: ip, Timestamp: time.Now()}
 				refused := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: ip, Timestamp: time.Now()}
 				findings := []alert.Finding{kept, refused, kept}

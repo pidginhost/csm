@@ -230,7 +230,7 @@ func TestReputationSightingScanTimeBoundaries(t *testing.T) {
 	}
 	paths := sightingLogs(t, map[string]string{"/var/log/secure": strings.Join(lines, "\n") + "\n"})
 	offsets := recordOffsets(lines)
-	ips, records := collectRecentSightings(&config.Config{}, now)
+	ips, records, _ := collectRecentSightings(&config.Config{}, now)
 	for i, c := range cases {
 		if ips[c.ip] != "SSH login" {
 			t.Errorf("%s collected as %q, want SSH login", c.ip, ips[c.ip])
@@ -291,7 +291,7 @@ func TestReputationEximSightingUsesFullServerTime(t *testing.T) {
 	}
 	paths := sightingLogs(t, map[string]string{reputationEximMainlog: strings.Join(lines, "\n") + "\n"})
 	offsets := recordOffsets(lines)
-	ips, records := collectRecentSightings(&config.Config{}, now)
+	ips, records, _ := collectRecentSightings(&config.Config{}, now)
 	for i, c := range cases {
 		if got := ips[c.ip] == "SMTP auth failure"; got != c.collected {
 			t.Errorf("%s: collected as %q, want collected %v", c.name, ips[c.ip], c.collected)
@@ -453,7 +453,7 @@ func TestReputationSightingPreservesLegacySurfaceChoice(t *testing.T) {
 		f: {reputationWHMAccessLog, cpanel, 1, at(time.Minute)},
 		g: {reputationEximMainlog, exim, 0, at(time.Minute)},
 	}
-	ips, records := collectRecentSightings(cfg, now)
+	ips, records, _ := collectRecentSightings(cfg, now)
 	if fmt.Sprint(ips) != fmt.Sprint(wantIPs) {
 		t.Fatalf("sightings collected %v, want %v", ips, wantIPs)
 	}
