@@ -132,3 +132,52 @@ func TestScanKeepsLegacyAfterSynchronousRefusal(t *testing.T) {
 		})
 	}
 }
+
+// A retry of the same finding cannot bypass its final admission refusal.
+// Unanswered work, rewritten logs and legacy-only spray retries still run.
+func TestScanRefusalEndsItsOwnPendingRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		mintErr, respondErr error
+		spray, legacy       bool
+	}{
+		{name: "missing observation", mintErr: attributionRefusal(admission.CauseNoObservation)},
+		{name: "queue overflow", respondErr: &admission.Error{Reason: admission.ReasonQueueOverflow}},
+		{name: "closed ingress", respondErr: &admission.Error{Reason: admission.ReasonEngineUnavailable}, legacy: true},
+		{name: "rewritten log", mintErr: attributionRefusal(admission.CauseRewrittenLog), legacy: true},
+		{name: "spray retry", mintErr: attributionRefusal(admission.CauseNoObservation), spray: true, legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := pendingTestConfig(t)
+			blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+			applyBlockTestSetup(t, blocker)
+			f := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.Critical, SourceIP: "203.0.113.95", Message: "brute force", Timestamp: time.Now()}
+			p := pendingIP{IP: f.SourceIP, FindingID: alert.FindingID(f), Check: f.Check, Severity: f.Severity, Reason: f.Message, QueuedAt: time.Now(), LoginSpray: tc.spray}
+			if tc.spray {
+				p.TTL = 24 * time.Hour
+			}
+			saveBlockState(cfg.StatePath, &blockState{Pending: []pendingIP{p}})
+			a := withAdmission(t)
+			a.executes, a.mintErr, a.respondErr = true, tc.mintErr, tc.respondErr
+			lost := func() uint64 {
+				statuses := AutoBlockQueueStatuses(time.Now())
+				return statuses["pending"].DroppedTotal + statuses["candidates"].DroppedTotal
+			}
+			before := lost()
+			actions := AutoBlockIPs(cfg, []alert.Finding{f})
+			state := loadBlockState(cfg.StatePath)
+			if tc.legacy {
+				if len(blocker.calls) != 1 || blocker.calls[0].ip != f.SourceIP {
+					t.Fatalf("legacy retry calls = %+v", blocker.calls)
+				}
+				return
+			}
+			if len(blocker.calls) != 0 || len(actions) != 0 || len(state.IPs) != 0 || len(state.Pending) != 0 || state.BlocksThisHour != 0 {
+				t.Fatalf("refused finding retried: calls %+v, actions %+v, state %+v", blocker.calls, actions, state)
+			}
+			if dropped := lost() - before; dropped != 0 {
+				t.Fatalf("final refusal counted %d lost retries", dropped)
+			}
+		})
+	}
+}

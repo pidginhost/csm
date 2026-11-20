@@ -257,6 +257,8 @@ func TestAdmissionEvidenceRefusesRewrittenBeforeMissingRecord(t *testing.T) {
 	unstamped := alert.Finding{Check: "waf_attack_blocked", SourceIP: "203.0.113.64", Attribution: admission.AttributionHTTPPeer}
 	edge := unstamped
 	edge.SourceIP = "198.51.100.7"
+	chainEdge := edge
+	chainEdge.Attribution = admission.AttributionTrustedHTTPChain
 	for _, tc := range []struct {
 		name string
 		rw   HTTPRewrite
@@ -268,6 +270,9 @@ func TestAdmissionEvidenceRefusesRewrittenBeforeMissingRecord(t *testing.T) {
 		{"direct", HTTPRewrite{State: RewriteNone}, unstamped, admission.CauseNoObservation},
 		{"edge on a rewriting host", activeRewrite, edge, admission.CauseProxyPeer},
 		{"edge on a direct host", HTTPRewrite{State: RewriteNone}, edge, admission.CauseProxyPeer},
+		{"forwarded edge on a rewriting host", activeRewrite, chainEdge, admission.CauseProxyPeer},
+		{"forwarded edge on an unknown host", HTTPRewrite{State: RewriteUnknown}, chainEdge, admission.CauseProxyPeer},
+		{"forwarded edge on a direct host", HTTPRewrite{State: RewriteNone}, chainEdge, admission.CauseProxyPeer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			withHTTPRewrite(t, tc.rw)

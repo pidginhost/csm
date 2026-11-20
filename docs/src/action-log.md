@@ -154,7 +154,8 @@ stamped the finding), `kind_not_allowed` (no parser vouched for the address in
 a way the check accepts), `target_mismatch` (the response names an address its
 evidence does not attribute), `unreachable` (the address is a client behind a
 trusted proxy, which sends this host no packets of its own), `proxy_peer` (the
-address is a known CDN or website-firewall edge, which carries many visitors)
+address is a known CDN or website-firewall edge, which carries many visitors,
+including when a forwarded client header names it)
 or `rewritten_log` (the web server replaced the logged client address, or CSM
 could not read its configuration, so the connecting peer is unknown; it is
 named before `no_observation` for an HTTP finding, and `proxy_peer` before

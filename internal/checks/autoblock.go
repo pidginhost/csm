@@ -438,8 +438,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 	// An address admission accepted a block for has one enforcer: legacy
 	// drops its queued retry and every other finding for that address this
-	// scan. An address admission refused as an edge or a proxied client has
-	// no admission block, so its other findings keep theirs.
+	// scan. A refusal ends only a retry of that finding; independent evidence
+	// and legacy-only spray retries keep their blocks.
 	takenIPs := make(map[string]bool)
 	for _, f := range findings {
 		work.progress()
@@ -465,11 +465,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// so an executing admission is not handed it.
 		if !challengeSelected(cfg, f) {
 			if taken, accepted := respond(admission.KindBlockIP, f, ip, 0); taken {
-				if !accepted {
-					continue
+				if accepted {
+					takenIPs[ip] = true
 				}
-				takenIPs[ip] = true
-				if p, ok := ipsToBlock[ip]; ok {
+				if p, ok := ipsToBlock[ip]; ok && (accepted || !p.LoginSpray && p.FindingID == alert.FindingID(f)) {
 					work.candidateOutcome(p.queueCandidate, nil)
 					work.finishCandidate(p.queueCandidate)
 					delete(ipsToBlock, ip)

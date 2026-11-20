@@ -76,22 +76,28 @@ func TestCompareMatchesSprayBlocksThroughTheirEntries(t *testing.T) {
 	}
 }
 
-// A challenge keeps the refusal that left it without a root, so the timeout
-// of a scan-pass finding is refused for its attribution with the routing
-// check, not as a rootless policy refusal. That refusal is designed.
+// Both older rootless-policy rows and retained attribution refusals explain
+// challenge timeouts. Recordings can contain either form across upgrades.
 func TestCompareExplainsChallengeTimeoutAttributionRefusals(t *testing.T) {
 	fid := "fid-" + strings.Repeat("7", 32)
 	findings := map[string]string{fid: "wp_user_enumeration"}
 	timeout := legacyBlock(fid, 10*time.Minute, "challenge_timeout")
-	refused := summary(time.Hour, "wp_user_enumeration", "refused", "attribution", 1)
-	refused.Entry = "challenge_timeout"
 	last := summary(4*time.Hour, "wp_user_enumeration", "queued", "", 1)
-	report, err := compareReport(findings, []anonAction{timeout, refused, last})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(report, "explained by a designed refusal: 1 (attribution 1)") || !strings.Contains(report, "unexplained: 0: pass") {
-		t.Fatalf("a challenge timeout refused for its attribution was not explained:\n%s", report)
+	for _, tc := range []struct{ check, reason string }{
+		{"unknown", "policy"},
+		{"wp_user_enumeration", "attribution"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			refused := summary(time.Hour, tc.check, "refused", tc.reason, 1)
+			refused.Entry = "challenge_timeout"
+			report, err := compareReport(findings, []anonAction{timeout, refused, last})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(report, "explained by a designed refusal: 1 ("+tc.reason+" 1)") || !strings.Contains(report, "unexplained: 0: pass") {
+				t.Fatalf("a challenge timeout refusal was not explained:\n%s", report)
+			}
+		})
 	}
 }
 

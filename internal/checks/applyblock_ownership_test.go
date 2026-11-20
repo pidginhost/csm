@@ -51,3 +51,28 @@ func TestApplyBlockLeavesTakenBlocksToAdmission(t *testing.T) {
 		})
 	}
 }
+
+// A long-lived derived block stays outside admission even when its local
+// evidence was refused. The legacy engine must receive the full lifetime.
+func TestLongDerivedBlockKeepsLegacyLifetimeAfterRefusal(t *testing.T) {
+	for _, cause := range []admission.Cause{admission.CauseNoObservation, admission.CauseRewrittenLog, admission.CauseKindNotAllowed} {
+		t.Run(cause.String(), func(t *testing.T) {
+			cfg := pendingTestConfig(t)
+			cfg.AutoResponse.BlockExpiry = "1h"
+			blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+			applyBlockTestSetup(t, blocker)
+			a := withAdmission(t)
+			a.executes = true
+			res, err := ApplyBlock(cfg, ApplyBlockRequest{
+				IP: "203.0.113.97", TTL: 24 * time.Hour, Source: BlockSourceCentral, Entry: admission.EntryCentral,
+				RootFinding: alert.Finding{Check: "wp_login_bruteforce"}, RootErr: attributionRefusal(cause),
+			})
+			if err != nil || res.Outcome != firewall.BlockOutcomeLive || len(blocker.calls) != 1 || blocker.calls[0].timeout != 24*time.Hour {
+				t.Fatalf("long derived block: result %+v, err %v, calls %+v", res, err, blocker.calls)
+			}
+			if len(a.responses()) != 0 || len(a.refused) != 0 {
+				t.Fatalf("legacy-only block reached admission: responses %+v, refusals %v", a.responses(), a.refused)
+			}
+		})
+	}
+}
