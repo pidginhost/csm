@@ -23,10 +23,10 @@ const (
 )
 
 // peerLogGroupFor is the group whose web server workers open the peer log by
-// path: nobody on cPanel, where LiteSpeed runs them; elsewhere only Apache's
-// root parent opens it and the directory stays root's.
+// path: nobody for LiteSpeed on cPanel. Apache's root parent opens its logs
+// itself, so there the directory stays root's.
 func peerLogGroupFor(info platform.Info) string {
-	if info.IsCPanel() {
+	if info.IsCPanel() && info.WebServer == platform.WSLiteSpeed {
 		return "nobody"
 	}
 	return ""

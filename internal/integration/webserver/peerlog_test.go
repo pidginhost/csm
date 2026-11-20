@@ -452,7 +452,8 @@ func TestPeerLogGroupFor(t *testing.T) {
 		want string
 	}{
 		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed}, "nobody"},
-		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache}, "nobody"},
+		// Apache's root parent opens its logs; its workers need no access.
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache}, ""},
 		{platform.Info{OS: platform.OSDebian, WebServer: platform.WSApache}, ""},
 	} {
 		if got := peerLogGroupFor(tc.info); got != tc.want {
