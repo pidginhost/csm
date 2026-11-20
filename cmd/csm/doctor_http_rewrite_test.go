@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -151,5 +152,59 @@ func TestDoctorHTTPRewriteProductionReader(t *testing.T) {
 	platform.Detect()
 	if got := row(false); got.Status != "warn" || !strings.Contains(got.Message, "web_server: settings were not applied") {
 		t.Fatalf("detection cached before the settings: row = %+v", got)
+	}
+}
+
+type peerLogStatInfo struct {
+	os.FileInfo
+	mod time.Time
+}
+
+func (f peerLogStatInfo) ModTime() time.Time { return f.mod }
+
+// The web peer log row says whether CSM can verify rewritten client
+// addresses on this host, and what to do when it cannot.
+func TestDoctorWebPeerLogRow(t *testing.T) {
+	now := time.Unix(1795200000, 0)
+	cpanel := platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed, AccessLogPaths: []string{"/usr/local/apache/logs/access_log"}}
+	active := checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSLiteSpeed, Directive: "useIpInProxyHeader 2"}
+	files := func(m map[string]time.Time) func(string) (os.FileInfo, error) {
+		return func(path string) (os.FileInfo, error) {
+			if at, ok := m[path]; ok {
+				return peerLogStatInfo{mod: at}, nil
+			}
+			return nil, os.ErrNotExist
+		}
+	}
+	fresh := map[string]time.Time{
+		"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
+		"/var/log/csm/web-peer.log":             now.Add(-time.Minute),
+		"/usr/local/apache/logs/access_log":     now.Add(-time.Minute),
+	}
+	stale := map[string]time.Time{
+		"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
+		"/var/log/csm/web-peer.log":             now.Add(-time.Hour),
+		"/usr/local/apache/logs/access_log":     now.Add(-time.Minute),
+	}
+	fronted := cpanel
+	fronted.FrontProxied = true
+	for _, tc := range []struct {
+		name   string
+		info   platform.Info
+		r      checks.HTTPRewrite
+		files  map[string]time.Time
+		status string
+		says   string
+	}{
+		{"direct host", cpanel, checks.HTTPRewrite{State: checks.RewriteNone}, nil, "ok", "not needed"},
+		{"fronted", fronted, active, fresh, "warn", "nginx"},
+		{"not installed", cpanel, active, nil, "warn", "csm webserver-integration install"},
+		{"not written", cpanel, active, stale, "warn", "not writing"},
+		{"active", cpanel, active, fresh, "ok", "active"},
+	} {
+		got := webPeerLogDoctorCheck(tc.info, tc.r, files(tc.files), now)
+		if got.Name != "web peer log" || got.Status != tc.status || !strings.Contains(got.Message, tc.says) {
+			t.Errorf("%s: row = %+v, want %s mentioning %q", tc.name, got, tc.status, tc.says)
+		}
 	}
 }

@@ -39,6 +39,18 @@ remove_csm_modsec_sections() {
     fi
 }
 
+# The peer log snippet makes the web server write under /var/log/csm, which
+# nothing keeps bounded once CSM is gone.
+remove_peer_log_snippets() {
+    local snippet
+    for snippet in \
+        /etc/apache2/conf.d/csm-peer-log.conf \
+        /etc/apache2/conf-enabled/csm-peer-log.conf \
+        /etc/httpd/conf.d/csm-peer-log.conf; do
+        rm -f -- "$snippet" 2>/dev/null || echo "WARNING: could not remove $snippet" >&2
+    done
+}
+
 # Remove the challenge snippets before the map files they reference. A
 # snippet left pointing at a deleted map fails the web server's configtest
 # host-wide, so the maps stay whenever a snippet has to stay.
@@ -151,6 +163,7 @@ for user_conf in /etc/apache2/conf.d/modsec/modsec2.user.conf /usr/local/apache/
 done
 rm -f /etc/apache2/conf.d/modsec/csm_modsec_custom.conf 2>/dev/null || true
 remove_challenge_snippets || true
+remove_peer_log_snippets || true
 
 # Remove PHP Shield ini files
 rm -f /opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini 2>/dev/null || true

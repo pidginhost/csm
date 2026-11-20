@@ -149,3 +149,34 @@ func appendLine(t *testing.T, path, line string) {
 		t.Fatal(err)
 	}
 }
+
+// Behind a local nginx every peer is this host. The daemon still reads the
+// peer log, so the log stays bounded, but it records no verdict and raises
+// no forgery alert from it.
+func TestFrontProxiedHostDisablesPeerVerdicts(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	d := &Daemon{webPeer: newWebPeerLog()}
+	var spec *logWatchSpec
+	for _, s := range d.fixedLogSpecs(platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache, FrontProxied: true}, nil, false) {
+		if s.path == webPeerLogPath {
+			spec = &s
+		}
+	}
+	if spec == nil || spec.truncateAt == 0 {
+		t.Fatalf("a front-proxied host does not read and bound the peer log: %+v", spec)
+	}
+	at := time.Unix(1795200000, 0)
+	for _, line := range []string{
+		peerLine(at, "site.example", "127.0.0.1:41000", "192.0.2.60"),
+		peerLine(at, "site.example", "203.0.113.80:41000", "203.0.113.80"),
+	} {
+		if got := spec.handler(line, &config.Config{}); len(got) != 0 {
+			t.Fatalf("front-proxied peer log line %q raised %+v", line, got)
+		}
+	}
+	for _, ip := range []string{"192.0.2.60", "203.0.113.80"} {
+		if got := checks.WebPeerVerdict(netip.MustParseAddr(ip), at); got != checks.PeerUnknown {
+			t.Fatalf("verdict for %s on a front-proxied host = %v, want unknown", ip, got)
+		}
+	}
+}

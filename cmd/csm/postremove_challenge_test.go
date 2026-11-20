@@ -283,3 +283,45 @@ func TestPostremoveDisablesTheCPanelSiteSnippet(t *testing.T) {
 		t.Fatalf("map kept after its references were disabled: %v", err)
 	}
 }
+
+// Uninstalling removes the peer log snippet from every place the installer
+// puts it: left behind, it points the web server at a log nothing bounds.
+func TestPostremoveRemovesThePeerLogSnippet(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "build", "packaging", "scripts", "postremove.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(body)
+	start := strings.Index(script, "remove_peer_log_snippets() {")
+	if start < 0 || !strings.Contains(script, "\nremove_peer_log_snippets || true\n") {
+		t.Fatal("postremove.sh does not define and call remove_peer_log_snippets")
+	}
+	fn := script[start : start+strings.Index(script[start:], "\n}\n")+2]
+	root := t.TempDir()
+	for _, path := range []string{"/etc/apache2", "/etc/httpd"} {
+		fn = strings.ReplaceAll(fn, path, filepath.Join(root, strings.TrimPrefix(path, "/")))
+	}
+	var snippets []string
+	for _, info := range []platform.Info{
+		{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed},
+		{OS: platform.OSDebian, WebServer: platform.WSApache},
+		{OS: platform.OSRHEL, WebServer: platform.WSApache},
+	} {
+		path := filepath.Join(root, strings.TrimPrefix(webserver.PeerLogPathFor(info), "/"))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# csm-managed-version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		snippets = append(snippets, path)
+	}
+	if out, err := runPostremoveChallengeFunction(t, fn, "remove_peer_log_snippets"); err != nil {
+		t.Fatalf("remove_peer_log_snippets: %v: %s", err, out)
+	}
+	for _, path := range snippets {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s survived uninstall: %v", path, err)
+		}
+	}
+}

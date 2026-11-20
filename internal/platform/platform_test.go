@@ -345,3 +345,25 @@ func TestPopulatePaths_CPanelAccessLogCandidates(t *testing.T) {
 		}
 	}
 }
+
+// cPanel runs nginx in front of Apache or LiteSpeed. An installed nginx
+// counts as much as a running one: at boot CSM may start before nginx.
+func TestFrontProxied(t *testing.T) {
+	for _, tc := range []struct {
+		panel    Panel
+		running  map[string]bool
+		nginxBin bool
+		want     bool
+	}{
+		{PanelCPanel, map[string]bool{"nginx": true, "httpd": true}, true, true},
+		{PanelCPanel, map[string]bool{"nginx": true, "lshttpd": true}, true, true},
+		{PanelCPanel, map[string]bool{"httpd": true}, true, true},
+		{PanelCPanel, map[string]bool{}, true, true},
+		{PanelCPanel, map[string]bool{"httpd": true}, false, false},
+		{PanelNone, map[string]bool{"nginx": true, "apache2": true}, true, false},
+	} {
+		if got := frontProxied(tc.panel, tc.running, tc.nginxBin); got != tc.want {
+			t.Errorf("frontProxied(%s, %v, %v) = %v, want %v", tc.panel, tc.running, tc.nginxBin, got, tc.want)
+		}
+	}
+}

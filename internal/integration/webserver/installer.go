@@ -84,6 +84,9 @@ type Result struct {
 	// automate on this stack. Empty when install is fully automatic.
 	// The CLI prints it after the result block on successful install.
 	FollowUp string `json:"follow_up,omitempty"`
+	// PeerLog is the web peer log snippet's own result for the verbs that
+	// manage it.
+	PeerLog *Result `json:"peer_log,omitempty"`
 }
 
 // Installer drives the install / upgrade / status / remove flow. All
@@ -106,6 +109,10 @@ type Installer struct {
 	// configuration once so site blocks read the per-site snippet. Only the
 	// explicit command sets it; the daemon never rebuilds on its own.
 	RebuildSiteIncludes bool
+	// PeerLogPath is where the web peer log snippet goes; "" where the web
+	// server does not support it. PeerLogDir is the directory it logs to.
+	PeerLogPath string
+	PeerLogDir  string
 }
 
 // LegacySnippetPath is where the package installer used to deploy a
@@ -143,6 +150,8 @@ func New(info platform.Info, cfg *config.Config) (*Installer, error) {
 		RemoveAt:          os.Remove,
 		Stderr:            os.Stderr,
 		LegacySnippetPath: legacySnippetFor(h),
+		PeerLogPath:       PeerLogPathFor(info),
+		PeerLogDir:        peerLogDir,
 	}, nil
 }
 

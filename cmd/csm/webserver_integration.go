@@ -77,22 +77,7 @@ func runWebserverIntegration() {
 	// read the per-site snippet; the daemon's own refresh never does.
 	inst.RebuildSiteIncludes = verb == "install" || verb == "upgrade"
 
-	var (
-		res webserver.Result
-		op  error
-	)
-	switch verb {
-	case "install":
-		res, op = inst.Install()
-	case "upgrade":
-		res, op = inst.Upgrade()
-	case "status":
-		res, op = inst.Status()
-	case "validate":
-		res, op = inst.Validate()
-	case "remove":
-		res, op = inst.Remove()
-	}
+	res, op := inst.Run(verb)
 
 	emitResult(asJSON, res)
 	if op != nil {
@@ -143,6 +128,16 @@ func emitResult(asJSON bool, res webserver.Result) {
 		fmt.Println("Manual setup required:")
 		for _, line := range strings.Split(res.FollowUp, "\n") {
 			fmt.Println("  " + line)
+		}
+	}
+	if p := res.PeerLog; p != nil {
+		fmt.Println("web peer log")
+		fmt.Printf("  status:    %s\n", p.Status)
+		if p.SnippetPath != "" {
+			fmt.Printf("  snippet:   %s\n", p.SnippetPath)
+		}
+		if p.Message != "" {
+			fmt.Printf("  message:   %s\n", p.Message)
 		}
 	}
 }

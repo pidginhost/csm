@@ -1,0 +1,236 @@
+package webserver
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"text/template"
+
+	"github.com/pidginhost/csm/internal/platform"
+)
+
+// peerLogDir holds PeerLogFile, the log the snippet makes the web server
+// write and the daemon read.
+const (
+	peerLogDir  = "/var/log/csm"
+	PeerLogFile = peerLogDir + "/web-peer.log"
+)
+
+// PeerLogPathFor is where the peer log snippet goes on hosts whose web
+// server applies server-level Apache log directives to every site: Apache,
+// and LiteSpeed reading cPanel's Apache tree. Hosts where nginx fronts the
+// web server would log only nginx as the peer. Elsewhere it is "".
+func PeerLogPathFor(info platform.Info) string {
+	if info.FrontProxied {
+		return ""
+	}
+	switch {
+	case info.IsCPanel() && (info.WebServer == platform.WSApache || info.WebServer == platform.WSLiteSpeed):
+		return "/etc/apache2/conf.d/csm-peer-log.conf"
+	case info.WebServer == platform.WSApache && info.IsDebianFamily():
+		return "/etc/apache2/conf-enabled/csm-peer-log.conf"
+	case info.WebServer == platform.WSApache:
+		return "/etc/httpd/conf.d/csm-peer-log.conf"
+	}
+	return ""
+}
+
+// peerLogBody is the snippet: one line per request with its start time,
+// the virtual host, the connection's peer and the client address the
+// server logged.
+func (i *Installer) peerLogBody() ([]byte, error) {
+	tpl, err := template.New("peerlog").Parse(peerLogTemplate)
+	if err != nil {
+		return nil, err
+	}
+	var b bytes.Buffer
+	b.WriteString(templateHeaderPrefix + strconv.Itoa(PeerLogTemplateVersion) + "\n")
+	err = tpl.Execute(&b, struct{ LogFile string }{filepath.Join(i.PeerLogDir, filepath.Base(PeerLogFile))})
+	return b.Bytes(), err
+}
+
+func (i *Installer) peerLogResult(action string) Result {
+	return Result{Action: action, Webserver: i.Handler.Kind(), SnippetPath: i.PeerLogPath, ShippedVer: PeerLogTemplateVersion}
+}
+
+// readPeerLog returns the snippet's bytes and whether it exists; an
+// existing file without the managed header is the operator's.
+func (i *Installer) readPeerLog() ([]byte, bool, error) {
+	data, err := i.ReadAt(i.PeerLogPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	case parseHeaderVersion(data) == 0:
+		return data, true, ErrManualEdits
+	}
+	return data, true, nil
+}
+
+// InstallPeerLog writes the peer log snippet, validates the web server
+// configuration and reloads it, restoring the previous state on failure. It
+// needs no challenge settings.
+func (i *Installer) InstallPeerLog() (Result, error) {
+	res := i.peerLogResult("install")
+	if i.PeerLogPath == "" {
+		res.Status, res.Message = "skipped", "the web peer log is not supported on this web server"
+		return res, nil
+	}
+	prev, existed, err := i.readPeerLog()
+	if err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	// Never downgrade a snippet a newer CSM wrote.
+	if v := parseHeaderVersion(prev); existed && v >= PeerLogTemplateVersion {
+		res.Status, res.OnDiskVer = "no-op", v
+		return res, nil
+	}
+	body, err := i.peerLogBody()
+	if err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	// The web server opens the log when it reloads: a missing directory
+	// would fail that reload.
+	if err := i.MkdirAll(i.PeerLogDir, 0o750); err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	if err := i.MkdirAll(filepath.Dir(i.PeerLogPath), 0o755); err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	if err := i.WriteAt(i.PeerLogPath, body, 0o644); err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	if err := i.applyPeerLog(prev, existed); err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	res.Status, res.OnDiskVer = "ok", PeerLogTemplateVersion
+	return res, nil
+}
+
+// RemovePeerLog removes a managed peer log snippet and reloads.
+func (i *Installer) RemovePeerLog() (Result, error) {
+	res := i.peerLogResult("remove")
+	if i.PeerLogPath == "" {
+		res.Status = "skipped"
+		return res, nil
+	}
+	prev, existed, err := i.readPeerLog()
+	if err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	if !existed {
+		res.Status = "no-op"
+		return res, nil
+	}
+	if err := i.RemoveAt(i.PeerLogPath); err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	if err := i.applyPeerLog(prev, true); err != nil {
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	}
+	res.Status = "ok"
+	return res, nil
+}
+
+// PeerLogStatus reports whether the snippet is installed and current.
+func (i *Installer) PeerLogStatus() (Result, error) {
+	res := i.peerLogResult("status")
+	if i.PeerLogPath == "" {
+		res.Status = "skipped"
+		return res, nil
+	}
+	data, existed, err := i.readPeerLog()
+	switch {
+	case errors.Is(err, ErrManualEdits):
+		res.Status, res.Message = "manual", err.Error()
+		return res, nil
+	case err != nil:
+		res.Status, res.Message = "fail", err.Error()
+		return res, err
+	case !existed:
+		res.Status = "missing"
+		return res, nil
+	}
+	res.OnDiskVer = parseHeaderVersion(data)
+	res.Status = "ok"
+	if res.OnDiskVer < PeerLogTemplateVersion {
+		res.Status = "stale"
+	}
+	return res, nil
+}
+
+// applyPeerLog validates and reloads after a change to the snippet; on a
+// failure it puts back prev (or removes the file when there was none) and,
+// when the reload itself failed, reloads the restored configuration.
+func (i *Installer) applyPeerLog(prev []byte, existed bool) error {
+	restore := func() error {
+		if existed {
+			return i.WriteAt(i.PeerLogPath, prev, 0o644)
+		}
+		if err := i.RemoveAt(i.PeerLogPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := i.Handler.Validate(); err != nil {
+		return errors.Join(fmt.Errorf("configtest refused the peer log change: %w", err), restore())
+	}
+	if err := i.Handler.Reload(); err != nil {
+		rollback := restore()
+		if rollback == nil {
+			rollback = i.Handler.Reload()
+		}
+		return errors.Join(fmt.Errorf("reload after the peer log change failed: %w", err), rollback)
+	}
+	return nil
+}
+
+// Run performs one integration verb: the challenge snippet's, then the web
+// peer log's for install, upgrade, status and remove. The peer log does not
+// depend on the challenge settings, so it runs even when the challenge
+// part fails; either failure is returned.
+func (i *Installer) Run(verb string) (Result, error) {
+	var (
+		res Result
+		err error
+	)
+	switch verb {
+	case "install":
+		res, err = i.Install()
+	case "upgrade":
+		res, err = i.Upgrade()
+	case "status":
+		res, err = i.Status()
+	case "validate":
+		return i.Validate()
+	case "remove":
+		res, err = i.Remove()
+	default:
+		return Result{Action: verb, Status: "fail"}, fmt.Errorf("webserver integration: unknown verb %q", verb)
+	}
+	var peer Result
+	var peerErr error
+	switch verb {
+	case "install", "upgrade":
+		peer, peerErr = i.InstallPeerLog()
+	case "status":
+		peer, peerErr = i.PeerLogStatus()
+	case "remove":
+		peer, peerErr = i.RemovePeerLog()
+	}
+	res.PeerLog = &peer
+	return res, errors.Join(err, peerErr)
+}

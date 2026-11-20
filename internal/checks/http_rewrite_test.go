@@ -750,3 +750,21 @@ func TestDetectHTTPRewriteMarksFormatRewrites(t *testing.T) {
 		})
 	}
 }
+
+// The CSM peer log snippet adds a log format the rewrite detector reads like
+// any other. It must not make a direct host look rewritten or unknown.
+func TestPeerLogSnippetIsNotARewrite(t *testing.T) {
+	dir := t.TempDir()
+	conf := writeRewriteFile(t, dir, "httpd.conf",
+		"LogFormat \"%a %l %u %t \\\"%r\\\" %>s %b\" combined\nCustomLog logs/access_log combined\n"+
+			"LogFormat \"%{%s}t %v %{c}a %a\" csmpeer\nCustomLog /var/log/csm/web-peer.log csmpeer\n")
+	for _, server := range []platform.WebServer{platform.WSApache, platform.WSLiteSpeed} {
+		src := rewriteSources{server: server, apacheConfig: conf}
+		if server == platform.WSLiteSpeed {
+			src.lswsConfig = writeRewriteFile(t, dir, "lsws.xml", "<httpServerConfig><serverName>web</serverName></httpServerConfig>")
+		}
+		if got := detectHTTPRewrite(src); got.State != RewriteNone {
+			t.Errorf("%s with the peer log snippet = %+v, want no rewrite", server, got)
+		}
+	}
+}

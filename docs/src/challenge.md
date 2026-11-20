@@ -343,6 +343,13 @@ csm webserver-integration validate    # run the webserver's configtest
 csm webserver-integration remove      # uninstall the snippet
 ```
 
+`install` and `upgrade` also add the
+[web peer log](detection-realtime.md#web-peer-log-and-forged-client-addresses)
+on Apache and on cPanel with LiteSpeed, `status` reports it and `remove` takes
+it away. The peer log does not need `challenge.public_url`: when the challenge
+part fails, the peer log is still installed and the command reports the
+failure.
+
 The installer auto-detects the active webserver via
 `internal/platform`. Supported stacks and snippet paths:
 

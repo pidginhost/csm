@@ -50,6 +50,9 @@ type Info struct {
 	OSVersion string
 	Panel     Panel
 	WebServer WebServer
+	// FrontProxied marks a cPanel host with nginx, which cPanel runs in
+	// front of Apache or LiteSpeed: every request reaches them from here.
+	FrontProxied bool
 
 	// Config locations for the detected web server.
 	ApacheConfigDir string // e.g. /etc/apache2 or /etc/httpd
@@ -512,6 +515,13 @@ func detectWebServer(i *Info) {
 
 	i.WebServer = selectWebServer(i.Panel, running, i.ApacheBinary != "", i.NginxBinary != "")
 	i.WebServer = liteSpeedBinaryFallback(i.WebServer, running, i.LiteSpeedBinary != "")
+	i.FrontProxied = frontProxied(i.Panel, running, i.NginxBinary != "")
+}
+
+// frontProxied reports a cPanel host with nginx running or installed: CSM
+// may start at boot before nginx does.
+func frontProxied(panel Panel, running map[string]bool, hasNginxBinary bool) bool {
+	return panel == PanelCPanel && (running["nginx"] || hasNginxBinary)
 }
 
 // liteSpeedBinaryFallback corrects the historical boot-order misdetect: when

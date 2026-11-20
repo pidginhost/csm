@@ -105,7 +105,8 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	// daemon is already down for that reason.
 	report.Checks = append(report.Checks, doctorIntegrityCheck(cfg, verifyIntegrity))
 	report.Checks = append(report.Checks, doctorAccountRootAccess(cfg)...)
-	report.Checks = append(report.Checks, webRewriteDoctorCheck(doctorHTTPRewrite(overridesApplied)))
+	rewrite := doctorHTTPRewrite(overridesApplied)
+	report.Checks = append(report.Checks, webRewriteDoctorCheck(rewrite), webPeerLogDoctorCheck(platform.Detect(), rewrite, os.Stat, time.Now()))
 
 	// 2. Daemon reachable
 	resp, err := readStatus()

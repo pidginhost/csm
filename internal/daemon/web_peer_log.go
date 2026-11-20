@@ -8,13 +8,14 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integration/webserver"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/netutil"
 )
 
-// webPeerLogPath is the log the web server writes "<unix seconds> <vhost>
-// <peer> <client>" to for every request, through the CSM peer log snippet.
-const webPeerLogPath = "/var/log/csm/web-peer.log"
+// webPeerLogPath is the log the CSM snippet makes the web server write:
+// "<unix seconds> <vhost> <peer> <client>" per request.
+const webPeerLogPath = webserver.PeerLogFile
 
 // webPeerLogMaxBytes is the size past which the daemon empties the peer log
 // once it has read it all. Every truncation leaves an hour of unknown

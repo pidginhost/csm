@@ -846,6 +846,11 @@ connected for themselves, which came through a trusted proxy or a known CDN
 edge, and which another peer chose. Automatic responses use that verdict for
 web findings; see [auto-response](auto-response.md).
 
+`csm webserver-integration install` or `upgrade` sets up the peer log on
+Apache and on cPanel with LiteSpeed, and `csm doctor` shows whether it is
+active. On cPanel hosts with nginx in front, every peer is the server itself:
+CSM keeps the log bounded but takes no verdict or alert from it.
+
 A request logged with a client address chosen by a peer that is neither the
 client nor a trusted proxy raises `http_client_forged` (Critical), at most once
 an hour per virtual host, measured when CSM emits the alert rather than when
