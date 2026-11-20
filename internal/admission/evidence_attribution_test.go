@@ -18,13 +18,14 @@ func TestCauseVocabulary(t *testing.T) {
 		{CauseUnreachable, 4, "unreachable"},
 		{CauseProxyPeer, 5, "proxy_peer"},
 		{CauseRewrittenLog, 6, "rewritten_log"},
+		{CauseForgedClient, 7, "forged_client"},
 	} {
 		if uint8(w.c) != w.n || w.c.String() != w.name || !w.c.Valid() {
 			t.Errorf("cause %d = %q valid %v, want %d %q", uint8(w.c), w.c.String(), w.c.Valid(), w.n, w.name)
 		}
 	}
-	if Cause(0).Valid() || Cause(7).Valid() {
-		t.Error("cause 0 or 7 is valid")
+	if Cause(0).Valid() || Cause(8).Valid() {
+		t.Error("cause 0 or 8 is valid")
 	}
 }
 

@@ -111,10 +111,14 @@ const (
 	// CauseRewrittenLog: the web server may replace the logged address;
 	// this build reads no separate connecting peer.
 	CauseRewrittenLog
+	// CauseForgedClient: the web server logged the address for a request
+	// whose connecting peer was neither the address nor a trusted proxy:
+	// that peer chose it.
+	CauseForgedClient
 	causeEnd
 )
 
-var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable", "proxy_peer", "rewritten_log"}
+var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable", "proxy_peer", "rewritten_log", "forged_client"}
 
 func (c Cause) Valid() bool { return c > 0 && c < causeEnd }
 

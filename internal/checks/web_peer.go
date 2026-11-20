@@ -248,3 +248,10 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 	}
 	return PeerUnknown
 }
+
+// webPeerDirect reports whether the peer log shows ip connected for itself
+// around at.
+func webPeerDirect(ip string, at time.Time) bool {
+	client, err := netip.ParseAddr(strings.TrimSpace(ip))
+	return err == nil && WebPeerVerdict(client, at) == PeerDirect
+}

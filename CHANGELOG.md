@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- With the CSM web peer log, web attackers on proxy-header hosts that connect directly are blocked again; proxied clients are only challenged and forged addresses never blocked.
 - With `auto_response.dry_run` off, an address admission refuses is no longer blocked by the older path or its queued retry, except clients Apache or nginx read from a proxy header.
 - With `auto_response.dry_run` off, web findings on LiteSpeed hosts that read client addresses from a proxy header no longer firewall-block that address; challenges still apply.
 - With `auto_response.dry_run` off, web findings no longer firewall-block an address the access log takes from request data, even where a proxy header is also trusted; challenges still apply.

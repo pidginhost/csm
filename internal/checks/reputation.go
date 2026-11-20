@@ -785,6 +785,12 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		for _, rec := range tailFileRecords(path, 100) {
 			if ip := firstField(rec.text); ip != "" {
 				if CurrentHTTPRewrite().State != RewriteNone {
+					// The peer log can still show the address connected
+					// for itself.
+					if r := accessLogSighting(rec, ip, cfg); !r.at.IsZero() && webPeerDirect(ip, r.at) {
+						add(ip, "HTTP request", r)
+						continue
+					}
 					addIfNotInfra(ips, ip, "HTTP request", cfg)
 					rewritten[ip] = true
 					continue

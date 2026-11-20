@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"net/netip"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -24,13 +25,13 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	if mayBeProxyEdge(f.Attribution, producer) && KnownProxyPeer(f.SourceIP, config.Active()) {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
 	}
-	// This build reads no separate peer field when the web server replaces
-	// the logged address, so neither the peer nor a chain can be verified,
-	// with or without an observation. An unknown state is refused the same
-	// way.
+	// When the web server may replace the logged address, only the peer log
+	// can verify it. An unknown state is treated the same way.
 	if (f.Attribution == admission.AttributionHTTPPeer || f.Attribution == admission.AttributionTrustedHTTPChain) &&
 		CurrentHTTPRewrite().State != RewriteNone {
-		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseRewrittenLog, Detail: "the web server may replace the client address it logs"}
+		if err := rewrittenPeerRefusal(f, producer); err != nil {
+			return "", admission.EvidenceInput{}, err
+		}
 	}
 	if producer == "" {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseNoObservation, Detail: "finding has no observation"}
@@ -56,6 +57,27 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 		Observation: admission.ObservationRef{Stream: f.Observation.Stream, Cursor: f.Observation.Cursor, Version: 1},
 		ObservedAt:  f.Observation.ObservedAt, Parser: parser, Target: target, Attribution: f.Attribution, Claims: f.Claims, Intel: f.Intel,
 	}, nil
+}
+
+// rewrittenPeerRefusal refuses an HTTP finding whose logged address the web
+// server may have replaced, unless the peer log shows the address connected
+// for itself. A client a trusted proxy forwarded is unreachable, one another
+// peer chose is forged. A chain, a finding without an observation, and an
+// address the peer log does not cover stay unverified.
+func rewrittenPeerRefusal(f alert.Finding, producer admission.ProducerID) error {
+	if f.Attribution == admission.AttributionHTTPPeer && producer != "" {
+		if client, err := netip.ParseAddr(strings.TrimSpace(f.SourceIP)); err == nil {
+			switch WebPeerVerdict(client, f.Observation.ObservedAt) {
+			case PeerDirect:
+				return nil
+			case PeerProxied:
+				return &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseUnreachable, Detail: "the peer log shows the address behind a trusted proxy"}
+			case PeerForged:
+				return &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseForgedClient, Detail: "the peer log shows another peer chose the address"}
+			}
+		}
+	}
+	return &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseRewrittenLog, Detail: "the web server may replace the client address it logs"}
 }
 
 // mayBeProxyEdge reports whether a finding's address can be an edge that

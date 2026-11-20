@@ -553,10 +553,15 @@ the ledger applies automatic IP blocks itself within this ceiling and the
 free slots of the temporary block set, and the existing paths leave those
 blocks to it. A block the ledger refuses is final too: the existing paths do
 not apply it either, including a queued retry of the same finding.
-Independent evidence for the address keeps its own response. Two refusals
-still leave the block to them: a client address Apache or nginx may have
-rewritten from a proxy header, which CSM cannot verify yet, and a ledger that
-could not take new work at all. LiteSpeed also applies those headers to
+Independent evidence for the address keeps its own response. Where the web
+server rewrites client addresses, the web peer log installed by
+`csm webserver-integration install` verifies each one: an address that
+connected for itself is blocked as on a direct host, a client behind a trusted
+proxy or a known CDN edge is only challenged, and an address another peer
+chose is refused as `forged_client`. Two refusals still leave the block to the
+existing paths: a client address Apache or nginx may have rewritten from a
+proxy header that the peer log does not cover, and a ledger that could not
+take new work at all. LiteSpeed also applies those headers to
 requests from the host itself, so any local user can choose the address it
 logs: on LiteSpeed that refusal is final as well, and so is one whose
 log format writes request data where CSM reads the client, even when the same

@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func withHTTPRewrite(t *testing.T, r HTTPRewrite) {
@@ -306,5 +308,90 @@ func TestReputationStampPrefersARecordOverARewrittenLog(t *testing.T) {
 	}
 	if f := findings[2]; f.Attribution != admission.AttributionUnknown || f.Observation != (alert.Observation{}) {
 		t.Fatalf("unseen address = %+v, want nothing", f)
+	}
+}
+
+// On a rewriting host the peer log decides: a client logged for its own
+// connection mints as on a direct host, one behind a trusted proxy or a CDN
+// edge is unreachable, and one another peer chose is forged. Apache and
+// LiteSpeed alike.
+func TestAdmissionEvidenceUsesThePeerVerdict(t *testing.T) {
+	for _, server := range []platform.WebServer{platform.WSApache, platform.WSLiteSpeed} {
+		for _, tc := range []struct {
+			name string
+			peer string
+			want admission.Cause
+		}{
+			{"direct", "203.0.113.70", 0},
+			{"proxied", "198.51.100.200", admission.CauseUnreachable},
+			{"forged", "127.0.0.1", admission.CauseForgedClient},
+		} {
+			t.Run(string(server)+"/"+tc.name, func(t *testing.T) {
+				withWebPeers(t, 500000)
+				withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: server, Directive: "useIpInProxyHeader 2"})
+				cfg := &config.Config{}
+				cfg.WebServer.TrustedProxies = []string{"198.51.100.200"}
+				f := httpPeerFinding("203.0.113.70")
+				ObserveWebPeer(f.Observation.ObservedAt, netip.MustParseAddr(tc.peer), netip.MustParseAddr("203.0.113.70"), cfg)
+				producer, in, err := AdmissionEvidence(f)
+				if tc.want != 0 {
+					if admission.CauseOf(err) != tc.want {
+						t.Fatalf("AdmissionEvidence = %v, want cause %v", err, tc.want)
+					}
+					return
+				}
+				if err != nil || producer != ProducerAccessLog || in.Attribution != admission.AttributionHTTPPeer || in.Target.Key() != "ip:203.0.113.70" {
+					t.Fatalf("AdmissionEvidence = %s %+v, %v; want the direct peer minted", producer, in, err)
+				}
+			})
+		}
+	}
+}
+
+// Without a peer log line the rewrite still cannot be verified.
+func TestAdmissionEvidenceUnknownVerdictKeepsRewrittenRefusal(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, activeRewrite)
+	if _, _, err := AdmissionEvidence(httpPeerFinding("203.0.113.71")); admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("AdmissionEvidence = %v, want rewritten_log", err)
+	}
+}
+
+// A trusted chain names a client behind a proxy whatever the peer log says.
+func TestAdmissionEvidenceChainIgnoresVerdict(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, activeRewrite)
+	f := httpPeerFinding("203.0.113.72")
+	f.Attribution = admission.AttributionTrustedHTTPChain
+	ObserveWebPeer(f.Observation.ObservedAt, netip.MustParseAddr("203.0.113.72"), netip.MustParseAddr("203.0.113.72"), &config.Config{})
+	if _, _, err := AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("AdmissionEvidence = %v, want rewritten_log", err)
+	}
+}
+
+// A rewritten access-log sighting the peer log verifies as direct is a
+// sighting like a direct host's; otherwise it stays the rewritten log's.
+func TestReputationVerifiedRewrittenSighting(t *testing.T) {
+	at := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+	for _, direct := range []bool{true, false} {
+		t.Run(map[bool]string{true: "direct", false: "unverified"}[direct], func(t *testing.T) {
+			withWebPeers(t, 500000)
+			withHTTPRewrite(t, activeRewrite)
+			if direct {
+				ObserveWebPeer(at, netip.MustParseAddr("203.0.113.73"), netip.MustParseAddr("203.0.113.73"), &config.Config{})
+			}
+			cfg := listIPs(t, "203.0.113.73")
+			sightingLogs(t, map[string]string{sightingAccessLog: sightingLines("203.0.113.73", at)["HTTP request"] + "\n"})
+			f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "203.0.113.73")
+			if direct {
+				if f.Attribution != admission.AttributionDerived || f.Observation.Producer != string(ProducerReputationScan) {
+					t.Fatalf("verified sighting = %+v, want derived evidence", f)
+				}
+				return
+			}
+			if f.Attribution != admission.AttributionHTTPPeer || f.Observation != (alert.Observation{}) {
+				t.Fatalf("unverified sighting = %+v, want the rewritten log's client", f)
+			}
+		})
 	}
 }
