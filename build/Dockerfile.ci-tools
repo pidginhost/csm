@@ -22,6 +22,7 @@ FROM golang:1.27.4-bookworm
 # golangci-lint and gosec are also built into Dockerfile.builder for the
 # tagged jobs; keep the versions equal.
 ARG GOLANGCI_LINT_VERSION=v2.15.0
+# v1.10.0 rejects Go 1.27.4 stdlib files; see docs/src/development.md.
 ARG GOVULNCHECK_VERSION=v1.9.0
 ARG GOCOVER_COBERTURA_VERSION=v1.5.0
 ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad

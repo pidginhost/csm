@@ -232,6 +232,10 @@ image jobs: ci-tools, or both builder architectures. Preflight waits for
 those builds, and both release builds wait for preflight while still
 running alongside lint and tests.
 
+Keep govulncheck at v1.9.0 in the Makefile and CI tools image for Go 1.27.4.
+Version v1.10.0 fails to type-check that toolchain's standard library with
+"requires go1.27 or later" errors. Recheck that failure before lifting the pin.
+
 Release builds and preflight run in branch and tag pipelines, including
 scheduled and manually started runs. They are excluded from merge-request
 pipelines; merge requests use the checks in the branch pipeline.
