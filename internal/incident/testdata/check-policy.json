@@ -494,5 +494,15 @@
       "modsec_classifier_gap",
       "modsec_disabled_vhost"
     ]
+  },
+  {
+    "kind": "web_attack",
+    "selectors": [
+      "isInboundWebAttackCheck"
+    ],
+    "reason": "The http_ prefix routes this forgery alert with inbound web findings, but it carries no source IP: another peer chose the logged address, so web attack classification never applies.",
+    "checks": [
+      "http_client_forged"
+    ]
   }
 ]
