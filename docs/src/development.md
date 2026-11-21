@@ -22,9 +22,12 @@ CGO, pkg-config, YARA-X 1.23.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a
 stale image fails instead of downloading another toolchain in every job.
-`go.mod` sets the Go release and the Makefile sets the analysers; a pipeline
-test fails when a build image, the CI tools tag or this page disagrees. Lint
-and test job logs print the Go and analyser versions they ran.
+`go.mod` sets the Go release. The Makefile pins the Go analysers. A pipeline
+test checks the image definitions and the versions on this page. When the CI
+tools image tag changes, update the full tag in its build examples too.
+Jobs on the shared Go runner print the Go version. Analyser jobs also print
+the scanner version. The kernel job prints the Go version recorded by the
+test service when its `production-results/kernel/engines.txt` report is available.
 
 ## Build
 
