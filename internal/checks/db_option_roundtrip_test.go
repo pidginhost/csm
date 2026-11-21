@@ -49,37 +49,49 @@ func TestBackupAndCleanOption_BackupStoresTrueOriginal(t *testing.T) {
 	// script (evil.top is an abused TLD -> attacker indicator).
 	original := "start\n<script src=\"" + maliciousURL + "\"></script>\nend"
 
-	var queries []string
-	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
-		queries = append(queries, query)
-		return nil, nil
-	})
-	t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
-
-	creds := wpDBCreds{dbName: "db1", dbUser: "u", dbHost: "localhost"}
-	if !backupAndCleanOption(creds, "wp_", "opt", original, maliciousURL) {
-		t.Fatal("expected clean to succeed and write a backup")
-	}
-
-	var insert, update string
-	for _, q := range queries {
+	var inserted, updated bool
+	withOptionExec(t, func(stmt string, args []any) (int64, error) {
 		switch {
-		case strings.HasPrefix(strings.TrimSpace(q), "INSERT"):
-			insert = q
-		case strings.HasPrefix(strings.TrimSpace(q), "UPDATE"):
-			update = q
+		case strings.HasPrefix(stmt, "INSERT"):
+			inserted = true
+			if len(args) != 2 || args[1] != original {
+				t.Fatal("backup did not receive the exact original")
+			}
+		case strings.HasPrefix(stmt, "UPDATE"):
+			updated = true
+			if !inserted || !strings.Contains(stmt, "BINARY option_value=?") || len(args) != 3 ||
+				args[0] != "start\n\nend" || args[1] != "opt" || args[2] != original {
+				t.Fatal("update did not compare and replace the exact option bytes")
+			}
+		default:
+			t.Fatalf("unexpected statement %q", stmt)
 		}
+		return 1, nil
+	})
+	creds := wpDBCreds{dbName: "db1", dbUser: "u", dbHost: "localhost"}
+	if !backupAndCleanOption(creds, "wp_", "opt", original, maliciousURL) || !updated {
+		t.Fatal("expected backup and update")
 	}
-	if insert == "" || update == "" {
-		t.Fatalf("expected both INSERT (backup) and UPDATE (clean) queries; got %v", queries)
+}
+
+func withOptionExec(t *testing.T, fn func(string, []any) (int64, error)) {
+	t.Helper()
+	old := execOptionWrite
+	t.Cleanup(func() { execOptionWrite = old })
+	execOptionWrite = func(_ context.Context, _ mysqlclient.Creds, stmt string, args ...any) (int64, error) {
+		return fn(stmt, args)
 	}
-	// The backup stores the SQL-escaped true original: a real newline appears
-	// as the single-escape "\n" here, and NOT the double "\\n" that a
-	// batch-escaped-then-re-escaped value would produce.
-	if !strings.Contains(insert, escapeSQLString(original)) {
-		t.Errorf("backup did not store the true original bytes\n insert: %q\n want substring: %q", insert, escapeSQLString(original))
-	}
-	if strings.Contains(insert, `start\\nstart`) || strings.Contains(insert, `\\n<script`) {
-		t.Errorf("backup value is double-escaped (corrupted): %q", insert)
+}
+
+func TestCleanOptionConcurrentUpdate(t *testing.T) {
+	withOptionExec(t, func(stmt string, _ []any) (int64, error) {
+		if strings.HasPrefix(stmt, "INSERT") {
+			return 1, nil
+		}
+		return 0, nil
+	})
+	name, err := writeCleanOption(wpDBCreds{}, "wp_", "widget_text", "before", "after")
+	if name == "" || err == nil {
+		t.Fatal("a concurrent edit must report failure and identify the retained backup")
 	}
 }

@@ -269,3 +269,9 @@ func TestSupportBundleCapability(t *testing.T) {
 		t.Error("support_bundle.v1 capability missing")
 	}
 }
+
+func TestResponsePreviewCapability(t *testing.T) {
+	if !contains(Capabilities(), "response.preview_diff.v1") {
+		t.Error("missing response preview capability")
+	}
+}

@@ -162,6 +162,12 @@ file cannot block response processing.
 Manual full scans leave cleaner refusals for review instead of reporting a
 failed remediation. `csm clean` also distinguishes a refusal from an action
 failure; both return a nonzero exit status when the file was not cleaned.
+`csm clean --preview` runs the same cleaner without a backup or a write and
+prints the change as a unified diff. Its header names the SHA-256 of the file
+before and after, the digests the action log records when the clean is
+applied. File names and content are escaped for the terminal. A preview that
+exceeds the display limit fails without writing. Integrations can check for
+`response.preview_diff.v1` in the capabilities list.
 
 WordPress core, plugin and theme files are cleaned in place, with three
 exceptions. When cleaning would leave nothing of a file that sends no page
@@ -344,6 +350,8 @@ auto_response:
 ```
 
 ### Exposed-file virtual patches
+
+A preview, from `csm virtual-patch` without `--apply` or from `auto` mode in dry run, shows each access-file change as a unified diff and writes nothing. Each diff header names the SHA-256 of the file before and after; the after digest is the one the rollback copy expects. Later changes to the same file start from the previous planned change. The local command shows context. Automatic alerts show only the proposed deny rules and mask any existing line that needs a final newline. A file that cannot be shown as text fails the preview.
 
 Each applied deny keeps a rollback copy under `/opt/csm/quarantine/pre_clean/`. Re-applying the same rollback state reuses that copy; content, ownership, permissions, or remove-versus-replace changes keep separate restore points.
 

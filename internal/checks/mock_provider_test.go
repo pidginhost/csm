@@ -245,6 +245,10 @@ func withMockCmd(t *testing.T, m CmdRunner) {
 	// the existing assertions keep working without touching every
 	// dbscan/db_clean test fixture.
 	if mc, ok := m.(*mockCmd); ok && (mc.runWithEnv != nil || mc.run != nil) {
+		withOptionExec(t, func(stmt string, _ []any) (int64, error) {
+			_, err := mc.RunWithEnv("mysql", []string{"-e", stmt})
+			return 1, err
+		})
 		mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, creds mysqlclient.Creds, query string, _ ...any) ([]string, error) {
 			// Reconstruct the historical CLI argv so existing
 			// mock callbacks (which switch on `args[i]`) match.

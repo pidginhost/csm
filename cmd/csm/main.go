@@ -237,7 +237,7 @@ Commands:
   update-rules  Download latest malware signature rules
   update-geoip  Download latest MaxMind GeoLite2 databases
   update-bot-ranges  Refresh built-in AI-crawler IP ranges from vendor feeds
-  clean <path>  Attempt to clean an infected PHP file (backup created first)
+  clean <path>  Clean an infected PHP file or .htaccess, backup created first (--preview prints the diff only)
   db-clean ...  WordPress database cleanup (see: csm db-clean --help)
   store compact Reclaim unused space in the bbolt state database (daemon must be stopped; add --preview for a dry run)
   store export <path>   Back up bbolt + state + signatures to a tar+zstd archive
@@ -1223,20 +1223,6 @@ func refreshBotRanges(ctx context.Context, client *http.Client, sources []threat
 	return threatintel.RefreshFetchedRanges(ctx, client, sources, cachePath)
 }
 
-func runClean() {
-	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "Usage: csm clean <path>\n")
-		os.Exit(1)
-	}
-	path := os.Args[2]
-
-	result := checks.CleanInfectedFile(path)
-	fmt.Fprintln(os.Stderr, checks.FormatCleanResult(result))
-	if !result.Cleaned {
-		os.Exit(1)
-	}
-}
-
 func runDBClean() {
 	if len(os.Args) < 3 {
 		printDBCleanUsage()
@@ -1256,16 +1242,8 @@ func runDBClean() {
 		printDBCleanUsage()
 
 	case "--option":
-		if len(os.Args) < 5 {
-			fmt.Fprintf(os.Stderr, "Usage: csm db-clean --option <account> <option_name> [--preview]\n")
-			os.Exit(1)
-		}
-		account := os.Args[3]
-		optionName := os.Args[4]
-		result := checks.DBCleanOption(account, optionName, preview)
-		fmt.Fprint(os.Stderr, checks.FormatDBCleanResult(result))
-		if !result.Success {
-			os.Exit(1)
+		if code := runDBCleanOptionCommand(os.Args[3:], os.Stderr, checks.DBCleanOption); code != 0 {
+			os.Exit(code)
 		}
 
 	case "--revoke-user":

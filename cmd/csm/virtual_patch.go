@@ -38,15 +38,20 @@ func runVirtualPatch() {
 
 func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 	apply := false
-	for _, a := range args {
+	words, _, ok := responseConfigArgs(args)
+	if !ok {
+		fmt.Fprintln(stderr, "usage: csm virtual-patch [--apply]")
+		return 1
+	}
+	for _, a := range words {
 		switch a {
 		case "--apply":
 			apply = true
 		case "-h", "--help":
 			_, _ = fmt.Fprint(stderr, "usage: csm virtual-patch [--apply]\n\n"+
 				"Re-scan document roots and deny HTTP access to confirmed web-exposed files.\n"+
-				"Without --apply it only previews. Requires auto_response.virtual_patch_exposed_files\n"+
-				"to be set to manual or auto.\n")
+				"Without --apply it only prints each .htaccess change as a unified diff. Requires\n"+
+				"auto_response.virtual_patch_exposed_files to be set to manual or auto.\n")
 			return 0
 		default:
 			fmt.Fprintf(stderr, "unknown flag %q (try --apply)\n", a)
@@ -64,6 +69,9 @@ func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 		return 1
 	}
 
+	defer config.SetActive(config.Active())
+	config.SetActive(cfg)
+
 	ctx, cancel := context.WithTimeout(context.Background(), virtualPatchTimeout)
 	defer cancel()
 
@@ -79,15 +87,20 @@ func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 	if apply {
 		mode = "APPLY"
 	}
-	fmt.Fprintf(stderr, "\n%s: %d web-exposed finding(s), %d action(s)\n", mode, len(findings), len(actions))
+	if _, err := fmt.Fprintf(stderr, "\n%s: %d web-exposed finding(s), %d action(s)\n", mode, len(findings), len(actions)); err != nil {
+		return 1
+	}
 	applied := 0
 	failed := 0
 	for _, a := range actions {
-		fmt.Fprintf(stderr, "  - %s\n", a.Message)
+		// Paths and previewed content are tenant-controlled.
+		if _, err := fmt.Fprint(stderr, checks.TerminalSafe(fmt.Sprintf("  - %s\n%s\n", a.Message, a.Details))); err != nil {
+			return 1
+		}
 		switch {
 		case strings.HasPrefix(a.Message, "VIRTUAL-PATCH: denied"):
 			applied++
-		case strings.HasPrefix(a.Message, "VIRTUAL-PATCH failed:"):
+		case strings.HasPrefix(a.Message, "VIRTUAL-PATCH failed:"), strings.HasPrefix(a.Message, "VIRTUAL-PATCH preview failed:"):
 			failed++
 		}
 	}

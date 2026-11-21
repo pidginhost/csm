@@ -2,6 +2,8 @@ package checks
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -590,37 +592,51 @@ func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, ma
 		return false
 	}
 
-	cleaned := removeMaliciousScripts(originalValue)
-	// Never claim a clean (nor write back) unless the confirmed attacker
-	// script is actually gone. This keeps removal locked to detection: if
-	// a script form is flagged but the remover cannot strip it, report the
-	// finding but never persist a value that still carries a live payload.
-	// Plain text references to the same URL are inert option data and must
-	// not block a valid script cleanup.
-	if optionInjectionRemains(optionName, cleaned) {
+	cleaned, refusal := cleanOptionValue(optionName, originalValue)
+	if refusal != "" {
 		return false
 	}
-	if cleaned == originalValue {
-		return false
+	_, err := writeCleanOption(creds, prefix, optionName, originalValue, cleaned)
+	return err == nil
+}
+
+func cleanOptionValue(name, value string) (cleaned, refusal string) {
+	cleaned = removeMaliciousScripts(value)
+	if cleaned == value {
+		return "", "Content unchanged after cleaning"
 	}
-
-	// Save original value as a backup option (csm_backup_<name>_<timestamp>).
-	backupName := fmt.Sprintf("csm_backup_%s_%d", optionName, time.Now().Unix())
-	if len(backupName) > 191 {
-		backupName = backupName[:191]
+	if optionInjectionRemains(name, cleaned) {
+		return "", "Failed to remove all malicious scripts"
 	}
-	backupQuery := fmt.Sprintf(
-		"INSERT INTO %soptions (option_name, option_value, autoload) VALUES ('%s', '%s', 'no')",
-		prefix, escapeSQLString(backupName), escapeSQLString(originalValue))
-	runMySQLQuery(creds, backupQuery)
+	return cleaned, ""
+}
 
-	// Write the cleaned value.
-	updateQuery := fmt.Sprintf(
-		"UPDATE %soptions SET option_value='%s' WHERE option_name='%s'",
-		prefix, escapeSQLString(cleaned), escapeSQLString(optionName))
-	runMySQLQuery(creds, updateQuery)
+var execOptionWrite = mysqlclient.PerAccountExec
 
-	return true
+func writeCleanOption(creds wpDBCreds, prefix, name, before, after string) (string, error) {
+	ctx := creds.queryCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	conn := mysqlclient.Creds{User: creds.dbUser, Password: creds.dbPass, Host: creds.dbHost, DBName: creds.dbName}
+	const backupPrefix = "csm_backup_"
+	suffix := "_" + rand.Text()
+	backupName := backupPrefix + name[:min(len(name), 191-len(backupPrefix)-len(suffix))] + suffix
+	insert := "INSERT INTO " + prefix + "options (option_name, option_value, autoload) VALUES (?, ?, 'no')"
+	if _, err := execOptionWrite(ctx, conn, insert, backupName, before); err != nil {
+		return "", errors.New("failed to back up option")
+	}
+	// A concurrent WordPress update wins, even if the option's collation
+	// considers its new value equal to the one we previewed.
+	update := "UPDATE " + prefix + "options SET option_value=? WHERE option_name=? AND BINARY option_value=?"
+	rows, err := execOptionWrite(ctx, conn, update, after, name, before)
+	if err != nil {
+		return backupName, errors.New("failed to write cleaned option")
+	}
+	if rows != 1 {
+		return backupName, errors.New("option changed before cleaning")
+	}
+	return backupName, nil
 }
 
 // A notice sink makes executable markup malicious regardless of URL

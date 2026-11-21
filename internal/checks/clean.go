@@ -103,16 +103,14 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 		result.Error = "file changed before automatic cleaning"
 		return result
 	}
-	if sz := target.Info.Size(); sz > cleanMaxFileSize {
-		result.Refused = true
-		result.Error = fmt.Sprintf("file too large to clean (%d bytes > %d)", sz, cleanMaxFileSize)
-		return result
-	}
-
 	audit.rec.Result = actionlog.Failed
-	data, err := io.ReadAll(target.File)
+	data, err := target.readForClean()
 	if err != nil {
-		result.Error = fmt.Sprintf("cannot read file: %v", err)
+		result.Refused = errors.Is(err, errFileResponseRefused)
+		if result.Refused {
+			audit.rec.Result = actionlog.Refused
+		}
+		result.Error = err.Error()
 		return result
 	}
 
@@ -130,8 +128,41 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 	}
 	result.BackupPath = backupPath
 
+	content, removals, refusal := surgicalClean(data)
+	if refusal != nil {
+		audit.rec.Result = actionlog.Refused
+		result.Refused = true
+		result.Error = refusal.Error()
+		if errors.Is(refusal, errCleanLeavesNothing) {
+			result.WholeFile = true
+			result.wholeFileInfo = target.Info
+			result.wholeFileContent = data
+		}
+		return result
+	}
+
+	audit.rec.Reason = strings.Join(removals, "; ")
+	if err := audit.replace(target, []byte(content), backupPath); err != nil {
+		result.Refused = errors.Is(err, errFileResponseRefused)
+		result.Error = fmt.Sprintf("cannot write cleaned file: %v", err)
+		return result
+	}
+
+	result.Cleaned = true
+	result.Removals = removals
+	// Keep the pre-rewrite change time, but only a successful cleanup proves
+	// the file contained an injection.
+	companionSweeps.add(path, target.Info, time.Now())
+	return result
+}
+
+var errCleanLeavesNothing = errors.New("cleaning would leave nothing of the file - quarantine it whole instead")
+
+// surgicalClean returns data with every known injection removed and a
+// description of each removal, or why the result must not replace the file.
+// errCleanLeavesNothing marks malware that is the whole file.
+func surgicalClean(data []byte) (string, []string, error) {
 	content := string(data)
-	originalLen := len(content)
 	var removals []string
 
 	// Strategy 1: Remove @include injections (including variable-based)
@@ -163,42 +194,56 @@ func cleanInfectedFileIdentified(path string, expected os.FileInfo) (result Clea
 	removals = append(removals, removed...)
 
 	// If nothing was removed, file couldn't be cleaned
-	if len(removals) == 0 || len(content) == originalLen {
-		audit.rec.Result = actionlog.Refused
-		result.Refused = true
-		result.Error = "no known injection patterns found - file may need manual review"
-		return result
+	if len(removals) == 0 || len(content) == len(data) {
+		return "", nil, errors.New("no known injection patterns found - file may need manual review")
 	}
 	if cleanLeavesNothing(content) {
-		audit.rec.Result = actionlog.Refused
-		result.Refused = true
 		// Line and block removals can take site code with the injection; a
 		// stub would lose it as well, so the file goes to quarantine whole,
 		// where a restore can recover it. Page output stays for an operator.
 		if !phpWithoutOutput(string(data)) {
-			result.Error = "cleaning would erase the file's page output; manual review required"
-			return result
+			return "", nil, errors.New("cleaning would erase the file's page output; manual review required")
 		}
-		result.WholeFile = true
-		result.wholeFileInfo = target.Info
-		result.wholeFileContent = data
-		result.Error = "cleaning would leave nothing of the file - quarantine it whole instead"
-		return result
+		return "", nil, errCleanLeavesNothing
 	}
+	return content, removals, nil
+}
 
-	audit.rec.Reason = strings.Join(removals, "; ")
-	if err := audit.replace(target, []byte(content), backupPath); err != nil {
-		result.Refused = errors.Is(err, errFileResponseRefused)
-		result.Error = fmt.Sprintf("cannot write cleaned file: %v", err)
-		return result
+// PreviewCleanInfectedFile shows the change CleanInfectedFile would make to
+// path as a unified diff. It writes no backup, file or action record.
+func PreviewCleanInfectedFile(path string) (string, error) {
+	target, err := openCleanTarget(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot read file: %w", err)
 	}
+	defer target.Close()
+	data, err := target.readForClean()
+	if err != nil {
+		return "", err
+	}
+	if previewTooLarge(data) {
+		return "", errPreviewTooLarge
+	}
+	content, _, err := surgicalClean(data)
+	if err != nil {
+		return "", err
+	}
+	return renderChangeDiff(target.Path, data, []byte(content))
+}
 
-	result.Cleaned = true
-	result.Removals = removals
-	// Keep the pre-rewrite change time, but only a successful cleanup proves
-	// the file contained an injection.
-	companionSweeps.add(path, target.Info, time.Now())
-	return result
+func (t *cleanTarget) readForClean() ([]byte, error) {
+	size := t.Info.Size()
+	if size <= cleanMaxFileSize {
+		data, err := io.ReadAll(io.LimitReader(t.File, cleanMaxFileSize+1))
+		if err != nil {
+			return nil, fmt.Errorf("cannot read file: %w", err)
+		}
+		size = int64(len(data))
+		if size <= cleanMaxFileSize {
+			return data, nil
+		}
+	}
+	return nil, refuseFileResponse(fmt.Errorf("file too large to clean (%d bytes > %d)", size, cleanMaxFileSize))
 }
 
 type cleanTarget struct {
@@ -803,20 +848,20 @@ func getLineContext(lines []string, idx, window int) string {
 // FormatCleanResult returns a human-readable summary of a clean operation.
 func FormatCleanResult(r CleanResult) string {
 	if r.Refused {
-		return fmt.Sprintf("REFUSED to clean %s: %s", r.Path, r.Error)
+		return fmt.Sprintf("REFUSED to clean %s: %s", DisplayField(r.Path), DisplayField(r.Error))
 	}
 	if r.Error != "" {
-		return fmt.Sprintf("FAILED to clean %s: %s", r.Path, r.Error)
+		return fmt.Sprintf("FAILED to clean %s: %s", DisplayField(r.Path), DisplayField(r.Error))
 	}
 	if !r.Cleaned {
-		return fmt.Sprintf("No changes made to %s", r.Path)
+		return fmt.Sprintf("No changes made to %s", DisplayField(r.Path))
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "CLEANED %s\n", r.Path)
-	fmt.Fprintf(&b, "  Backup: %s\n", r.BackupPath)
+	fmt.Fprintf(&b, "CLEANED %s\n", DisplayField(r.Path))
+	fmt.Fprintf(&b, "  Backup: %s\n", DisplayField(r.BackupPath))
 	for _, removal := range r.Removals {
-		fmt.Fprintf(&b, "  - %s\n", removal)
+		fmt.Fprintf(&b, "  - %s\n", DisplayField(removal))
 	}
 	return b.String()
 }

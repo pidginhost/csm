@@ -30,9 +30,11 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
 - A new `backup` setting has the daemon export its state on a schedule, delete archives past retention, and warn when an export fails.
+- `csm clean --preview`, `csm virtual-patch`, `csm db-clean --option --preview` and dry-run virtual patches show the change as a unified diff; `csm clean` also cleans `.htaccess` files.
 
 ### Changed
 
+- Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 
 ## [4.15.0] - 2026-11-20
