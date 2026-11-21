@@ -67,7 +67,7 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 func rewrittenPeerRefusal(f alert.Finding, producer admission.ProducerID) error {
 	if f.Attribution == admission.AttributionHTTPPeer && producer != "" {
 		if client, err := netip.ParseAddr(strings.TrimSpace(f.SourceIP)); err == nil {
-			switch WebPeerVerdict(client, f.Observation.ObservedAt) {
+			switch settledWebPeerVerdict(client, f.Observation.ObservedAt, f.Timestamp) {
 			case PeerDirect:
 				return nil
 			case PeerProxied:

@@ -468,3 +468,34 @@ func TestAdmissionPeerVerdictKeepsCDNEdgeRefusalFirst(t *testing.T) {
 		t.Fatalf("admission = %v, want proxy_peer before direct verdict", err)
 	}
 }
+
+// The web server writes a request's peer line with its access line but may
+// flush it later, and CSM reads the two logs on separate polls. A direct
+// verdict stands only after the peer log is read again a settle period after
+// the finding's line was read, so a forged line still on its way is not
+// outvoted by the client's earlier direct lines.
+func TestAdmissionEvidenceWaitsForTheRequestsOwnPeerLine(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: platform.WSLiteSpeed, Directive: "useIpInProxyHeader 2"})
+	cfg := &config.Config{}
+	f := httpPeerFinding("203.0.113.74")
+	f.Timestamp = f.Observation.ObservedAt.Add(time.Second)
+	client := netip.MustParseAddr("203.0.113.74")
+	ObserveWebPeer(f.Observation.ObservedAt.Add(-time.Minute), client, client, cfg)
+	var slept []time.Duration
+	webPeerSleep = func(d time.Duration) { slept = append(slept, d) }
+	webPeerClock = func() time.Time { return f.Timestamp }
+	drains := 0
+	SetWebPeerDrain(func(time.Duration) bool {
+		if drains++; drains == 2 {
+			ObserveWebPeer(f.Observation.ObservedAt, netip.MustParseAddr("127.0.0.1"), client, cfg)
+		}
+		return true
+	})
+	if _, _, err := AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseForgedClient {
+		t.Fatalf("AdmissionEvidence = %v, want the request's own forged line to decide", err)
+	}
+	if len(slept) != 1 || slept[0] != webPeerSettle || drains != 2 {
+		t.Fatalf("slept %v over %d drains, want one %v wait between two drains", slept, drains, webPeerSettle)
+	}
+}

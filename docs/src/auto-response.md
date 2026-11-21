@@ -560,7 +560,9 @@ host, a client behind a trusted proxy or a known CDN edge is only challenged,
 and an address another peer chose is refused as `forged_client`.
 Verification uses the request time in the access or ModSecurity log,
 including delayed reads and scheduled scans. A request without a valid log
-time stays unverified. Two refusals still leave the block to the existing
+time stays unverified. Before an address counts as connected for itself, CSM
+reads the peer log again about two seconds after it read the finding, so a
+peer line the web server flushed after its access line still decides. Two refusals still leave the block to the existing
 paths: a client address Apache or nginx may have rewritten from a proxy
 header that the peer log does not cover, and a ledger that could not take
 new work at all. LiteSpeed also applies those headers to

@@ -43,13 +43,14 @@ func newWebPeerLog() *webPeerLog {
 	return &webPeerLog{alertedAt: make(map[string]time.Time), now: time.Now}
 }
 
-// spec is the watch of path: optional, emptied past the cap, and every
-// gap in what it read is a loss in the index.
+// spec is the watch of path: optional, emptied past the cap, every gap in
+// what it read is a loss in the index, and verdicts can read it to its end.
 func (p *webPeerLog) spec(path string) logWatchSpec {
 	return logWatchSpec{
 		name: "web_peer_log", path: path, handler: p.handle,
 		optional: true, truncateAt: webPeerLogMaxBytes,
-		reset: func() { checks.MarkWebPeerLoss(time.Now()) },
+		reset:   func() { checks.MarkWebPeerLoss(time.Now()) },
+		onWatch: func(w *LogWatcher) { checks.SetWebPeerDrain(w.Drain) },
 	}
 }
 

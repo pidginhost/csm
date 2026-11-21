@@ -14,10 +14,10 @@ import (
 // withWebPeers gives a test its own peer index and bound.
 func withWebPeers(t *testing.T, maxClients int) {
 	t.Helper()
-	prevIndex, prevMax := webPeers, webPeerMaxClients
-	webPeers = newWebPeerIndex()
+	prevMax := webPeerMaxClients
 	webPeerMaxClients = maxClients
-	t.Cleanup(func() { webPeers, webPeerMaxClients = prevIndex, prevMax })
+	t.Cleanup(ResetWebPeersForTest())
+	t.Cleanup(func() { webPeerMaxClients = prevMax })
 }
 
 func TestParseWebPeerLine(t *testing.T) {
@@ -413,5 +413,35 @@ func TestWebPeerOverflowPreservesReaderLoss(t *testing.T) {
 	ObserveWebPeer(at, client, client, &config.Config{})
 	if got := WebPeerVerdict(client, at); got != PeerUnknown {
 		t.Fatalf("overflow rolled back loss: %v, want unknown", got)
+	}
+}
+
+// A refusal needs no settle wait: later lines cannot turn forged or proxied
+// into direct. Without a reader, or when the reader fails, nothing is direct.
+func TestSettledPeerVerdictEdges(t *testing.T) {
+	withWebPeers(t, 500000)
+	cfg := &config.Config{}
+	at := time.Unix(1795200000, 0)
+	waits := 0
+	webPeerSleep = func(time.Duration) { waits++ }
+	webPeerClock = func() time.Time { return at }
+	forged := netip.MustParseAddr("203.0.113.75")
+	ObserveWebPeer(at, netip.MustParseAddr("127.0.0.1"), forged, cfg)
+	if got := settledWebPeerVerdict(forged, at, at); got != PeerForged || waits != 0 {
+		t.Fatalf("forged verdict = %v after %d waits, want forged without waiting", got, waits)
+	}
+	direct := netip.MustParseAddr("203.0.113.76")
+	ObserveWebPeer(at, direct, direct, cfg)
+	SetWebPeerDrain(nil)
+	if got := settledWebPeerVerdict(direct, at, at); got != PeerUnknown {
+		t.Fatalf("verdict without a reader = %v, want unknown", got)
+	}
+	SetWebPeerDrain(func(time.Duration) bool { return false })
+	if got := settledWebPeerVerdict(direct, at, at); got != PeerUnknown {
+		t.Fatalf("verdict after a failed read = %v, want unknown", got)
+	}
+	SetWebPeerDrain(func(time.Duration) bool { return true })
+	if got := settledWebPeerVerdict(direct, at, time.Time{}); got != PeerDirect || waits != 1 {
+		t.Fatalf("settled verdict = %v after %d waits, want direct after one wait", got, waits)
 	}
 }

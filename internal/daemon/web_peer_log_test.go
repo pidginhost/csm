@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -237,5 +238,36 @@ func TestFrontProxiedPeerWatcherBoundsLog(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The peer log watcher registers a reader that brings the index to the end
+// of the log at once, so a verdict does not depend on the next poll.
+func TestWebPeerWatcherDrainsForVerdicts(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	previous := checks.CurrentHTTPRewrite()
+	checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSLiteSpeed, Directive: "useIpInProxyHeader 2"})
+	t.Cleanup(func() { checks.SetHTTPRewrite(previous) })
+	path := filepath.Join(t.TempDir(), "peer.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := newObservedLogWatcher(newWebPeerLog().spec(path), &config.Config{}, make(chan alert.Finding, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() { w.Run(stop); close(done) }()
+	t.Cleanup(func() { close(stop); <-done })
+	// Past the loss the watcher marked when it attached at the end of the log.
+	at := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	appendLine(t, path, peerLine(at, "site.example", "203.0.113.77", "203.0.113.77"))
+	f := alert.Finding{
+		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.77",
+		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now(),
+		Observation: alert.Observation{Producer: string(checks.ProducerAccessLog), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: at},
+	}
+	if _, _, err := checks.AdmissionEvidence(f); err != nil {
+		t.Fatalf("AdmissionEvidence = %v, want the direct line read without waiting for a poll", err)
 	}
 }

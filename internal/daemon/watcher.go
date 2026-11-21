@@ -57,10 +57,16 @@ type logWatchSpec struct {
 	// reset, when set, is told whenever lines may have been skipped: the
 	// watcher started at the end, or the log was truncated or rotated.
 	reset func()
+	// onWatch, when set, receives each watcher created for the spec.
+	onWatch func(*LogWatcher)
 }
 
 // LogWatcher tails a log file using inotify and processes new lines.
 type LogWatcher struct {
+	// drainCh asks Run for an immediate read to the end; done closes when
+	// Run returns.
+	drainCh   chan chan struct{}
+	done      chan struct{}
 	path      string
 	cfg       *config.Config
 	handler   LogLineHandler
@@ -140,7 +146,8 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 // newLogWatcher creates a watcher that opens the log with open, or with
 // os.Open when open is nil, every time it opens it.
 func newLogWatcher(path string, cfg *config.Config, handler LogLineHandler, alertCh chan<- alert.Finding, open func(string) (*os.File, error)) (*LogWatcher, error) {
-	w := &LogWatcher{path: path, cfg: cfg, handler: handler, alertCh: alertCh, open: open}
+	w := &LogWatcher{path: path, cfg: cfg, handler: handler, alertCh: alertCh, open: open,
+		drainCh: make(chan chan struct{}), done: make(chan struct{})}
 	f, err := w.openFile()
 	if err != nil {
 		return nil, err
@@ -200,6 +207,9 @@ func newObservedLogWatcher(spec logWatchSpec, cfg *config.Config, alertCh chan<-
 	w.truncateAt, w.onReset = spec.truncateAt, spec.reset
 	// The watcher starts at the end: anything before it was never read.
 	w.reset()
+	if spec.onWatch != nil {
+		spec.onWatch(w)
+	}
 	return w, nil
 }
 
@@ -304,6 +314,9 @@ func (w *LogWatcher) Run(stopCh <-chan struct{}) {
 	// Stop() close used to race readNewLines/reopen, and the freed fd could be
 	// reused by another goroutine mid-Stat/Read.
 	defer w.closeFile()
+	if w.done != nil {
+		defer close(w.done)
+	}
 
 	ticker := time.NewTicker(logWatcherPollInterval)
 	defer ticker.Stop()
@@ -320,7 +333,31 @@ func (w *LogWatcher) Run(stopCh <-chan struct{}) {
 			w.reopen()
 		case <-ticker.C:
 			w.readNewLines()
+		case reply := <-w.drainCh:
+			w.readNewLines()
+			close(reply)
 		}
+	}
+}
+
+// Drain reads the log to its end in Run's goroutine and reports whether that
+// finished within timeout.
+func (w *LogWatcher) Drain(timeout time.Duration) bool {
+	reply := make(chan struct{})
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case w.drainCh <- reply:
+	case <-w.done:
+		return false
+	case <-t.C:
+		return false
+	}
+	select {
+	case <-reply:
+		return true
+	case <-t.C:
+		return false
 	}
 }
 

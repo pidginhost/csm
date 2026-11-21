@@ -56,7 +56,35 @@ const (
 	webPeerPruneEvery = 4096
 	// webPeerMaxLine bounds the line a parser reads.
 	webPeerMaxLine = 512
+	// webPeerSettle is how long after a finding's line was read the web
+	// server may still hold the peer line it wrote for the same request:
+	// LiteSpeed flushes its logs about once a second.
+	webPeerSettle = 2 * time.Second
+	// webPeerDrainTimeout bounds one read of the peer log to its end.
+	webPeerDrainTimeout = 5 * time.Second
 )
+
+var (
+	webPeerDrainMu sync.Mutex
+	webPeerDrain   func(timeout time.Duration) bool
+	webPeerSleep   = time.Sleep
+	webPeerClock   = time.Now
+)
+
+// SetWebPeerDrain registers the reader that brings the peer index to the end
+// of the peer log before it returns, or reports false when it cannot; nil
+// when the daemon reads no peer log.
+func SetWebPeerDrain(drain func(timeout time.Duration) bool) {
+	webPeerDrainMu.Lock()
+	defer webPeerDrainMu.Unlock()
+	webPeerDrain = drain
+}
+
+func currentWebPeerDrain() func(time.Duration) bool {
+	webPeerDrainMu.Lock()
+	defer webPeerDrainMu.Unlock()
+	return webPeerDrain
+}
 
 // webPeerMaxClients bounds the distinct addresses one window holds.
 var webPeerMaxClients = 500000
@@ -251,6 +279,38 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 	return PeerUnknown
 }
 
+// settledWebPeerVerdict is WebPeerVerdict for a finding whose line was read
+// at seenAt. The web server writes a request's peer line with its access line
+// but may flush it later, and the two logs are read on separate polls. So the
+// peer log is read to its end first, and anything but a refusal is decided
+// again after a read that starts a settle period after seenAt: a forged line
+// still on its way must not be outvoted by the client's earlier direct lines.
+func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict {
+	drain := currentWebPeerDrain()
+	if drain != nil && !drain(webPeerDrainTimeout) {
+		return PeerUnknown
+	}
+	v := WebPeerVerdict(client, at)
+	switch {
+	case v == PeerForged || v == PeerProxied:
+		return v
+	case drain == nil:
+		return PeerUnknown
+	}
+	if seenAt.IsZero() {
+		seenAt = webPeerClock()
+	}
+	wait := seenAt.Add(webPeerSettle).Sub(webPeerClock())
+	if wait <= 0 {
+		return v
+	}
+	webPeerSleep(wait)
+	if !drain(webPeerDrainTimeout) {
+		return PeerUnknown
+	}
+	return WebPeerVerdict(client, at)
+}
+
 // webPeerDirect reports whether the peer log shows ip connected for itself
 // around at.
 func webPeerDirect(ip string, at time.Time) bool {
@@ -274,10 +334,17 @@ func (x *webPeerIndex) markLoss(at time.Time) {
 	}
 }
 
-// ResetWebPeersForTest gives a test an empty peer index and returns the
-// function that restores the previous one.
+// ResetWebPeersForTest gives a test an empty, complete peer index: reads of
+// the log succeed at once and settle waits do not sleep. It returns the
+// function that restores the previous state.
 func ResetWebPeersForTest() func() {
-	prev := webPeers
+	prev, prevDrain, prevSleep, prevClock := webPeers, currentWebPeerDrain(), webPeerSleep, webPeerClock
 	webPeers = newWebPeerIndex()
-	return func() { webPeers = prev }
+	SetWebPeerDrain(func(time.Duration) bool { return true })
+	webPeerSleep, webPeerClock = func(time.Duration) {}, time.Now
+	return func() {
+		webPeers = prev
+		SetWebPeerDrain(prevDrain)
+		webPeerSleep, webPeerClock = prevSleep, prevClock
+	}
 }
