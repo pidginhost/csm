@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"fmt"
+	"maps"
+	"reflect"
 	"testing"
 	"time"
 
@@ -66,6 +68,84 @@ func TestWritableMailSuccessIsNotALogin(t *testing.T) {
 // trustedMailObs stamps a mail line as the journal entry a mail service
 // wrote, for tests about parsing and tracking rather than log trust.
 var trustedMailObs = alert.Observation{Producer: string(checks.ProducerMailJournal)}
+
+func TestFileMailLoginStillAlertsAfterSpray(t *testing.T) {
+	for _, protocol := range []string{"smtp", "imap", "pop3", "managesieve"} {
+		for _, mode := range []string{"off", "observe", "enforce"} {
+			t.Run(protocol+"/"+mode, func(t *testing.T) {
+				d, clock := newPairingDaemon(t, sprayTestConfig(mode))
+				const ip, account = "203.0.113.151", "alice@example.net"
+				for _, other := range []string{"bob@example.net", "carol@example.net"} {
+					clock.advance(time.Second)
+					d.handleMailLine(makeDovecotFailLine("imap", ip, other), alert.Observation{}, d.currentCfg())
+				}
+				line := makeDovecotSuccessLine(protocol, ip, account)
+				if protocol == "smtp" {
+					line = "postfix/smtpd[7]: A123: client=mx.example.net[" + ip + "], sasl_method=PLAIN, sasl_username=" + account
+				}
+				got := d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+				want := 1
+				if mode == "off" {
+					want = 0
+				}
+				if len(got) != want || (want == 1 && (got[0].Check != "mail_account_compromised" || got[0].SourceIP != ip || got[0].Mailbox != account)) {
+					t.Fatalf("findings=%+v, want %d compromise alerts", got, want)
+				}
+				if len(d.mailAuthTracker.ExportGoodSource()) != 0 || len(smtpSuccessIPs(d)) != 0 {
+					t.Fatal("file login trained trust")
+				}
+				if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+					t.Fatalf("repeated file login bypassed suppression: %+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestFileMailLoginDoesNotRefreshSprayTrust(t *testing.T) {
+	for _, history := range []string{"new", "recent", "aged", "subnet"} {
+		t.Run(history, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			const ip, account = "2001:db8::151", "alice@example.net"
+			if history != "new" {
+				trustedIP := ip
+				if history == "subnet" {
+					trustedIP = "2001:db8::152"
+				}
+				d.mailSpray.Success(trustedIP, account)
+				clock.advance(time.Second)
+				if history != "recent" {
+					clock.advance(d.mailSpray.cfg.TrustAge)
+				}
+			}
+			before := maps.Clone(d.mailSpray.trust)
+			d.handleMailLine(makeDovecotSuccessLine("imap", ip, account), alert.Observation{}, d.currentCfg())
+			d.handleMailLine("postfix/smtpd[7]: A123: client=mx.example.net["+ip+"], sasl_method=PLAIN, sasl_username="+account, alert.Observation{}, d.currentCfg())
+			if !reflect.DeepEqual(before, d.mailSpray.trust) {
+				t.Fatal("file login created or refreshed spray trust")
+			}
+		})
+	}
+}
+
+func TestFileSMTPLoginAfterStaleFailuresAlertsOnce(t *testing.T) {
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	const ip, account = "203.0.113.151", "alice@example.net"
+	for range 2 {
+		d.smtpAuthTracker.RecordFailure(ip, account, mailboxExists, alert.Observation{})
+		clock.advance(time.Hour)
+	}
+	line := "postfix/smtpd[7]: A123: client=mx.example.net[" + ip + "], sasl_method=PLAIN, sasl_username=" + account
+	for _, want := range []int{1, 0} {
+		got := d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+		if len(got) != want || (want == 1 && (got[0].Check != "mail_account_compromised" || got[0].Mailbox != account)) {
+			t.Fatalf("findings=%+v, want %d compromise alerts", got, want)
+		}
+	}
+	if len(smtpSuccessIPs(d)) != 0 {
+		t.Fatal("file login trained trust")
+	}
+}
 
 // Unverified logins remain evidence for the per-address compromise alert.
 func TestFileMailLoginStillAlertsAfterFailures(t *testing.T) {

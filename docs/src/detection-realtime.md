@@ -472,19 +472,25 @@ not count historical authentication failures as new activity.
 With `mail_logs.source: auto`, each retry reads the configured journal units
 when the journal is usable: syslog goes through journald (`/dev/log` is its
 socket), the running journal service holds an open journal, and Postfix does
-not write its own log file. The configured `mail_logs.units` must also cover
+not write its own log file, including secondary instances listed in
+`multi_instance_directories`. The configured `mail_logs.units` must also cover
 all running Postfix and Dovecot master processes. Old journal files alone do
 not qualify, including when journald uses `Storage=none`. If these checks
 cannot confirm coverage, it chooses the configured or platform file if present,
 then the journal units. Set `mail_logs.units` to the actual service names for
-custom services or named Postfix instances; unit names are exact, not patterns. A file missing for 90 seconds triggers a new selection.
+custom Dovecot services or named Postfix instances; unit names are exact, not
+patterns. Postfix units must be named `postfix` or `postfix@<instance>` so their
+unprivileged workers pass the sender filter. Other Postfix unit names keep auto
+on file input. A file missing for 90 seconds triggers a new selection.
 The old reader stops before a replacement starts. Journal input follows new
 records from the selected services, including services with no prior entries;
 it does not replay older records on attachment.
 
 Any local user can write a line into a mail log file under any program name,
 so a line read from a file alerts but never blocks an address, and a login
-read from a file earns no customer standing or mail trust.
+read from a file earns no customer standing or mail trust. Logins after password
+spraying still raise compromise alerts, including SMTP logins and logins to a
+different mailbox from those that failed.
 
 Explicit `file` and `journal` modes retry their selected source without
 switching, and a working reader stays attached until it stops or loses its file.

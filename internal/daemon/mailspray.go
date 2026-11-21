@@ -346,6 +346,12 @@ func (m *mailSpray) breadth(key, mailbox string, stored bool, untrusted []string
 // the login's own mailbox did not fail. A login never adds to the evidence
 // pool.
 func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
+	return m.success(ip, mailbox, true)
+}
+
+// Unverified logins still classify compromises, but cannot create or refresh
+// trust. The caller carries the log's provenance on any resulting finding.
+func (m *mailSpray) success(ip, mailbox string, trusted bool) (clean bool, v *sprayVerdict) {
 	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -357,10 +363,12 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	key := sprayEvidenceKey(ip)
 	e := m.ips[key]
 	if m.agedTrust(ip, mailbox, now) || m.trustPredatesFailures(e, k, key, now) {
-		t := m.trust[k]
-		t.last = now
-		m.trust[k] = t
-		m.markTrust(ip)
+		if trusted {
+			t := m.trust[k]
+			t.last = now
+			m.trust[k] = t
+			m.markTrust(ip)
+		}
 		return true, nil
 	}
 	// An IPv6 host rotates its address. A login to a mailbox another
@@ -372,7 +380,9 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 				return false, nil
 			}
 		}
-		m.recordTrust(k, now)
+		if trusted {
+			m.recordTrust(k, now)
+		}
 		return true, nil
 	}
 	if e != nil {
@@ -395,10 +405,17 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 				return false, nil
 			}
 		}
-		hadTrust := m.recordTrust(k, now)
+		hadTrust := false
+		if trusted {
+			hadTrust = m.recordTrust(k, now)
+		}
 		// 4d fires once per trust relationship; later logins while the new
 		// trust ages are the same user.
 		if m.cfg.Mode == sprayOff || hadTrust || e == nil || !e.staleFailures(mailbox, now, m.cfg.Window) {
+			return true, nil
+		}
+		// File logins earn no trust relationship to suppress repeat advisories.
+		if !trusted && !e.noteWeakAlert(mailbox, now, m.cfg.Window) {
 			return true, nil
 		}
 		return true, m.verdict(e, ip, sprayRuleSingleMailboxSuccess, false, mailbox, []string{mailbox}, now)

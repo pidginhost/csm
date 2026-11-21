@@ -1153,8 +1153,8 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	recordGoodSource := !degraded && trusted
 	var sprayed *alert.Finding
 	sprayMailbox := normalizeSprayMailbox(account)
-	if !degraded && trusted && t.spray != nil {
-		clean, v := t.spray.Success(ip, sprayMailbox)
+	if !degraded && t.spray != nil {
+		clean, v := t.spray.success(ip, sprayMailbox, trusted)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
 		}

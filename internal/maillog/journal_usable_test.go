@@ -249,14 +249,41 @@ func TestAutoIgnoresUnprivilegedProcessNames(t *testing.T) {
 	}
 }
 
+// A mail master CSM cannot read keeps auto on the file. A process that is
+// gone is another matter: see TestAutoSkipsVanishedMailProcess.
 func TestAutoRejectsUnreadableMailProcess(t *testing.T) {
 	usableJournalHost(t, true, true, true)
 	journalTestProcess(t, "3", "/usr/sbin/dovecot", "0", "0::/system.slice/dovecot.service\n")
-	if err := os.Remove(filepath.Join(journalProcPath, "3", "status")); err != nil {
+	status := filepath.Join(journalProcPath, "3", "status")
+	if err := os.Remove(status); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(status, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if mailUnitsCovered([]string{"postfix"}) {
 		t.Fatal("an unreadable mail master was ignored")
+	}
+}
+
+// Any user can start a short-lived process named master or dovecot. One
+// that exits while CSM reads it must not decide the mail source, or anyone
+// could keep mail on the file, where it only alerts.
+func TestAutoSkipsVanishedMailProcess(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	journalTestProcess(t, "4", "/home/tenant/master", "0", "0::/user.slice/session-9.scope\n")
+	if err := os.Remove(filepath.Join(journalProcPath, "4", "status")); err != nil {
+		t.Fatal(err)
+	}
+	if !mailUnitsCovered([]string{"postfix"}) {
+		t.Fatal("a process that exited mid-read kept auto on the file")
+	}
+	journalTestProcess(t, "5", "/home/tenant/dovecot", "0", "")
+	if err := os.Remove(filepath.Join(journalProcPath, "5", "cgroup")); err != nil {
+		t.Fatal(err)
+	}
+	if !mailUnitsCovered([]string{"postfix"}) {
+		t.Fatal("a process whose cgroup vanished kept auto on the file")
 	}
 }
 
@@ -265,5 +292,57 @@ func TestAutoRecognizesReplacedMailExecutable(t *testing.T) {
 	journalTestProcess(t, "3", "/usr/sbin/dovecot (deleted)", "0", "0::/system.slice/mail-imap.service\n")
 	if mailUnitsCovered([]string{"postfix", "dovecot"}) {
 		t.Fatal("an upgraded mail master's unit was ignored")
+	}
+}
+
+func TestAutoRequiresPostfixSenderCoverage(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	journalTestProcess(t, "3", "/usr/libexec/postfix/master", "0", "0::/system.slice/mail-smtp.service\n")
+	previous := lookupServiceUID
+	t.Cleanup(func() { lookupServiceUID = previous })
+	lookupServiceUID = func(string) (uint32, bool) { return 89, true }
+	path := filepath.Join(t.TempDir(), "maillog")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := New(config.MailLogsConfig{Source: "auto", Units: []string{"postfix", "mail-smtp"}}, path, NewQueue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.(*FileReader); !ok {
+		t.Fatalf("reader %T would discard non-root Postfix entries from the custom unit", r)
+	}
+}
+
+func TestPostfixSecondaryInstanceFileLogging(t *testing.T) {
+	for _, tc := range []struct {
+		name, secondary   string
+		missing, wantFile bool
+	}{
+		{"syslog", "", false, false},
+		{"own log", "maillog_file = /var/log/postfix-secondary.log\n", false, true},
+		{"unreadable", "", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usableJournalHost(t, true, true, true)
+			dir := filepath.Join(t.TempDir(), "postfix-secondary")
+			if err := os.MkdirAll(filepath.Dir(postfixMainCF), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(postfixMainCF, []byte("multi_instance_directories =\n  "+dir+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.missing {
+				if err := os.Mkdir(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "main.cf"), []byte(tc.secondary), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := postfixLogsToFile(); got != tc.wantFile {
+				t.Fatalf("postfixLogsToFile=%v, want %v", got, tc.wantFile)
+			}
+		})
 	}
 }

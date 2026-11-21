@@ -70,7 +70,7 @@ func MailSenderRules(units []string) []SenderRule {
 	var rules []SenderRule
 	for _, u := range units {
 		uids := []uint32{0}
-		if name := strings.TrimSuffix(journalUnitName(u), ".service"); name == "postfix" || strings.HasPrefix(name, "postfix@") {
+		if postfixJournalUnit(u) {
 			if id, ok := lookupServiceUID("postfix"); ok && id != 0 {
 				uids = append(uids, id)
 			}
@@ -78,4 +78,9 @@ func MailSenderRules(units []string) []SenderRule {
 		rules = append(rules, SenderRule{Units: []string{u}, UIDs: uids})
 	}
 	return rules
+}
+
+func postfixJournalUnit(unit string) bool {
+	name := strings.TrimSuffix(journalUnitName(unit), ".service")
+	return name == "postfix" || strings.HasPrefix(name, "postfix@")
 }
