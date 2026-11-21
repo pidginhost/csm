@@ -74,6 +74,13 @@ func TestParseWebserverIntegrationArgs(t *testing.T) {
 		{[]string{"--config=/etc/csm/csm.yaml", "peer-log", "status"}, "status", true, false, true},
 		{[]string{"upgrade", "--config-dir", "/etc/csm/conf.d", "--json"}, "upgrade", false, true, true},
 		{[]string{"install", "--config"}, "", false, false, false},
+		{[]string{"peer-log", "remove", "--config", "--dry-run"}, "", false, false, false},
+		{[]string{"peer-log", "install", "--config-dir", "--bogus"}, "", false, false, false},
+		{[]string{"install", "--config", "--json"}, "", false, false, false},
+		{[]string{"install", "--config", ""}, "", false, false, false},
+		{[]string{"install", "--config-dir", ""}, "", false, false, false},
+		{[]string{"install", "--config="}, "", false, false, false},
+		{[]string{"peer-log", "remove", "--config-dir="}, "", false, false, false},
 		{[]string{"install", "--bogus"}, "", false, false, false},
 		{[]string{"peer-log", "remove", "--dry-run"}, "", false, false, false},
 		{[]string{"peer-log", "install", "remove"}, "", false, false, false},
@@ -82,6 +89,27 @@ func TestParseWebserverIntegrationArgs(t *testing.T) {
 		verb, peerLog, asJSON, ok := parseWebserverIntegrationArgs(tc.args)
 		if ok != tc.ok || ok && (verb != tc.verb || peerLog != tc.peerLog || asJSON != tc.json) {
 			t.Errorf("parse(%q) = %q %v %v %v, want %q %v %v %v", tc.args, verb, peerLog, asJSON, ok, tc.verb, tc.peerLog, tc.json, tc.ok)
+		}
+	}
+}
+
+func TestWebserverIntegrationConfigOverridesReachLoader(t *testing.T) {
+	for _, equals := range []bool{false, true} {
+		args := []string{"csm", "webserver-integration", "install"}
+		cfgPath, confDir := "/etc/csm/custom.yaml", "/etc/csm/custom.d"
+		if equals {
+			args = append(args, "--config="+cfgPath, "--config-dir="+confDir)
+		} else {
+			args = append(args, "--config", cfgPath, "--config-dir", confDir)
+		}
+		if _, _, _, ok := parseWebserverIntegrationArgs(args[2:]); !ok {
+			t.Fatalf("rejected valid configuration overrides: %q", args)
+		}
+		if got, explicit := configPathFromArgs(args); !explicit || got != cfgPath {
+			t.Errorf("config path for %q = %q, explicit=%v; want %q", args, got, explicit, cfgPath)
+		}
+		if got, explicit, err := configDirFromArgs(args); err != nil || !explicit || got != confDir {
+			t.Errorf("config dir for %q = %q, explicit=%v, err=%v; want %q", args, got, explicit, err, confDir)
 		}
 	}
 }

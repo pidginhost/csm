@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -11,16 +12,20 @@ func configDirFromArgs(args []string) (string, bool, error) {
 	path := ""
 	explicit := false
 	for i, arg := range args {
-		if arg != "--config-dir" {
+		value, equals := strings.CutPrefix(arg, "--config-dir=")
+		if !equals && arg != "--config-dir" {
 			continue
 		}
-		if i+1 >= len(args) {
-			return "", true, fmt.Errorf("--config-dir requires a path")
+		if !equals {
+			if i+1 >= len(args) {
+				return "", true, fmt.Errorf("--config-dir requires a path")
+			}
+			value = args[i+1]
 		}
-		if args[i+1] == "" {
+		if value == "" {
 			return "", true, fmt.Errorf("--config-dir requires a non-empty path")
 		}
-		path = args[i+1]
+		path = value
 		explicit = true
 	}
 	return path, explicit, nil

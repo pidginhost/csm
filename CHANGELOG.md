@@ -24,7 +24,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
-- `csm webserver-integration` now rejects unknown flags and extra words instead of ignoring them.
+- `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 
 ## [4.15.0] - 2026-11-20
 

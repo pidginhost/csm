@@ -11,6 +11,9 @@ import (
 
 func configPathFromArgs(args []string) (string, bool) {
 	for i, arg := range args {
+		if path, ok := strings.CutPrefix(arg, "--config="); ok {
+			return path, true
+		}
 		if arg == "--config" && i+1 < len(args) {
 			return args[i+1], true
 		}

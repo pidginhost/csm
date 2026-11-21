@@ -351,7 +351,10 @@ remove the managed peer log snippet, and files without the CSM header are
 left alone. An unreadable peer-log snippet fails the upgrade and is reported
 in its peer-log result. Besides `--json`, `--config` and `--config-dir`,
 flags and extra arguments are usage errors; these commands do not accept
-`--dry-run`.
+`--dry-run`. Configuration overrides accept both `--config <file>` and
+`--config=<file>`, and both `--config-dir <directory>` and
+`--config-dir=<directory>`. An empty value or another flag in place of a
+spaced value is a usage error, even for commands that need no configuration.
 
 The installer auto-detects the active webserver via
 `internal/platform`. Supported stacks and snippet paths:

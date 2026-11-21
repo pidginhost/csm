@@ -85,10 +85,13 @@ func parseWebserverIntegrationArgs(args []string) (verb string, peerLog, asJSON,
 			asJSON = true
 		case a == "--config" || a == "--config-dir":
 			// Read again when the configuration loads; skip its value.
-			if i++; i >= len(args) {
+			if i++; i >= len(args) || args[i] == "" || strings.HasPrefix(args[i], "-") {
 				return "", false, false, false
 			}
 		case strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "--config-dir="):
+			if _, value, _ := strings.Cut(a, "="); value == "" {
+				return "", false, false, false
+			}
 		case strings.HasPrefix(a, "-"):
 			return "", false, false, false
 		default:
