@@ -66,31 +66,31 @@ func TestParseDovecotLogLineInfraIP(t *testing.T) {
 	}
 }
 
-// --- isPrivateOrLoopback (daemon version) -----------------------------
+// --- skipSourceAddress (daemon version) -----------------------------
 
 func TestDaemonIsPrivateOrLoopback(t *testing.T) {
-	if !isPrivateOrLoopback("127.0.0.1") {
+	if !skipSourceAddress("127.0.0.1") {
 		t.Error("loopback should be private")
 	}
-	if !isPrivateOrLoopback("10.0.0.1") {
+	if !skipSourceAddress("10.0.0.1") {
 		t.Error("10.x should be private")
 	}
-	if !isPrivateOrLoopback("172.16.0.1") {
+	if !skipSourceAddress("172.16.0.1") {
 		t.Error("172.16.x should be private")
 	}
-	if !isPrivateOrLoopback("192.168.1.1") {
+	if !skipSourceAddress("192.168.1.1") {
 		t.Error("192.168.x should be private")
 	}
-	if isPrivateOrLoopback("203.0.113.5") {
+	if skipSourceAddress("203.0.113.5") {
 		t.Error("public IP should not be private")
 	}
-	if !isPrivateOrLoopback("fd00::1") {
+	if !skipSourceAddress("fd00::1") {
 		t.Error("IPv6 unique local address should be private")
 	}
-	if isPrivateOrLoopback("2001:db8::1") {
+	if skipSourceAddress("2001:db8::1") {
 		t.Error("public IPv6 should not be private")
 	}
-	if !isPrivateOrLoopback("invalid") {
+	if !skipSourceAddress("invalid") {
 		t.Error("invalid IP treated as private (skip)")
 	}
 }

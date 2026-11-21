@@ -315,7 +315,7 @@ func FuzzIsPrivateOrLoopback(f *testing.F) {
 	f.Add("not-an-ip")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, ip string) {
-		_ = isPrivateOrLoopback(ip)
+		_ = skipSourceAddress(ip)
 	})
 }
 

@@ -460,26 +460,26 @@ func TestParseDovecotLogLine_EmptyUserReturnsNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isPrivateOrLoopback — remaining edge cases
+// skipSourceAddress — remaining edge cases
 // ---------------------------------------------------------------------------
 
 func TestIsPrivateOrLoopback_172BoundaryLow(t *testing.T) {
 	// 172.15.x is NOT private
-	if isPrivateOrLoopback("172.15.255.255") {
+	if skipSourceAddress("172.15.255.255") {
 		t.Error("172.15.x should NOT be private")
 	}
 }
 
 func TestIsPrivateOrLoopback_172BoundaryHigh(t *testing.T) {
 	// 172.32.x is NOT private
-	if isPrivateOrLoopback("172.32.0.1") {
+	if skipSourceAddress("172.32.0.1") {
 		t.Error("172.32.x should NOT be private")
 	}
 }
 
 func TestIsPrivateOrLoopback_EmptyString(t *testing.T) {
 	// Empty string is invalid IP, treated as private (skip)
-	if !isPrivateOrLoopback("") {
+	if !skipSourceAddress("") {
 		t.Error("empty string should be treated as private (invalid)")
 	}
 }

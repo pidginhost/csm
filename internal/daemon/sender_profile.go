@@ -215,7 +215,7 @@ func sendCountry(cfg *config.Config, user, ip string, now time.Time) (string, *s
 		}
 		return h.Webmail.Country, h.Webmail
 	}
-	if isPrivateOrLoopback(ip) || isInfraIPDaemon(ip, cfg.InfraIPs) {
+	if skipSourceAddress(ip) || isInfraIPDaemon(ip, cfg.InfraIPs) {
 		return "", nil
 	}
 	return geoLookup(ip).Country, nil

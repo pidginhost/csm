@@ -20,7 +20,7 @@ import (
 // only alert, and its successes are not evidence of anything.
 func (d *Daemon) stalwartAuth(ev stalwartlog.Event, s stalwartlog.Session, obs alert.Observation, cfg *config.Config) []alert.Finding {
 	ip := s.RemoteIP.String()
-	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || skipSourceAddress(ip) {
 		return nil
 	}
 	account := ev.Fields["accountName"]
@@ -176,7 +176,7 @@ func (d *Daemon) stalwartBan(ev stalwartlog.Event, s stalwartlog.Session, cfg *c
 		return nil
 	}
 	ip := s.RemoteIP.String()
-	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || skipSourceAddress(ip) {
 		return nil
 	}
 	if reason := ev.Fields["reason"]; reason != "" {

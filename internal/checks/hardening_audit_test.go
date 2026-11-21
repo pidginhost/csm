@@ -122,9 +122,9 @@ func TestIsPrivateOrLoopback(t *testing.T) {
 		{"fc00::1", true},
 	}
 	for _, c := range cases {
-		got := isPrivateOrLoopback(c.ip)
+		got := isLocalBindAddress(c.ip)
 		if got != c.want {
-			t.Errorf("isPrivateOrLoopback(%q) = %v, want %v", c.ip, got, c.want)
+			t.Errorf("isLocalBindAddress(%q) = %v, want %v", c.ip, got, c.want)
 		}
 	}
 }

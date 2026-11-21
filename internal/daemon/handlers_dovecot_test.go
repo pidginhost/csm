@@ -103,9 +103,9 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := isPrivateOrLoopback(tt.ip)
+		got := skipSourceAddress(tt.ip)
 		if got != tt.private {
-			t.Errorf("isPrivateOrLoopback(%q) = %v, want %v", tt.ip, got, tt.private)
+			t.Errorf("skipSourceAddress(%q) = %v, want %v", tt.ip, got, tt.private)
 		}
 	}
 }

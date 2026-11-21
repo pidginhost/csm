@@ -1172,31 +1172,31 @@ func TestHexToIPv4BadHex(t *testing.T) {
 }
 
 func TestIsPrivateOrLoopbackFC00(t *testing.T) {
-	if !isPrivateOrLoopback("fc00::1") {
+	if !isLocalBindAddress("fc00::1") {
 		t.Error("fc00::1 should be private")
 	}
 }
 
 func TestIsPrivateOrLoopbackPublicIPv6(t *testing.T) {
-	if isPrivateOrLoopback("2001:4860:4860::8888") {
+	if isLocalBindAddress("2001:4860:4860::8888") {
 		t.Error("2001:4860:4860::8888 is not private")
 	}
 }
 
 func TestIsPrivateOrLoopback172_16(t *testing.T) {
-	if !isPrivateOrLoopback("172.16.0.1") {
+	if !isLocalBindAddress("172.16.0.1") {
 		t.Error("172.16.0.1 should be private")
 	}
 }
 
 func TestIsPrivateOrLoopback172_32(t *testing.T) {
-	if isPrivateOrLoopback("172.32.0.1") {
+	if isLocalBindAddress("172.32.0.1") {
 		t.Error("172.32.0.1 is not private (outside /12)")
 	}
 }
 
 func TestIsPrivateOrLoopbackGarbageString(t *testing.T) {
-	if isPrivateOrLoopback("not.an.ip") {
+	if isLocalBindAddress("not.an.ip") {
 		t.Error("invalid IP should not be private")
 	}
 }

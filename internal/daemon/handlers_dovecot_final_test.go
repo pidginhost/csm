@@ -75,11 +75,11 @@ func TestParseDovecotLogLineEmptyIPReturnsNil(t *testing.T) {
 	}
 }
 
-// --- isPrivateOrLoopback: IPv4-mapped IPv6 loopback behavior -------------
+// --- skipSourceAddress: IPv4-mapped IPv6 loopback behavior -------------
 
 func TestIsPrivateOrLoopbackIPv4MappedIPv6(t *testing.T) {
 	// ::ffff:10.0.0.1 is IPv4-mapped IPv6 to private 10.0.0.1.
-	if !isPrivateOrLoopback("::ffff:10.0.0.1") {
+	if !skipSourceAddress("::ffff:10.0.0.1") {
 		t.Error("::ffff:10.0.0.1 should be treated as private")
 	}
 }

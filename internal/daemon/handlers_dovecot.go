@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/geoip"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -74,7 +74,7 @@ func observeMailboxLoginGeo(cfg *config.Config, user, ip string, at time.Time, w
 		return nil
 	}
 	var info geoip.Info
-	if !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
+	if !skipSourceAddress(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
 		info = geoLookup(ip)
 	}
 	country := info.Country
@@ -168,14 +168,11 @@ func parseDovecotLoginFields(line string) (user, ip string) {
 	return user, ip
 }
 
-// isPrivateOrLoopback returns true if the IP is loopback, RFC1918 private or
-// an IPv6 unique local address.
-func isPrivateOrLoopback(ipStr string) bool {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return true // invalid = skip
-	}
-	return ip.IsLoopback() || ip.IsPrivate()
+// skipSourceAddress reports whether a log's source address is loopback,
+// private or does not parse: such a source is never tracked or blocked.
+func skipSourceAddress(ip string) bool {
+	private, valid := netutil.PrivateOrLoopback(ip)
+	return private || !valid
 }
 
 // pruneOldCountries removes country entries older than maxAge seconds.
