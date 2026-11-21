@@ -3,10 +3,11 @@ package config
 import "github.com/pidginhost/csm/internal/admission"
 
 // DefaultAdmissionCeiling is the admission ledger's hourly ceiling over
-// every automatic source when max_blocks_per_hour is unset or zero.
-// The legacy hourly counter keeps DefaultMaxBlocksPerHour for the
-// same key until routing through the ledger replaces it.
-const DefaultAdmissionCeiling = 2000
+// every automatic source when max_blocks_per_hour is unset or zero: twice
+// the busiest measured hour and, through its ten-minute burst, minute on a
+// busy shared host. The legacy hourly counter keeps DefaultMaxBlocksPerHour
+// for the same key until routing through the ledger replaces it.
+const DefaultAdmissionCeiling = 1000
 
 // Where the admission ceiling came from.
 const (

@@ -391,7 +391,7 @@ auto_response:
   block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default; admission caps new temporary lifetimes; retries keep their first expiry
   http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration
   # Shared scan-driven block budget; 0/omitted selects 50.
-  # Also sets the admission ledger ceiling: 0/omitted selects 2000, capped at 20000.
+  # Also sets the admission ledger ceiling: 0/omitted selects 1000, capped at 20000.
   # A value sets both, so leave it out unless the ceiling should be lower too.
   # Outside dry run, with the firewall on, the ledger caps the IP blocks it applies.
   # See Automatic response admission in the API reference.

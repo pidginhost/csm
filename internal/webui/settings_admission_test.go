@@ -23,7 +23,7 @@ func TestSettingsApplyPreservesAdmissionCeilingSource(t *testing.T) {
 	}{
 		{"50", 50, config.CeilingConfigured},
 		{"7", 7, config.CeilingConfigured},
-		{"0", 2000, config.CeilingDefault},
+		{"0", 1000, config.CeilingDefault},
 		{"25000", 20000, config.CeilingClamped},
 	} {
 		disk, err := config.LoadBytes([]byte("auto_response:\n  max_blocks_per_hour: " + tc.value + "\n"))

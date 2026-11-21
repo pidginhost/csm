@@ -56,7 +56,7 @@ func TestDoctorWarnsOnAConfiguredCeilingBelowTheDefault(t *testing.T) {
 				}
 				continue
 			}
-			if !strings.Contains(row.Message, "below the default of 2000") || !strings.Contains(row.Fix, "remove auto_response.max_blocks_per_hour") {
+			if !strings.Contains(row.Message, "below the default of 1000") || !strings.Contains(row.Fix, "remove auto_response.max_blocks_per_hour") {
 				t.Errorf("executing=%v %d: warning %+v does not say it is below the default and to remove the key", executing, tc.limit, row)
 			}
 		}
@@ -65,7 +65,7 @@ func TestDoctorWarnsOnAConfiguredCeilingBelowTheDefault(t *testing.T) {
 
 // A config an earlier release accepted keeps its meaning and never fails
 // doctor. The scan budget stays what the key says, or 50 without it;
-// admission takes 2000 for an omitted or zero key, the configured value
+// admission takes 1000 for an omitted or zero key, the configured value
 // otherwise and the largest ceiling for one above it; a drop-in overrides
 // the main file. The report warns about a low configured ceiling, keeps
 // the messages for a ceiling of 1 and for a clamped one, and its overall
@@ -78,14 +78,15 @@ func TestDoctorLegacyCeilingConfigCompatibility(t *testing.T) {
 		source, status     string
 		says               string
 	}{
-		{"omitted", "", "", 50, 2000, config.CeilingDefault, "ok", "2000 automatic responses per hour (default)"},
-		{"zero", "max_blocks_per_hour: 0", "", 50, 2000, config.CeilingDefault, "ok", "2000 automatic responses per hour (default)"},
-		{"old shipped value", "max_blocks_per_hour: 50", "", 50, 50, config.CeilingConfigured, "warn", "below the default of 2000"},
+		{"omitted", "", "", 50, 1000, config.CeilingDefault, "ok", "1000 automatic responses per hour (default)"},
+		{"zero", "max_blocks_per_hour: 0", "", 50, 1000, config.CeilingDefault, "ok", "1000 automatic responses per hour (default)"},
+		{"old shipped value", "max_blocks_per_hour: 50", "", 50, 50, config.CeilingConfigured, "warn", "below the default of 1000"},
 		{"one", "max_blocks_per_hour: 1", "", 1, 1, config.CeilingConfigured, "warn", "a ceiling of 1 runs only the reserved lane"},
-		{"at the default", "max_blocks_per_hour: 2000", "", 2000, 2000, config.CeilingConfigured, "ok", "2000 automatic responses per hour (configured)"},
+		{"at the default", "max_blocks_per_hour: 1000", "", 1000, 1000, config.CeilingConfigured, "ok", "1000 automatic responses per hour (configured)"},
+		{"former default kept", "max_blocks_per_hour: 2000", "", 2000, 2000, config.CeilingConfigured, "ok", "2000 automatic responses per hour (configured)"},
 		{"above the largest", "max_blocks_per_hour: 30000", "", 30000, admission.MaxCeiling, config.CeilingClamped, "warn", "exceeds the largest ceiling"},
-		{"drop-in sets it", "", "max_blocks_per_hour: 50", 50, 50, config.CeilingConfigured, "warn", "below the default of 2000"},
-		{"drop-in clears it", "max_blocks_per_hour: 50", "max_blocks_per_hour: 0", 50, 2000, config.CeilingDefault, "ok", "2000 automatic responses per hour (default)"},
+		{"drop-in sets it", "", "max_blocks_per_hour: 50", 50, 50, config.CeilingConfigured, "warn", "below the default of 1000"},
+		{"drop-in clears it", "max_blocks_per_hour: 50", "max_blocks_per_hour: 0", 50, 1000, config.CeilingDefault, "ok", "1000 automatic responses per hour (default)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

@@ -518,9 +518,9 @@ Absent values are null, never missing keys. The durable outcome windows in
 `ledger` keep counting dry-run endings across sessions and restarts.
 
 The hourly ceiling follows `auto_response.max_blocks_per_hour`, capped at 20000.
-An omitted or zero value selects 2000 for the ledger and 50 for the shared
+An omitted or zero value selects 1000 for the ledger and 50 for the shared
 scan-driven block budget. An explicit value is used by both, and `csm doctor`
-warns when it puts the ceiling below 2000. After editing the configuration, run
+warns when it puts the ceiling below 1000. After editing the configuration, run
 `systemctl reload csm`; web UI settings saves apply at the next ledger tick.
 See [automatic response](auto-response.md) for the scope of the current
 budget.
