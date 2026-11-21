@@ -110,3 +110,14 @@ func NormalizeIPNet(n *net.IPNet) *net.IPNet {
 	}
 	return &net.IPNet{IP: ip.Mask(n.Mask), Mask: n.Mask}
 }
+
+// PrivateOrLoopback reports whether ip is a loopback or RFC 1918/4193
+// private address, and whether it parsed at all. Callers decide what an
+// address that does not parse means for them.
+func PrivateOrLoopback(ip string) (private, valid bool) {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return false, false
+	}
+	return p.IsLoopback() || p.IsPrivate(), true
+}

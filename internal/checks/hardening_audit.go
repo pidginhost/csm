@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/sshdconf"
 	"github.com/pidginhost/csm/internal/store"
@@ -822,32 +823,12 @@ func hexToIPv4(h string) string {
 	return fmt.Sprintf("%d.%d.%d.%d", b[3], b[2], b[1], b[0])
 }
 
-// isPrivateOrLoopback returns true for loopback, RFC1918, and RFC4193 addresses.
-func isPrivateOrLoopback(ipStr string) bool {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-	if ip.IsLoopback() {
-		return true
-	}
-	// Check private ranges
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"fc00::/7",
-	}
-	for _, cidr := range privateRanges {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		if network.Contains(ip) {
-			return true
-		}
-	}
-	return false
+// isLocalBindAddress reports whether a service bound to ip is reachable only
+// from this host or a private network. An address that does not parse counts
+// as exposed.
+func isLocalBindAddress(ip string) bool {
+	private, valid := netutil.PrivateOrLoopback(ip)
+	return valid && private
 }
 
 // isPortListening checks /proc/net/tcp and /proc/net/tcp6 for a port in LISTEN state.
@@ -912,7 +893,7 @@ func checkMySQLExposed(hasNft bool, nftRules string, hasIpt bool, iptRules strin
 		}
 	}
 
-	if !allZero && ip != "" && isPrivateOrLoopback(ip) {
+	if !allZero && ip != "" && isLocalBindAddress(ip) {
 		return []store.AuditResult{{
 			Category: "firewall", Name: "fw_mysql_exposed", Title: "MySQL Exposure",
 			Status: "pass", Message: fmt.Sprintf("MySQL bound to private/loopback address %s", ip),

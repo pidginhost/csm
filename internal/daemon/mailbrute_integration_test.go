@@ -50,7 +50,7 @@ func buildMailHandler(cfg *config.Config, tr *mailAuthTracker) LogLineHandler {
 				ip = v4.String()
 			}
 		}
-		if isInfraIPDaemon(ip, c.InfraIPs) || isPrivateOrLoopback(ip) {
+		if isInfraIPDaemon(ip, c.InfraIPs) || skipSourceAddress(ip) {
 			return findings
 		}
 		if tr == nil {

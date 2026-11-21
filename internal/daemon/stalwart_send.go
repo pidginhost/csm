@@ -144,7 +144,7 @@ func (d *Daemon) stalwartSend(ev stalwartlog.Event, s stalwartlog.Session, cfg *
 		return nil
 	}
 	signalIP := ""
-	if ip := s.RemoteIP.String(); smtp && !isPrivateOrLoopback(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
+	if ip := s.RemoteIP.String(); smtp && !skipSourceAddress(ip) && !isInfraIPDaemon(ip, cfg.InfraIPs) {
 		signalIP = ip
 	}
 	now := time.Now()

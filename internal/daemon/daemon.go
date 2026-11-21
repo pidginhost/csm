@@ -2703,7 +2703,7 @@ func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAut
 			ip = v4.String()
 		}
 	}
-	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || skipSourceAddress(ip) {
 		return nil
 	}
 	// The Exim mainlog is written by Exim alone.
@@ -2762,7 +2762,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 				probeIP = v4.String()
 			}
 		}
-		if !isInfraIPDaemon(probeIP, cfg.InfraIPs) && !isPrivateOrLoopback(probeIP) {
+		if !isInfraIPDaemon(probeIP, cfg.InfraIPs) && !skipSourceAddress(probeIP) {
 			if d.smtpProbeTracker != nil {
 				findings = append(findings, d.smtpProbeTracker.Record(probeIP)...)
 			}
@@ -2782,7 +2782,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 			}
 		}
 
-		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) && d.smtpAuthTracker != nil {
+		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !skipSourceAddress(ip) && d.smtpAuthTracker != nil {
 			// Exim answers 435 when the Dovecot auth socket cannot answer.
 			// Only a permanent (5xx) reply says the credentials were checked;
 			// any other reply still counts per IP but is not spray evidence.
@@ -2876,7 +2876,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 			ip = v4.String()
 		}
 	}
-	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || skipSourceAddress(ip) {
 		return findings
 	}
 	if tracker == nil {
@@ -2908,7 +2908,7 @@ func (d *Daemon) noteDovecotSessionVerdict(tracker *mailAuthTracker, sessions *d
 	if !ok {
 		return false
 	}
-	if tracker != nil && d.sprayRulesOn() && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+	if tracker != nil && d.sprayRulesOn() && !isInfraIPDaemon(ip, cfg.InfraIPs) && !skipSourceAddress(ip) {
 		sessions.Note(session, ip, account, exist, customerLoginTime(line, tracker.now()))
 	}
 	return true
@@ -2940,7 +2940,7 @@ func (d *Daemon) handleSMTPAuthPairing(t *smtpAuthTracker, line string, obs aler
 		return nil, false
 	}
 	if ip, account, exist, ok := dovecotSessionlessRejection(line); ok {
-		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+		if !isInfraIPDaemon(ip, cfg.InfraIPs) && !skipSourceAddress(ip) {
 			t.NoteDovecotRejection(ip, account, exist, smtpAuthLogTime(line, t.now()))
 		}
 		return nil, true
@@ -2952,7 +2952,7 @@ func (d *Daemon) handleSMTPAuthPairing(t *smtpAuthTracker, line string, obs aler
 	process, msg := postfixSMTPDMessage(line)
 	// A successful login, handled like an authenticated Exim delivery.
 	if ip, user := postfixSASLSuccess(msg); ip != "" {
-		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+		if isInfraIPDaemon(ip, cfg.InfraIPs) || skipSourceAddress(ip) {
 			return nil, true
 		}
 		return t.recordSuccessAt(ip, user, customerLoginTime(line, t.now()), syslogFed, trustedMailLogin(obs)), true
@@ -2976,7 +2976,7 @@ func (d *Daemon) handleSMTPAuthPairing(t *smtpAuthTracker, line string, obs aler
 	// Claim the verdict even for a server-blamed reply so it cannot pair
 	// with a later failure. Recheck infra protection in case configuration
 	// changed between the two log lines.
-	credential := !isPostfixSASLNonCredentialReply(reply) && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip)
+	credential := !isPostfixSASLNonCredentialReply(reply) && !isInfraIPDaemon(ip, cfg.InfraIPs) && !skipSourceAddress(ip)
 	account, exist, names, ok := t.PairMTAFailure(ip, process, smtpAuthLogTime(line, t.now()), credential)
 	if !ok {
 		return nil, true

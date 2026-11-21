@@ -754,13 +754,13 @@ func TestHexToIPv4InvalidHex(t *testing.T) {
 	}
 }
 
-// --- isPrivateOrLoopback ------------------------------------------------
+// --- isLocalBindAddress ------------------------------------------------
 
 func TestIsPrivateOrLoopbackLoopback(t *testing.T) {
-	if !isPrivateOrLoopback("127.0.0.1") {
+	if !isLocalBindAddress("127.0.0.1") {
 		t.Error("127.0.0.1 should be loopback")
 	}
-	if !isPrivateOrLoopback("::1") {
+	if !isLocalBindAddress("::1") {
 		t.Error("::1 should be loopback")
 	}
 }
@@ -768,7 +768,7 @@ func TestIsPrivateOrLoopbackLoopback(t *testing.T) {
 func TestIsPrivateOrLoopbackRFC1918(t *testing.T) {
 	privates := []string{"10.0.0.1", "172.20.5.5", "192.168.1.1"}
 	for _, ip := range privates {
-		if !isPrivateOrLoopback(ip) {
+		if !isLocalBindAddress(ip) {
 			t.Errorf("%s should be private", ip)
 		}
 	}
@@ -777,20 +777,20 @@ func TestIsPrivateOrLoopbackRFC1918(t *testing.T) {
 func TestIsPrivateOrLoopbackPublic(t *testing.T) {
 	publics := []string{"8.8.8.8", "1.1.1.1", "203.0.113.5"}
 	for _, ip := range publics {
-		if isPrivateOrLoopback(ip) {
+		if isLocalBindAddress(ip) {
 			t.Errorf("%s should NOT be private/loopback", ip)
 		}
 	}
 }
 
 func TestIsPrivateOrLoopbackIPv6ULA(t *testing.T) {
-	if !isPrivateOrLoopback("fc00::1") {
+	if !isLocalBindAddress("fc00::1") {
 		t.Error("fc00::1 should be private (RFC 4193 ULA)")
 	}
 }
 
 func TestIsPrivateOrLoopbackInvalidIP(t *testing.T) {
-	if isPrivateOrLoopback("not-an-ip") {
+	if isLocalBindAddress("not-an-ip") {
 		t.Error("invalid IP should return false")
 	}
 }

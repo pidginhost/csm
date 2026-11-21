@@ -92,7 +92,7 @@ func (d *Daemon) handleFTPSessionLine(line string, cfg *config.Config) []alert.F
 func (d *Daemon) handleFTPJournalLine(line string, cfg *config.Config) []alert.Finding {
 	findings := d.handleFTPSessionLine(line, cfg)
 	for _, f := range findings {
-		if f.Check != "ftp_auth_failure_realtime" || isPrivateOrLoopback(f.SourceIP) {
+		if f.Check != "ftp_auth_failure_realtime" || skipSourceAddress(f.SourceIP) {
 			continue
 		}
 		now := time.Now()

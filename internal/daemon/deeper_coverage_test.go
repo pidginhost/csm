@@ -938,22 +938,22 @@ func TestEvictAccessLogState_KeepsActive(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isPrivateOrLoopback — edge cases
+// skipSourceAddress — edge cases
 // ---------------------------------------------------------------------------
 
 func TestIsPrivateOrLoopback_IPv6Loopback(t *testing.T) {
-	if !isPrivateOrLoopback("::1") {
+	if !skipSourceAddress("::1") {
 		t.Error("::1 should be loopback")
 	}
 }
 
 func TestIsPrivateOrLoopback_172Boundary(t *testing.T) {
 	// 172.15.x.x is NOT private
-	if isPrivateOrLoopback("172.15.255.255") {
+	if skipSourceAddress("172.15.255.255") {
 		t.Error("172.15.x.x should not be private")
 	}
 	// 172.32.x.x is NOT private
-	if isPrivateOrLoopback("172.32.0.1") {
+	if skipSourceAddress("172.32.0.1") {
 		t.Error("172.32.x.x should not be private")
 	}
 }

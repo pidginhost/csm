@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// hexToIPv4 and isPrivateOrLoopback tests are in coverage_test.go.
+// hexToIPv4 and isLocalBindAddress tests are in coverage_test.go.
 
 // --- parsePHPIni ------------------------------------------------------
 
