@@ -27,11 +27,11 @@ var webPeerLogMaxBytes int64 = 256 << 20
 // stamped and still count: a clock step, not a request from the future.
 const webPeerClockSkew = 5 * time.Minute
 
-// webPeerAlertEvery is how often one vhost raises a forgery alert.
+// webPeerAlertEvery is how often each peer origin raises a forgery alert.
 const webPeerAlertEvery = time.Hour
 
-// Keep live entries on saturation: evicting one would let a busy tenant
-// trigger repeated alerts for it. Peer classification is never suppressed.
+// Keep live entries on saturation: evicting one would let its key alert
+// again at once. Peer classification is never suppressed.
 const webPeerAlertMaxVhosts = 10000
 
 // webPeerLog feeds the peer index and raises one forgery alert per vhost
@@ -110,30 +110,38 @@ func (p *webPeerLog) handle(line string, cfg *config.Config) []alert.Finding {
 		checks.MarkWebPeerLoss(now)
 		return nil
 	}
-	if checks.ObserveWebPeer(at, peer, client, cfg) != checks.PeerForged || !p.due(vhost, now) {
+	if checks.ObserveWebPeer(at, peer, client, cfg) != checks.PeerForged {
 		return nil
 	}
-	origin := "remote"
+	origin, advice := "remote", "If this peer is a proxy you run or use, list it in web_server.trusted_proxies."
 	if peer.IsLoopback() || netutil.IsHostAddress(peer.String()) {
-		origin = "local"
+		origin, advice = "local", "A local peer is a process on this server, such as a site's script, or a proxy running in front of the web server."
+	}
+	// One alert per origin and hour: a front proxy or a forging tenant
+	// touches every virtual host.
+	if !p.due(origin, now) {
+		return nil
 	}
 	return []alert.Finding{{
 		Severity: alert.Critical,
 		Check:    "http_client_forged",
 		Message:  fmt.Sprintf("Web server %s logged a client address chosen by a %s peer", vhost, origin),
-		Details: fmt.Sprintf("Peer: %s\nLogged client: %s\n"+
+		Details: fmt.Sprintf("Peer: %s\nLogged client: %s\nVirtual host: %s\n"+
 			"The web server applied a forwarding header from a connection that is neither the client nor a trusted proxy. "+
-			"CSM does not block addresses chosen this way. A local peer is a process on this server, such as a site's script.",
-			peer, client),
+			"CSM does not block addresses chosen this way. %s "+
+			"The virtual host comes from the request, which the peer chooses, so it does not identify the account responsible. "+
+			"Further forgeries from %s peers within the hour raise no new alert.",
+			peer, client, vhost, advice, origin),
 	}}
 }
 
-// due uses emission time: request start times arrive out of order and a
-// backlog must not produce an hour's worth of alerts in one read.
-func (p *webPeerLog) due(vhost string, at time.Time) bool {
+// due reports whether key may alert at at, using emission time: request
+// start times arrive out of order and a backlog must not produce an hour's
+// worth of alerts in one read.
+func (p *webPeerLog) due(key string, at time.Time) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if last, ok := p.alertedAt[vhost]; ok && at.Sub(last) < webPeerAlertEvery {
+	if last, ok := p.alertedAt[key]; ok && at.Sub(last) < webPeerAlertEvery {
 		return false
 	}
 	if !at.Before(p.pruneAt) {
@@ -150,11 +158,11 @@ func (p *webPeerLog) due(vhost string, at time.Time) bool {
 	}
 	if len(p.alertedAt) >= webPeerAlertMaxVhosts {
 		if !p.saturated {
-			csmlog.Warn("web peer forgery alert dedup is full; alerts for new virtual hosts are suppressed until an entry expires")
+			csmlog.Warn("web peer forgery alert dedup is full; new alert keys are suppressed until an entry expires")
 			p.saturated = true
 		}
 		return false
 	}
-	p.alertedAt[vhost] = at
+	p.alertedAt[key] = at
 	return true
 }

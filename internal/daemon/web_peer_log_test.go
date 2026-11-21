@@ -645,3 +645,30 @@ func TestBufferedApacheLogsDisablePeerVerdicts(t *testing.T) {
 		t.Fatalf("verdict with buffered logs = %v, want unknown", got)
 	}
 }
+
+// A front proxy or a forging tenant touches every virtual host: forgery
+// alerts are limited per host and origin, not per virtual host, and say what
+// the virtual host does and does not prove.
+func TestForgeryAlertsLimitedPerOrigin(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	p := newWebPeerLog()
+	now := time.Unix(1795200000, 0)
+	p.now = func() time.Time { return now }
+	cfg := &config.Config{}
+	first := p.handle(peerLine(now, "a.example", "127.0.0.1", "192.0.2.70"), cfg)
+	if len(first) != 1 || !strings.Contains(first[0].Details, "does not identify") {
+		t.Fatalf("first local forgery = %+v, want one alert saying the virtual host does not identify the account", first)
+	}
+	for i, vhost := range []string{"b.example", "c.example", "d.example"} {
+		if got := p.handle(peerLine(now, vhost, "127.0.0.1", fmt.Sprintf("192.0.2.%d", 71+i)), cfg); len(got) != 0 {
+			t.Fatalf("local forgery on %s within the hour alerted again: %+v", vhost, got)
+		}
+	}
+	remote := p.handle(peerLine(now, "b.example", "203.0.113.250", "192.0.2.80"), cfg)
+	if len(remote) != 1 || !strings.Contains(remote[0].Details, "web_server.trusted_proxies") {
+		t.Fatalf("first remote forgery = %+v, want one alert naming web_server.trusted_proxies", remote)
+	}
+	if again := p.handle(peerLine(now, "c.example", "203.0.113.251", "192.0.2.81"), cfg); len(again) != 0 {
+		t.Fatalf("remote forgery within the hour alerted again: %+v", again)
+	}
+}

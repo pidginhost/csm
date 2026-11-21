@@ -877,14 +877,13 @@ peer verification, enable PHP suEXEC, reload LiteSpeed, then restart CSM.
 
 A request logged with a client address chosen by a peer that is neither the
 client nor a trusted proxy raises `http_client_forged` (Critical), at most once
-an hour per virtual host, measured when CSM emits the alert rather than when
-the request started. The alert names whether the peer was this server
-itself, such as a site's script, or a remote host. CSM never blocks an address
-chosen this way.
-
-Alert deduplication retains at most 10,000 virtual hosts. If it fills, CSM
-logs a warning and suppresses alerts for additional hosts until entries expire.
-Peer classification continues, and existing entries keep their hourly limit.
+an hour for peers on this server and once for remote peers, measured when CSM
+emits the alert rather than when the request started. A local peer is a
+process on this server, such as a site's script, or a proxy in front of the
+web server; a remote one that is a proxy you run or use belongs in
+`web_server.trusted_proxies`. The alert names the virtual host from the
+request, which the peer chooses, so it does not identify the account
+responsible. CSM never blocks an address chosen this way.
 
 The daemon empties the peer log once it has read it past 256 MB. After a
 restart, truncation, rotation, read failure, unreadable line or line stamped
