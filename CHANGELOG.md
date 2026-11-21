@@ -11,11 +11,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- FTP journal alerts now catch new attackers during large bursts, flag logins after brute force, and ignore expired failures.
-- Reputation exemptions require verified mail logins; FTP and cPanel activity cannot erase or renew them.
-- Forged mail log entries no longer influence trusted authentication alerts or suspend mailboxes.
-- Repeated SSH logins now produce separate alerts instead of disappearing from login history.
-- SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks or count as customer logins; they still alert.
+- A feed-listed address is excused from reputation blocking only by an IPv4 mail login the mail service recorded in the last day.
+- SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks, mailbox suspensions or count as customer logins; they still alert.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
