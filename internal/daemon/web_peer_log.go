@@ -23,6 +23,10 @@ const webPeerLogPath = webserver.PeerLogFile
 // verdicts, so the cap keeps it rare on a busy host.
 var webPeerLogMaxBytes int64 = 256 << 20
 
+// webPeerClockSkew is how far ahead of the daemon's clock a peer line may be
+// stamped and still count: a clock step, not a request from the future.
+const webPeerClockSkew = 5 * time.Minute
+
 // webPeerAlertEvery is how often one vhost raises a forgery alert.
 const webPeerAlertEvery = time.Hour
 
@@ -96,7 +100,10 @@ func (p *webPeerLog) hostSpec(path string, info platform.Info) logWatchSpec {
 
 func (p *webPeerLog) handle(line string, cfg *config.Config) []alert.Finding {
 	at, vhost, peer, client, ok := checks.ParseWebPeerLine(line)
-	if !ok {
+	// A request starts before its line is written, so a line from the future
+	// is corrupt: code able to append could glue digits onto the next line
+	// and move it out of every verdict window.
+	if !ok || at.After(p.now().Add(webPeerClockSkew)) {
 		checks.MarkWebPeerLoss(p.now())
 		return nil
 	}

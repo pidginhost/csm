@@ -51,6 +51,7 @@ func TestWebPeerLogHandlerAlertsForgeryOncePerVhostHour(t *testing.T) {
 		!strings.Contains(first[0].Message, "site.example") || !strings.Contains(first[0].Message, "local") || first[0].SourceIP != "" {
 		t.Fatalf("first forged line = %+v, want one Critical local alert naming the vhost and no source address", first)
 	}
+	now = t0.Add(10 * time.Minute)
 	if again := p.handle(peerLine(t0.Add(10*time.Minute), "site.example", "127.0.0.1", "192.0.2.91"), cfg); len(again) != 0 {
 		t.Fatalf("a second forgery within the hour alerted again: %+v", again)
 	}
@@ -94,6 +95,7 @@ func TestWebPeerLogTruncationMarksLoss(t *testing.T) {
 	// right, but this test reads the next window.
 	w.truncateAt = 1 << 30
 	after := time.Now().Add(3 * time.Hour)
+	p.now = func() time.Time { return after }
 	appendLine(t, path, peerLine(after, "site.example", "203.0.113.81", "203.0.113.81"))
 	w.readNewLines()
 	if got := checks.WebPeerVerdict(client, after); got != checks.PeerDirect {
@@ -265,7 +267,11 @@ func TestWebPeerWatcherDrainsForVerdicts(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, err := newObservedLogWatcher(newWebPeerLog().spec(path), &config.Config{}, make(chan alert.Finding, 4))
+	p := newWebPeerLog()
+	// The lines below sit past the loss marked at attach; the reader's clock
+	// has moved on with them.
+	p.now = func() time.Time { return time.Now().Add(8 * time.Hour) }
+	w, err := newObservedLogWatcher(p.spec(path), &config.Config{}, make(chan alert.Finding, 4))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +303,9 @@ func TestWebPeerLateRetryReplacesStoppedDrain(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	spec := newWebPeerLog().spec(path)
+	peerLog := newWebPeerLog()
+	peerLog.now = func() time.Time { return time.Now().Add(8 * time.Hour) }
+	spec := peerLog.spec(path)
 	old, err := newObservedLogWatcher(spec, &config.Config{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -341,6 +349,7 @@ func TestWebPeerSuExecRevokedWhileRunning(t *testing.T) {
 	t.Cleanup(func() { checks.SetHTTPRewrite(previous) })
 	var unsafe atomic.Bool
 	p := newWebPeerLog()
+	p.now = func() time.Time { return time.Now().Add(8 * time.Hour) }
 	p.serverRunsSiteCode = func(platform.WebServer) bool { return unsafe.Load() }
 	d := &Daemon{webPeer: p}
 	var spec logWatchSpec
@@ -404,6 +413,7 @@ func TestWebPeerSuExecPollRevokesAndBounds(t *testing.T) {
 			t.Cleanup(checks.ResetWebPeersForTest())
 			unsafe := unsafeAtStart
 			p := newWebPeerLog()
+			p.now = func() time.Time { return time.Now().Add(8 * time.Hour) }
 			p.serverRunsSiteCode = func(platform.WebServer) bool { return unsafe }
 			path := filepath.Join(t.TempDir(), "peer.log")
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
@@ -451,5 +461,34 @@ func TestWebPeerSuExecPollRevokesAndBounds(t *testing.T) {
 				t.Fatalf("revoked log not bounded: %v, %v", st, err)
 			}
 		})
+	}
+}
+
+// A line stamped after it was read cannot be a request's start. Site code
+// that can append to the log could otherwise glue digits onto the front of
+// the web server's next line, throwing a forged line far into the future and
+// out of every verdict window while the victim's direct lines stay.
+func TestWebPeerLogRejectsLinesFromTheFuture(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	now := time.Unix(1795200000, 0)
+	p := newWebPeerLog()
+	p.now = func() time.Time { return now }
+	victim := "203.0.113.81"
+	if got := p.handle(peerLine(now.Add(-time.Minute), "site.example", victim, victim), &config.Config{}); len(got) != 0 {
+		t.Fatalf("direct line raised %+v", got)
+	}
+	glued := "9" + peerLine(now, "site.example", "127.0.0.1", victim)
+	if got := p.handle(glued, &config.Config{}); len(got) != 0 {
+		t.Fatalf("a far-future line raised %+v", got)
+	}
+	if got := checks.WebPeerVerdict(netip.MustParseAddr(victim), now); got != checks.PeerUnknown {
+		t.Fatalf("verdict after a far-future line = %v, want unknown", got)
+	}
+	// A clock step of a few seconds is not an attack.
+	t.Cleanup(checks.ResetWebPeersForTest())
+	later := netip.MustParseAddr("203.0.113.82")
+	p.handle(peerLine(now.Add(30*time.Second), "site.example", later.String(), later.String()), &config.Config{})
+	if got := checks.WebPeerVerdict(later, now.Add(30*time.Second)); got != checks.PeerDirect {
+		t.Fatalf("a line 30s ahead of the clock = %v, want direct", got)
 	}
 }

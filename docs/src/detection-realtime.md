@@ -887,7 +887,8 @@ logs a warning and suppresses alerts for additional hosts until entries expire.
 Peer classification continues, and existing entries keep their hourly limit.
 
 The daemon empties the peer log once it has read it past 256 MB. After a
-restart, truncation, rotation, read failure or unreadable line, any verdict
+restart, truncation, rotation, read failure, unreadable line or line stamped
+more than five minutes ahead of the clock, any verdict
 whose one-hour window reaches the gap is unknown. This includes verdicts
 for the hour after the gap. Web findings keep the responses they get without
 the peer log. Unchanged files can be reopened without invalidating verdicts.
