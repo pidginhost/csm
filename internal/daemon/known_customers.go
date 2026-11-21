@@ -610,6 +610,11 @@ func (d *Daemon) noteFTPCustomers(findings []alert.Finding) {
 // summary: an FTP or cPanel login must neither erase nor renew it. Only live
 // trusted readers set MailAt; legacy saved summaries are not login proof.
 func (d *Daemon) trustedMailLoginSince(ip string, since time.Time) bool {
+	// An exemption names one address. The set keeps an IPv6 login only by
+	// its /64, which can hold other tenants of a provider.
+	if addr, err := netip.ParseAddr(ip); err != nil || !addr.Unmap().Is4() {
+		return false
+	}
 	k := d.knownCustomers
 	if k == nil {
 		return false

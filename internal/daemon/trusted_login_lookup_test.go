@@ -148,3 +148,17 @@ func TestTrustedMailLoginRejectsFutureSavedTime(t *testing.T) {
 		t.Fatal("future saved time granted reputation exemption")
 	}
 }
+
+// The customer set keys an IPv6 login by its /64, which can hold other
+// tenants of a provider. An exemption names one address, so an IPv6 login
+// excuses nothing, not even the address it came from.
+func TestTrustedMailLoginSinceNeverWidensIPv6(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	now := time.Now()
+	d.knownCustomers.NoteTrusted("2001:db8:1:2::10", knownCustomerIMAP, "a@example.test", now.Add(-time.Hour), syslogFed)
+	for _, ip := range []string{"2001:db8:1:2::10", "2001:db8:1:2::99"} {
+		if d.trustedMailLoginSince(ip, now.Add(-24*time.Hour)) {
+			t.Errorf("%s excused by an IPv6 customer login", ip)
+		}
+	}
+}
