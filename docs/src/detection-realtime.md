@@ -394,9 +394,18 @@ in both realtime monitoring and scheduled scans. Missing or malformed peers and
 hostname peers produce no finding. To record numeric peers, use pure-ftpd's
 existing `DontResolve yes` setting. Without it, a numeric peer can be a reverse
 DNS name its owner chose to read as another address, so FTP failures only alert
-and never count toward a block; `csm doctor` names each pure-ftpd configuration
-that lacks the setting. Addresses in usernames or later message fields never
-identify the client.
+and never count toward a block or attack score. A journal login in this mode
+cannot inherit earlier brute-force history. CSM checks the setting for each journal
+entry; disabling it takes effect without restarting CSM. Every configuration
+source present must enable it. Unreadable sources, including broken symlinks,
+and an installed server with no known configuration leave FTP alert-only.
+`csm doctor` names the sources that need attention.
+
+Use `DontResolve yes` (also `DontResolve = yes` or `DontResolve : yes`) in a
+pure-ftpd configuration. For Debian's `/etc/pure-ftpd/conf/DontResolve`, write
+only `yes`. Restart pure-ftpd after changing the setting. FTP file findings
+remain alert-only and do not build attack scores, regardless of this setting.
+Addresses in usernames or later message fields never identify the client.
 
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
@@ -432,9 +441,9 @@ same address is a new finding, even within the 24-hour history reminder window.
 A successful FTP login and a cPanel File Manager write are not emailed. On
 shared hosting every customer connects from an address that is not
 infrastructure, so both fire on ordinary use of a core feature. They stay on
-the findings page, in history, in incident correlation and in the attack
-database, where their value is correlation with other evidence on the same
-account. Failed FTP authentication, FTP brute force, a login from a
+the findings page, in history and in incident correlation. File Manager activity
+also enters the attack database; FTP activity from unverified sources does not.
+Failed FTP authentication, FTP brute force, a login from a
 brute-force source, and SSH logins are all still emailed.
 
 The FTP journal reader keeps failure history for `thresholds.ftp_fail_window_min`

@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -63,23 +62,18 @@ var ftpJournal = journalSource{
 	},
 }
 
-// pureFTPDNumericPeers reports whether pure-ftpd logs client addresses
-// rather than reverse DNS names, re-reading its configuration at most once a
-// minute. A variable for tests.
-var pureFTPDNumericPeers = func() func() bool {
-	var mu sync.Mutex
-	var checked time.Time
-	var numeric bool
+// pureFTPDNumericPeers reports whether every known configuration source
+// disables DNS. A variable for tests.
+var pureFTPDNumericPeers = newFTPNumericPeerProbe(platform.PureFTPDDontResolve)
+
+func newFTPNumericPeerProbe(probe func() ([]string, []string)) func() bool {
 	return func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		if now := time.Now(); now.Sub(checked) >= time.Minute || now.Before(checked) {
-			configs, missing := platform.PureFTPDDontResolve()
-			checked, numeric = now, len(configs) > 0 && len(missing) == 0
-		}
-		return numeric
+		// A cached approval would survive an operator disabling DontResolve
+		// and restarting pure-ftpd, admitting attacker-chosen PTR names.
+		configs, missing := probe()
+		return len(configs) > 0 && len(missing) == 0
 	}
-}()
+}
 
 // ftpJournalSource is ftpJournal with the daemon's handlers: root entries
 // also count failures toward an FTP brute force.
@@ -171,10 +165,12 @@ func (d *Daemon) dispatchJournalLine(src journalSource, line maillog.Line) bool 
 			return true
 		}
 		src = *src.session
-	} else if src.producer == checks.ProducerFTPJournal && !pureFTPDNumericPeers() {
-		// A client's reverse DNS name stands in its address unless DontResolve
-		// is set, and the client's owner can make it read as another address.
-		src = *src.session
+	}
+	if (src.producer == checks.ProducerFTPJournal || src.producer == checks.ProducerFTPLog) && !pureFTPDNumericPeers() {
+		// A numeric PTR name is not a peer: it must neither add failures nor
+		// borrow a real peer's earlier failures to escalate a login.
+		src.producer = checks.ProducerFTPLog
+		src.handler = parseFTPLogLine
 	}
 	return d.dispatchLogLine(src.producer, line, func(msg string, _ alert.Observation, cfg *config.Config) []alert.Finding {
 		findings := src.handler(msg, cfg)

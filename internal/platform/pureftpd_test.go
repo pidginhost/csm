@@ -81,3 +81,42 @@ func TestPureFTPDDontResolve(t *testing.T) {
 		})
 	}
 }
+
+func TestPureFTPDConfSeparators(t *testing.T) {
+	for _, separator := range []string{" ", "\t", "=", ":", " = ", "\t: \t", "\v", "\f", "\r"} {
+		for _, value := range []string{"yes", "ON", "True", "1"} {
+			line := "DontResolve" + separator + value
+			if !pureFTPDConfEnables(line, "DontResolve") {
+				t.Errorf("valid assignment rejected: %q", line)
+			}
+		}
+	}
+	for _, line := range []string{"DontResolve == yes", "DontResolve : = yes", "DontResolve yes # comment", "DontResolve yesplease", "DontRe\u017folve yes", "\u00a0DontResolve yes", "DontResolve=\u00a0yes"} {
+		if pureFTPDConfEnables(line, "DontResolve") {
+			t.Errorf("invalid assignment accepted: %q", line)
+		}
+	}
+}
+
+func TestPureFTPDBrokenSourcesAreNotAbsent(t *testing.T) {
+	withMTAProbes(t, nil, nil)
+	root := t.TempDir()
+	good, broken := filepath.Join(root, "good.conf"), filepath.Join(root, "broken.conf")
+	options := filepath.Join(root, "conf")
+	if err := os.WriteFile(good, []byte("DontResolve yes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{broken, options} {
+		if err := os.Symlink(filepath.Join(root, "absent"), path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldFiles, oldDir := pureFTPDConfigFiles, pureFTPDOptionDir
+	t.Cleanup(func() { pureFTPDConfigFiles, pureFTPDOptionDir = oldFiles, oldDir })
+	pureFTPDConfigFiles, pureFTPDOptionDir = []string{good, broken}, options
+	configs, missing := PureFTPDDontResolve()
+	if !slices.Equal(configs, []string{good, broken, filepath.Join(options, "DontResolve")}) ||
+		!slices.Equal(missing, []string{broken, filepath.Join(options, "DontResolve")}) {
+		t.Fatalf("unreadable sources were ignored: configs=%v missing=%v", configs, missing)
+	}
+}

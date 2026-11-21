@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -51,7 +52,13 @@ func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platfor
 	if len(ftpMissing) > 0 {
 		c.Status = "warn"
 		c.Message += ". FTP failures only alert while pure-ftpd logs client host names"
-		fixes = append(fixes, "set DontResolve yes in "+joinServices(ftpMissing)+" and restart pure-ftpd")
+		for _, source := range ftpMissing {
+			if filepath.Base(source) == "DontResolve" {
+				fixes = append(fixes, "write yes to "+source+" and restart pure-ftpd")
+			} else {
+				fixes = append(fixes, "set DontResolve yes in "+source+" and restart pure-ftpd")
+			}
+		}
 	}
 	c.Message += ". Watcher health reports source availability"
 	c.Fix = strings.Join(fixes, "; ")

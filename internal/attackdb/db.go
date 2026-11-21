@@ -369,6 +369,12 @@ func NewForTest(records map[string]*IPRecord) *DB {
 // RecordFinding records an attack event from a finding.
 // Fire-and-forget: never blocks, never panics.
 func (db *DB) RecordFinding(f alert.Finding) {
+	// FTP file lines and resolving-mode journal entries can name an
+	// attacker-chosen address. Alert history retains them, but local
+	// reputation must not turn them into evidence against that address.
+	if f.Observation.Producer == "ftp_log" || f.Observation.Producer == "ftp_scan" {
+		return
+	}
 	attackType, ok := AttackTypeFor(f.Check)
 	if !ok {
 		return // not an attack-related check

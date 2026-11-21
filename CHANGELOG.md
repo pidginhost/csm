@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- FTP journal alerts stop triggering blocks or falsely reporting cracked passwords when address lookup is enabled; unverified FTP alerts no longer raise threat scores. Enable pure-ftpd's DontResolve setting and restart pure-ftpd to allow automatic FTP blocks.
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
 - Internal registry downloads between releases carry verified signatures even when only the AMD64 build is available.
 - The registry installer refuses unverified builds, and `csm doctor` reports older copies that still accept them.
@@ -37,7 +38,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Changed
 
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
-- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source. FTP failures block only with pure-ftpd's `DontResolve yes`.
+- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
 - SSH, mail and FTP logins read from log files now alert without blocking.
 - FTP logins no longer count as known customers in block alerts.
 - Hosts that leave `auto_response.max_blocks_per_hour` unset now allow at most 1000 automatic blocks an hour instead of 2000; `csm doctor` warns only below 1000.

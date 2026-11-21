@@ -6,6 +6,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/maillog"
@@ -248,13 +249,24 @@ func TestFTPJournalHostNamesOnlyAlert(t *testing.T) {
 	for range checks.FTPFailThreshold + 2 {
 		d.dispatchJournalLine(src, failure())
 	}
+	db := attackdb.NewForTest(nil)
 	n := 0
 	for len(d.alertCh) > 0 {
 		f := <-d.alertCh
 		n++
+		db.RecordFinding(f)
+		if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseWritableLog {
+			t.Fatalf("resolving FTP admitted evidence: %v", err)
+		}
+		if !checks.UnverifiedAddress(f.Check, f.Observation.Producer) {
+			t.Fatal("resolving FTP can attest an incident address")
+		}
 		if f.Check == "ftp_bruteforce" || !checks.ProducerWritableLog(admission.ProducerID(f.Observation.Producer)) {
 			t.Fatalf("root entry while pure-ftpd resolves names gave %s stamped %q", f.Check, f.Observation.Producer)
 		}
+	}
+	if db.TotalIPs() != 0 {
+		t.Fatal("resolving FTP changed attack scores")
 	}
 	if n != checks.FTPFailThreshold+2 {
 		t.Fatalf("%d findings, want one per entry", n)
@@ -267,6 +279,55 @@ func TestFTPJournalHostNamesOnlyAlert(t *testing.T) {
 	for len(d.alertCh) > 0 {
 		if f := <-d.alertCh; f.Check == "ftp_bruteforce" {
 			t.Fatal("failures logged while pure-ftpd resolved names counted toward a brute force")
+		}
+	}
+}
+
+// An operator can restart pure-ftpd with DNS enabled between consecutive
+// entries. A previous positive answer must not authorize the new entries.
+func TestFTPNumericPeerProbeDoesNotCacheApproval(t *testing.T) {
+	numeric := true
+	probe := newFTPNumericPeerProbe(func() ([]string, []string) {
+		if numeric {
+			return []string{"pure-ftpd.conf"}, nil
+		}
+		return []string{"pure-ftpd.conf"}, []string{"pure-ftpd.conf"}
+	})
+	if !probe() {
+		t.Fatal("numeric configuration rejected")
+	}
+	numeric = false
+	if probe() {
+		t.Fatal("cached approval survived disabling DontResolve")
+	}
+}
+
+// A numeric-looking PTR name must not borrow an actual peer's earlier
+// failures to turn a login into a cracked-password alert.
+func TestFTPResolvingLoginDoesNotBorrowFailureHistory(t *testing.T) {
+	setFTPNumericPeers(t, true)
+	d := New(&config.Config{}, nil, nil, "")
+	at := time.Now()
+	for range checks.FTPFailThreshold {
+		d.ftpFails.Failure("198.51.100.7", at, at, d.currentCfg())
+	}
+	setFTPNumericPeers(t, false)
+	for _, uid := range []string{"0", "1001"} {
+		line := maillog.JournalLine(map[string]string{
+			"MESSAGE":           "(alice@198.51.100.7) [INFO] alice is now logged in",
+			"SYSLOG_IDENTIFIER": "pure-ftpd", "_PID": "77", "_SYSTEMD_UNIT": "pure-ftpd.service",
+			"_UID": uid, "_EXE": "/usr/sbin/pure-ftpd", "_TRANSPORT": "syslog",
+		}, maillog.Position{Stream: "journal", Cursor: "s=" + uid, ObservedAt: at})
+		if !d.dispatchJournalLine(d.ftpJournalSource(), line) || len(d.alertCh) != 1 {
+			t.Fatal("expected one login alert")
+		}
+		f := <-d.alertCh
+		if f.Check != "ftp_login" || f.Severity != alert.Warning || f.Observation.Producer != string(checks.ProducerFTPLog) {
+			t.Fatalf("PTR login borrowed trusted failure history: %+v", f)
+		}
+		d.noteFTPCustomers([]alert.Finding{f})
+		if _, ok := d.knownCustomers.Lookup("198.51.100.7"); ok {
+			t.Fatal("PTR login earned customer trust")
 		}
 	}
 }

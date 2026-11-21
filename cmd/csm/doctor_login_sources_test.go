@@ -108,3 +108,10 @@ func TestLoginSourcesDoctorCheckFTPHostNames(t *testing.T) {
 		t.Fatalf("check without the gap = %+v", c)
 	}
 }
+
+func TestLoginSourcesDoctorDebianDontResolve(t *testing.T) {
+	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", []string{"/etc/pure-ftpd/conf/DontResolve"})
+	if c.Status != "warn" || !strings.Contains(c.Fix, "write yes to /etc/pure-ftpd/conf/DontResolve") || strings.Contains(c.Fix, "set DontResolve yes in /etc/pure-ftpd/conf/DontResolve") {
+		t.Fatalf("doctor must give the wrapper's value-only syntax: %+v", c)
+	}
+}

@@ -24,16 +24,16 @@ var (
 // reports its configuration as a whole.
 func PureFTPDDontResolve() (configs, missing []string) {
 	for _, path := range pureFTPDConfigFiles {
-		data, err := os.ReadFile(path) // #nosec G304 -- fixed pure-ftpd configuration paths
-		if errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		configs = append(configs, path)
+		data, err := os.ReadFile(path) // #nosec G304 -- fixed pure-ftpd configuration paths
 		if err != nil || !pureFTPDConfEnables(string(data), "DontResolve") {
 			missing = append(missing, path)
 		}
 	}
-	if _, err := os.Stat(pureFTPDOptionDir); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Lstat(pureFTPDOptionDir); !errors.Is(err, fs.ErrNotExist) {
 		path := filepath.Join(pureFTPDOptionDir, "DontResolve")
 		configs = append(configs, path)
 		data, err := os.ReadFile(path) // #nosec G304 -- fixed pure-ftpd configuration path
@@ -52,15 +52,19 @@ func PureFTPDDontResolve() (configs, missing []string) {
 // whitespace after it, and counts any enabled line: no later line undoes it.
 func pureFTPDConfEnables(conf, key string) bool {
 	for _, line := range strings.Split(conf, "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.Trim(line, " \t\r\v\f")
 		if len(line) <= len(key) || !strings.EqualFold(line[:len(key)], key) {
 			continue
 		}
 		rest := line[len(key):]
-		if rest[0] != '=' && rest[0] != ':' && rest[0] != ' ' && rest[0] != '\t' {
+		if rest[0] != '=' && rest[0] != ':' && !strings.ContainsAny(rest[:1], " \t\r\v\f") {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(strings.TrimLeft(rest[1:], " \t"))) {
+		rest = strings.TrimLeft(rest, " \t\r\v\f")
+		if len(rest) > 0 && (rest[0] == '=' || rest[0] == ':') {
+			rest = rest[1:]
+		}
+		switch strings.ToLower(strings.Trim(rest, " \t\r\v\f")) {
 		case "yes", "on", "true", "1":
 			return true
 		}
