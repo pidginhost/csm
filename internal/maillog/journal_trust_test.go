@@ -128,6 +128,8 @@ func TestTrustedLineAcceptsServiceExecutable(t *testing.T) {
 		want           bool
 	}{
 		{"pure-ftpd.service", "1001", "/usr/sbin/pure-ftpd", true},
+		// Its binary replaced by an upgrade while the service runs.
+		{"pure-ftpd.service", "1001", "/usr/sbin/pure-ftpd (deleted)", true},
 		{"pure-ftpd.service", "0", "", true},
 		{"pure-ftpd.service", "1001", "/usr/bin/logger", false},
 		{"pure-ftpd.service", "1001", "", false},

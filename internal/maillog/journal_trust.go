@@ -16,8 +16,10 @@ import (
 type SenderRule struct {
 	Units []string
 	UIDs  []uint32
-	// Executables are program names trusted at any uid in the rule's units:
+	// Executables are program names accepted at any uid in the rule's units:
 	// for a service that drops to a user's uid but runs no user code.
+	// journald can take a process's unit and executable from the one it
+	// replaced under the same uid, so that user can forge such a line.
 	Executables []string
 }
 
@@ -45,7 +47,7 @@ func TrustedLine(line Line, rules []SenderRule) bool {
 					return true
 				}
 			}
-			if line.Exe != "" && slices.Contains(r.Executables, filepath.Base(line.Exe)) {
+			if line.Exe != "" && slices.Contains(r.Executables, filepath.Base(strings.TrimSuffix(line.Exe, " (deleted)"))) {
 				return true
 			}
 		}

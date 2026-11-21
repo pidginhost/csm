@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -98,7 +99,7 @@ func TestFTPJournalLoginAfterBruteforce(t *testing.T) {
 		t.Fatalf("login findings=%d, want one", len(d.alertCh))
 	}
 	got := <-d.alertCh
-	if got.Check != "ftp_login_after_bruteforce" || got.Severity != alert.Critical || got.LoginAccount != "alice" || got.Observation.Producer != string(checks.ProducerFTPJournal) || !got.Timestamp.Equal(at) {
+	if got.Check != "ftp_login_after_bruteforce" || got.Severity != alert.Critical || got.LoginAccount != "alice" || got.Observation.Producer != string(checks.ProducerFTPLog) || !got.Timestamp.Equal(at) {
 		t.Fatalf("login after brute force = %+v", got)
 	}
 }
@@ -125,5 +126,51 @@ func TestFTPJournalBacklogDoesNotBecomeFreshAttack(t *testing.T) {
 	got := d.handleFTPJournalLine("pure-ftpd: (alice@203.0.113.81) [INFO] alice is now logged in", cfg)
 	if len(got) != 1 || got[0].Check != "ftp_login" {
 		t.Fatalf("old failures escalated a login: %+v", got)
+	}
+}
+
+// pure-ftpd logs failures as root and a session's lines under the logged-in
+// user's uid. journald can give an entry the unit and executable of a
+// session process that user's own program replaced, so an entry under a
+// user's uid alerts but neither counts toward a brute force nor makes its
+// address a customer.
+func TestFTPJournalUserEntriesOnlyAlert(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	src := d.ftpJournalSource()
+	entry := func(message, uid string) maillog.Line {
+		return maillog.JournalLine(map[string]string{
+			"MESSAGE": message, "SYSLOG_IDENTIFIER": "pure-ftpd", "_PID": "77",
+			"_SYSTEMD_UNIT": "pure-ftpd.service", "_UID": uid, "_EXE": "/usr/sbin/pure-ftpd", "_TRANSPORT": "syslog",
+		}, maillog.Position{Stream: "journal", Cursor: "s=3", ObservedAt: time.Now()})
+	}
+	const failure = "(?@198.51.100.32) [WARNING] Authentication failed for user [alice]"
+	for range checks.FTPFailThreshold + 2 {
+		d.dispatchJournalLine(src, entry(failure, "1001"))
+	}
+	d.dispatchJournalLine(src, entry("(alice@198.51.100.32) [INFO] alice is now logged in", "1001"))
+	var findings []alert.Finding
+	for len(d.alertCh) > 0 {
+		findings = append(findings, <-d.alertCh)
+	}
+	if len(findings) != checks.FTPFailThreshold+3 {
+		t.Fatalf("%d findings, want one per entry", len(findings))
+	}
+	for _, f := range findings {
+		if f.Check == "ftp_bruteforce" || !checks.ProducerWritableLog(admission.ProducerID(f.Observation.Producer)) {
+			t.Fatalf("user-uid entry gave %s stamped %q", f.Check, f.Observation.Producer)
+		}
+	}
+	d.noteFTPCustomers(findings)
+	if _, ok := d.knownCustomers.Lookup("198.51.100.32"); ok {
+		t.Fatal("a user-uid login made its address a customer")
+	}
+	// Root failures start from zero: the user's entries counted nothing.
+	for range checks.FTPFailThreshold - 1 {
+		d.dispatchJournalLine(src, entry(failure, "0"))
+	}
+	for len(d.alertCh) > 0 {
+		if f := <-d.alertCh; f.Check == "ftp_bruteforce" {
+			t.Fatal("user-uid failures counted toward a brute force")
+		}
 	}
 }

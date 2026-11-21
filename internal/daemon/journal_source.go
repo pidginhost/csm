@@ -26,6 +26,10 @@ type journalSource struct {
 	rules       []maillog.SenderRule
 	producer    admission.ProducerID
 	handler     LogLineHandler
+	// session, when set, takes the entries its rules accept and rules do
+	// not: lines the service wrote under a user's uid. That user can forge
+	// one, so its producer must only alert.
+	session *journalSource
 }
 
 // journalUsable probes the host once at start; a variable for tests.
@@ -44,28 +48,33 @@ var sshJournal = journalSource{
 }
 
 // ftpJournal reads pure-ftpd's entries. It logs a failure as root before
-// login and a session's lines as the logged-in user afterwards; no user code
-// runs in its unit, so its own executable is trusted at any uid there.
+// login and a session's lines, the login among them, as the logged-in user.
 var ftpJournal = journalSource{
 	name:        "ftp_journal",
 	units:       []string{"pure-ftpd"},
 	identifiers: []string{"pure-ftpd"},
-	rules:       []maillog.SenderRule{{Units: []string{"pure-ftpd"}, UIDs: []uint32{0}, Executables: []string{"pure-ftpd"}}},
+	rules:       []maillog.SenderRule{{Units: []string{"pure-ftpd"}, UIDs: []uint32{0}}},
 	producer:    checks.ProducerFTPJournal,
+	session: &journalSource{
+		rules:    []maillog.SenderRule{{Units: []string{"pure-ftpd"}, Executables: []string{"pure-ftpd"}}},
+		producer: checks.ProducerFTPLog,
+	},
 }
 
-// ftpJournalSource is ftpJournal with the daemon's handler, which also
-// counts failures toward an FTP brute force.
+// ftpJournalSource is ftpJournal with the daemon's handlers: root entries
+// also count failures toward an FTP brute force.
 func (d *Daemon) ftpJournalSource() journalSource {
 	src := ftpJournal
 	src.handler = d.handleFTPJournalLine
+	session := *src.session
+	session.handler = d.handleFTPSessionLine
+	src.session = &session
 	return src
 }
 
-// handleFTPJournalLine reports each pure-ftpd failure and login, and raises
-// an FTP brute force when an address reaches the threshold, as the scan of
-// the system log file does where the journal is not used.
-func (d *Daemon) handleFTPJournalLine(line string, cfg *config.Config) []alert.Finding {
+// handleFTPSessionLine reports a pure-ftpd failure or login, a login after a
+// brute force from its address at Critical.
+func (d *Daemon) handleFTPSessionLine(line string, cfg *config.Config) []alert.Finding {
 	findings := parseFTPLogLine(line, cfg)
 	for i, f := range findings {
 		if f.Check == "ftp_login" {
@@ -73,6 +82,16 @@ func (d *Daemon) handleFTPJournalLine(line string, cfg *config.Config) []alert.F
 				findings[i] = login
 			}
 		}
+	}
+	return findings
+}
+
+// handleFTPJournalLine reports a pure-ftpd root entry and raises an FTP
+// brute force when an address reaches the threshold, as the scan of the
+// system log file does where the journal is not used.
+func (d *Daemon) handleFTPJournalLine(line string, cfg *config.Config) []alert.Finding {
+	findings := d.handleFTPSessionLine(line, cfg)
+	for _, f := range findings {
 		if f.Check != "ftp_auth_failure_realtime" || isPrivateOrLoopback(f.SourceIP) {
 			continue
 		}
@@ -123,11 +142,15 @@ func (d *Daemon) startJournalSource(src journalSource) {
 	})
 }
 
-// dispatchJournalLine hands an entry src's service wrote to its handler;
-// any other entry is dropped, which is not a delivery failure.
+// dispatchJournalLine hands an entry src's service wrote to its handler, or
+// to src's session handler under its producer; any other entry is dropped,
+// which is not a delivery failure.
 func (d *Daemon) dispatchJournalLine(src journalSource, line maillog.Line) bool {
 	if !maillog.TrustedLine(line, src.rules) {
-		return true
+		if src.session == nil || !maillog.TrustedLine(line, src.session.rules) {
+			return true
+		}
+		src = *src.session
 	}
 	return d.dispatchLogLine(src.producer, line, func(msg string, _ alert.Observation, cfg *config.Config) []alert.Finding {
 		findings := src.handler(msg, cfg)
