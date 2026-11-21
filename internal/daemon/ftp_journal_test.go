@@ -16,6 +16,7 @@ import (
 // An account can forge the message of a root failure. Its alert must not
 // consume the trusted alert's batch identity or persisted notification key.
 func TestFTPJournalUserAlertCannotSuppressRootAlert(t *testing.T) {
+	setFTPNumericPeers(t, true)
 	d := New(&config.Config{}, nil, nil, "")
 	src := d.ftpJournalSource()
 	at := time.Now()
@@ -82,6 +83,7 @@ func TestFTPSourceFollowsJournal(t *testing.T) {
 // blocking brute-force finding; an entry a user's program wrote counts for
 // nothing.
 func TestFTPJournalBruteforceBlocks(t *testing.T) {
+	setFTPNumericPeers(t, true)
 	d := New(&config.Config{}, nil, nil, "")
 	src := d.ftpJournalSource()
 	entry := func(uid, exe string) maillog.Line {
@@ -119,6 +121,7 @@ func TestFTPJournalBruteforceBlocks(t *testing.T) {
 
 // Moving FTP to the journal must preserve the cracked-password escalation.
 func TestFTPJournalLoginAfterBruteforce(t *testing.T) {
+	setFTPNumericPeers(t, true)
 	d := New(&config.Config{}, nil, nil, "")
 	src := d.ftpJournalSource()
 	at := time.Now()
@@ -179,6 +182,7 @@ func TestFTPJournalBacklogDoesNotBecomeFreshAttack(t *testing.T) {
 // user's uid alerts but neither counts toward a brute force nor makes its
 // address a customer.
 func TestFTPJournalUserEntriesOnlyAlert(t *testing.T) {
+	setFTPNumericPeers(t, true)
 	d := New(&config.Config{}, nil, nil, "")
 	src := d.ftpJournalSource()
 	entry := func(message, uid string) maillog.Line {
@@ -215,6 +219,54 @@ func TestFTPJournalUserEntriesOnlyAlert(t *testing.T) {
 	for len(d.alertCh) > 0 {
 		if f := <-d.alertCh; f.Check == "ftp_bruteforce" {
 			t.Fatal("user-uid failures counted toward a brute force")
+		}
+	}
+}
+
+// setFTPNumericPeers fixes whether pure-ftpd logs client addresses.
+func setFTPNumericPeers(t *testing.T, numeric bool) {
+	t.Helper()
+	old := pureFTPDNumericPeers
+	pureFTPDNumericPeers = func() bool { return numeric }
+	t.Cleanup(func() { pureFTPDNumericPeers = old })
+}
+
+// Unless DontResolve is set, pure-ftpd logs a client's reverse DNS name, and
+// the client's owner can make that name read as another address. Root
+// failures then alert but count toward nothing.
+func TestFTPJournalHostNamesOnlyAlert(t *testing.T) {
+	setFTPNumericPeers(t, false)
+	d := New(&config.Config{}, nil, nil, "")
+	src := d.ftpJournalSource()
+	failure := func() maillog.Line {
+		return maillog.JournalLine(map[string]string{
+			"MESSAGE":           "(?@198.51.100.33) [WARNING] Authentication failed for user [alice]",
+			"SYSLOG_IDENTIFIER": "pure-ftpd", "_PID": "77", "_SYSTEMD_UNIT": "pure-ftpd.service",
+			"_UID": "0", "_EXE": "/usr/sbin/pure-ftpd", "_TRANSPORT": "syslog",
+		}, maillog.Position{Stream: "journal", Cursor: "s=4", ObservedAt: time.Now()})
+	}
+	for range checks.FTPFailThreshold + 2 {
+		d.dispatchJournalLine(src, failure())
+	}
+	n := 0
+	for len(d.alertCh) > 0 {
+		f := <-d.alertCh
+		n++
+		if f.Check == "ftp_bruteforce" || !checks.ProducerWritableLog(admission.ProducerID(f.Observation.Producer)) {
+			t.Fatalf("root entry while pure-ftpd resolves names gave %s stamped %q", f.Check, f.Observation.Producer)
+		}
+	}
+	if n != checks.FTPFailThreshold+2 {
+		t.Fatalf("%d findings, want one per entry", n)
+	}
+	// Once pure-ftpd logs addresses, failures count from zero.
+	setFTPNumericPeers(t, true)
+	for range checks.FTPFailThreshold - 1 {
+		d.dispatchJournalLine(src, failure())
+	}
+	for len(d.alertCh) > 0 {
+		if f := <-d.alertCh; f.Check == "ftp_bruteforce" {
+			t.Fatal("failures logged while pure-ftpd resolved names counted toward a brute force")
 		}
 	}
 }

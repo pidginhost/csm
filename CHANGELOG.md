@@ -37,7 +37,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Changed
 
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
-- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
+- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source. FTP failures block only with pure-ftpd's `DontResolve yes`.
 - SSH, mail and FTP logins read from log files now alert without blocking.
 - FTP logins no longer count as known customers in block alerts.
 - Hosts that leave `auto_response.max_blocks_per_hour` unset now allow at most 1000 automatic blocks an hour instead of 2000; `csm doctor` warns only below 1000.

@@ -10,16 +10,24 @@ func FTPServerInstalled() bool {
 	}
 	// Plesk renames ProFTPD, and Debian's Pure-FTPd authentication packages
 	// install distinct server binaries instead of the vanilla executable.
+	return PureFTPDInstalled() || binaryInstalled([]string{
+		"proftpd", "in.proftpd", "vsftpd",
+	}, []string{
+		"/usr/sbin/proftpd",
+		"/usr/sbin/in.proftpd",
+		"/usr/sbin/vsftpd",
+	})
+}
+
+// PureFTPDInstalled reports whether a pure-ftpd server binary is installed,
+// including the variants Debian's authentication packages provide.
+func PureFTPDInstalled() bool {
 	return binaryInstalled([]string{
 		"pure-ftpd", "pure-ftpd-mysql", "pure-ftpd-postgresql", "pure-ftpd-ldap",
-		"proftpd", "in.proftpd", "vsftpd",
 	}, []string{
 		"/usr/sbin/pure-ftpd",
 		"/usr/sbin/pure-ftpd-mysql",
 		"/usr/sbin/pure-ftpd-postgresql",
 		"/usr/sbin/pure-ftpd-ldap",
-		"/usr/sbin/proftpd",
-		"/usr/sbin/in.proftpd",
-		"/usr/sbin/vsftpd",
 	})
 }

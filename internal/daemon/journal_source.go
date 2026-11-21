@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -12,6 +13,7 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // journalSource is a service log the daemon reads from the journal when
@@ -60,6 +62,24 @@ var ftpJournal = journalSource{
 		producer: checks.ProducerFTPLog,
 	},
 }
+
+// pureFTPDNumericPeers reports whether pure-ftpd logs client addresses
+// rather than reverse DNS names, re-reading its configuration at most once a
+// minute. A variable for tests.
+var pureFTPDNumericPeers = func() func() bool {
+	var mu sync.Mutex
+	var checked time.Time
+	var numeric bool
+	return func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if now := time.Now(); now.Sub(checked) >= time.Minute || now.Before(checked) {
+			configs, missing := platform.PureFTPDDontResolve()
+			checked, numeric = now, len(configs) > 0 && len(missing) == 0
+		}
+		return numeric
+	}
+}()
 
 // ftpJournalSource is ftpJournal with the daemon's handlers: root entries
 // also count failures toward an FTP brute force.
@@ -150,6 +170,10 @@ func (d *Daemon) dispatchJournalLine(src journalSource, line maillog.Line) bool 
 		if src.session == nil || !maillog.TrustedLine(line, src.session.rules) {
 			return true
 		}
+		src = *src.session
+	} else if src.producer == checks.ProducerFTPJournal && !pureFTPDNumericPeers() {
+		// A client's reverse DNS name stands in its address unless DontResolve
+		// is set, and the client's owner can make it read as another address.
 		src = *src.session
 	}
 	return d.dispatchLogLine(src.producer, line, func(msg string, _ alert.Observation, cfg *config.Config) []alert.Finding {

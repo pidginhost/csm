@@ -332,7 +332,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
 | Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on Postfix hosts with Dovecot |
-| FTP log | All with journald, otherwise cPanel only | FTP logins and failures. Where syslog goes through journald, pure-ftpd's own journal entries (`pure-ftpd.service`): failures it sends as root can block, while lines it sends as the logged-in user, logins among them, only alert; otherwise `/var/log/messages`, whose lines only alert |
+| FTP log | All with journald, otherwise cPanel only | FTP logins and failures. Where syslog goes through journald, pure-ftpd's own journal entries (`pure-ftpd.service`): failures it sends as root can block when pure-ftpd's `DontResolve yes` is set, while lines it sends as the logged-in user, logins among them, only alert; otherwise `/var/log/messages`, whose lines only alert |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
 
@@ -392,8 +392,11 @@ retention period.
 FTP findings use only the peer field directly after the pure-ftpd program tag,
 in both realtime monitoring and scheduled scans. Missing or malformed peers and
 hostname peers produce no finding. To record numeric peers, use pure-ftpd's
-existing `DontResolve yes` setting. Addresses in usernames or later message
-fields never identify the client.
+existing `DontResolve yes` setting. Without it, a numeric peer can be a reverse
+DNS name its owner chose to read as another address, so FTP failures only alert
+and never count toward a block; `csm doctor` names each pure-ftpd configuration
+that lacks the setting. Addresses in usernames or later message fields never
+identify the client.
 
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
