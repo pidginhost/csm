@@ -167,8 +167,9 @@ func TestWritableLogIncidentEvidenceSurvivesRestoreAndTrim(t *testing.T) {
 		t.Run(fmt.Sprint(trim), func(t *testing.T) {
 			calls := 0
 			cfg := CorrelatorConfig{
-				OpenThreshold:   1,
-				AddressEvidence: func(check string, _ alert.Severity) bool { return check == "modsec_csm_block_escalation" },
+				OpenThreshold:     1,
+				AddressEvidence:   func(check string, _ alert.Severity) bool { return check == "modsec_csm_block_escalation" },
+				UnverifiedAddress: func(_, producer string) bool { return producer != "journal" },
 				Root: func(f alert.Finding) PreparedRoot {
 					if f.Observation.Producer == "journal" {
 						return PreparedRoot{Finding: f}

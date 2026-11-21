@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/store"
@@ -110,7 +111,12 @@ func TestIncidentExclusionPinGateRefusesEachExcludedCheck(t *testing.T) {
 // observes the gate and not a disarmed correlator.
 func TestIncidentExclusionPinGateBlocksAnAttestedAddress(t *testing.T) {
 	blocked := incidentExclusionPinConfig(t)
-	f := alert.Finding{Check: "mail_account_compromised", Severity: alert.Critical, SourceIP: "198.51.100.30", Timestamp: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)}
+	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	// Stamped by a reader the daemon trusts: an unstamped finding of a check
+	// a syslog file producer also emits attests nothing.
+	f := alert.Finding{Check: "mail_account_compromised", Severity: alert.Critical, SourceIP: "198.51.100.30", Timestamp: at,
+		Attribution: admission.AttributionPeer,
+		Observation: alert.Observation{Producer: string(checks.ProducerEximLog), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: at}}
 	if _, _, err := IncidentCorrelator().OnFinding(f); err != nil {
 		t.Fatalf("OnFinding: %v", err)
 	}

@@ -144,6 +144,25 @@ var writableLogProducers = map[admission.ProducerID]bool{
 // write.
 func ProducerWritableLog(p admission.ProducerID) bool { return writableLogProducers[p] }
 
+// UnverifiedAddress reports whether a finding of check stamped by producer
+// cannot attest its address: a syslog file producer stamped it, or no
+// producer was recorded for a check one of them emits, as stored evidence
+// older than the producer record looks.
+func UnverifiedAddress(check, producer string) bool {
+	if writableLogProducers[admission.ProducerID(producer)] {
+		return true
+	}
+	if producer != "" {
+		return false
+	}
+	for _, p := range producerTable {
+		if writableLogProducers[p.Spec.ID] && slices.Contains(p.Spec.Checks, check) {
+			return true
+		}
+	}
+	return false
+}
+
 // ProducerTable returns a copy of the producer table.
 func ProducerTable() []ProducerEntry {
 	out := make([]ProducerEntry, len(producerTable))

@@ -220,13 +220,14 @@ func IncidentCorrelator() *incident.Correlator {
 			}
 		}
 		incidentCorrelator = incident.NewCorrelator(incident.CorrelatorConfig{
-			Persist:          persist,
-			OpenThreshold:    incidentOpenThreshold,
-			SpraySuppression: spray,
-			AutoBlock:        autoBlock,
-			IsWhitelisted:    whitelisted,
-			AddressEvidence:  checks.AddressEvidence,
-			Root:             prepareIncidentRoot,
+			Persist:           persist,
+			OpenThreshold:     incidentOpenThreshold,
+			SpraySuppression:  spray,
+			AutoBlock:         autoBlock,
+			IsWhitelisted:     whitelisted,
+			AddressEvidence:   checks.AddressEvidence,
+			UnverifiedAddress: checks.UnverifiedAddress,
+			Root:              prepareIncidentRoot,
 			CanSprayBlock: func() bool {
 				cfg := globalCfgForIncidents()
 				return cfg != nil && cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs

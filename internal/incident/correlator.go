@@ -119,6 +119,12 @@ type CorrelatorConfig struct {
 	// finding named. nil refuses every block.
 	AddressEvidence func(check string, sev alert.Severity) bool
 
+	// UnverifiedAddress reports whether a finding of check stamped by
+	// producer cannot attest its address: a syslog file line, or older
+	// stored evidence that never recorded its producer. The daemon passes
+	// checks.UnverifiedAddress; nil verifies everything.
+	UnverifiedAddress func(check, producer string) bool
+
 	// OnIncidentBlock fires when the generic auto-block gate trips. The
 	// callback runs after the correlator mutex is released and returns
 	// true only when a live block request was accepted. Dry-run,
@@ -733,10 +739,10 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	if src := alert.AttackerAddress(f); src != "" {
 		ev.RemoteIP = src
+		ev.Producer = f.Observation.Producer
 		if c.cfg.Root != nil && c.cfg.AddressEvidence != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			root := c.cfg.Root(f)
 			ev.root = &root
-			ev.AddressUntrusted = admission.CauseOf(root.Err) == admission.CauseWritableLog
 		}
 		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.eventAttests(ev) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
@@ -744,6 +750,7 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 				inc.RemoteIPEvidenceFinding = ev.FindingID
 				inc.RemoteIPEvidenceCheck = ev.Check
 				inc.RemoteIPEvidenceSeverity = ev.Severity
+				inc.RemoteIPEvidenceProducer = ev.Producer
 				transition = true
 			}
 		}
@@ -1680,7 +1687,7 @@ func (c *Correlator) rememberedAddressEvidence(inc *Incident, ip string) bool {
 	if !inc.RemoteIPEvidence || inc.RemoteIPEvidenceCheck == "" || c.cfg.AddressEvidence == nil || inc.CorrelationKey == nil || normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) != ip {
 		return false
 	}
-	return c.eventAttests(IncidentEvent{Check: inc.RemoteIPEvidenceCheck, Severity: inc.RemoteIPEvidenceSeverity})
+	return c.eventAttests(IncidentEvent{Check: inc.RemoteIPEvidenceCheck, Severity: inc.RemoteIPEvidenceSeverity, Producer: inc.RemoteIPEvidenceProducer})
 }
 
 // restoreAddressEvidence migrates verifiable old proof from a retained
@@ -1697,6 +1704,7 @@ func (c *Correlator) restoreAddressEvidence(inc *Incident) {
 						inc.RemoteIPEvidenceFinding = ev.FindingID
 						inc.RemoteIPEvidenceCheck = ev.Check
 						inc.RemoteIPEvidenceSeverity = ev.Severity
+						inc.RemoteIPEvidenceProducer = ev.Producer
 						break
 					}
 				}
@@ -1708,6 +1716,7 @@ func (c *Correlator) restoreAddressEvidence(inc *Incident) {
 	inc.RemoteIPEvidenceFinding = ""
 	inc.RemoteIPEvidenceCheck = ""
 	inc.RemoteIPEvidenceSeverity = ""
+	inc.RemoteIPEvidenceProducer = ""
 	if c.cfg.AddressEvidence == nil || inc.CorrelationKey == nil {
 		return
 	}
@@ -1722,6 +1731,7 @@ func (c *Correlator) restoreAddressEvidence(inc *Incident) {
 			inc.RemoteIPEvidenceFinding = ev.FindingID
 			inc.RemoteIPEvidenceCheck = ev.Check
 			inc.RemoteIPEvidenceSeverity = ev.Severity
+			inc.RemoteIPEvidenceProducer = ev.Producer
 			return
 		}
 	}
@@ -1736,7 +1746,15 @@ func (c *Correlator) eventAttests(ev IncidentEvent) bool {
 		// severity floor, but cannot establish a Critical-only signal.
 		sev, ok = alert.Warning, true
 	}
-	return !ev.AddressUntrusted && ok && c.cfg.AddressEvidence(ev.Check, sev)
+	// A syslog file line names no one who connected, whether its refusal
+	// is still in memory or only its producer survived a restore.
+	if ev.root != nil && admission.CauseOf(ev.root.Err) == admission.CauseWritableLog {
+		return false
+	}
+	if c.cfg.UnverifiedAddress != nil && c.cfg.UnverifiedAddress(ev.Check, ev.Producer) {
+		return false
+	}
+	return ok && c.cfg.AddressEvidence(ev.Check, sev)
 }
 
 // attesting names the finding a block of ip rests on and the admission root

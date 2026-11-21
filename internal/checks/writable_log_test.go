@@ -274,3 +274,26 @@ func TestWritableLogRefusalPrecedesProxyClassification(t *testing.T) {
 		t.Fatalf("writable proxy sighting: %v, want writable_log", err)
 	}
 }
+
+// Stored incident evidence is verified by its producer. Evidence older than
+// this release never recorded one: for a check a syslog file producer
+// emits, a missing producer cannot be told apart from a forged line.
+func TestUnverifiedAddress(t *testing.T) {
+	for _, tc := range []struct {
+		check, producer string
+		want            bool
+	}{
+		{"ssh_login_unknown_ip", string(ProducerSSHLog), true},
+		{"ssh_login_unknown_ip", "", true},
+		{"ssh_login_unknown_ip", string(ProducerSSHJournal), false},
+		{"mail_bruteforce", "", true},
+		{"smtp_bruteforce", string(ProducerEximLog), false},
+		{"ftp_bruteforce", string(ProducerFTPScan), true},
+		{"wp_login_bruteforce", "", false},
+		{"modsec_csm_block_escalation", string(ProducerModSecLog), false},
+	} {
+		if got := UnverifiedAddress(tc.check, tc.producer); got != tc.want {
+			t.Errorf("UnverifiedAddress(%q, %q) = %v, want %v", tc.check, tc.producer, got, tc.want)
+		}
+	}
+}
