@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/maillog"
@@ -41,7 +43,7 @@ func TestFTPJournalBruteforceBlocks(t *testing.T) {
 		return maillog.JournalLine(map[string]string{
 			"MESSAGE": "(?@198.51.100.31) [WARNING] Authentication failed for user [alice]", "SYSLOG_IDENTIFIER": "pure-ftpd",
 			"_PID": "77", "_SYSTEMD_UNIT": "pure-ftpd.service", "_UID": uid, "_EXE": exe, "_TRANSPORT": "syslog",
-		}, maillog.Position{Stream: "journal", Cursor: "s=1"})
+		}, maillog.Position{Stream: "journal", Cursor: "s=1", ObservedAt: time.Now()})
 	}
 	for i := 0; i < checks.FTPFailThreshold; i++ {
 		d.dispatchJournalLine(src, entry("1000", "/usr/bin/logger"))
@@ -67,5 +69,61 @@ func TestFTPJournalBruteforceBlocks(t *testing.T) {
 	}
 	if brute != 1 || failures != checks.FTPFailThreshold+2 {
 		t.Fatalf("brute-force findings %d, failure findings %d", brute, failures)
+	}
+}
+
+// Moving FTP to the journal must preserve the cracked-password escalation.
+func TestFTPJournalLoginAfterBruteforce(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	src := d.ftpJournalSource()
+	at := time.Now()
+	entry := func(message, uid string) maillog.Line {
+		return maillog.JournalLine(map[string]string{
+			"MESSAGE": message, "SYSLOG_IDENTIFIER": "pure-ftpd", "_PID": "77",
+			"_SYSTEMD_UNIT": "pure-ftpd.service", "_UID": uid, "_EXE": "/usr/sbin/pure-ftpd", "_TRANSPORT": "syslog",
+		}, maillog.Position{Stream: "journal", Cursor: "s=2", ObservedAt: at})
+	}
+	for range checks.FTPFailThreshold {
+		if !d.dispatchJournalLine(src, entry("(?@203.0.113.78) [WARNING] Authentication failed for user [alice]", "0")) {
+			t.Fatal("failure dispatch stopped")
+		}
+	}
+	for len(d.alertCh) > 0 {
+		<-d.alertCh
+	}
+	if !d.dispatchJournalLine(src, entry("(alice@203.0.113.78) [INFO] alice is now logged in", "1001")) {
+		t.Fatal("login dispatch stopped")
+	}
+	if len(d.alertCh) != 1 {
+		t.Fatalf("login findings=%d, want one", len(d.alertCh))
+	}
+	got := <-d.alertCh
+	if got.Check != "ftp_login_after_bruteforce" || got.Severity != alert.Critical || got.LoginAccount != "alice" || got.Observation.Producer != string(checks.ProducerFTPJournal) || !got.Timestamp.Equal(at) {
+		t.Fatalf("login after brute force = %+v", got)
+	}
+}
+
+// A delayed journal consumer must not turn scattered old failures into a burst.
+func TestFTPJournalBacklogDoesNotBecomeFreshAttack(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.FTPFailWindowMin = 1
+	d := New(cfg, nil, nil, "")
+	now := time.Now()
+	for i := checks.FTPFailThreshold; i >= 0; i-- {
+		at := now.Add(-time.Duration(i) * 2 * time.Minute)
+		line := at.Format(time.RFC3339Nano) + " pure-ftpd: (?@203.0.113.81) [WARNING] Authentication failed for user [alice]"
+		findings := d.handleFTPJournalLine(line, cfg)
+		if len(findings) == 0 || findings[0].Check != "ftp_auth_failure_realtime" {
+			t.Fatalf("journal failure was not parsed: %+v", findings)
+		}
+		for _, f := range findings {
+			if f.Check == "ftp_bruteforce" {
+				t.Fatalf("old failures became a current burst: %+v", f)
+			}
+		}
+	}
+	got := d.handleFTPJournalLine("pure-ftpd: (alice@203.0.113.81) [INFO] alice is now logged in", cfg)
+	if len(got) != 1 || got[0].Check != "ftp_login" {
+		t.Fatalf("old failures escalated a login: %+v", got)
 	}
 }

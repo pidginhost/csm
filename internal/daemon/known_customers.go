@@ -157,6 +157,16 @@ func (k *knownCustomers) customerAddr(ip string) (netip.Addr, bool) {
 // login older than the TTL is ignored and one stamped in the future counts
 // as now.
 func (k *knownCustomers) Note(ip, kind, account string, at time.Time, src loginSource) {
+	k.note(ip, kind, account, at, src, false)
+}
+
+// NoteTrusted also retains mail history for reputation checks. Callers must
+// have verified that the login came from the service's own log or journal.
+func (k *knownCustomers) NoteTrusted(ip, kind, account string, at time.Time, src loginSource) {
+	k.note(ip, kind, account, at, src, true)
+}
+
+func (k *knownCustomers) note(ip, kind, account string, at time.Time, src loginSource, trusted bool) {
 	if k == nil {
 		return
 	}
@@ -176,6 +186,12 @@ func (k *knownCustomers) Note(ip, kind, account string, at time.Time, src loginS
 		return
 	}
 	c := store.KnownCustomer{Kind: kind, Account: strings.Clone(normalizeSprayMailbox(account)), At: at, Syslog: syslog}
+	if trusted {
+		switch kind {
+		case knownCustomerIMAP, knownCustomerPOP, knownCustomerSMTP, knownCustomerWebmail:
+			c.MailAt = at
+		}
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.putLocked(addr, c, now)
@@ -185,6 +201,16 @@ func (k *knownCustomers) Note(ip, kind, account string, at time.Time, src loginS
 // entry counts as absent.
 func (k *knownCustomers) putLocked(addr netip.Addr, c store.KnownCustomer, now time.Time) {
 	if old, exists := k.entries[addr]; exists {
+		// The preferred summary may be non-mail or from a different source.
+		// Neither replacing nor retaining it may erase or renew mail history.
+		if old.MailAt.After(c.MailAt) {
+			c.MailAt = old.MailAt
+		}
+		if c.MailAt.After(old.MailAt) {
+			old.MailAt = c.MailAt
+			k.entries[addr] = old
+			k.dirty[addr] = struct{}{}
+		}
 		if !knownCustomerExpired(old.At, now) {
 			switch {
 			case !old.Syslog && c.Syslog:
@@ -423,7 +449,7 @@ func (k *knownCustomers) Purge() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	for addr, c := range k.entries {
-		if knownCustomerExpired(c.At, now) {
+		if knownCustomerExpired(c.At, now) && knownCustomerExpired(c.MailAt, now) {
 			k.removeLocked(addr)
 		}
 	}
@@ -443,9 +469,13 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 	valid := make([]entry, 0, len(saved))
 	var dropped []string
 	for raw, c := range saved {
+		// A future saved timestamp cannot prove an observed mail login.
+		if c.MailAt.After(now) {
+			c.MailAt = time.Time{}
+		}
 		syslog, kindOK := loginFromSyslog(c.Kind, loginSource(c.Syslog))
 		addr, ok := k.customerAddr(raw)
-		if !kindOK || !ok || knownCustomerExpired(c.At, now) {
+		if !kindOK || !ok || (knownCustomerExpired(c.At, now) && knownCustomerExpired(c.MailAt, now)) {
 			dropped = append(dropped, raw)
 			continue
 		}
@@ -485,7 +515,7 @@ func (k *knownCustomers) Load(saved map[string]store.KnownCustomer) {
 }
 
 func sameKnownCustomer(a, b store.KnownCustomer) bool {
-	return a.Kind == b.Kind && a.Account == b.Account && a.At.Equal(b.At) && a.Syslog == b.Syslog
+	return a.Kind == b.Kind && a.Account == b.Account && a.At.Equal(b.At) && a.Syslog == b.Syslog && a.MailAt.Equal(b.MailAt)
 }
 
 // Changes returns what changed since the last call: entries to write and
@@ -576,18 +606,22 @@ func (d *Daemon) noteFTPCustomers(findings []alert.Finding) {
 	}
 }
 
-// trustedMailLoginSince reports whether ip's last customer login was to a mail
-// service, since since. Only logins a service recorded reach the set.
+// trustedMailLoginSince asks for mail history independently of the customer
+// summary: an FTP or cPanel login must neither erase nor renew it. Only live
+// trusted readers set MailAt; legacy saved summaries are not login proof.
 func (d *Daemon) trustedMailLoginSince(ip string, since time.Time) bool {
-	hit, ok := d.knownCustomers.Lookup(ip)
-	if !ok || hit.At.Before(since) {
+	k := d.knownCustomers
+	if k == nil {
 		return false
 	}
-	switch hit.Kind {
-	case knownCustomerIMAP, knownCustomerPOP, knownCustomerSMTP, knownCustomerWebmail:
-		return true
+	key, ok := customerKey(ip)
+	if !ok {
+		return false
 	}
-	return false
+	k.mu.Lock()
+	c, ok := k.entries[key]
+	k.mu.Unlock()
+	return ok && !c.MailAt.IsZero() && !c.MailAt.Before(since) && !knownCustomerExpired(c.MailAt, k.now())
 }
 
 // ftpCustomerAccount is the account an FTP login is known under: the hosting

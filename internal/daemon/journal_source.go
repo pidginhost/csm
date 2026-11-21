@@ -67,11 +67,18 @@ func (d *Daemon) ftpJournalSource() journalSource {
 // the system log file does where the journal is not used.
 func (d *Daemon) handleFTPJournalLine(line string, cfg *config.Config) []alert.Finding {
 	findings := parseFTPLogLine(line, cfg)
-	for _, f := range findings {
+	for i, f := range findings {
+		if f.Check == "ftp_login" {
+			if login, ok := d.ftpFails.LoginFinding(line, time.Now(), cfg); ok {
+				findings[i] = login
+			}
+		}
 		if f.Check != "ftp_auth_failure_realtime" || isPrivateOrLoopback(f.SourceIP) {
 			continue
 		}
-		n, windowMin, report := d.ftpFails.Failure(f.SourceIP, time.Now(), cfg)
+		now := time.Now()
+		at := customerLoginTime(line, now)
+		n, windowMin, report := d.ftpFails.Failure(f.SourceIP, at, now, cfg)
 		if report {
 			findings = append(findings, alert.Finding{
 				Severity: alert.High, Check: "ftp_bruteforce", SourceIP: f.SourceIP,

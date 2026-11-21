@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -33,21 +34,28 @@ func NewFTPFailWindow() *FTPFailWindow {
 	return &FTPFailWindow{t: newFTPFailTracker(), reported: map[string]time.Time{}}
 }
 
-// Failure records a failure from ip at at. It returns the address's failures
-// in the window, the window in minutes, and whether to report a brute force.
-func (w *FTPFailWindow) Failure(ip string, at time.Time, cfg *config.Config) (count, windowMin int, report bool) {
+// Failure records a failure from ip at at, received at now. It returns the
+// failures in the window, the window in minutes, and whether to report.
+func (w *FTPFailWindow) Failure(ip string, at, now time.Time, cfg *config.Config) (count, windowMin int, report bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	windowMin = effectiveFTPFailWindowMin(cfg)
 	window := time.Duration(windowMin) * time.Minute
-	w.t.evict(at, windowMin)
-	w.t.record(ip, at)
-	w.t.capIPs(maxTrackedIPs)
+	w.t.evict(now, windowMin)
 	for addr, when := range w.reported {
-		if at.Sub(when) >= window {
+		if now.Sub(when) >= window {
 			delete(w.reported, addr)
 		}
 	}
+	if at.After(now) {
+		at = now
+	}
+	if at.Before(now.Add(-window)) {
+		return w.t.count(ip), windowMin, false
+	}
+	// Bound history by age, not source count: strong old candidates must
+	// never prevent a new address from accumulating its failures.
+	w.t.record(ip, at)
 	count = w.t.count(ip)
 	if count < ftpFailThreshold {
 		return count, windowMin, false
@@ -57,6 +65,24 @@ func (w *FTPFailWindow) Failure(ip string, at time.Time, cfg *config.Config) (co
 	if _, done := w.reported[ip]; done {
 		return count, windowMin, false
 	}
-	w.reported[ip] = at
+	w.reported[ip] = now
 	return count, windowMin, true
+}
+
+// LoginFinding keeps the live reader's brute-force history in the same login
+// finding the scheduled scan emits. Reading a login does not add a failure.
+func (w *FTPFailWindow) LoginFinding(line string, at time.Time, cfg *config.Config) (alert.Finding, bool) {
+	f, ok := FTPLoginFinding(line, cfg)
+	if !ok {
+		return f, false
+	}
+	w.mu.Lock()
+	w.t.evict(at, effectiveFTPFailWindowMin(cfg))
+	n := w.t.count(f.SourceIP)
+	w.mu.Unlock()
+	if n >= ftpFailThreshold {
+		_, account := ftpLoginFields(line)
+		f = ftpLoginFinding(f.SourceIP, account, line, n)
+	}
+	return f, true
 }

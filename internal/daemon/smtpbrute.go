@@ -502,7 +502,7 @@ func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src loginSource, trusted bool) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
 	if trusted {
-		t.knownCustomers.Note(ip, knownCustomerSMTP, account, at, src)
+		t.knownCustomers.NoteTrusted(ip, knownCustomerSMTP, account, at, src)
 	}
 	if ip == "" {
 		return nil

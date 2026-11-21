@@ -429,6 +429,12 @@ database, where their value is correlation with other evidence on the same
 account. Failed FTP authentication, FTP brute force, a login from a
 brute-force source, and SSH logins are all still emailed.
 
+The FTP journal reader keeps failure history for `thresholds.ftp_fail_window_min`
+and raises the same critical login-after-brute-force alert as the file scan.
+Busy sources cannot displace another source's failures from this window.
+Journal timestamps date the failures, so delayed delivery does not turn old
+attempts into a fresh burst.
+
 The phpanel webhook and SSE event stream still receive these successful
 operations; the email and operator-webhook filter runs after data delivery.
 
@@ -649,7 +655,10 @@ Names containing field-like text or angle brackets remain one account name.
 Records without a usable remote address do not count toward IP blocking or
 login trust. A reputation exemption requires a mail login in the last day that
 the mail service itself recorded (its own log or journal entry); a line in a
-mail log file, which any local user can write, never qualifies.
+mail log file, which any local user can write, never qualifies. The last trusted
+mail login is saved independently of FTP and cPanel activity, which cannot erase
+or renew the exemption. Older saved customer summaries without verified mail
+history do not qualify; a new trusted mail login is required.
 
 ## Stalwart Mail Server
 

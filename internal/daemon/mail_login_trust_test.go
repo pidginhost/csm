@@ -42,6 +42,11 @@ func TestWritableMailSuccessIsNotALogin(t *testing.T) {
 				t.Fatal("mail dispatch stopped")
 			}
 		}
+		for _, ip := range []string{dovecotIP, postfixIP} {
+			if got := d.trustedMailLoginSince(ip, clock.Now().Add(-24*time.Hour)); got != journal {
+				t.Errorf("journal=%v: %s reputation exemption=%v", journal, ip, got)
+			}
+		}
 		_, customer := d.knownCustomers.Lookup(dovecotIP)
 		_, smtpCustomer := d.knownCustomers.Lookup(postfixIP)
 		good := false

@@ -31,6 +31,9 @@ type KnownCustomer struct {
 	Account string    `json:"account,omitempty"`
 	At      time.Time `json:"at"`
 	Syslog  bool      `json:"syslog,omitempty"`
+	// MailAt is the last mail login observed through a trusted reader. It is
+	// independent of the preferred customer summary and absent in older data.
+	MailAt time.Time `json:"mail_at,omitzero"`
 }
 
 // SaveKnownCustomers writes upserts and removes deletes in one transaction.

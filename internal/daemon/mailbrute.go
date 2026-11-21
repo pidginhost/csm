@@ -1120,7 +1120,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind string, trusted bool) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
 	if trusted {
-		t.knownCustomers.Note(ip, kind, account, at, syslogFed)
+		t.knownCustomers.NoteTrusted(ip, kind, account, at, syslogFed)
 	}
 	// A tracker key is not an authenticated identity. Keep the logged local
 	// part or hosting-account case for owner lookup and mailbox response.

@@ -11,6 +11,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- FTP journal alerts now catch new attackers during large bursts, flag logins after brute force, and ignore expired failures.
+- Reputation exemptions require verified mail logins; FTP and cPanel activity cannot erase or renew them.
 - Forged mail log entries no longer influence trusted authentication alerts or suspend mailboxes.
 - Repeated SSH logins now produce separate alerts instead of disappearing from login history.
 - Older SSH incidents no longer authorize automatic blocks from unverified login records.

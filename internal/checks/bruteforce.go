@@ -780,8 +780,8 @@ func stampCpanelScan(f *alert.Finding, r scanRecord, cfg *config.Config, proxied
 // loopback, infrastructure, or unusable. The daemon's realtime log watcher
 // calls it so a login seen live and the same line re-read by CheckFTPLogins
 // carry one identity; without that the state store sees two findings and the
-// operator gets one login reported twice. It has no brute-force history, so
-// the escalation to ftp_login_after_bruteforce stays with the scheduled check.
+// operator gets one login reported twice. It has no brute-force history;
+// the scheduled check and FTPFailWindow supply that for escalation.
 func FTPLoginFinding(line string, cfg *config.Config) (alert.Finding, bool) {
 	if cfg == nil {
 		cfg = &config.Config{}
@@ -913,8 +913,13 @@ func pureFTPDMessageFields(fields []string) []string {
 	if len(fields) >= 5 && isSyslogTimestampPrefix(fields) && isPureFTPDProgramToken(fields[4]) {
 		return fields[5:]
 	}
-	if len(fields) >= 3 && isPureFTPDProgramToken(fields[2]) {
-		if _, err := time.Parse(time.RFC3339Nano, fields[0]); err == nil {
+	if _, err := time.Parse(time.RFC3339Nano, fields[0]); err == nil {
+		// JournalLine carries the program directly after the timestamp;
+		// file syslog includes a hostname between them.
+		if len(fields) >= 2 && isPureFTPDProgramToken(fields[1]) {
+			return fields[2:]
+		}
+		if len(fields) >= 3 && isPureFTPDProgramToken(fields[2]) {
 			return fields[3:]
 		}
 	}
