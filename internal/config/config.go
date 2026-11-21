@@ -1300,6 +1300,10 @@ type Config struct {
 		CompactFillRatio float64 `yaml:"compact_fill_ratio"`  // default 0.5
 	} `yaml:"retention" hotreload:"restart"`
 
+	// Backup runs the store export on a schedule. The scheduler reads the
+	// live config on every tick, so the whole block applies on reload.
+	Backup BackupConfig `yaml:"backup" hotreload:"safe"`
+
 	// Sentry ships panics and selected errors to a Sentry server for
 	// aggregation across hosts. Disabled by default; set enabled=true and
 	// provide a DSN from the Sentry project. Init is one-shot: changes
@@ -1662,6 +1666,7 @@ type defaultPresence struct {
 	antispam                   antispamPresence
 	phpRelay                   phpRelayPresence
 	retention                  retentionPresence
+	backupRetentionDays        bool
 	blockDigestMinBlock        bool
 	thresholdsRollingCoverage  bool
 	thresholdsDropperDetection bool
@@ -2237,6 +2242,21 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		cfg.Retention.CompactFillRatio = 0.5
 	}
 
+	if cfg.Backup.Schedule == "" {
+		cfg.Backup.Schedule = "24h"
+	}
+	if cfg.Backup.DestinationDir == "" {
+		cfg.Backup.DestinationDir = "/var/lib/csm/backups"
+	}
+	if cfg.Backup.Filename == "" {
+		cfg.Backup.Filename = "csm-{date}.csmbak"
+	}
+	// An explicit 0 stays 0 so Validate refuses it rather than pruning
+	// archives the operator meant to keep.
+	if cfg.Backup.RetentionDays == 0 && !presence.backupRetentionDays {
+		cfg.Backup.RetentionDays = 14
+	}
+
 	if cfg.MailLogs.Source == "" {
 		cfg.MailLogs.Source = "auto"
 	}
@@ -2500,6 +2520,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			BlockDigest map[string]yaml.Node `yaml:"block_digest"`
 		} `yaml:"alerts"`
 		Retention     map[string]yaml.Node `yaml:"retention"`
+		Backup        map[string]yaml.Node `yaml:"backup"`
 		Integrity     map[string]yaml.Node `yaml:"integrity"`
 		Suppressions  map[string]yaml.Node `yaml:"suppressions"`
 		AutoResponse  map[string]yaml.Node `yaml:"auto_response"`
@@ -2582,6 +2603,9 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	if node, ok := raw.Retention["compact_min_size_mb"]; ok && node.Tag != "!!null" {
 		presence.retention.compactMinSizeMB = true
+	}
+	if node, ok := raw.Backup["retention_days"]; ok && !yamlNodeIsNull(&node) {
+		presence.backupRetentionDays = true
 	}
 
 	fg := raw.EmailProtection.ForwardGuard

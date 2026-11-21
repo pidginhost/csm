@@ -53,6 +53,14 @@ func TestIncidentCapabilityAlwaysPresent(t *testing.T) {
 	}
 }
 
+// Config loading rejects unknown keys, so an orchestrator must see this before
+// it writes a backup block.
+func TestScheduledBackupCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "store.backup.schedule.v1") {
+		t.Error("store.backup.schedule.v1 capability missing")
+	}
+}
+
 func TestBPFEnforcementAvailableCapabilityAlwaysPresent(t *testing.T) {
 	if !contains(Capabilities(), "bpf_enforcement.available.v1") {
 		t.Error("bpf_enforcement.available.v1 capability missing")

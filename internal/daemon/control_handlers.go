@@ -420,6 +420,38 @@ func prepareExportStagingPath(statePath, dstPath string, now time.Time) (string,
 	return filepath.Join(requestDir, base), nil
 }
 
+// exportStore writes the backup archive to dstPath. Both the control command
+// and the backup scheduler export through here.
+func (d *Daemon) exportStore(dstPath string) (*store.ExportResult, error) {
+	sdb := store.Global()
+	if sdb == nil {
+		return nil, fmt.Errorf("bbolt store not available")
+	}
+	// The alert path saves state.json at most once a minute; write what it
+	// holds so the archive carries the current dedup state.
+	if err := d.store.Flush(); err != nil {
+		return nil, fmt.Errorf("saving state: %w", err)
+	}
+	cfg := d.currentCfg()
+	hostname, _ := os.Hostname()
+	pi := platform.Detect()
+	return sdb.Export(store.ExportOptions{
+		StatePath: cfg.StatePath,
+		RulesPath: cfg.Signatures.RulesDir,
+		DstPath:   dstPath,
+		Manifest: store.Manifest{
+			CSMVersion:     d.version,
+			SourceHostname: hostname,
+			SourcePlatform: map[string]string{
+				"os":         string(pi.OS),
+				"os_version": pi.OSVersion,
+				"panel":      string(pi.Panel),
+				"webserver":  string(pi.WebServer),
+			},
+		},
+	})
+}
+
 func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error) {
 	var args control.StoreExportArgs
 	if len(argsRaw) > 0 {
@@ -430,45 +462,19 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 	if args.DstPath == "" {
 		return nil, fmt.Errorf("dst_path is required")
 	}
-	sdb := store.Global()
-	if sdb == nil {
-		return nil, fmt.Errorf("bbolt store not available")
-	}
-	// The alert path saves state.json at most once a minute; write what it
-	// holds so the archive carries the current dedup state.
-	if err := c.d.store.Flush(); err != nil {
-		return nil, fmt.Errorf("saving state: %w", err)
-	}
-	cfg := c.d.currentCfg()
-	hostname, _ := os.Hostname()
-	pi := platform.Detect()
 
 	dstPath := args.DstPath
 	staged := false
 	var err error
 	if args.Stage {
-		dstPath, err = prepareExportStagingPath(cfg.StatePath, args.DstPath, time.Now())
+		dstPath, err = prepareExportStagingPath(c.d.currentCfg().StatePath, args.DstPath, time.Now())
 		if err != nil {
 			return nil, fmt.Errorf("creating export staging dir: %w", err)
 		}
 		staged = true
 	}
 
-	res, err := sdb.Export(store.ExportOptions{
-		StatePath: cfg.StatePath,
-		RulesPath: cfg.Signatures.RulesDir,
-		DstPath:   dstPath,
-		Manifest: store.Manifest{
-			CSMVersion:     c.d.version,
-			SourceHostname: hostname,
-			SourcePlatform: map[string]string{
-				"os":         string(pi.OS),
-				"os_version": pi.OSVersion,
-				"panel":      string(pi.Panel),
-				"webserver":  string(pi.WebServer),
-			},
-		},
-	})
+	res, err := c.d.exportStore(dstPath)
 	if err != nil {
 		if staged {
 			_ = os.RemoveAll(filepath.Dir(dstPath))

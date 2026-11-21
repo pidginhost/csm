@@ -559,3 +559,11 @@ systemctl start csm
 ```
 
 Partial restore: `--only=baseline` restores only the file-hash state (useful after a full re-install where firewall and history should stay fresh); `--only=firewall` merges the firewall buckets into an existing daemon (useful for cloning blocklists across a cluster); a durable firewall journal and its snapshot in the archive replace the target's. It refuses while either side has a durable firewall action unresolved or its audit undelivered.
+
+#### Scheduled backups
+
+Set `backup.enabled: true` and the daemon runs the same export on its own every `backup.schedule` (default `24h`, at least `1h`). Each archive lands in `backup.destination_dir` (default `/var/lib/csm/backups`) under `backup.filename` (default `csm-{date}.csmbak`, where `{date}` is the run's UTC start time such as `20261121T030000Z`), with its `.sha256` companion. The next export is due one schedule after the newest archive in that directory, so a restart does not add an export.
+
+After a successful export the daemon deletes the archives older than `backup.retention_days` (default 14), together with their companions. It only deletes names its own filename pattern produces, never other files in the directory, and a failed run deletes nothing. A failed run raises a `backup_export_failed` Warning and is tried again one schedule later. Changes to the block apply on reload.
+
+The destination must be inside `/var/lib/csm` and outside `state_path`: the systemd sandbox lets the daemon write nowhere else of its own, so copy archives off the host from there. `csm validate` refuses any other destination. Before every export the daemon checks that each directory from `/var/lib/csm` down to the destination is a real directory, not a symlink, owned by root and not writable by group or others; otherwise the run fails.

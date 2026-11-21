@@ -265,6 +265,17 @@ retention:
   compact_min_size_mb: 128
   compact_fill_ratio: 0.5
 
+# Scheduled backups: the daemon runs `csm store export` on its own and deletes
+# its archives older than retention_days. destination_dir must be inside
+# /var/lib/csm, the only CSM directory the service sandbox lets it write;
+# copy archives off the host from there. {date} is the run's UTC start time.
+backup:
+  enabled: false
+  schedule: "24h"
+  destination_dir: "/var/lib/csm/backups"
+  filename: "csm-{date}.csmbak"
+  retention_days: 14
+
 # Diagnostics. pprof_listen binds a net/http/pprof server (heap/goroutine/CPU
 # profiles) for debugging. MUST be a loopback host:port; reach it over an SSH
 # tunnel. Empty (default) disables it. Go runtime stats (go_memstats_*) are

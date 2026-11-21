@@ -1290,6 +1290,9 @@ func (d *Daemon) Run() error {
 		obs.Go("retention-scanner", d.retentionScanner)
 	}
 
+	d.wg.Add(1)
+	obs.Go("backup-scheduler", d.backupScheduler)
+
 	// Refresh the sd_notify status line now that AF_ALG, BPF trackers,
 	// and the periodic scanners have all reported in. The initial
 	// READY=1 fired earlier so systemctl restart didn't have to wait
