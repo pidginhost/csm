@@ -889,20 +889,15 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 
 	audit.capture(target, original)
 	audit.rec.Result = actionlog.Refused
-	_, ranges := auditHtaccessPatterns(resolved, original)
-	if len(ranges) == 0 {
-		return RemediationResult{Refused: true, Error: "no malicious directives found to remove"}
-	}
-
-	cleaned := applyRangeRemoval(original, ranges)
-	if len(cleaned) == len(original) {
-		return RemediationResult{Refused: true, Error: "no bytes removed (range computation produced empty diff)"}
+	cleaned, ranges, err := cleanHtaccessContent(resolved, original)
+	if err != nil {
+		return RemediationResult{Refused: true, Error: err.Error()}
 	}
 
 	backupDir := htaccessBackupDirRoot
 
 	backupPath := newQuarantinePath(backupDir, resolved)
-	meta := quarantineMetadata(resolved, target.Info, fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)))
+	meta := quarantineMetadata(resolved, target.Info, fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", ranges, len(original), len(cleaned)))
 	audit.rec.Result = actionlog.Failed
 	audit.rec.Reason = meta.Reason
 	if err := storeQuarantineBackup(backupPath, original, meta, 0640); err != nil {
@@ -918,8 +913,51 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	return RemediationResult{
 		Success:     true,
 		Action:      fmt.Sprintf("removed %d malicious byte(s) from %s", bytesRemoved, resolved),
-		Description: fmt.Sprintf("Cleaned .htaccess: %d ranges, %d bytes removed (backup: %s)", len(ranges), bytesRemoved, backupPath),
+		Description: fmt.Sprintf("Cleaned .htaccess: %d ranges, %d bytes removed (backup: %s)", ranges, bytesRemoved, backupPath),
 	}
+}
+
+// cleanHtaccessContent returns original without the directives the
+// per-pattern detectors remove, and how many byte ranges went.
+func cleanHtaccessContent(path string, original []byte) ([]byte, int, error) {
+	_, ranges := auditHtaccessPatterns(path, original)
+	if len(ranges) == 0 {
+		return nil, 0, errors.New("no malicious directives found to remove")
+	}
+	cleaned := applyRangeRemoval(original, ranges)
+	if len(cleaned) == len(original) {
+		return nil, 0, errors.New("no bytes removed (range computation produced empty diff)")
+	}
+	return cleaned, len(ranges), nil
+}
+
+// PreviewCleanHtaccessFile shows the change CleanHtaccessFile would make to
+// path as a unified diff. It writes no backup, file or action record.
+func PreviewCleanHtaccessFile(path string) (string, error) {
+	if filepath.Base(path) != ".htaccess" {
+		return "", errors.New("automated .htaccess remediation only applies to .htaccess files")
+	}
+	resolved, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixHtaccessAllowedRoots))
+	if err != nil {
+		return "", err
+	}
+	target, err := openFixTarget(resolved, info)
+	if err != nil {
+		return "", fmt.Errorf("cannot open: %w", err)
+	}
+	defer target.Close()
+	original, ok, err := readHtaccessFileBounded(target.File)
+	if err != nil {
+		return "", fmt.Errorf("cannot read: %w", err)
+	}
+	if !ok {
+		return "", errors.New(".htaccess too large to clean automatically")
+	}
+	cleaned, _, err := cleanHtaccessContent(resolved, original)
+	if err != nil {
+		return "", err
+	}
+	return renderChangeDiff(resolved, original, cleaned)
 }
 
 // mergeRanges normalises the input slice: sort by start, then merge

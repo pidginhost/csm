@@ -45,8 +45,8 @@ func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 		case "-h", "--help":
 			_, _ = fmt.Fprint(stderr, "usage: csm virtual-patch [--apply]\n\n"+
 				"Re-scan document roots and deny HTTP access to confirmed web-exposed files.\n"+
-				"Without --apply it only previews. Requires auto_response.virtual_patch_exposed_files\n"+
-				"to be set to manual or auto.\n")
+				"Without --apply it only prints each .htaccess change as a unified diff. Requires\n"+
+				"auto_response.virtual_patch_exposed_files to be set to manual or auto.\n")
 			return 0
 		default:
 			fmt.Fprintf(stderr, "unknown flag %q (try --apply)\n", a)
@@ -83,11 +83,12 @@ func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 	applied := 0
 	failed := 0
 	for _, a := range actions {
-		fmt.Fprintf(stderr, "  - %s\n", a.Message)
+		// Paths and previewed content are tenant-controlled.
+		_, _ = fmt.Fprint(stderr, checks.TerminalSafe(fmt.Sprintf("  - %s\n%s\n", a.Message, a.Details)))
 		switch {
 		case strings.HasPrefix(a.Message, "VIRTUAL-PATCH: denied"):
 			applied++
-		case strings.HasPrefix(a.Message, "VIRTUAL-PATCH failed:"):
+		case strings.HasPrefix(a.Message, "VIRTUAL-PATCH failed:"), strings.HasPrefix(a.Message, "VIRTUAL-PATCH preview failed:"):
 			failed++
 		}
 	}

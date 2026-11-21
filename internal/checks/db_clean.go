@@ -77,6 +77,12 @@ func DBCleanOption(account, optionName string, preview bool) DBCleanResult {
 	result.Details = append(result.Details, fmt.Sprintf("Original length: %d, Cleaned length: %d", len(value), len(cleaned)))
 
 	if preview {
+		diff, err := renderChangeDiff(optionName, []byte(value), []byte(cleaned))
+		if err != nil {
+			result.Message = fmt.Sprintf("PREVIEW failed for %q: %v", optionName, err)
+			return result
+		}
+		result.Details = append(result.Details, diff)
 		result.Message = fmt.Sprintf("PREVIEW: Would clean malicious script from %q", optionName)
 		result.Success = true
 		return result
@@ -359,7 +365,7 @@ func FormatDBCleanResult(r DBCleanResult) string {
 		fmt.Fprintf(&sb, "  Database: %s\n", r.Database)
 	}
 	for _, d := range r.Details {
-		fmt.Fprintf(&sb, "  %s\n", d)
+		fmt.Fprintf(&sb, "  %s\n", strings.ReplaceAll(strings.TrimSuffix(d, "\n"), "\n", "\n  "))
 	}
 
 	return sb.String()

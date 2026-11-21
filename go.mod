@@ -5,6 +5,7 @@ go 1.27.4
 require (
 	github.com/VKCOM/php-parser v0.8.2
 	github.com/VirusTotal/yara-x/go v1.23.0
+	github.com/aymanbagabas/go-udiff v0.4.2
 	github.com/cilium/ebpf v0.22.0
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/getsentry/sentry-go v0.50.0

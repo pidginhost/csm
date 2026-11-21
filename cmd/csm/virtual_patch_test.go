@@ -101,3 +101,32 @@ func TestRunVirtualPatchCommandReturnsFailureWhenAnActionFails(t *testing.T) {
 		t.Fatalf("failure incorrectly claimed a rollback backup: %s", stderr.String())
 	}
 }
+
+func TestRunVirtualPatchCommandPrintsPreviewsAndFailsAnUnrenderableOne(t *testing.T) {
+	withVirtualPatchCLISeams(t)
+	virtualPatchScan = func(context.Context, *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "web_exposed_config_leak", FilePath: "/home/a/.env"}}
+	}
+	virtualPatchApply = func(_ *config.Config, _ []alert.Finding, apply bool) []alert.Finding {
+		if apply {
+			t.Fatal("a preview must not apply")
+		}
+		return []alert.Finding{
+			{Message: "VIRTUAL-PATCH (preview): would deny HTTP access to /home/a/.env", Details: "+++ /home/a/.htaccess\n+Require all denied\x1b[2J\n"},
+			{Message: "VIRTUAL-PATCH preview failed: /home/b/.env", Details: "binary content"},
+		}
+	}
+	var stderr bytes.Buffer
+	if code := runVirtualPatchCommand(nil, &stderr); code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	out := stderr.String()
+	for _, want := range []string{"+Require all denied\\x1b[2J", "binary content"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.ContainsRune(out, '\x1b') {
+		t.Errorf("output carries a raw escape: %q", out)
+	}
+}
