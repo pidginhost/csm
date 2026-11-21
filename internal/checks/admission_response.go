@@ -139,6 +139,20 @@ func rewrittenRefusalFinal(r HTTPRewrite) bool {
 	return r.Server == platform.WSLiteSpeed || r.Format || r.NginxProxyProtocol()
 }
 
+// writableSpray rejects summaries that depend on any writable log line,
+// including a mixed-source spray whose latest observation was trusted.
+func writableSpray(f alert.Finding) bool {
+	if ProducerWritableLog(admission.ProducerID(f.Observation.Producer)) {
+		return true
+	}
+	for _, c := range f.SprayConstituents {
+		if ProducerWritableLog(admission.ProducerID(c.Observation.Producer)) {
+			return true
+		}
+	}
+	return false
+}
+
 // respondSpray asks admission to block a spray's prefix through the mail
 // subnet entry, with each counted address as a root, read as its tracker
 // recorded it, newest first, at most as many as one candidate holds. A
@@ -211,6 +225,11 @@ func AdmissionRoot(f alert.Finding) admission.Evidence {
 // PrepareAdmissionRoot preserves a local finding's mint refusal so a
 // selected response can count it once with its original check and reason.
 func PrepareAdmissionRoot(f alert.Finding) (admission.Evidence, error) {
+	// Derived paths must retain this refusal even while no owner is wired.
+	if ProducerWritableLog(admission.ProducerID(f.Observation.Producer)) {
+		_, _, err := AdmissionEvidence(f)
+		return admission.Evidence{}, err
+	}
 	a := getResponseAdmission()
 	if a == nil {
 		return admission.Evidence{}, nil

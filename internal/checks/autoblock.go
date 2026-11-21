@@ -378,7 +378,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// replaces what would otherwise be hundreds of per-IP blocks.
 	for _, f := range findings {
 		work.progress()
-		if f.AutoIPResponseEvaluated || ResponsePolicyFor(f.Check).Subnet != admission.EntryMailSubnet {
+		if f.AutoIPResponseEvaluated || ResponsePolicyFor(f.Check).Subnet != admission.EntryMailSubnet || writableSpray(f) {
 			continue
 		}
 		cidr := extractCIDRFromFinding(f)

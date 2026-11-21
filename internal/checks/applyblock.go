@@ -112,7 +112,8 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	}
 	// Admission refuses such a root while it applies blocks; this holds when
 	// it does not, during an engine outage or a held policy.
-	if ProducerWritableLog(admission.ProducerID(req.RootFinding.Observation.Producer)) {
+	if admission.CauseOf(req.RootErr) == admission.CauseWritableLog ||
+		ProducerWritableLog(admission.ProducerID(req.RootFinding.Observation.Producer)) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, fmt.Errorf("%w: %s came from a log line any local user can write", firewall.ErrIPProtected, req.IP)
 	}
 	blocker := getIPBlocker()

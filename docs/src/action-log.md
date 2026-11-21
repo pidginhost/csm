@@ -162,8 +162,14 @@ named before `no_observation` for an HTTP finding, and `proxy_peer` before
 both), `forged_client` (the web peer log shows the request came from a
 peer that is neither the address nor a trusted proxy, which chose it) or
 `writable_log` (the address came from an SSH, mail or FTP line read from a
-syslog file, which any local user can write under any program name). An
-address the web peer log shows behind a trusted proxy is refused as
+syslog file, which any local user can write under any program name).
+These file findings remain alert-only even while admission is unavailable or
+not applying blocks. A threat-feed match does not make their addresses
+blockable. Subnet responses refuse summaries containing writable-log
+constituents. Incidents retain this refusal through storage and timeline
+trimming, and derived responses retain it at every block lifetime.
+Journal producers can mint evidence; syslog file producers cannot.
+An address the web peer log shows behind a trusted proxy is refused as
 `unreachable`. A `challenge_timeout` refusal names the check and cause that left its
 challenge without a root. Refusals
 at submission and queue placement keep the same cause as refusals at evidence

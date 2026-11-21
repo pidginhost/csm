@@ -305,7 +305,7 @@ func TestReputationStampPrefersARecordOverARewrittenLog(t *testing.T) {
 	}
 	stampReputationSightings(findings,
 		map[string]scanRecord{"203.0.113.65": record},
-		map[string]bool{"203.0.113.65": true, "203.0.113.66": true})
+		map[string]bool{"203.0.113.65": true, "203.0.113.66": true}, nil)
 	if f := findings[0]; f.Attribution != admission.AttributionDerived || f.Observation.Stream != record.stream {
 		t.Fatalf("recorded sighting = %+v, want derived evidence on its record", f)
 	}

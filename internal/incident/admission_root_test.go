@@ -2,6 +2,7 @@ package incident
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -156,5 +157,76 @@ func TestIncidentRootUsesTheAttributedAddress(t *testing.T) {
 func TestIncidentEventsStaySmall(t *testing.T) {
 	if size := reflect.TypeOf(IncidentEvent{}).Size(); size > 256 {
 		t.Fatalf("an incident event takes %d bytes", size)
+	}
+}
+
+// A writable-log refusal must outlive its in-memory root: neither a
+// restart nor timeline trimming can turn it into address evidence.
+func TestWritableLogIncidentEvidenceSurvivesRestoreAndTrim(t *testing.T) {
+	for _, trim := range []bool{false, true} {
+		t.Run(fmt.Sprint(trim), func(t *testing.T) {
+			calls := 0
+			cfg := CorrelatorConfig{
+				OpenThreshold:   1,
+				AddressEvidence: func(check string, _ alert.Severity) bool { return check == "modsec_csm_block_escalation" },
+				Root: func(f alert.Finding) PreparedRoot {
+					if f.Observation.Producer == "journal" {
+						return PreparedRoot{Finding: f}
+					}
+					return PreparedRoot{Finding: f, Err: &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseWritableLog}}
+				},
+				AutoBlock:       IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "critical"},
+				OnIncidentBlock: func(_, _ string, _ time.Duration, _ string, _ PreparedRoot) bool { calls++; return false },
+			}
+			c := NewCorrelator(cfg)
+			now := time.Unix(1_700_000_000, 0)
+			c.now = func() time.Time { return now }
+			if trim {
+				for i := 0; i < 260; i++ {
+					feed(t, c, &now, attestingFinding("wp_login_bruteforce", alert.High, i))
+				}
+			}
+			id := feed(t, c, &now, attestingFinding("modsec_csm_block_escalation", alert.High, 1))
+			if trim {
+				for i := 260; i < 860; i++ {
+					feed(t, c, &now, attestingFinding("wp_login_bruteforce", alert.High, i))
+				}
+			}
+			inc, ok := c.Get(id)
+			if !ok {
+				t.Fatal("missing incident")
+			}
+			if inc.RemoteIPEvidence {
+				t.Error("writable finding was retained as address evidence")
+			}
+			if trim {
+				for _, ev := range inc.Timeline {
+					if ev.Check == "modsec_csm_block_escalation" {
+						t.Fatal("fixture did not trim the refused finding")
+					}
+				}
+			}
+			data, err := json.Marshal(inc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored Incident
+			if err := json.Unmarshal(data, &stored); err != nil {
+				t.Fatal(err)
+			}
+			second := NewCorrelator(cfg)
+			second.now = func() time.Time { return now }
+			second.Restore([]Incident{stored})
+			feed(t, second, &now, attestingFinding("wp_login_bruteforce", alert.Critical, 9999))
+			if calls != 0 {
+				t.Fatalf("writable evidence requested %d blocks", calls)
+			}
+			trusted := attestingFinding("modsec_csm_block_escalation", alert.Critical, 10000)
+			trusted.Observation.Producer = "journal"
+			feed(t, second, &now, trusted)
+			if calls != 1 {
+				t.Fatalf("independent trusted evidence requested %d blocks, want one", calls)
+			}
+		})
 	}
 }

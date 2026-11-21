@@ -445,7 +445,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	for _, work := range cacheWork {
 		work.finish(saved)
 	}
-	stampReputationSightings(findings, sightings, rewritten)
+	stampReputationSightings(findings, sightings, rewritten, ips)
 	healthNow := time.Now()
 	quotaExhausted = quotaErrorObserved || !abuseQuotaReady(sdb, healthNow)
 	findings = append(findings, reputationHealthFindings(ctx, cfg, sdb, scanState, healthNow, quotaExhausted)...)
@@ -875,7 +875,7 @@ func accessLogSighting(rec syslogRecord, ip string, cfg *config.Config) scanReco
 // derived evidence. A finding without such a record names none and mints
 // nothing. One a rewritten web log reported is read as that log's client,
 // so admission refuses it for the rewrite rather than for a missing record.
-func stampReputationSightings(findings []alert.Finding, records map[string]scanRecord, rewritten map[string]bool) {
+func stampReputationSightings(findings []alert.Finding, records map[string]scanRecord, rewritten map[string]bool, sources map[string]string) {
 	for i := range findings {
 		if findings[i].Check != "ip_reputation" {
 			continue
@@ -885,6 +885,15 @@ func stampReputationSightings(findings []alert.Finding, records map[string]scanR
 			r.stamp(&findings[i], ProducerReputationScan)
 		} else if rewritten[findings[i].SourceIP] {
 			findings[i].Attribution = admission.AttributionHTTPPeer
+		}
+		// A feed match cannot authenticate the syslog line that nominated
+		// this address. Keep its origin even without a dated observation,
+		// so legacy responses also refuse it.
+		switch sources[findings[i].SourceIP] {
+		case "SSH login":
+			findings[i].Observation.Producer = string(ProducerSSHLoginScan)
+		case reputationViaMailLogin:
+			findings[i].Observation.Producer = string(ProducerMailLog)
 		}
 	}
 }

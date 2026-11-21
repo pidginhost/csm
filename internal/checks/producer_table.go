@@ -47,6 +47,8 @@ var (
 	mintsDestination = admission.Attributions(admission.AttributionSocketDestination)
 )
 
+// Syslog file producers declare no attribution: their lines can alert but
+// cannot mint evidence, including when a caller bypasses AdmissionEvidence.
 // producerTable lists every producer of address evidence. Realtime and
 // scheduled readers are separate producers because each has its own
 // observation stream. Admission has no realtime entry: both reach the
@@ -55,10 +57,10 @@ var (
 // account or mailbox, a request names a host it chose itself.
 var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerSSHLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: mintsPeer},
+		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}},
 		admission.ParserRef{Name: "sshd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerSSHLoginScan, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: mintsPeer},
+		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}},
 		admission.ParserRef{Name: "sshd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerSSHJournal, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: mintsPeer},
@@ -67,10 +69,10 @@ var producerTable = []ProducerEntry{
 		Checks: []string{"pam_bruteforce", "credential_stuffing"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "pam_csm", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerFTPLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ftp_auth_failure_realtime"}, Attribution: mintsPeer},
+		Checks: []string{"ftp_auth_failure_realtime"}},
 		admission.ParserRef{Name: "pureftpd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerFTPScan, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ftp_bruteforce"}, Attribution: mintsPeer},
+		Checks: []string{"ftp_bruteforce"}},
 		admission.ParserRef{Name: "pureftpd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerFTPJournal, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"ftp_auth_failure_realtime", "ftp_bruteforce"}, Attribution: mintsPeer},
@@ -85,7 +87,7 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerMailLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		// Postfix hosts track SMTP auth failures from the mail log too.
 		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray"},
-		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
+		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}},
 		admission.ParserRef{Name: "dovecot", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerMailJournal, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray"},

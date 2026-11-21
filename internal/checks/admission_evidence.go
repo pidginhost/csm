@@ -19,14 +19,14 @@ import (
 // claims against.
 func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.EvidenceInput, error) {
 	producer := admission.ProducerID(f.Observation.Producer)
+	if ProducerWritableLog(producer) {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseWritableLog, Detail: "the address came from a log line any local user can write"}
+	}
 	// A known CDN or website-firewall edge carries every visitor behind it:
 	// blocking it as one of them is never an automatic response, whatever
 	// else is wrong with the finding.
 	if mayBeProxyEdge(f.Attribution, producer) && KnownProxyPeer(f.SourceIP, config.Active()) {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
-	}
-	if ProducerWritableLog(producer) {
-		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseWritableLog, Detail: "the address came from a log line any local user can write"}
 	}
 	// When the web server may replace the logged address, only the peer log
 	// can verify it. An unknown state is treated the same way.

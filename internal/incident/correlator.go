@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -735,8 +736,9 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 		if c.cfg.Root != nil && c.cfg.AddressEvidence != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			root := c.cfg.Root(f)
 			ev.root = &root
+			ev.AddressUntrusted = admission.CauseOf(root.Err) == admission.CauseWritableLog
 		}
-		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
+		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.eventAttests(ev) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
 				inc.RemoteIPEvidence = true
 				inc.RemoteIPEvidenceFinding = ev.FindingID
@@ -1734,7 +1736,7 @@ func (c *Correlator) eventAttests(ev IncidentEvent) bool {
 		// severity floor, but cannot establish a Critical-only signal.
 		sev, ok = alert.Warning, true
 	}
-	return ok && c.cfg.AddressEvidence(ev.Check, sev)
+	return !ev.AddressUntrusted && ok && c.cfg.AddressEvidence(ev.Check, sev)
 }
 
 // attesting names the finding a block of ip rests on and the admission root

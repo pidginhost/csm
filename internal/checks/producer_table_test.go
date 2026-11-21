@@ -116,9 +116,9 @@ func TestProducerTableDeclaresExactAttribution(t *testing.T) {
 	peer, http := admission.Attributions(admission.AttributionPeer), admission.Attributions(admission.AttributionHTTPPeer)
 	chain := admission.Attributions(admission.AttributionHTTPPeer, admission.AttributionTrustedHTTPChain)
 	want := map[admission.ProducerID]admission.AttributionSet{
-		ProducerSSHLog: peer, ProducerSSHLoginScan: peer, ProducerPAMSocket: peer,
-		ProducerFTPLog: peer, ProducerFTPScan: peer, ProducerEximLog: peer, ProducerEximHistory: peer,
-		ProducerMailLog: peer, ProducerStalwartLog: peer, ProducerCpanelAccessLog: peer, ProducerCpanelScan: peer,
+		ProducerSSHLog: 0, ProducerSSHLoginScan: 0, ProducerPAMSocket: peer,
+		ProducerFTPLog: 0, ProducerFTPScan: 0, ProducerEximLog: peer, ProducerEximHistory: peer,
+		ProducerMailLog: 0, ProducerStalwartLog: peer, ProducerCpanelAccessLog: peer, ProducerCpanelScan: peer,
 		ProducerSSHJournal: peer, ProducerMailJournal: peer, ProducerFTPJournal: peer,
 		ProducerAccessLog: http, ProducerDomlogScan: chain, ProducerModSecLog: http,
 		ProducerModSecAuditScan: http,

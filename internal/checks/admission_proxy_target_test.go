@@ -100,13 +100,6 @@ func TestQueuedProxyRecheckMatchesEveryProducer(t *testing.T) {
 				}
 				withKnownProxyPrefixes(t)
 				_, _, err := AdmissionEvidence(f)
-				// A syslog file line names no one who connected.
-				if ProducerWritableLog(p.Spec.ID) {
-					if admission.CauseOf(err) != admission.CauseWritableLog {
-						t.Fatalf("a writable log producer minted: %v", err)
-					}
-					return
-				}
 				if kind == admission.AttributionTrustedHTTPChain {
 					if admission.CauseOf(err) != admission.CauseUnreachable {
 						t.Fatalf("a proxied client minted: %v", err)
@@ -126,10 +119,10 @@ func TestQueuedProxyRecheckMatchesEveryProducer(t *testing.T) {
 				mintable++
 			})
 		}
-		if !any && p.Spec.ID != ProducerPHPRelaySpool {
+		if !any && p.Spec.ID != ProducerPHPRelaySpool && !ProducerWritableLog(p.Spec.ID) {
 			t.Errorf("%s reads no address attribution", p.Spec.ID)
 		}
-		if p.Spec.ID == ProducerPHPRelaySpool && any {
+		if (p.Spec.ID == ProducerPHPRelaySpool || ProducerWritableLog(p.Spec.ID)) && any {
 			t.Errorf("%s now reads an address attribution: classify it", p.Spec.ID)
 		}
 	}

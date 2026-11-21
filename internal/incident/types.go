@@ -285,6 +285,9 @@ type IncidentEvent struct {
 	Process   string    `json:"process,omitempty"`
 	Path      string    `json:"path,omitempty"`
 	RemoteIP  string    `json:"remote_ip,omitempty"`
+	// AddressUntrusted survives loss of the in-memory root so a writable
+	// log finding never becomes address evidence after restore.
+	AddressUntrusted bool `json:"address_untrusted,omitempty"`
 	// root retains the attesting finding's prepared evidence or mint
 	// refusal for the block it may lead to; never stored. It is a pointer
 	// because timelines are copied on every read: most events carry none.

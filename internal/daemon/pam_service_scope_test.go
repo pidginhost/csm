@@ -72,7 +72,7 @@ func TestPAMVisibilityTrackersExpire(t *testing.T) {
 	}
 }
 
-// One pure-ftpd login stream seen by the PAM hook and by the FTP log stays
+// One pure-ftpd login stream seen by the PAM hook and by the journal stays
 // one family of evidence: the PAM side is visibility only, so nothing
 // corroborates the FTP root into C3.
 func TestPAMAndFTPServiceFailuresStayOneFamily(t *testing.T) {
@@ -89,7 +89,7 @@ func TestPAMAndFTPServiceFailuresStayOneFamily(t *testing.T) {
 	}
 	producers := map[string]*admission.Producer{}
 	for _, entry := range checks.ProducerTable() {
-		if entry.Spec.ID != checks.ProducerPAMSocket && entry.Spec.ID != checks.ProducerFTPLog {
+		if entry.Spec.ID != checks.ProducerPAMSocket && entry.Spec.ID != checks.ProducerFTPJournal {
 			continue
 		}
 		prod, regErr := reg.Register(entry.Spec)
@@ -125,8 +125,8 @@ func TestPAMAndFTPServiceFailuresStayOneFamily(t *testing.T) {
 		}
 		roots = append(roots, e)
 	}
-	if len(roots) == 0 {
-		t.Fatal("no evidence minted; the FTP log should give at least one root")
+	if len(roots) != 3 {
+		t.Fatalf("minted %d roots, want one for each FTP journal failure", len(roots))
 	}
 	a, err := admission.Assess(target, roots, observed.Add(time.Minute))
 	if err != nil {

@@ -97,7 +97,7 @@ var logPathFor = map[string]string{
 
 // A reputation finding names the local record that put its address in the
 // scan: the record its log's parser read the address from, at the time the
-// log wrote it, as derived evidence that mints.
+// log wrote it. Writable sightings retain their origin and cannot mint.
 func TestReputationFindingNamesItsSighting(t *testing.T) {
 	at := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
 	for kind, line := range sightingLines("203.0.113.60", at) {
@@ -108,12 +108,19 @@ func TestReputationFindingNamesItsSighting(t *testing.T) {
 			f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "203.0.113.60")
 			want := syslogTestRef(t, paths[logPathFor[kind]], 0, line)
 			o := f.Observation
-			if f.Attribution != admission.AttributionDerived || o.Producer != string(ProducerReputationScan) ||
+			producer, cause := ProducerReputationScan, admission.Cause(0)
+			switch kind {
+			case "SSH login":
+				producer, cause = ProducerSSHLoginScan, admission.CauseWritableLog
+			case "mail login":
+				producer, cause = ProducerMailLog, admission.CauseWritableLog
+			}
+			if f.Attribution != admission.AttributionDerived || o.Producer != string(producer) ||
 				o.Stream != want.Stream || o.Cursor != want.Cursor || !o.ObservedAt.Equal(at) || o.ObservedAt.Location() != time.UTC {
 				t.Fatalf("finding %s read as %s named %+v, want derived %+v at %v", f.SourceIP, f.Attribution, o, want, at)
 			}
-			if _, _, err := mintScanFinding(t, f); err != nil {
-				t.Fatalf("mint: %v", err)
+			if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != cause || (cause == 0 && err != nil) {
+				t.Fatalf("mint: %v, want cause %s", err, cause)
 			}
 		})
 	}
@@ -140,11 +147,15 @@ func TestReputationSightingMustBeARecentParsedRecord(t *testing.T) {
 			}
 			sightingLogs(t, map[string]string{tc.path: tc.line + "\n"})
 			f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "203.0.113.61")
-			if f.Observation != (alert.Observation{}) || f.Attribution != admission.AttributionUnknown {
-				t.Fatalf("finding named %+v read as %s, want no sighting", f.Observation, f.Attribution)
+			want, cause := alert.Observation{}, admission.CauseNoObservation
+			if tc.path == "/var/log/secure" {
+				want.Producer, cause = string(ProducerSSHLoginScan), admission.CauseWritableLog
 			}
-			if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != admission.CauseNoObservation {
-				t.Fatalf("mint: %v, want the no-observation cause", err)
+			if f.Observation != want || f.Attribution != admission.AttributionUnknown {
+				t.Fatalf("finding named %+v read as %s, want origin %+v without a sighting", f.Observation, f.Attribution, want)
+			}
+			if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != cause {
+				t.Fatalf("mint: %v, want %s", err, cause)
 			}
 		})
 	}
@@ -176,7 +187,7 @@ func TestReputationNamesTheStrongestSightingsNewestRecord(t *testing.T) {
 func TestReputationSightingIsStableAcrossScans(t *testing.T) {
 	at := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
 	cfg := listIPs(t, "203.0.113.63")
-	sightingLogs(t, map[string]string{"/var/log/secure": sightingLines("203.0.113.63", at)["SSH login"] + "\n"})
+	sightingLogs(t, map[string]string{reputationEximMainlog: sightingLines("203.0.113.63", at)["SMTP auth fail"] + "\n"})
 	first := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "203.0.113.63")
 	again := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "203.0.113.63")
 	a, _, err := mintScanFinding(t, first)
@@ -379,11 +390,15 @@ func TestReputationSightingUsesOnlyItsParsersPeerAndTime(t *testing.T) {
 				t.Fatalf("severity %s, want the %s surface's %s", f.Severity, tc.surface, reputationSightingSeverity(tc.surface))
 			}
 			if !tc.sighting {
-				if f.Observation != (alert.Observation{}) || f.Attribution != admission.AttributionUnknown {
-					t.Fatalf("finding named %+v read as %s, want no sighting", f.Observation, f.Attribution)
+				want, cause := alert.Observation{}, admission.CauseNoObservation
+				if tc.path == "/var/log/secure" {
+					want.Producer, cause = string(ProducerSSHLoginScan), admission.CauseWritableLog
 				}
-				if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != admission.CauseNoObservation {
-					t.Fatalf("mint: %v, want the no-observation cause", err)
+				if f.Observation != want || f.Attribution != admission.AttributionUnknown {
+					t.Fatalf("finding named %+v read as %s, want origin %+v without a sighting", f.Observation, f.Attribution, want)
+				}
+				if _, _, err := mintScanFinding(t, f); admission.CauseOf(err) != cause {
+					t.Fatalf("mint: %v, want %s", err, cause)
 				}
 				return
 			}
@@ -474,7 +489,7 @@ func TestReputationSightingPreservesLegacySurfaceChoice(t *testing.T) {
 	// no sighting.
 	listed := listIPs(t, d)
 	listed.MailLogs.File = "/var/log/maillog"
-	if fd := reputationFindingFor(t, CheckIPReputation(context.Background(), listed, nil), d); fd.Severity != alert.Critical || fd.Observation != (alert.Observation{}) {
-		t.Fatalf("finding %s named %+v, want critical with no sighting", fd.Severity, fd.Observation)
+	if fd := reputationFindingFor(t, CheckIPReputation(context.Background(), listed, nil), d); fd.Severity != alert.Critical || fd.Observation != (alert.Observation{Producer: string(ProducerMailLog)}) {
+		t.Fatalf("finding %s named %+v, want critical with a writable origin and no sighting", fd.Severity, fd.Observation)
 	}
 }
