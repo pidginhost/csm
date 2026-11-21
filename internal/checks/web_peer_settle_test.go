@@ -114,9 +114,21 @@ func TestSettledPeerFinalRefusalsDoNotDrain(t *testing.T) {
 			if class != PeerUnknown {
 				webPeers.observe(at, client, class)
 			}
-			SetWebPeerDrain(func(time.Duration) bool { t.Error("a final refusal waited for the reader"); return true })
+			reads, waits := 0, 0
+			SetWebPeerDrain(func(time.Duration) bool { reads++; return true })
+			webPeerSleep = func(time.Duration) { waits++ }
 			if got := settledWebPeerVerdict(client, at, at); got != class {
 				t.Fatalf("got %v, want %v", got, class)
+			}
+			// A forged or proxied verdict needs no read. An unknown one reads
+			// the log once, since the request's own line may be waiting, and
+			// never sits out the settle period for a final refusal.
+			wantReads := 0
+			if class == PeerUnknown {
+				wantReads = 1
+			}
+			if reads != wantReads || waits != 0 {
+				t.Fatalf("%v: %d reads and %d waits, want %d reads and no wait", class, reads, waits, wantReads)
 			}
 		})
 	}

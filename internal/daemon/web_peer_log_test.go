@@ -283,19 +283,16 @@ func TestWebPeerWatcherDrainsForVerdicts(t *testing.T) {
 	t.Cleanup(func() { close(stop); <-done })
 	// Past the loss the watcher marked when it attached at the end of the log.
 	at := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	// A direct attacker's own line is in the log but not yet polled: the
+	// verdict must read it rather than refuse a block it can verify.
 	appendLine(t, path, peerLine(at, "site.example", "203.0.113.77", "203.0.113.77"))
-	// Establish direct evidence as the background poll would. Unknown final
-	// refusals no longer ask the reader to drain.
-	if !w.Drain(time.Second) {
-		t.Fatal("initial peer read failed")
-	}
 	f := alert.Finding{
 		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.77",
 		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now(),
 		Observation: alert.Observation{Producer: string(checks.ProducerAccessLog), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: at},
 	}
 	if _, _, err := checks.AdmissionEvidence(f); err != nil {
-		t.Fatalf("AdmissionEvidence = %v, want the cached direct line verified", err)
+		t.Fatalf("AdmissionEvidence = %v, want the unpolled direct line read and verified", err)
 	}
 	appendLine(t, path, peerLine(at, "site.example", "192.0.2.77", "203.0.113.77"))
 	if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseForgedClient {

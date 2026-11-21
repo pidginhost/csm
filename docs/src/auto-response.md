@@ -583,14 +583,15 @@ an empty window. Before an address counts as connected for itself, CSM
 reads the peer log again about two seconds after it read the finding, so a
 peer line the web server flushed after its access line still decides.
 Reputation sightings use the same check, findings read together share one
-wait, and a finding without a valid read time stays unverified. Already
-final refusals do not wait for the peer-log reader. Once CSM has trusted a
+wait, and a finding without a valid read time stays unverified. A refusal
+that is already final never sits out that wait. Once CSM has trusted a
 peer-log reader, losing that trust keeps unverified addresses refused until
 the daemon restarts; it cannot restore legacy blocking.
 Two refusals still leave the block to the existing
 paths: a client address Apache rewrote from a proxy header while CSM has
 never trusted its current web peer-log reader, or nginx read from a proxy
-header in a configuration CSM reads whole without PROXY protocol, and a ledger that could not take new
+header in a configuration CSM reads whole without PROXY protocol, and a
+ledger that could not take new
 work at all. LiteSpeed also applies those headers to
 requests from the host itself, so any local user can choose the address it
 logs: on LiteSpeed that refusal is final as well, and so is one whose

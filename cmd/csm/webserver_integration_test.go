@@ -69,6 +69,12 @@ func TestParseWebserverIntegrationArgs(t *testing.T) {
 		{[]string{"peer-log", "upgrade"}, "", false, false, false},
 		{[]string{"peer-log"}, "", false, false, false},
 		{[]string{"bogus"}, "", false, false, false},
+		// The configuration flags every csm command reads stay accepted.
+		{[]string{"install", "--config", "/etc/csm/csm.yaml"}, "install", false, false, true},
+		{[]string{"--config=/etc/csm/csm.yaml", "peer-log", "status"}, "status", true, false, true},
+		{[]string{"upgrade", "--config-dir", "/etc/csm/conf.d", "--json"}, "upgrade", false, true, true},
+		{[]string{"install", "--config"}, "", false, false, false},
+		{[]string{"install", "--bogus"}, "", false, false, false},
 		{[]string{"peer-log", "remove", "--dry-run"}, "", false, false, false},
 		{[]string{"peer-log", "install", "remove"}, "", false, false, false},
 		{[]string{"remove", "peer-log"}, "", false, false, false},

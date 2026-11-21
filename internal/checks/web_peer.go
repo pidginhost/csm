@@ -324,10 +324,11 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 // again after a read that starts a settle period after seenAt: a forged line
 // still on its way must not be outvoted by the client's earlier direct lines.
 func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict {
-	// A refusal already established by the index needs no reader round trip.
-	// In particular, a busy reader must not hold the dispatcher for a refusal
-	// that no new line could turn into an authorized block.
-	if v := WebPeerVerdict(client, at); webPeerRefusalReady(v) {
+	// A forged or proxied verdict cannot turn into a block whatever later
+	// lines say, so it needs no reader round trip and a busy reader cannot
+	// hold the dispatcher for it. An unknown one may be the request's own
+	// line still waiting to be read.
+	if v := WebPeerVerdict(client, at); v == PeerForged || v == PeerProxied {
 		return v
 	}
 	started := webPeerClock()

@@ -11,7 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Web client verification rejects gaps between direct requests and uncertain Apache buffering; losing peer-log trust no longer resumes blocking unverified addresses.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
@@ -23,10 +22,9 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A known CDN edge is never blocked automatically, including when a forwarded header names it or the web server rewrites client addresses.
 - Automatic blocks and the Web UI Block button now use only the address a check parsed from its log line, never one quoted in a finding's message.
 
-### Fixed
+### Changed
 
-- Final web client refusals no longer delay alert delivery while the peer log is busy.
-- Web integration commands reject unsupported arguments and report unreadable peer-log settings during upgrades.
+- `csm webserver-integration` now rejects unknown flags and extra words instead of ignoring them.
 
 ## [4.15.0] - 2026-11-20
 

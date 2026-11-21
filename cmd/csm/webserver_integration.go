@@ -74,13 +74,21 @@ func runWebserverIntegration() {
 }
 
 // parseWebserverIntegrationArgs reads a challenge verb, or "peer-log" and a
-// peer log verb, and --json. Unknown flags and extra words are usage errors.
+// peer log verb, --json, and the --config and --config-dir flags every csm
+// command reads. Other flags and extra words are usage errors.
 func parseWebserverIntegrationArgs(args []string) (verb string, peerLog, asJSON, ok bool) {
 	var words []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case a == "--json":
 			asJSON = true
+		case a == "--config" || a == "--config-dir":
+			// Read again when the configuration loads; skip its value.
+			if i++; i >= len(args) {
+				return "", false, false, false
+			}
+		case strings.HasPrefix(a, "--config=") || strings.HasPrefix(a, "--config-dir="):
 		case strings.HasPrefix(a, "-"):
 			return "", false, false, false
 		default:
