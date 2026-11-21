@@ -13,8 +13,8 @@ import (
 // internal/platform.Detect()). Pass an empty string to skip the platform
 // default - useful in tests.
 //
-//	auto    - try file (must exist); fall back to journal if file missing
-//	          but units are configured.
+//	auto    - prefer a usable journal covering the running mail services;
+//	          otherwise file, then journal if units are configured.
 //	file    - error if the file doesn't exist.
 //	journal - error if the journal reader is unavailable (default builds).
 func New(cfg config.MailLogsConfig, platformDefaultFile string, queue *Queue) (Reader, error) {
@@ -37,7 +37,7 @@ func New(cfg config.MailLogsConfig, platformDefaultFile string, queue *Queue) (R
 	case "auto":
 		// Only journald records who wrote a line; a log file takes any
 		// local user's lines under any program name.
-		if len(cfg.Units) > 0 && JournalUsable() && !postfixLogsToFile() {
+		if len(cfg.Units) > 0 && JournalUsable() && !postfixLogsToFile() && mailUnitsCovered(cfg.Units) {
 			return NewJournalReader(cfg.Units, queue), nil
 		}
 		if path != "" {

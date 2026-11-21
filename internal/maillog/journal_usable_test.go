@@ -3,6 +3,7 @@ package maillog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -43,13 +44,21 @@ func usableJournalHost(t *testing.T, devLogToJournald, stored, supported bool) {
 			t.Fatal(err)
 		}
 	}
-	prevDev, prevSock, prevDirs, prevSupported, prevMainCF := devLogPath, journaldSocket, journalDirs, journalSupported, postfixMainCF
+	prevDev, prevSock, prevDirs, prevSupported, prevMainCF, prevProc := devLogPath, journaldSocket, journalDirs, journalSupported, postfixMainCF, journalProcPath
 	t.Cleanup(func() {
-		devLogPath, journaldSocket, journalDirs, journalSupported, postfixMainCF = prevDev, prevSock, prevDirs, prevSupported, prevMainCF
+		devLogPath, journaldSocket, journalDirs, journalSupported, postfixMainCF, journalProcPath = prevDev, prevSock, prevDirs, prevSupported, prevMainCF, prevProc
 	})
 	devLogPath, journaldSocket, journalDirs = devLog, socket, []string{filepath.Join(root, "run", "log", "journal"), journals}
 	journalSupported = func() bool { return supported }
 	postfixMainCF = filepath.Join(root, "etc", "postfix", "main.cf")
+	journalProcPath = filepath.Join(root, "proc")
+	journalTestProcess(t, "1", "/usr/lib/systemd/systemd-journald", "0", "0::/system.slice/systemd-journald.service\n")
+	journalTestProcess(t, "2", "/usr/libexec/postfix/master", "0", "0::/system.slice/postfix.service\n")
+	if stored {
+		if err := os.Symlink(filepath.Join(journals, "0123456789abcdef", "system.journal"), filepath.Join(journalProcPath, "1", "fd", "7")); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // The journal holds every syslog line, with who sent it, only when syslog
@@ -125,4 +134,136 @@ func withJournalUnusable(t *testing.T) {
 	prev := journalSupported
 	t.Cleanup(func() { journalSupported = prev })
 	journalSupported = func() bool { return false }
+}
+
+// Continued Postfix settings and failed reads must not hide postlogd logging.
+func TestPostfixFileSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, config        string
+		directory, wantFile bool
+	}{
+		{"continued value", "maillog_file =\n  /var/log/postfix.log\n", false, true},
+		{"comment inside continuation", "maillog_file =\n# explanation\n  /var/log/postfix.log\n", false, true},
+		{"last value wins", "maillog_file = /var/log/postfix.log\nmaillog_file =\n", false, false},
+		{"continued unrelated value", "mydestination = example.net,\n maillog_file = /var/log/not-a-setting\n", false, false},
+		{"unreadable configuration", "", true, true},
+		{"scan failure", "#" + strings.Repeat("x", 70*1024) + "\nmaillog_file = /var/log/postfix.log\n", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usableJournalHost(t, true, true, true)
+			if err := os.MkdirAll(filepath.Dir(postfixMainCF), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.directory {
+				if err := os.Mkdir(postfixMainCF, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(postfixMainCF, []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "maillog")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r, err := New(config.MailLogsConfig{Source: "auto", Units: []string{"postfix", "dovecot"}}, path, NewQueue())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, file := r.(*FileReader)
+			if file != tc.wantFile {
+				t.Fatalf("reader %T, want file %v", r, tc.wantFile)
+			}
+		})
+	}
+}
+
+func journalTestProcess(t *testing.T, pid, exe, uid, cgroup string) {
+	t.Helper()
+	dir := filepath.Join(journalProcPath, pid)
+	if err := os.MkdirAll(filepath.Join(dir, "fd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(exe, filepath.Join(dir, "exe")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status"), []byte("Uid:\t"+uid+"\t"+uid+"\t"+uid+"\t"+uid+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cgroup"), []byte(cgroup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJournalUsableRequiresLiveStorage(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	// Storage=none leaves old journal files but no open journal in journald.
+	if err := os.Remove(filepath.Join(journalProcPath, "1", "fd", "7")); err != nil {
+		t.Fatal(err)
+	}
+	if JournalUsable() {
+		t.Fatal("old journal files counted as active storage")
+	}
+}
+
+func TestAutoRequiresMailUnitCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name, cgroup string
+		units        []string
+		wantJournal  bool
+	}{
+		{"missing custom dovecot", "0::/system.slice/mail-imap.service\n", []string{"postfix", "dovecot"}, false},
+		{"configured custom dovecot", "0::/system.slice/mail-imap.service\n", []string{"postfix", "mail-imap"}, true},
+		{"missing postfix instance", "0::/system.slice/system-postfix.slice/postfix@secondary.service\n", []string{"postfix", "dovecot"}, false},
+		{"configured instance", "0::/system.slice/system-postfix.slice/postfix@secondary.service\n", []string{"postfix", "postfix@secondary"}, true},
+		{"legacy cgroup", "2:cpu:/\n1:name=systemd:/system.slice/mail-imap.service\n", []string{"postfix", "mail-imap"}, true},
+		{"outside a service", "0::/user.slice/session-1.scope\n", []string{"postfix", "dovecot"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usableJournalHost(t, true, true, true)
+			exe := "/usr/sbin/dovecot"
+			if strings.Contains(tc.cgroup, "postfix@") {
+				exe = "/usr/libexec/postfix/master"
+			}
+			journalTestProcess(t, "3", exe, "0", tc.cgroup)
+			path := filepath.Join(t.TempDir(), "maillog")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r, err := New(config.MailLogsConfig{Source: "auto", Units: tc.units}, path, NewQueue())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, journal := r.(*JournalReader)
+			if journal != tc.wantJournal {
+				t.Fatalf("reader %T, want journal %v", r, tc.wantJournal)
+			}
+		})
+	}
+}
+
+func TestAutoIgnoresUnprivilegedProcessNames(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	journalTestProcess(t, "3", "/tmp/dovecot", "1000", "0::/user.slice/session-1.scope\n")
+	if !mailUnitsCovered([]string{"postfix"}) {
+		t.Fatal("an unprivileged process forced file mode")
+	}
+}
+
+func TestAutoRejectsUnreadableMailProcess(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	journalTestProcess(t, "3", "/usr/sbin/dovecot", "0", "0::/system.slice/dovecot.service\n")
+	if err := os.Remove(filepath.Join(journalProcPath, "3", "status")); err != nil {
+		t.Fatal(err)
+	}
+	if mailUnitsCovered([]string{"postfix"}) {
+		t.Fatal("an unreadable mail master was ignored")
+	}
+}
+
+func TestAutoRecognizesReplacedMailExecutable(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	journalTestProcess(t, "3", "/usr/sbin/dovecot (deleted)", "0", "0::/system.slice/mail-imap.service\n")
+	if mailUnitsCovered([]string{"postfix", "dovecot"}) {
+		t.Fatal("an upgraded mail master's unit was ignored")
+	}
 }

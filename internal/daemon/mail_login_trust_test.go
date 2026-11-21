@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -47,7 +48,14 @@ func TestWritableMailSuccessIsNotALogin(t *testing.T) {
 			good = len(e.goodFirst) > 0
 		}
 		d.mailAuthTracker.mu.Unlock()
-		sprayTrust := smtpSuccessIPs(d)[postfixIP]
+		trust := smtpSuccessIPs(d)
+		sprayTrust := trust[postfixIP]
+		if trust[dovecotIP] != journal {
+			t.Errorf("journal=%v: Dovecot spray trust=%v", journal, trust[dovecotIP])
+		}
+		if e := d.mailAuthTracker.ips[dovecotIP]; e == nil || (len(e.succ) != 0) != journal || (len(e.successAccounts) != 0) != journal {
+			t.Errorf("journal=%v: short-term login trust=%+v", journal, e)
+		}
 		if customer != journal || smtpCustomer != journal || good != journal || sprayTrust != journal {
 			t.Errorf("journal=%v: known customer %v/%v, good source %v, spray trust %v; want all %v",
 				journal, customer, smtpCustomer, good, sprayTrust, journal)
@@ -58,3 +66,59 @@ func TestWritableMailSuccessIsNotALogin(t *testing.T) {
 // trustedMailObs stamps a mail line as the journal entry a mail service
 // wrote, for tests about parsing and tracking rather than log trust.
 var trustedMailObs = alert.Observation{Producer: string(checks.ProducerMailJournal)}
+
+// Unverified logins remain evidence for the per-address compromise alert.
+func TestFileMailLoginStillAlertsAfterFailures(t *testing.T) {
+	for _, protocol := range []string{"imap", "pop3", "managesieve"} {
+		t.Run(protocol, func(t *testing.T) {
+			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+			const ip, account = "203.0.113.151", "alice@example.net"
+			for i := 0; i < 2; i++ {
+				clock.advance(time.Second)
+				d.handleMailLine(makeDovecotFailLine(protocol, ip, account), alert.Observation{}, d.currentCfg())
+			}
+			got := d.handleMailLine(makeDovecotSuccessLine(protocol, ip, account), alert.Observation{}, d.currentCfg())
+			if len(got) != 1 || got[0].Check != "mail_account_compromised" || got[0].SourceIP != ip || got[0].Mailbox != account {
+				t.Fatalf("findings=%+v, want one compromise for the source and mailbox", got)
+			}
+			if len(d.mailAuthTracker.ExportGoodSource()) != 0 || len(smtpSuccessIPs(d)) != 0 {
+				t.Fatal("file login trained trust")
+			}
+		})
+	}
+}
+
+// Service-owned logs keep their login standing regardless of mail_logs.source.
+func TestServiceMailLoginsKeepTrust(t *testing.T) {
+	for _, source := range []string{"exim", "stalwart-smtp", "stalwart-imap", "stalwart-pop3", "stalwart-sieve"} {
+		t.Run(source, func(t *testing.T) {
+			cfg := sprayTestConfig("off")
+			cfg.MailLogs.Source = "file"
+			d, clock := newStalwartAuthDaemon(t, cfg)
+			d.knownCustomers = newKnownCustomers(clock.Now)
+			d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), clock.Now)
+			d.smtpAuthTracker.SetSpray(d.mailSpray)
+			d.mailAuthTracker.SetSpray(d.mailSpray)
+			d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
+			d.mailAuthTracker.SetKnownCustomers(d.knownCustomers)
+			const ip, account = "203.0.113.152", "alice@example.net"
+			if source == "exim" {
+				d.handleEximLine(clock.Now().Format("2006-01-02 15:04:05")+" 1abc23-000456-AB <= alice@example.net H=mail.example.net ["+ip+"] P=esmtpsa A=dovecot_login:"+account+" S=100", alert.Observation{}, cfg)
+			} else {
+				port := map[string]int{"stalwart-smtp": 587, "stalwart-imap": 993, "stalwart-pop3": 995, "stalwart-sieve": 4190}[source]
+				feedStalwart(d, stalwartLine(clock.Now(), "auth.success", port, ip, fmt.Sprintf(", accountName = %q, accountId = 7", account)))
+			}
+			if _, ok := d.knownCustomers.Lookup(ip); !ok {
+				t.Fatal("service login lost customer standing")
+			}
+			if !smtpSuccessIPs(d)[ip] {
+				t.Fatal("service login lost spray trust")
+			}
+			if source != "exim" && source != "stalwart-smtp" {
+				if _, ok := d.mailAuthTracker.ExportGoodSource()[ip][account]; !ok {
+					t.Fatal("service login lost good-source standing")
+				}
+			}
+		})
+	}
+}

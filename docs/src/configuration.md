@@ -353,7 +353,7 @@ infra_ips: []                           # management IPs/CIDRs/hostnames - never
 # Packaged releases include journald support. Custom builds need
 # `make JOURNAL=1 build-yara` before `source: journal` can be selected.
 mail_logs:
-  source: auto                          # auto (journal when syslog goes through journald) | file | journal
+  source: auto                          # auto (journal when live storage and mail unit coverage are confirmed) | file | journal
   file: ""                              # optional path override for file source
   units: ["postfix", "postfix@-", "dovecot"]  # journal units for source=journal or auto fallback; postfix@- is the Debian/Ubuntu instance
 
