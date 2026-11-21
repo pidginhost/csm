@@ -17,8 +17,9 @@ func TestAdmissionCeilingMapsMaxBlocksPerHour(t *testing.T) {
 		source string
 		legacy int
 	}{
-		{"", DefaultAdmissionCeiling, CeilingDefault, DefaultMaxBlocksPerHour},
-		{"auto_response:\n  max_blocks_per_hour: 0\n", DefaultAdmissionCeiling, CeilingDefault, DefaultMaxBlocksPerHour},
+		// Twice the busiest measured minute and hour on a production host.
+		{"", 1000, CeilingDefault, DefaultMaxBlocksPerHour},
+		{"auto_response:\n  max_blocks_per_hour: 0\n", 1000, CeilingDefault, DefaultMaxBlocksPerHour},
 		{"auto_response:\n  max_blocks_per_hour: 50\n", 50, CeilingConfigured, 50},
 		{"auto_response:\n  max_blocks_per_hour: 200\n", 200, CeilingConfigured, 200},
 		{"auto_response:\n  max_blocks_per_hour: 1\n", 1, CeilingConfigured, 1},
