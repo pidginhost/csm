@@ -130,3 +130,14 @@ func TestRunVirtualPatchCommandPrintsPreviewsAndFailsAnUnrenderableOne(t *testin
 		t.Errorf("output carries a raw escape: %q", out)
 	}
 }
+
+func TestVirtualPatchPreviewReportsOutputFailure(t *testing.T) {
+	withVirtualPatchCLISeams(t)
+	virtualPatchScan = func(context.Context, *config.Config) []alert.Finding { return nil }
+	virtualPatchApply = func(*config.Config, []alert.Finding, bool) []alert.Finding {
+		return []alert.Finding{{Message: "VIRTUAL-PATCH (preview)", Details: "diff"}}
+	}
+	if code := runVirtualPatchCommand(nil, failedPreviewWriter{}); code == 0 {
+		t.Fatal("reported success without delivering preview")
+	}
+}

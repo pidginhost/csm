@@ -953,6 +953,9 @@ func PreviewCleanHtaccessFile(path string) (string, error) {
 	if !ok {
 		return "", errors.New(".htaccess too large to clean automatically")
 	}
+	if previewTooLarge(original) {
+		return "", errPreviewTooLarge
+	}
 	cleaned, _, err := cleanHtaccessContent(resolved, original)
 	if err != nil {
 		return "", err

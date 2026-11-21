@@ -1220,62 +1220,6 @@ func refreshBotRanges(ctx context.Context, client *http.Client, sources []threat
 	return threatintel.RefreshFetchedRanges(ctx, client, sources, cachePath)
 }
 
-func runClean() {
-	if code := runCleanCommand(os.Args[2:], os.Stderr); code != 0 {
-		os.Exit(code)
-	}
-}
-
-// runCleanCommand sends an .htaccess to the .htaccess cleaner and anything
-// else to the PHP cleaner, for a preview and an apply alike. File names and
-// content are tenant-controlled, so all output is escaped for the terminal.
-func runCleanCommand(args []string, stderr io.Writer) int {
-	preview := slices.Contains(args, "--preview")
-	args = slices.DeleteFunc(slices.Clone(args), func(a string) bool { return a == "--preview" })
-	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(stderr, "Usage: csm clean <path> [--preview]")
-		return 1
-	}
-	path := args[0]
-	htaccess := filepath.Base(path) == ".htaccess"
-	say := func(format string, a ...any) {
-		_, _ = fmt.Fprint(stderr, checks.TerminalSafe(fmt.Sprintf(format, a...)))
-	}
-
-	switch {
-	case preview:
-		render := checks.PreviewCleanInfectedFile
-		if htaccess {
-			render = checks.PreviewCleanHtaccessFile
-		}
-		diff, err := render(path)
-		if err != nil {
-			say("PREVIEW FAILED for %s: %v\n", path, err)
-			return 1
-		}
-		say("PREVIEW (no changes written; run without --preview to clean)\n%s", diff)
-	case htaccess:
-		res := checks.CleanHtaccessFile(path)
-		switch {
-		case res.Success:
-			say("CLEANED %s\n  %s\n", path, res.Description)
-		case res.Refused:
-			say("REFUSED to clean %s: %s\n", path, res.Error)
-			return 1
-		default:
-			say("FAILED to clean %s: %s\n", path, res.Error)
-			return 1
-		}
-	default:
-		result := checks.CleanInfectedFile(path)
-		say("%s\n", checks.FormatCleanResult(result))
-		if !result.Cleaned {
-			return 1
-		}
-	}
-	return 0
-}
-
 func runDBClean() {
 	if len(os.Args) < 3 {
 		printDBCleanUsage()
@@ -1295,16 +1239,8 @@ func runDBClean() {
 		printDBCleanUsage()
 
 	case "--option":
-		if len(os.Args) < 5 {
-			fmt.Fprintf(os.Stderr, "Usage: csm db-clean --option <account> <option_name> [--preview]\n")
-			os.Exit(1)
-		}
-		account := os.Args[3]
-		optionName := os.Args[4]
-		result := checks.DBCleanOption(account, optionName, preview)
-		fmt.Fprint(os.Stderr, checks.FormatDBCleanResult(result))
-		if !result.Success {
-			os.Exit(1)
+		if code := runDBCleanOptionCommand(os.Args[3:], os.Stderr, checks.DBCleanOption); code != 0 {
+			os.Exit(code)
 		}
 
 	case "--revoke-user":

@@ -54,3 +54,18 @@ test('a history row expands to its details and context', async () => {
     assert.ok(rows[0].textContent.includes('Size: 10') && rows[0].textContent.includes(CONTEXT), rows[0].textContent);
     assert.ok(rows[1].textContent.includes(CONTEXT), rows[1].textContent);
 });
+
+test('history displays a virtual patch diff as literal multiline text', async () => {
+    const diff = '--- site/.htaccess\n+++ site/.htaccess\n@@ -0,0 +1,2 @@\n+<Files "site.sql">\n+Require all denied';
+    const page = loadPage(templateBody('findings'), SHARED.concat(['history.js']), {
+        url: 'https://csm.example.test/findings?tab=history', globals: { bootstrap: undefined }
+    });
+    await settle();
+    page.respond('/api/v1/history', 200, { items: [
+        { severity: 2, check: 'auto_response', message: 'VIRTUAL-PATCH (preview)', details: diff, timestamp: '2026-09-22T10:00:00Z' }
+    ], total: 1 });
+    await settle();
+    const details = page.document.querySelector('.details-row');
+    assert.equal(details.textContent, diff);
+    assert.equal(details.querySelector('files'), null);
+});

@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/quarantinefs"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // Virtual patching for web-exposed files.
@@ -115,27 +116,44 @@ func VirtualPatchExposedFile(filePath string) RemediationResult {
 // VirtualPatchExposedFile would write and returns their unified diff, plus a
 // line for each one apply would fail to write. It writes nothing. A change
 // that cannot be shown fails the whole preview.
-func previewVirtualPatchExposedFile(filePath string) (RemediationResult, string) {
+func previewVirtualPatchExposedFile(filePath string, planned map[string][]byte, alertPreview bool) (RemediationResult, string) {
 	var out strings.Builder
 	var unrenderable error
+	// Retain only generated rules between findings. Each read is bounded by
+	// the same size limit as apply, even when many files share one directory.
+	pending := make(map[string][]byte)
 	res := virtualPatchExposedFile(filePath, func(dir string, block []byte) (bool, error) {
-		htaccess, state, patched, err := planHtaccessDeny(dir, block)
-		if err == nil {
-			diff, renderErr := renderChangeDiff(htaccess, state.content, patched)
-			if renderErr == nil {
-				out.WriteString(diff)
-				return false, nil
+		htaccess, state, patched, err := planHtaccessDeny(dir, block, planned[dir])
+		if err != nil {
+			if !errors.Is(err, errVirtualPatchAlreadyApplied) {
+				fmt.Fprintf(&out, "%s would not be written: %s\n", DisplayField(filepath.Join(dir, ".htaccess")), DisplayField(err.Error()))
 			}
-			unrenderable = fmt.Errorf("cannot preview %s: %w", htaccess, renderErr)
+			return false, err
+		}
+		var diff string
+		if alertPreview {
+			diff, err = renderAlertDenyDiff(htaccess, state.content, patched, block)
+		} else {
+			diff, err = renderChangeDiff(htaccess, state.content, patched)
+		}
+		if err != nil {
+			unrenderable = fmt.Errorf("cannot preview %s: %w", htaccess, err)
 			return false, unrenderable
 		}
-		if !errors.Is(err, errVirtualPatchAlreadyApplied) {
-			fmt.Fprintf(&out, "%s would not be written: %v\n", filepath.Join(dir, ".htaccess"), err)
-		}
-		return false, err
+		out.WriteString(diff)
+		pending[dir] = block
+		return false, nil
 	})
 	if unrenderable != nil {
 		return RemediationResult{Error: unrenderable.Error()}, ""
+	}
+	if res.Success && len(pending) == 0 {
+		// The primary deny already exists and the only missing deny was
+		// refused. There is no change to present as a successful preview.
+		return RemediationResult{Error: res.Description}, ""
+	}
+	for dir, block := range pending {
+		planned[dir] = append(planned[dir], block...)
 	}
 	return res, out.String()
 }
@@ -202,7 +220,7 @@ func virtualPatchExposedFile(filePath string, deny func(dir string, block []byte
 // block is already present, keeping a restorable pre-patch copy. It reports
 // whether an earlier CSM block had been removed or damaged in that file.
 func applyHtaccessDeny(dir string, block []byte) (bool, error) {
-	htaccess, state, newContent, err := planHtaccessDeny(dir, block)
+	htaccess, state, newContent, err := planHtaccessDeny(dir, block, nil)
 	if err != nil {
 		return false, err
 	}
@@ -243,7 +261,7 @@ func applyHtaccessDeny(dir string, block []byte) (bool, error) {
 // planHtaccessDeny reads the .htaccess in dir and returns its path, its
 // current state and the content the block would leave there. Apply and
 // preview both use it, so a preview shows the bytes apply writes.
-func planHtaccessDeny(dir string, block []byte) (string, htaccessState, []byte, error) {
+func planHtaccessDeny(dir string, block, planned []byte) (string, htaccessState, []byte, error) {
 	htaccess := filepath.Join(dir, ".htaccess")
 	if _, err := sanitizeFixPath(htaccess, effectiveFixRoots(fixHtaccessAllowedRoots)); err != nil {
 		return "", htaccessState{}, nil, err
@@ -251,6 +269,10 @@ func planHtaccessDeny(dir string, block []byte) (string, htaccessState, []byte, 
 	state, err := readHtaccessState(htaccess, dir)
 	if err != nil {
 		return "", htaccessState{}, nil, err
+	}
+	if len(planned) != 0 {
+		state.content = patchedHtaccessContent(state.content, state.existed, planned)
+		state.existed = true
 	}
 	if state.existed && containsHtaccessBlock(state.content, block) {
 		return "", htaccessState{}, nil, errVirtualPatchAlreadyApplied
@@ -389,44 +411,36 @@ func ensureTrailingNewline(b []byte) []byte {
 }
 
 func readHtaccessState(htaccess, dir string) (htaccessState, error) {
-	info, err := os.Lstat(htaccess)
+	parent, err := safepath.OpenDirNoFollow(dir)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return htaccessState{}, fmt.Errorf("inspecting .htaccess: %v", err)
-		}
-		dirInfo, statErr := os.Stat(dir)
-		if statErr != nil {
-			return htaccessState{}, fmt.Errorf("inspecting target directory: %v", statErr)
-		}
-		uid, gid, ownerErr := ownerFromInfo(dirInfo)
-		if ownerErr != nil {
-			return htaccessState{}, ownerErr
-		}
-		return htaccessState{uid: uid, gid: gid, mode: 0644}, nil
+		return htaccessState{}, fmt.Errorf("opening target directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	defer func() { _ = parent.Close() }()
+	file, err := parent.OpenFile(filepath.Base(htaccess), os.O_RDONLY, 0)
+	if errors.Is(err, syscall.ELOOP) {
 		return htaccessState{}, fmt.Errorf("refusing symlinked .htaccess: %s", htaccess)
 	}
-	if !info.Mode().IsRegular() {
-		return htaccessState{}, fmt.Errorf("refusing non-regular .htaccess: %s", htaccess)
-	}
-	if info.Size() > maxVirtualPatchHtaccessSize {
-		return htaccessState{}, fmt.Errorf("refusing .htaccess larger than %d bytes", maxVirtualPatchHtaccessSize)
-	}
-
-	// #nosec G304 -- htaccess is under the resolved and validated target dir;
-	// O_NOFOLLOW rejects a path swap to a symlink.
-	file, err := os.OpenFile(htaccess, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return htaccessState{}, fmt.Errorf("opening .htaccess: %v", err)
+		if !os.IsNotExist(err) {
+			return htaccessState{}, fmt.Errorf("opening .htaccess: %w", err)
+		}
+		dirInfo, statErr := parent.Info()
+		if statErr != nil {
+			return htaccessState{}, fmt.Errorf("inspecting target directory: %w", statErr)
+		}
+		uid, gid, ownerErr := ownerFromInfo(dirInfo)
+		return htaccessState{uid: uid, gid: gid, mode: 0644}, ownerErr
 	}
 	defer file.Close()
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return htaccessState{}, fmt.Errorf("stating .htaccess: %v", err)
 	}
-	if !os.SameFile(info, openedInfo) {
-		return htaccessState{}, fmt.Errorf(".htaccess changed while preparing virtual-patch")
+	if !openedInfo.Mode().IsRegular() {
+		return htaccessState{}, fmt.Errorf("refusing non-regular .htaccess: %s", htaccess)
+	}
+	if openedInfo.Size() > maxVirtualPatchHtaccessSize {
+		return htaccessState{}, fmt.Errorf("refusing .htaccess larger than %d bytes", maxVirtualPatchHtaccessSize)
 	}
 	content, err := io.ReadAll(io.LimitReader(file, maxVirtualPatchHtaccessSize+1))
 	if err != nil {
@@ -797,6 +811,11 @@ func parseVirtualPatchMode(value string) (os.FileMode, error) {
 // deny rule for each virtual-patchable web_exposed_* finding, deduplicated by
 // path. It returns one auto_response action finding per file.
 func VirtualPatchExposedFindings(_ *config.Config, findings []alert.Finding, apply bool) []alert.Finding {
+	return virtualPatchFindings(findings, apply, false)
+}
+
+func virtualPatchFindings(findings []alert.Finding, apply, alertPreview bool) []alert.Finding {
+	planned := make(map[string][]byte)
 	var actions []alert.Finding
 	seen := make(map[string]struct{})
 	for _, f := range findings {
@@ -816,15 +835,15 @@ func VirtualPatchExposedFindings(_ *config.Config, findings []alert.Finding, app
 		seen[path] = struct{}{}
 
 		if !apply {
-			res, diff := previewVirtualPatchExposedFile(path)
+			res, diff := previewVirtualPatchExposedFile(path, planned, alertPreview)
 			switch {
 			case res.Error == virtualPatchAlreadyApplied:
 			case res.Error != "":
 				actions = append(actions, alert.Finding{
 					Severity:  alert.Warning,
 					Check:     "auto_response",
-					Message:   fmt.Sprintf("VIRTUAL-PATCH preview failed: %s", path),
-					Details:   res.Error,
+					Message:   fmt.Sprintf("VIRTUAL-PATCH preview failed: %s", DisplayField(path)),
+					Details:   DisplayField(res.Error),
 					Timestamp: time.Now(),
 				})
 			default:
@@ -835,7 +854,7 @@ func VirtualPatchExposedFindings(_ *config.Config, findings []alert.Finding, app
 				actions = append(actions, alert.Finding{
 					Severity:  alert.Warning,
 					Check:     "auto_response",
-					Message:   fmt.Sprintf("VIRTUAL-PATCH (preview): would deny HTTP access to %s", path),
+					Message:   fmt.Sprintf("VIRTUAL-PATCH (preview): would deny HTTP access to %s", DisplayField(path)),
 					Details:   details + "\n\n" + diff,
 					Timestamp: time.Now(),
 				})
@@ -849,26 +868,26 @@ func VirtualPatchExposedFindings(_ *config.Config, findings []alert.Finding, app
 			actions = append(actions, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "auto_response",
-				Message:  fmt.Sprintf("%s %s", virtualPatchRevertedPrefix, path),
+				Message:  fmt.Sprintf("%s %s", virtualPatchRevertedPrefix, DisplayField(path)),
 				Details: fmt.Sprintf("%s. CSM had already denied this path; something rewrote the .htaccess and the file was downloadable until this scan. "+
 					"Backup plugins own the .htaccess in their own directory and restore it on every run, so the deny belongs somewhere the plugin does not overwrite.",
-					res.Description),
+					DisplayField(res.Description)),
 				Timestamp: time.Now(),
 			})
 		case res.Success:
 			actions = append(actions, alert.Finding{
 				Severity:  alert.Critical,
 				Check:     "auto_response",
-				Message:   fmt.Sprintf("VIRTUAL-PATCH: denied HTTP access to %s", path),
-				Details:   res.Description,
+				Message:   fmt.Sprintf("VIRTUAL-PATCH: denied HTTP access to %s", DisplayField(path)),
+				Details:   DisplayField(res.Description),
 				Timestamp: time.Now(),
 			})
 		case res.Error != "" && res.Error != virtualPatchAlreadyApplied:
 			actions = append(actions, alert.Finding{
 				Severity:  alert.Warning,
 				Check:     "auto_response",
-				Message:   fmt.Sprintf("VIRTUAL-PATCH failed: %s", path),
-				Details:   res.Error,
+				Message:   fmt.Sprintf("VIRTUAL-PATCH failed: %s", DisplayField(path)),
+				Details:   DisplayField(res.Error),
 				Timestamp: time.Now(),
 			})
 		}
@@ -889,5 +908,5 @@ func AutoVirtualPatchExposedFiles(cfg *config.Config, findings []alert.Finding) 
 			autoEligible = append(autoEligible, finding)
 		}
 	}
-	return VirtualPatchExposedFindings(cfg, autoEligible, !cfg.AutoResponseDryRunEnabled())
+	return virtualPatchFindings(autoEligible, !cfg.AutoResponseDryRunEnabled(), true)
 }

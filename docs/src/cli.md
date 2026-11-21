@@ -149,8 +149,8 @@ SSH port, password and root login settings, `disable_functions`, `allow_url_fope
 
 | Command | Description |
 |---------|-------------|
-| `csm clean <path> [--preview]` | Clean an infected PHP file, or remove malicious directives from an `.htaccess` under an account root (backs up original). `--preview` prints the change as a unified diff and writes nothing; it fails when the change cannot be shown as text. |
-| `csm db-clean --option <account> <option_name> [--preview]` | Sanitize malicious WordPress option values (e.g. injected `siteurl` / `home`). `--preview` prints the cleaned value as a unified diff. |
+| `csm clean <path> [--preview]` | Clean an infected PHP file, or remove malicious directives from an `.htaccess` under a detected or configured account root (backs up original). `--preview` prints the change as a unified diff and writes nothing; oversized or binary previews fail without writing. |
+| `csm db-clean --option <account> <option_name> [--preview]` | Sanitize malicious WordPress option values (e.g. injected `siteurl` / `home`). `--preview` prints the cleaned value as a unified diff. Apply preserves concurrent edits and reports any retained backup. |
 | `csm db-clean --revoke-user <account> <user_id> [--demote] [--preview]` | Revoke or demote a compromised WordPress admin and invalidate their sessions |
 | `csm db-clean --delete-spam <account> [--preview]` | Delete published posts whose title or content matches a high-confidence spam keyword. Matches are confirmed on a Unicode-aware word boundary, so a post is never removed for containing a keyword inside a longer word. Keywords that also occur in ordinary writing are reported by scans but never deleted. |
 | `csm db-clean --drop-object <account> <schema> <type> <name> [--preview]` | Drop a MySQL trigger / event / stored procedure / stored function, capturing its CREATE SQL into the `db_object_backups` bbolt bucket first. `<type>` must be `trigger`, `event`, `procedure`, or `function`. `<schema>` must match a database discovered for `<account>`. Daemon must be stopped. |

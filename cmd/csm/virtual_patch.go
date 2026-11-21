@@ -38,7 +38,12 @@ func runVirtualPatch() {
 
 func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 	apply := false
-	for _, a := range args {
+	words, _, ok := responseConfigArgs(args)
+	if !ok {
+		fmt.Fprintln(stderr, "usage: csm virtual-patch [--apply]")
+		return 1
+	}
+	for _, a := range words {
 		switch a {
 		case "--apply":
 			apply = true
@@ -64,6 +69,9 @@ func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 		return 1
 	}
 
+	defer config.SetActive(config.Active())
+	config.SetActive(cfg)
+
 	ctx, cancel := context.WithTimeout(context.Background(), virtualPatchTimeout)
 	defer cancel()
 
@@ -79,12 +87,16 @@ func runVirtualPatchCommand(args []string, stderr io.Writer) int {
 	if apply {
 		mode = "APPLY"
 	}
-	fmt.Fprintf(stderr, "\n%s: %d web-exposed finding(s), %d action(s)\n", mode, len(findings), len(actions))
+	if _, err := fmt.Fprintf(stderr, "\n%s: %d web-exposed finding(s), %d action(s)\n", mode, len(findings), len(actions)); err != nil {
+		return 1
+	}
 	applied := 0
 	failed := 0
 	for _, a := range actions {
 		// Paths and previewed content are tenant-controlled.
-		_, _ = fmt.Fprint(stderr, checks.TerminalSafe(fmt.Sprintf("  - %s\n%s\n", a.Message, a.Details)))
+		if _, err := fmt.Fprint(stderr, checks.TerminalSafe(fmt.Sprintf("  - %s\n%s\n", a.Message, a.Details))); err != nil {
+			return 1
+		}
 		switch {
 		case strings.HasPrefix(a.Message, "VIRTUAL-PATCH: denied"):
 			applied++

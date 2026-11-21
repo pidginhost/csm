@@ -255,3 +255,9 @@ func TestPlacementCapabilityWhenBPFActive(t *testing.T) {
 		t.Error("bpf-file-placement present when placement backend is none")
 	}
 }
+
+func TestResponsePreviewCapability(t *testing.T) {
+	if !contains(Capabilities(), "response.preview_diff.v1") {
+		t.Error("missing response preview capability")
+	}
+}

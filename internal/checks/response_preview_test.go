@@ -126,10 +126,10 @@ func assertAppliedMatchesPreview(t *testing.T, sink *recordingSink, path, previe
 // are the ones the applied action records.
 func TestPreviewCleanInfectedFileMatchesTheAppliedAction(t *testing.T) {
 	sink := withActionSink(t)
-	qdir := t.TempDir()
+	qdir := mustEvalSymlinks(t, t.TempDir())
 	withQuarantineDirT(t, qdir)
 	const infected = "<?php\n@include(\"/tmp/x\");\necho 'site';\n"
-	path := writeTempPHP(t, infected)
+	path := mustEvalSymlinks(t, writeTempPHP(t, infected))
 
 	diff, err := PreviewCleanInfectedFile(path)
 	if err != nil {
@@ -150,10 +150,10 @@ func TestPreviewCleanInfectedFileMatchesTheAppliedAction(t *testing.T) {
 // be shown. The preview fails and changes nothing.
 func TestPreviewCleanInfectedFileFailsOnBinaryContent(t *testing.T) {
 	sink := withActionSink(t)
-	qdir := t.TempDir()
+	qdir := mustEvalSymlinks(t, t.TempDir())
 	withQuarantineDirT(t, qdir)
 	const infected = "<?php\n\x00\x0b@include(\"/tmp/x\");\necho 'site';\n"
-	path := writeTempPHP(t, infected)
+	path := mustEvalSymlinks(t, writeTempPHP(t, infected))
 
 	if diff, err := PreviewCleanInfectedFile(path); !errors.Is(err, errPreviewBinary) {
 		t.Fatalf("preview = %q, %v; want the binary refusal", diff, err)
@@ -163,10 +163,10 @@ func TestPreviewCleanInfectedFileFailsOnBinaryContent(t *testing.T) {
 
 func TestPreviewCleanInfectedFileReportsTheCleanersRefusal(t *testing.T) {
 	sink := withActionSink(t)
-	qdir := t.TempDir()
+	qdir := mustEvalSymlinks(t, t.TempDir())
 	withQuarantineDirT(t, qdir)
 	const clean = "<?php\necho 'site';\n"
-	path := writeTempPHP(t, clean)
+	path := mustEvalSymlinks(t, writeTempPHP(t, clean))
 
 	if _, err := PreviewCleanInfectedFile(path); err == nil || !strings.Contains(err.Error(), "no known injection patterns") {
 		t.Fatalf("preview err = %v, want the cleaner's refusal", err)
@@ -379,7 +379,7 @@ func TestDBCleanOptionPreviewShowsTheCleanedValue(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("preview failed: %+v", result)
 	}
-	details := strings.Join(result.Details, "\n")
+	details := result.Diff
 	for _, want := range []string{
 		"\n-before <script src=\"https://evil.top/x.js\"></script> after\n",
 		"\n+before  after\n",
@@ -394,5 +394,192 @@ func TestDBCleanOptionPreviewFailsOnBinaryContent(t *testing.T) {
 	result := dbCleanPreview(t, "binuser", `<script src="https://evil.top/x.js"></script>\0`)
 	if result.Success || !strings.Contains(result.Message, errPreviewBinary.Error()) {
 		t.Fatalf("preview = %+v, want the binary refusal", result)
+	}
+}
+
+func TestVirtualPatchPreviewChainsSharedFileChanges(t *testing.T) {
+	root := vpTestEnv(t)
+	dir := filepath.Join(root, "site")
+	findings := []alert.Finding{
+		vpFinding("web_exposed_db_dump", filepath.Join(dir, "first.sql")),
+		vpFinding("web_exposed_db_dump", filepath.Join(dir, "second.sql")),
+	}
+	for _, f := range findings {
+		mustWrite(t, f.FilePath, "fixture")
+	}
+	actions := VirtualPatchExposedFindings(nil, findings, false)
+	if len(actions) != 2 {
+		t.Fatalf("got %d actions", len(actions))
+	}
+	_, first := previewHeaderDigests(t, actions[0].Details)
+	second, final := previewHeaderDigests(t, actions[1].Details)
+	if first != second {
+		t.Error("second patch does not start from first patch")
+	}
+	htaccess := filepath.Join(dir, ".htaccess")
+	if _, err := os.Stat(htaccess); !os.IsNotExist(err) {
+		t.Fatalf("preview wrote access file: %v", err)
+	}
+	if got := VirtualPatchExposedFindings(nil, findings, true); len(got) != 2 {
+		t.Fatalf("apply: %+v", got)
+	}
+	if sha256Hex([]byte(readFile(t, htaccess))) != final {
+		t.Error("final preview differs from applied file")
+	}
+}
+
+func TestVirtualPatchPreviewDeduplicatesDirectoryDeny(t *testing.T) {
+	root := vpTestEnv(t)
+	first, _ := ai1wmSite(t, root)
+	second := filepath.Join(filepath.Dir(first), "second.wpress")
+	mustWrite(t, second, "fixture")
+	findings := []alert.Finding{vpFinding("web_exposed_backup_archive", first), vpFinding("web_exposed_backup_archive", second)}
+	if got := VirtualPatchExposedFindings(nil, findings, false); len(got) != 1 {
+		t.Fatalf("got %d actions for the same deny rules", len(got))
+	}
+}
+
+func TestAutoPatchPreviewExcludesTenantDirectives(t *testing.T) {
+	root := vpTestEnv(t)
+	dir := filepath.Join(root, "site\nextra")
+	file := filepath.Join(dir, "archive.sql")
+	mustWrite(t, file, "fixture")
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.VirtualPatchExposedFiles = config.VirtualPatchAuto
+	for _, ending := range []string{"", "\n"} {
+		body := "# operator-only comment" + ending
+		mustWrite(t, filepath.Join(dir, ".htaccess"), body)
+		got := AutoVirtualPatchExposedFiles(cfg, []alert.Finding{vpFinding("web_exposed_db_dump", file)})
+		if len(got) != 1 {
+			t.Fatalf("got %d findings", len(got))
+		}
+		if strings.Contains(got[0].Message, "\n") || strings.Contains(got[0].Details, "operator-only") {
+			t.Error("alert includes tenant text outside the rule")
+		}
+		before, after := previewHeaderDigests(t, got[0].Details)
+		if before != sha256Hex([]byte(body)) || after != sha256Hex(patchedHtaccessContent([]byte(body), true, buildDenyBlock("archive.sql", false))) || !strings.Contains(got[0].Details, "\n+Require all denied\n") {
+			t.Error("alert does not identify the planned change")
+		}
+	}
+}
+
+func TestPreviewDBResultEscapesFields(t *testing.T) {
+	got := FormatDBCleanResult(DBCleanResult{Message: "bad\rmessage", Database: "bad\nname", Details: []string{"URL: example\x1b[0m"}})
+	if strings.ContainsAny(got, "\r\x1b") || strings.Contains(got, "bad\nname") {
+		t.Fatalf("unsafe result: %q", got)
+	}
+}
+
+func TestPatchPreviewRefusesSwappedParent(t *testing.T) {
+	root := vpTestEnv(t)
+	dir := filepath.Join(root, "site")
+	target := filepath.Join(dir, "archive.sql")
+	mustWrite(t, target, "fixture")
+	other := filepath.Join(root, "other")
+	mustWrite(t, filepath.Join(other, ".htaccess"), "# private context\n")
+	old := fixAfterPathResolved
+	t.Cleanup(func() { fixAfterPathResolved = old })
+	fixAfterPathResolved = func(string) {
+		if err := os.Rename(dir, dir+".old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(other, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := VirtualPatchExposedFindings(nil, []alert.Finding{vpFinding("web_exposed_db_dump", target)}, false)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "preview failed") || strings.Contains(got[0].Details, "private context") {
+		t.Fatal("preview followed a replaced directory")
+	}
+}
+
+func TestPreviewDiffBoundsLineAllocations(t *testing.T) {
+	body := []byte(strings.Repeat("\n", 1<<18))
+	if diff, err := renderChangeDiff("input", body, append(body, 'x')); err == nil || diff != "" {
+		t.Fatal("expected a bounded preview refusal")
+	}
+}
+
+func TestCleanReadRefusesGrowthAfterOpen(t *testing.T) {
+	path := mustEvalSymlinks(t, writeTempPHP(t, "<?php"))
+	target, err := openCleanTarget(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	old := cleanMaxFileSize
+	cleanMaxFileSize = target.Info.Size()
+	t.Cleanup(func() { cleanMaxFileSize = old })
+	if err := os.Truncate(path, cleanMaxFileSize+1); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := target.readForClean(); len(data) != 0 || !errors.Is(err, errFileResponseRefused) {
+		t.Fatalf("read returned %d bytes, %v", len(data), err)
+	}
+}
+
+func TestDBCleanOptionStopsOnWriteFailure(t *testing.T) {
+	for _, failure := range []string{"INSERT", "UPDATE"} {
+		t.Run(failure, func(t *testing.T) {
+			const account = "fixture"
+			const row = "before <script src=\"https://evil.top/x.js\"></script> after"
+			withMockOS(t, wpConfigFixture(t, account, "<?php\ndefine('DB_NAME','fixture_db');\n$table_prefix='wp_';\n"))
+			var writes []string
+			withMockCmd(t, &mockCmd{runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
+				for _, a := range args {
+					if strings.HasPrefix(a, "SELECT option_value") {
+						return []byte(row + "\n"), nil
+					}
+					for _, kind := range []string{"INSERT", "UPDATE"} {
+						if strings.HasPrefix(a, kind) {
+							writes = append(writes, kind)
+							if failure == kind {
+								return nil, errors.New("write failed")
+							}
+						}
+					}
+				}
+				return nil, nil
+			}})
+			got := DBCleanOption(account, "widget_text", false)
+			want := "INSERT"
+			if failure == "UPDATE" {
+				want = "INSERT UPDATE"
+			}
+			if got.Success || strings.Join(writes, " ") != want {
+				t.Fatalf("writes %v, success %v, message %s", writes, got.Success, got.Message)
+			}
+		})
+	}
+}
+
+func TestDBPreviewPrintsDiffAtStartOfLine(t *testing.T) {
+	r := dbCleanPreview(t, "diffuser", `before <script src="https://evil.top/x.js"></script> after`)
+	out := FormatDBCleanResult(r)
+	if !r.Success || !strings.Contains(out, "\n--- widget_text\tsha256:") || !strings.Contains(out, "\n+before  after\n") {
+		t.Fatal("formatted preview is not a unified diff")
+	}
+}
+
+func TestVirtualPatchReportsFailureWhenOnlyMissingRuleIsRefused(t *testing.T) {
+	root := vpTestEnv(t)
+	archive, primary := ai1wmSite(t, root)
+	mustWrite(t, primary, string(buildDenyBlock(filepath.Base(archive), true)))
+	parent := filepath.Join(filepath.Dir(filepath.Dir(primary)), ".htaccess")
+	if err := os.Mkdir(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	actions := VirtualPatchExposedFindings(nil, []alert.Finding{vpFinding("web_exposed_backup_archive", archive)}, false)
+	if len(actions) != 1 || !strings.Contains(actions[0].Message, "preview failed:") || !strings.Contains(actions[0].Details, parent) {
+		t.Error("preview did not report the refused rule")
+	}
+}
+
+func TestCleanPreviewRefusesOverlongInputBeforeParsing(t *testing.T) {
+	body := strings.Repeat("\n", maxPreviewLines+1)
+	path := mustEvalSymlinks(t, writeTempPHP(t, body))
+	if _, err := PreviewCleanInfectedFile(path); !errors.Is(err, errPreviewTooLarge) {
+		t.Fatalf("wrong refusal for overlong input: %v", err)
 	}
 }

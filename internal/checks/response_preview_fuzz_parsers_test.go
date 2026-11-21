@@ -16,7 +16,7 @@ func FuzzRenderChangeDiff(f *testing.F) {
 	f.Add("/home/u/x", "", "\x1b]0;t\x07\n\x9b31m\n")
 	f.Fuzz(func(t *testing.T, path, before, after string) {
 		diff, err := renderChangeDiff(path, []byte(before), []byte(after))
-		if errors.Is(err, errPreviewBinary) {
+		if errors.Is(err, errPreviewBinary) || errors.Is(err, errPreviewTooLarge) {
 			return
 		}
 		if err != nil {
