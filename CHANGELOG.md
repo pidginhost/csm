@@ -24,6 +24,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- `csm doctor` lists the deploy scripts it checked when all of them verify releases, instead of printing nothing.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 
 ## [4.15.0] - 2026-11-20

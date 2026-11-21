@@ -25,13 +25,14 @@ func TestDoctorReportsDeployScriptsThatSkipVerification(t *testing.T) {
         die "no Ed25519 verifier available: install OpenSSL 3.0+ or python3-cryptography"
     fi
 }`
+	// An empty want means no check: an unrelated script says nothing about
+	// whether this host verifies releases.
 	for _, tc := range []struct {
-		name, body string
-		wantFail   bool
+		name, body, want string
 	}{
-		{"legacy skip path", legacy, true},
-		{"fail-closed", current, false},
-		{"unrelated script", "#!/bin/bash\necho hello\n", false},
+		{"legacy skip path", legacy, "fail"},
+		{"fail-closed", current, "ok"},
+		{"unrelated script", "#!/bin/bash\necho hello\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -44,19 +45,20 @@ func TestDoctorReportsDeployScriptsThatSkipVerification(t *testing.T) {
 			deployScriptSearchPaths = []string{dir}
 
 			checks := deployScriptDoctorChecks()
-			if !tc.wantFail {
-				for _, c := range checks {
-					if c.Status == "fail" {
-						t.Fatalf("clean script reported: %+v", c)
-					}
+			if tc.want == "" {
+				if len(checks) != 0 {
+					t.Fatalf("unrelated script reported: %+v", checks)
 				}
 				return
 			}
-			if len(checks) != 1 || checks[0].Status != "fail" {
-				t.Fatalf("stale script not reported: %+v", checks)
+			if len(checks) != 1 || checks[0].Status != tc.want {
+				t.Fatalf("got %+v, want one %s check", checks, tc.want)
 			}
-			if !strings.Contains(checks[0].Message, script) || checks[0].Fix == "" {
-				t.Fatalf("report does not name the script or an action: %+v", checks[0])
+			if !strings.Contains(checks[0].Message, script) {
+				t.Fatalf("report does not name the script: %+v", checks[0])
+			}
+			if tc.want == "fail" && checks[0].Fix == "" {
+				t.Fatalf("failure offers no action: %+v", checks[0])
 			}
 		})
 	}

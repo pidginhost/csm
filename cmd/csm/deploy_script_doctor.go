@@ -21,9 +21,10 @@ const maxDeployScriptBytes = 1 << 20
 // a release without verifying its signature. Versions released before
 // verification became mandatory warn and continue when no verifier is present,
 // and an operator copy is never upgraded in place, so the regression is
-// invisible until it has already installed something unverified.
+// invisible until it has already installed something unverified. When every
+// script verifies, the OK line names them so the operator sees the check ran.
 func deployScriptDoctorChecks() []DoctorCheck {
-	var stale []string
+	var checked, stale []string
 	seen := make(map[string]bool)
 	for _, dir := range deployScriptSearchPaths {
 		entries, err := os.ReadDir(dir)
@@ -44,16 +45,25 @@ func deployScriptDoctorChecks() []DoctorCheck {
 				continue
 			}
 			seen[resolved] = true
-			if deployScriptSkipsVerification(path) {
+			verifies, skips := deployScriptVerification(path)
+			if !verifies {
+				continue
+			}
+			checked = append(checked, path)
+			if skips {
 				stale = append(stale, path)
 			}
 		}
 	}
-	if len(stale) == 0 {
+	const checkName = "deploy scripts verify releases"
+	if len(checked) == 0 {
 		return nil
 	}
+	if len(stale) == 0 {
+		return []DoctorCheck{{Name: checkName, Status: "ok", Message: "checked " + strings.Join(checked, ", ")}}
+	}
 	return []DoctorCheck{{
-		Name:    "deploy scripts verify releases",
+		Name:    checkName,
 		Status:  "fail",
 		Message: fmt.Sprintf("these deploy scripts can install an unverified release: %s", strings.Join(stale, ", ")),
 		Fix: "replace each with the current scripts/deploy-gitlab.sh or scripts/deploy.sh from the release, " +
@@ -61,27 +71,27 @@ func deployScriptDoctorChecks() []DoctorCheck {
 	}}
 }
 
-// deployScriptSkipsVerification reports whether a script both performs release
-// verification and retains a path that continues when it cannot verify.
-func deployScriptSkipsVerification(path string) bool {
+// deployScriptVerification reports whether a script performs release
+// verification and whether it retains a path that continues when it cannot.
+func deployScriptVerification(path string) (verifies, skips bool) {
 	// #nosec G304 -- Fixed operator directories are scanned; the path is not caller-supplied.
 	file, err := os.Open(path)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxDeployScriptBytes {
-		return false
+		return false, false
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxDeployScriptBytes))
 	if err != nil {
-		return false
+		return false, false
 	}
 	body := string(data)
 	if !strings.Contains(body, "verify_signature") {
-		return false
+		return false, false
 	}
-	return strings.Contains(body, "skipping signature check") ||
+	return true, strings.Contains(body, "skipping signature check") ||
 		strings.Contains(body, "skipping signature verification")
 }
