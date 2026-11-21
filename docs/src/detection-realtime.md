@@ -483,8 +483,11 @@ Journal input requires a build with journal support. The default units are
 as `postfix@postfix-out`, in `mail_logs.units`. Each journal record reaches
 the mail detectors with its program name, process id and time, as a mail log
 file records them, so every mail detection works the same with either source.
-Journal selection uses the trusted systemd unit, not the caller-supplied syslog
-identifier. Keep `mail_logs.units` limited to mail services. File input has no
+Journal input requires a configured systemd unit and a root sender, or the
+`postfix` user for Postfix units. Messages must arrive through the syslog socket
+or native journal API. Output streams and entries without these credentials
+are ignored before any mail detector processes them. Keep `mail_logs.units`
+limited to mail services. File input has no
 sender credentials: a local user who can submit mail-facility syslog messages
 can forge failures or successes there. On hosts with untrusted local users,
 use `mail_logs.source: journal` with the mail service units, or restrict the

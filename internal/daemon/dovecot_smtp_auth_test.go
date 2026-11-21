@@ -255,12 +255,21 @@ func TestDovecotSMTPAuthJournalMessages(t *testing.T) {
 	} {
 		t.Run(tc.unit+tc.message, func(t *testing.T) {
 			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
-			d := New(&config.Config{}, nil, nil, "")
+			cfg := &config.Config{MailLogs: config.MailLogsConfig{Units: []string{"dovecot", "postfix"}}}
+			d := New(cfg, nil, nil, "")
 			d.smtpAuthTracker = newTestTracker(t, clock)
+			parsed := 0
+			handler := func(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
+				parsed++
+				return d.handleMailLine(line, obs, cfg)
+			}
 			for i := 0; i < 5; i++ {
-				if !d.dispatchMailLogLine(maillog.Line{Source: "journal", Unit: tc.unit, Message: tc.message}, d.handleMailLine) {
+				if !d.dispatchMailLogLine(maillog.Line{Source: "journal", Unit: tc.unit, UID: "0", Transport: "syslog", Message: tc.message}, handler) {
 					t.Fatal("mail dispatch stopped")
 				}
+			}
+			if parsed != 5 {
+				t.Fatalf("parsed %d journal messages, want 5", parsed)
 			}
 			if calls, _ := d.smtpAuthTracker.Stats(); calls != tc.want {
 				t.Fatalf("SMTP failures = %d, want %d", calls, tc.want)

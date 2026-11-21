@@ -124,3 +124,54 @@ func TestIncidentExclusionPinGateBlocksAnAttestedAddress(t *testing.T) {
 		t.Fatalf("blocked %v, want the attested address", *blocked)
 	}
 }
+
+// A renamed check in an old snapshot needs the same producer proof as its
+// current name, through cached attestation and retained timeline events.
+func TestIncidentRestoredSSHProducerProof(t *testing.T) {
+	for _, check := range []string{"ssh_login_realtime", "ssh_login_unknown_ip"} {
+		for _, producer := range []string{"", string(checks.ProducerSSHLog), string(checks.ProducerSSHJournal)} {
+			for _, timeline := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/timeline=%v", check, producer, timeline), func(t *testing.T) {
+					blocked := incidentExclusionPinConfig(t)
+					at := time.Now()
+					inc := incident.Incident{
+						ID: "restored", Kind: incident.KindWebAttack, Status: incident.StatusOpen, Severity: alert.Critical,
+						CreatedAt: at, UpdatedAt: at, CorrelationKey: &incident.Key{RemoteIP: "192.0.2.77"},
+					}
+					if timeline {
+						inc.Timeline = []incident.IncidentEvent{{Kind: "finding", Check: check, Severity: "CRITICAL",
+							RemoteIP: "192.0.2.77", FindingID: "0123456789abcdef", Producer: producer}}
+					} else {
+						inc.RemoteIPEvidence = true
+						inc.RemoteIPEvidenceFinding = "0123456789abcdef"
+						inc.RemoteIPEvidenceCheck = check
+						inc.RemoteIPEvidenceSeverity = "CRITICAL"
+						inc.RemoteIPEvidenceProducer = producer
+					}
+					c := IncidentCorrelator()
+					c.Restore([]incident.Incident{inc})
+					want := producer == string(checks.ProducerSSHJournal)
+					got, ok := c.Get(inc.ID)
+					if !ok || got.RemoteIPEvidence != want {
+						t.Errorf("restored evidence = %v (found %v), want %v", got.RemoteIPEvidence, ok, want)
+					}
+					// An advisory can trigger a response only if the restored
+					// SSH evidence attests the address; it adds no proof itself.
+					id, created, err := c.OnFinding(alert.Finding{
+						Check: "ftp_login", Severity: alert.Warning, SourceIP: "192.0.2.77", Timestamp: at,
+					})
+					if err != nil || created || id != inc.ID {
+						t.Fatalf("advisory did not join restored incident: id=%q created=%v err=%v", id, created, err)
+					}
+					wantBlocks := []string{}
+					if want {
+						wantBlocks = append(wantBlocks, "192.0.2.77")
+					}
+					if !slices.Equal(*blocked, wantBlocks) {
+						t.Fatalf("blocked %v, want %v", *blocked, wantBlocks)
+					}
+				})
+			}
+		}
+	}
+}

@@ -21,14 +21,14 @@ func TestTrustedLine(t *testing.T) {
 		// it; a child that inherits it writes under them.
 		{"inherited output stream", Line{Source: "journal", Unit: "sshd.service", UID: "0", Transport: "stdout"}, false},
 		{"no transport", Line{Source: "journal", Unit: "sshd.service", UID: "0"}, false},
-		{"program outside the unit", Line{Source: "journal", Unit: "", UID: "1000"}, false},
-		{"user process inside the unit", Line{Source: "journal", Unit: "sshd.service", UID: "1000"}, false},
+		{"program outside the unit", Line{Source: "journal", Unit: "", UID: "0", Transport: "syslog"}, false},
+		{"user process inside the unit", Line{Source: "journal", Unit: "sshd.service", UID: "1000", Transport: "syslog"}, false},
 		{"service user", Line{Source: "journal", Unit: "postfix@-.service", UID: "89", Transport: "syslog"}, true},
-		{"pipe command inside the unit", Line{Source: "journal", Unit: "postfix.service", UID: "1001"}, false},
-		{"unit not in any rule", Line{Source: "journal", Unit: "cron.service", UID: "0"}, false},
-		{"no uid", Line{Source: "journal", Unit: "sshd.service"}, false},
-		{"bad uid", Line{Source: "journal", Unit: "sshd.service", UID: "root"}, false},
-		{"file line", Line{Source: "file", Unit: "sshd.service", UID: "0"}, false},
+		{"pipe command inside the unit", Line{Source: "journal", Unit: "postfix.service", UID: "1001", Transport: "syslog"}, false},
+		{"unit not in any rule", Line{Source: "journal", Unit: "cron.service", UID: "0", Transport: "syslog"}, false},
+		{"no uid", Line{Source: "journal", Unit: "sshd.service", Transport: "syslog"}, false},
+		{"bad uid", Line{Source: "journal", Unit: "sshd.service", UID: "root", Transport: "syslog"}, false},
+		{"file line", Line{Source: "file", Unit: "sshd.service", UID: "0", Transport: "syslog"}, false},
 	} {
 		if got := TrustedLine(tc.line, rules); got != tc.want {
 			t.Errorf("%s: TrustedLine = %v, want %v", tc.name, got, tc.want)

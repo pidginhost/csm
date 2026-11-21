@@ -285,6 +285,8 @@ func TestUnverifiedAddress(t *testing.T) {
 	}{
 		{"ssh_login_unknown_ip", string(ProducerSSHLog), true},
 		{"ssh_login_unknown_ip", "", true},
+		{"ssh_login_realtime", "", true},
+		{"ssh_login_realtime", string(ProducerSSHJournal), false},
 		{"ssh_login_unknown_ip", string(ProducerSSHJournal), false},
 		{"mail_bruteforce", "", true},
 		{"smtp_bruteforce", string(ProducerEximLog), false},

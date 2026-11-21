@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // ProducerEntry is one producer of admission evidence: what it registers,
@@ -155,6 +156,9 @@ func UnverifiedAddress(check, producer string) bool {
 	if producer != "" {
 		return false
 	}
+	// Persisted names must follow the same aliases as AddressEvidence;
+	// otherwise a renamed syslog check regains authority after restore.
+	check = config.CanonicalCheckName(check)
 	for _, p := range producerTable {
 		if writableLogProducers[p.Spec.ID] && slices.Contains(p.Spec.Checks, check) {
 			return true

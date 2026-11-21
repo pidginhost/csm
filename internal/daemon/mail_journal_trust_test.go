@@ -23,9 +23,9 @@ func TestMailJournalDropsLinesNoServiceWrote(t *testing.T) {
 	pos := maillog.Position{Stream: "journal", Cursor: "s=1"}
 	msg := "2026-11-21T10:00:00Z dovecot[7]: imap-login: Login: user=<a@example.test>, rip=198.51.100.7"
 	for _, line := range []maillog.Line{
-		{Source: "journal", Unit: "", UID: "1000", Message: msg, Position: pos},
-		{Source: "journal", Unit: "dovecot.service", UID: "1000", Message: msg, Position: pos},
-		{Source: "journal", Unit: "dovecot.service", Message: msg, Position: pos},
+		{Source: "journal", Unit: "", UID: "0", Transport: "syslog", Message: msg, Position: pos},
+		{Source: "journal", Unit: "dovecot.service", UID: "1000", Transport: "syslog", Message: msg, Position: pos},
+		{Source: "journal", Unit: "dovecot.service", Transport: "syslog", Message: msg, Position: pos},
 		{Source: "journal", Unit: "dovecot.service", UID: "0", Transport: "stdout", Message: msg, Position: pos},
 	} {
 		if !d.dispatchMailLogLine(line, handler) {
