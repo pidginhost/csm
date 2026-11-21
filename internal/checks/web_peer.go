@@ -65,10 +65,11 @@ const (
 )
 
 var (
-	webPeerDrainMu sync.Mutex
-	webPeerDrain   func(timeout time.Duration) bool
-	webPeerSleep   = time.Sleep
-	webPeerClock   = time.Now
+	webPeerDrainMu      sync.Mutex
+	webPeerDrainVersion uint64
+	webPeerDrain        func(timeout time.Duration) bool
+	webPeerSleep        = time.Sleep
+	webPeerClock        = time.Now
 )
 
 // SetWebPeerDrain registers the reader that brings the peer index to the end
@@ -78,12 +79,13 @@ func SetWebPeerDrain(drain func(timeout time.Duration) bool) {
 	webPeerDrainMu.Lock()
 	defer webPeerDrainMu.Unlock()
 	webPeerDrain = drain
+	webPeerDrainVersion++
 }
 
-func currentWebPeerDrain() func(time.Duration) bool {
+func currentWebPeerDrain() (func(time.Duration) bool, uint64) {
 	webPeerDrainMu.Lock()
 	defer webPeerDrainMu.Unlock()
-	return webPeerDrain
+	return webPeerDrain, webPeerDrainVersion
 }
 
 // webPeerMaxClients bounds the distinct addresses one window holds.
@@ -286,36 +288,52 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 // again after a read that starts a settle period after seenAt: a forged line
 // still on its way must not be outvoted by the client's earlier direct lines.
 func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict {
-	drain := currentWebPeerDrain()
+	started := webPeerClock()
+	drain, version := currentWebPeerDrain()
 	if drain != nil && !drain(webPeerDrainTimeout) {
 		return PeerUnknown
 	}
-	v := WebPeerVerdict(client, at)
+	v := drainedWebPeerVerdict(client, at, version)
 	switch {
 	case v == PeerForged || v == PeerProxied:
 		return v
-	case drain == nil:
+	case drain == nil || seenAt.IsZero() || seenAt.After(started):
+		// An invalid read time cannot establish when the request's peer
+		// line will be visible. Refuse without delaying each batch item.
 		return PeerUnknown
 	}
-	if seenAt.IsZero() {
-		seenAt = webPeerClock()
-	}
-	wait := seenAt.Add(webPeerSettle).Sub(webPeerClock())
-	if wait <= 0 {
+	deadline := seenAt.Add(webPeerSettle)
+	if !started.Before(deadline) {
 		return v
 	}
-	webPeerSleep(wait)
+	if wait := deadline.Sub(webPeerClock()); wait > 0 {
+		webPeerSleep(wait)
+	}
+	// Even if the first drain took the entire wait, its EOF may predate
+	// the flush. Only a read started after the deadline can prove direct.
 	if !drain(webPeerDrainTimeout) {
+		return PeerUnknown
+	}
+	return drainedWebPeerVerdict(client, at, version)
+}
+
+// A replacement watcher has not been drained by this caller. Keep the
+// registration stable through the verdict so an old reader cannot vouch
+// for the new one, including a replacement during the settle wait.
+func drainedWebPeerVerdict(client netip.Addr, at time.Time, version uint64) PeerVerdict {
+	webPeerDrainMu.Lock()
+	defer webPeerDrainMu.Unlock()
+	if version != webPeerDrainVersion {
 		return PeerUnknown
 	}
 	return WebPeerVerdict(client, at)
 }
 
-// webPeerDirect reports whether the peer log shows ip connected for itself
-// around at.
-func webPeerDirect(ip string, at time.Time) bool {
+// webPeerDirect requires a settled read before a reputation sighting can
+// become derived evidence and bypass HTTP verification at mint time.
+func webPeerDirect(ip string, at, seenAt time.Time) bool {
 	client, err := netip.ParseAddr(strings.TrimSpace(ip))
-	return err == nil && WebPeerVerdict(client, at) == PeerDirect
+	return err == nil && settledWebPeerVerdict(client, at, seenAt) == PeerDirect
 }
 
 // MarkWebPeerLoss records that peer log lines up to at may be missing: the
@@ -338,7 +356,8 @@ func (x *webPeerIndex) markLoss(at time.Time) {
 // the log succeed at once and settle waits do not sleep. It returns the
 // function that restores the previous state.
 func ResetWebPeersForTest() func() {
-	prev, prevDrain, prevSleep, prevClock := webPeers, currentWebPeerDrain(), webPeerSleep, webPeerClock
+	prevDrain, _ := currentWebPeerDrain()
+	prev, prevSleep, prevClock := webPeers, webPeerSleep, webPeerClock
 	webPeers = newWebPeerIndex()
 	SetWebPeerDrain(func(time.Duration) bool { return true })
 	webPeerSleep, webPeerClock = func(time.Duration) {}, time.Now

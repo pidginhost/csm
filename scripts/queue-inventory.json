@@ -995,6 +995,39 @@
       "queue": "bpf.verdict"
     },
     {
+      "id": "internal/daemon/watcher.go::*LogWatcher.Drain::reply::channel::1",
+      "path": "internal/daemon/watcher.go",
+      "owner": "*LogWatcher.Drain",
+      "target": "reply",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed after the requested read finishes. Closing lets the watcher continue even when the caller timed out."
+    },
+    {
+      "id": "internal/daemon/watcher.go::newLogWatcher::done::channel::1",
+      "path": "internal/daemon/watcher.go",
+      "owner": "newLogWatcher",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the watcher releases its file, including Stop before Run, so drain callers stop waiting."
+    },
+    {
+      "id": "internal/daemon/watcher.go::newLogWatcher::drainCh::channel::1",
+      "path": "internal/daemon/watcher.go",
+      "owner": "newLogWatcher",
+      "target": "drainCh",
+      "kind": "channel",
+      "source": "make(chan chan struct{})",
+      "capacity": "0",
+      "class": "maintenance",
+      "rationale": "Requests an immediate poll in the watcher goroutine. The unbuffered handoff queues no log records; callers bound their wait with a timeout."
+    },
+    {
       "id": "internal/daemon/yara_backend.go::retryStartWithStopContext::retryDone::channel::1",
       "path": "internal/daemon/yara_backend.go",
       "owner": "retryStartWithStopContext",

@@ -64,7 +64,7 @@ type logWatchSpec struct {
 // LogWatcher tails a log file using inotify and processes new lines.
 type LogWatcher struct {
 	// drainCh asks Run for an immediate read to the end; done closes when
-	// Run returns.
+	// Run returns or Stop closes a watcher that never ran.
 	drainCh   chan chan struct{}
 	done      chan struct{}
 	path      string
@@ -314,9 +314,6 @@ func (w *LogWatcher) Run(stopCh <-chan struct{}) {
 	// Stop() close used to race readNewLines/reopen, and the freed fd could be
 	// reused by another goroutine mid-Stat/Read.
 	defer w.closeFile()
-	if w.done != nil {
-		defer close(w.done)
-	}
 
 	ticker := time.NewTicker(logWatcherPollInterval)
 	defer ticker.Stop()
@@ -373,6 +370,9 @@ func (w *LogWatcher) closeFile() {
 	w.closeOnce.Do(func() {
 		if w.file != nil {
 			_ = w.file.Close()
+		}
+		if w.done != nil {
+			close(w.done)
 		}
 	})
 }

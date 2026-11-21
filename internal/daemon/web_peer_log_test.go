@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -269,5 +270,52 @@ func TestWebPeerWatcherDrainsForVerdicts(t *testing.T) {
 	}
 	if _, _, err := checks.AdmissionEvidence(f); err != nil {
 		t.Fatalf("AdmissionEvidence = %v, want the direct line read without waiting for a poll", err)
+	}
+}
+
+func TestWebPeerLateRetryReplacesStoppedDrain(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	previous := checks.CurrentHTTPRewrite()
+	checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSLiteSpeed})
+	t.Cleanup(func() { checks.SetHTTPRewrite(previous) })
+	oldInterval := logWatcherRetryInterval
+	logWatcherRetryInterval = time.Millisecond
+	t.Cleanup(func() { logWatcherRetryInterval = oldInterval })
+	path := filepath.Join(t.TempDir(), "peer.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := newWebPeerLog().spec(path)
+	old, err := newObservedLogWatcher(spec, &config.Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Stop()
+
+	d := New(&config.Config{}, nil, nil, "")
+	d.wg.Add(1)
+	attached := make(chan struct{})
+	go func() { d.retryLogWatcherNamed(spec); close(attached) }()
+	stop := sync.OnceFunc(func() { close(d.stopCh); d.wg.Wait() })
+	t.Cleanup(stop)
+	select {
+	case <-attached:
+	case <-time.After(time.Second):
+		t.Fatal("retry did not attach")
+	}
+	// Beyond the startup loss window, as in TestWebPeerWatcherDrainsForVerdicts.
+	at := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	appendLine(t, path, peerLine(at, "site.example", "203.0.113.92", "203.0.113.92"))
+	f := alert.Finding{
+		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.92",
+		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now().Add(-time.Minute),
+		Observation: alert.Observation{Producer: string(checks.ProducerAccessLog), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: at},
+	}
+	if _, _, err := checks.AdmissionEvidence(f); err != nil {
+		t.Fatalf("replacement reader: %v", err)
+	}
+	stop()
+	if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("stopped reader admitted direct evidence: %v", err)
 	}
 }

@@ -441,7 +441,7 @@ func TestSettledPeerVerdictEdges(t *testing.T) {
 		t.Fatalf("verdict after a failed read = %v, want unknown", got)
 	}
 	SetWebPeerDrain(func(time.Duration) bool { return true })
-	if got := settledWebPeerVerdict(direct, at, time.Time{}); got != PeerDirect || waits != 1 {
+	if got := settledWebPeerVerdict(direct, at, at); got != PeerDirect || waits != 1 {
 		t.Fatalf("settled verdict = %v after %d waits, want direct after one wait", got, waits)
 	}
 }

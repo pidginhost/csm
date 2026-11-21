@@ -15,7 +15,7 @@ import (
 func httpPeerFinding(ip string) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: ip,
-		Attribution: admission.AttributionHTTPPeer,
+		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now(),
 		Observation: alert.Observation{Producer: string(ProducerAccessLog), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: time.Now()},
 	}
 }

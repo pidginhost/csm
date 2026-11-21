@@ -782,12 +782,16 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		if path == "" || isWHMAccessLog(path) {
 			continue
 		}
-		for _, rec := range tailFileRecords(path, 100) {
+		records := tailFileRecords(path, 100)
+		// All records in this read share one flush deadline, independent of
+		// the request timestamps or time spent evaluating earlier records.
+		seenAt := webPeerClock()
+		for _, rec := range records {
 			if ip := firstField(rec.text); ip != "" {
 				if CurrentHTTPRewrite().State != RewriteNone {
 					// The peer log can still show the address connected
 					// for itself.
-					if r := accessLogSighting(rec, ip, cfg); !r.at.IsZero() && webPeerDirect(ip, r.at) {
+					if r := accessLogSighting(rec, ip, cfg); !r.at.IsZero() && webPeerDirect(ip, r.at, seenAt) {
 						add(ip, "HTTP request", r)
 						continue
 					}

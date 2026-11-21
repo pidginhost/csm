@@ -562,7 +562,12 @@ Verification uses the request time in the access or ModSecurity log,
 including delayed reads and scheduled scans. A request without a valid log
 time stays unverified. Before an address counts as connected for itself, CSM
 reads the peer log again about two seconds after it read the finding, so a
-peer line the web server flushed after its access line still decides. Two refusals still leave the block to the existing
+peer line the web server flushed after its access line still decides. The
+read must start after that wait, even if an earlier read was slow. Reputation
+sightings use the same check before becoming evidence. Findings from one
+read share the wait; a missing or future finding timestamp stays unverified.
+A stopped or replaced peer reader cannot verify a direct connection. Two
+refusals still leave the block to the existing
 paths: a client address Apache or nginx may have rewritten from a proxy
 header that the peer log does not cover, and a ledger that could not take
 new work at all. LiteSpeed also applies those headers to

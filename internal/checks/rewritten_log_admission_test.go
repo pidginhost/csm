@@ -499,3 +499,90 @@ func TestAdmissionEvidenceWaitsForTheRequestsOwnPeerLine(t *testing.T) {
 		t.Fatalf("slept %v over %d drains, want one %v wait between two drains", slept, drains, webPeerSettle)
 	}
 }
+
+// A reputation scan must not turn an unsettled HTTP sighting into derived
+// evidence, which bypasses HTTP verification when it is later minted.
+func TestReputationWaitsForSightingPeerFlush(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, activeRewrite)
+	const ip = "203.0.113.84"
+	cfg := listIPs(t, ip)
+	now := time.Now().Truncate(time.Second)
+	at := now.Add(-time.Second)
+	sightingLogs(t, map[string]string{sightingAccessLog: sightingLines(ip, at)["HTTP request"] + "\n"})
+	client := netip.MustParseAddr(ip)
+	ObserveWebPeer(at.Add(-time.Minute), client, client, cfg)
+	webPeerClock = func() time.Time { return now }
+	webPeerSleep = func(d time.Duration) { now = now.Add(d) }
+	reads := 0
+	SetWebPeerDrain(func(time.Duration) bool {
+		reads++
+		if reads == 2 {
+			ObserveWebPeer(at, netip.MustParseAddr("192.0.2.84"), client, cfg)
+		}
+		return true
+	})
+	f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), ip)
+	if _, _, err := AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("unsettled reputation sighting minted: %v, attribution %v", err, f.Attribution)
+	}
+	if reads != 2 {
+		t.Fatalf("peer reads = %d, want 2", reads)
+	}
+}
+
+func TestAutoBlockPeerFindingsShareSettleWait(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, activeRewrite)
+	withBlocker(t)
+	withChallengeList(t, nil)
+	a := withAdmission(t)
+	cfg := liveAutoBlockConfig(t)
+	now := time.Now()
+	at := now
+	webPeerClock = func() time.Time { return now }
+	var waited time.Duration
+	webPeerSleep = func(d time.Duration) { waited += d; now = now.Add(d) }
+	minted := 0
+	a.mint = func(f alert.Finding) admission.Evidence {
+		if _, _, err := AdmissionEvidence(f); err != nil {
+			t.Errorf("mint: %v", err)
+		}
+		minted++
+		return admission.Evidence{}
+	}
+	var findings []alert.Finding
+	for _, ip := range []string{"203.0.113.85", "203.0.113.86", "203.0.113.87"} {
+		f := httpPeerFinding(ip)
+		f.Timestamp, f.Observation.ObservedAt = at, at
+		findings = append(findings, f)
+		client := netip.MustParseAddr(ip)
+		ObserveWebPeer(at, client, client, cfg)
+	}
+	AutoBlockIPs(cfg, findings)
+	if minted != len(findings) || waited != webPeerSettle {
+		t.Fatalf("minted %d with wait %v, want %d with wait %v", minted, waited, len(findings), webPeerSettle)
+	}
+}
+
+func TestReputationPeerSightingsShareReadDeadline(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, activeRewrite)
+	now := time.Now().Truncate(time.Second)
+	at := now.Add(-time.Minute)
+	cfg := &config.Config{}
+	var lines []string
+	for _, ip := range []string{"203.0.113.88", "203.0.113.89", "203.0.113.90"} {
+		lines = append(lines, sightingLines(ip, at)["HTTP request"])
+		client := netip.MustParseAddr(ip)
+		ObserveWebPeer(at, client, client, cfg)
+	}
+	sightingLogs(t, map[string]string{sightingAccessLog: strings.Join(lines, "\n") + "\n"})
+	webPeerClock = func() time.Time { return now }
+	var waited time.Duration
+	webPeerSleep = func(d time.Duration) { waited += d; now = now.Add(d) }
+	_, records, _ := collectRecentSightings(cfg, now)
+	if len(records) != 3 || waited != webPeerSettle {
+		t.Fatalf("got %d records with wait %v, want 3 with wait %v", len(records), waited, webPeerSettle)
+	}
+}
