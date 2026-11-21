@@ -346,3 +346,39 @@ func TestPostfixSecondaryInstanceFileLogging(t *testing.T) {
 		})
 	}
 }
+
+// Any user controls their own executable's path and can make it unreadable,
+// for example by nesting it deeper than PATH_MAX. Only root processes can be
+// mail masters, so a user's process is skipped before its executable is
+// read and cannot force mail onto the file.
+func TestAutoIgnoresUnreadableUserExecutables(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	dir := filepath.Join(journalProcPath, "7")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file where the exe link belongs: reading it fails with
+	// EINVAL, an error that is not "the process is gone".
+	if err := os.WriteFile(filepath.Join(dir, "exe"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status"), []byte("Uid:\t1000\t1000\t1000\t1000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !mailUnitsCovered([]string{"postfix"}) {
+		t.Fatal("a user's unreadable executable kept auto on the file")
+	}
+}
+
+// CSM can start before Postfix and Dovecot. No mail master running yet is
+// nothing the journal would miss: one that starts in a configured unit is
+// read from its first entry.
+func TestAutoPrefersJournalBeforeMailStarts(t *testing.T) {
+	usableJournalHost(t, true, true, true)
+	if err := os.RemoveAll(filepath.Join(journalProcPath, "2")); err != nil {
+		t.Fatal(err)
+	}
+	if !mailUnitsCovered([]string{"postfix", "dovecot"}) {
+		t.Fatal("no running mail master kept auto on the file")
+	}
+}

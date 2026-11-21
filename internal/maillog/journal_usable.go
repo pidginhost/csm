@@ -124,24 +124,12 @@ func mailUnitsCovered(units []string) bool {
 	for _, u := range units {
 		selected = append(selected, journalUnitName(u))
 	}
-	processes, _ := filepath.Glob(filepath.Join(journalProcPath, "[0-9]*", "exe"))
-	found := false
-	for _, exe := range processes {
-		target, err := os.Readlink(exe)
-		if err != nil {
-			if processGone(err) {
-				continue
-			}
-			return false
-		}
-		name := filepath.Base(strings.TrimSuffix(target, " (deleted)"))
-		if name != "master" && name != "dovecot" {
-			continue
-		}
-		// Any user can start a short-lived process under these names; one
-		// that exits mid-read decides nothing. A read that fails otherwise
+	processes, _ := filepath.Glob(filepath.Join(journalProcPath, "[0-9]*"))
+	for _, proc := range processes {
+		// Only root runs a mail master. Read the uid first: any user controls
+		// their own executable's path and can make it unreadable. A process
+		// that exits mid-read decides nothing; a read that fails otherwise
 		// keeps auto on the file.
-		proc := filepath.Dir(exe)
 		root, err := rootProcess(proc)
 		if err != nil {
 			if processGone(err) {
@@ -152,6 +140,17 @@ func mailUnitsCovered(units []string) bool {
 		if !root {
 			continue
 		}
+		target, err := os.Readlink(filepath.Join(proc, "exe"))
+		if err != nil {
+			if processGone(err) {
+				continue
+			}
+			return false
+		}
+		name := filepath.Base(strings.TrimSuffix(target, " (deleted)"))
+		if name != "master" && name != "dovecot" {
+			continue
+		}
 		unit, err := processUnit(proc)
 		if err != nil {
 			if processGone(err) {
@@ -159,7 +158,6 @@ func mailUnitsCovered(units []string) bool {
 			}
 			return false
 		}
-		found = true
 		if !slices.Contains(selected, unit) {
 			return false
 		}
@@ -169,7 +167,9 @@ func mailUnitsCovered(units []string) bool {
 			return false
 		}
 	}
-	return found
+	// No master running yet is nothing the journal would miss: one that
+	// starts in a configured unit is read from its first entry.
+	return true
 }
 
 func rootProcess(proc string) (bool, error) {
