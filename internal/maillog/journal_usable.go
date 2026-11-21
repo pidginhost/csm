@@ -75,6 +75,7 @@ func postfixConfigLogsToFile(path string, seen map[string]bool) bool {
 		return false
 	}
 	seen[path] = true
+	// #nosec G304 -- Postfix's main.cf, or the main.cf of an instance its root-owned configuration lists.
 	f, err := os.Open(path)
 	if err != nil {
 		return true
@@ -172,6 +173,7 @@ func mailUnitsCovered(units []string) bool {
 }
 
 func rootProcess(proc string) (bool, error) {
+	// #nosec G304 -- procfs status of a numeric process directory under the probe root.
 	status, err := os.ReadFile(filepath.Join(proc, "status"))
 	if err != nil {
 		return false, err
@@ -186,6 +188,7 @@ func rootProcess(proc string) (bool, error) {
 }
 
 func processUnit(proc string) (string, error) {
+	// #nosec G304 -- procfs cgroup of a numeric process directory under the probe root.
 	data, err := os.ReadFile(filepath.Join(proc, "cgroup"))
 	if err != nil {
 		return "", err
