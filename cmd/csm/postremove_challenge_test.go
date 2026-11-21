@@ -353,3 +353,17 @@ func TestPostremoveKeepsOperatorPeerLog(t *testing.T) {
 		t.Fatalf("operator snippet changed: %q, %v", got, err)
 	}
 }
+
+// The package creates the peer log directory before the daemon starts, so the
+// sandbox grants it without a restart after the first integration install. An
+// existing directory keeps its mode and group.
+func TestPostinstallCreatesThePeerLogDirectory(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "build", "packaging", "scripts", "postinstall.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "[ -d " + filepath.Dir(webserver.PeerLogFile) + " ] || install -d -m 0750 " + filepath.Dir(webserver.PeerLogFile)
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("postinstall.sh does not create the peer log directory: want %q", want)
+	}
+}

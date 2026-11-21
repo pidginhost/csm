@@ -164,10 +164,15 @@ func TestPeerLogUpgradesPreviousLogLocation(t *testing.T) {
 // operator must restart it after installing a directory that was absent.
 func TestPeerLogInstallReportsDaemonRestart(t *testing.T) {
 	i := newPeerLogInstaller(t, &fakeHandler{kind: "apache"})
-	for _, want := range []string{"ok", "no-op"} {
+	// Only the install that created the directory needs the restart: the
+	// package creates it before the daemon starts in the normal flow.
+	for _, tc := range []struct {
+		status  string
+		restart bool
+	}{{"ok", true}, {"no-op", false}} {
 		res, err := i.InstallPeerLog()
-		if err != nil || res.Status != want || !strings.Contains(res.Message, "systemctl restart csm.service") {
-			t.Fatalf("install = %+v, %v; want %s with restart instruction", res, err, want)
+		if err != nil || res.Status != tc.status || strings.Contains(res.Message, "systemctl restart csm.service") != tc.restart {
+			t.Fatalf("install = %+v, %v; want %s, restart instruction %v", res, err, tc.status, tc.restart)
 		}
 	}
 }

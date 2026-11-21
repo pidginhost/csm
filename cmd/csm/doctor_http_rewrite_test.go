@@ -252,7 +252,7 @@ func TestDoctorRewriteRowNginxVerified(t *testing.T) {
 }
 
 func TestDoctorNginxProxyProtocolRefusalIsFinal(t *testing.T) {
-	r := checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSNginx,
+	r := checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSNginx, ProxyProtocol: true,
 		RealIP: &checks.NginxRealIP{Headers: []string{"proxy_protocol"}, From: []string{"198.51.100.0/24"}}}
 	for _, cfg := range []*config.Config{nil, {}} {
 		got := webRewriteDoctorCheck(r, cfg)

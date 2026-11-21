@@ -101,14 +101,16 @@ func (i *Installer) InstallPeerLog() (Result, error) {
 	}
 	// Prepare the directory even for a current or newer snippet: the server
 	// skips or cannot open the log while it is missing or closed to it.
-	dirChanged, err := i.preparePeerLogDir()
+	dirCreated, dirChanged, err := i.preparePeerLogDir()
 	if err != nil {
 		res.Status, res.Message = "fail", err.Error()
 		return res, err
 	}
 	// The optional ReadWritePaths grant cannot take effect in a daemon
 	// namespace that predates the directory, even after a web server reload.
-	res.Message = "If CSM was running before the peer log directory was created, run systemctl restart csm.service to activate its log access."
+	if dirCreated {
+		res.Message = "Restart CSM (systemctl restart csm.service): it can empty the new peer log only after a restart."
+	}
 	// Never downgrade a snippet a newer CSM wrote.
 	if v := parseHeaderVersion(prev); existed && v >= PeerLogTemplateVersion {
 		res.Status, res.OnDiskVer = "no-op", v
@@ -144,44 +146,46 @@ func (i *Installer) InstallPeerLog() (Result, error) {
 
 // preparePeerLogDir makes the log directory 0750 with the web server's group,
 // so its workers can open the log and other local users cannot, and reports
-// whether it changed anything the running server may have missed.
-func (i *Installer) preparePeerLogDir() (bool, error) {
-	info, err := i.LstatAt(i.PeerLogDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, err
+// whether it created the directory and whether it changed anything the
+// running server may have missed.
+func (i *Installer) preparePeerLogDir() (created, changed bool, err error) {
+	info, lerr := i.LstatAt(i.PeerLogDir)
+	if lerr != nil && !errors.Is(lerr, os.ErrNotExist) {
+		return false, false, lerr
 	}
+	created = info == nil
 	if info != nil && !info.IsDir() {
-		return false, fmt.Errorf("peer log directory %s is not a directory", i.PeerLogDir)
+		return false, false, fmt.Errorf("peer log directory %s is not a directory", i.PeerLogDir)
 	}
 	gid := 0
 	if i.PeerLogGroup != "" {
 		g, lookupErr := user.LookupGroup(i.PeerLogGroup)
 		if lookupErr != nil {
-			return false, fmt.Errorf("web server group %s: %w", i.PeerLogGroup, lookupErr)
+			return false, false, fmt.Errorf("web server group %s: %w", i.PeerLogGroup, lookupErr)
 		}
 		if gid, err = strconv.Atoi(g.Gid); err != nil {
-			return false, fmt.Errorf("web server group %s: %w", i.PeerLogGroup, err)
+			return false, false, fmt.Errorf("web server group %s: %w", i.PeerLogGroup, err)
 		}
 	}
-	changed := info == nil || info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0o750 || !peerLogDirOwner(info, gid)
+	changed = info == nil || info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0o750 || !peerLogDirOwner(info, gid)
 	if !changed {
-		return false, nil
+		return false, false, nil
 	}
 	// The parent is root-owned /var/log. Close access before replacing the
 	// owner and group so a failed chown cannot expose logs to the old group.
-	if err := i.MkdirAll(i.PeerLogDir, 0o700); err != nil {
-		return false, err
+	if err = i.MkdirAll(i.PeerLogDir, 0o700); err != nil {
+		return false, false, err
 	}
-	if err := i.ChmodAt(i.PeerLogDir, 0o700); err != nil {
-		return false, err
+	if err = i.ChmodAt(i.PeerLogDir, 0o700); err != nil {
+		return false, false, err
 	}
-	if err := i.ChownAt(i.PeerLogDir, 0, gid); err != nil {
-		return false, err
+	if err = i.ChownAt(i.PeerLogDir, 0, gid); err != nil {
+		return false, false, err
 	}
-	if err := i.ChmodAt(i.PeerLogDir, 0o750); err != nil {
-		return false, err
+	if err = i.ChmodAt(i.PeerLogDir, 0o750); err != nil {
+		return false, false, err
 	}
-	return true, nil
+	return created, true, nil
 }
 
 func peerLogDirOwner(info os.FileInfo, gid int) bool {

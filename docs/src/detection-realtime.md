@@ -857,9 +857,9 @@ switching between Apache and LiteSpeed. On Apache the log also covers virtual
 hosts with their own access logs, and Apache skips it rather than failing to
 start when the directory is missing.
 
-Restart CSM after the first install, or after the directory is recreated:
-the daemon may only empty the log once the directory existed when it
-started. `csm doctor` warns when the peer log has not been written for 15
+The CSM package creates the directory before the daemon starts. If `install`
+has to create it again, restart CSM: the daemon may only empty the log once
+the directory existed when it started. `csm doctor` warns when the peer log has not been written for 15
 minutes while an access log has.
 
 On cPanel hosts with nginx in front, every peer is the server itself: CSM

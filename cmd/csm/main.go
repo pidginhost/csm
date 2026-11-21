@@ -582,6 +582,7 @@ func runInstall() {
 		ConfigPath:     cfgPath,
 		StatePath:      defaultStatePath,
 		LogPath:        defaultLogPath,
+		PeerLogDir:     defaultPeerLogDir,
 		ConfigExplicit: configExplicit,
 		PackageMode:    packageMode,
 	}

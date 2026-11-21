@@ -580,12 +580,16 @@ func TestInstallerRuntimeDirsCreateSandboxRequiredPaths(t *testing.T) {
 	installRoot := filepath.Join(t.TempDir(), "opt", "csm")
 	statePath := filepath.Join(t.TempDir(), "var", "lib", "csm", "state")
 	logPath := filepath.Join(t.TempDir(), "var", "log", "csm", "monitor.log")
+	peerLogDir := filepath.Join(t.TempDir(), "var", "log", "csm-web")
 
-	got := installerRuntimeDirs(installRoot, statePath, logPath)
+	got := installerRuntimeDirs(installRoot, statePath, logPath, peerLogDir)
 	for _, want := range []string{
 		installRoot,
 		statePath,
 		filepath.Dir(logPath),
+		// The sandbox grants the peer log directory only if it exists when
+		// the daemon starts.
+		peerLogDir,
 		filepath.Join(installRoot, "quarantine"),
 		filepath.Join(installRoot, "rules"),
 		filepath.Join(installRoot, "policies"),

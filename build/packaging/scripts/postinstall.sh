@@ -21,6 +21,9 @@ install -d -m 0750 /etc/csm /etc/csm/conf.d
 install -d -m 0711 /var/lib/csm
 install -d -m 0700 /var/lib/csm/state
 install -d -m 0755 /usr/lib/csm /usr/lib/csm/profiles
+# The web peer log directory must exist when the daemon starts for its sandbox
+# to grant it. An existing one keeps its mode and the web server's group.
+[ -d /var/log/csm-web ] || install -d -m 0750 /var/log/csm-web
 
 is_placeholder_config() {
     # Only the SET_*_HERE markers are reliable placeholders. The shipped

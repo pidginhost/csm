@@ -27,12 +27,15 @@ import (
 )
 
 type Installer struct {
-	BinaryPath     string
-	CommandPath    string
-	ConfigPath     string
-	ConfigDir      string
-	StatePath      string
-	LogPath        string
+	BinaryPath  string
+	CommandPath string
+	ConfigPath  string
+	ConfigDir   string
+	StatePath   string
+	LogPath     string
+	// PeerLogDir is the web peer log directory the daemon's sandbox grants
+	// only if it exists when the daemon starts; "" skips it.
+	PeerLogDir     string
 	ConfigExplicit bool
 	PackageMode    bool
 	operations     *installerOperations
@@ -178,7 +181,7 @@ func (inst *Installer) Install() error {
 	}
 
 	// Create directories
-	for _, d := range installerRuntimeDirs(filepath.Dir(inst.BinaryPath), inst.StatePath, inst.LogPath) {
+	for _, d := range installerRuntimeDirs(filepath.Dir(inst.BinaryPath), inst.StatePath, inst.LogPath, inst.PeerLogDir) {
 		if err := makeRuntimeDir(d); err != nil {
 			return fmt.Errorf("creating directory %s: %w", d, err)
 		}
@@ -730,8 +733,8 @@ func immutableUnsupported(chattrOutput []byte) bool {
 		strings.Contains(lower, "inappropriate ioctl")
 }
 
-func installerRuntimeDirs(installRoot, statePath, logPath string) []string {
-	return []string{
+func installerRuntimeDirs(installRoot, statePath, logPath, peerLogDir string) []string {
+	dirs := []string{
 		installRoot,
 		statePath,
 		filepath.Dir(logPath),
@@ -740,7 +743,14 @@ func installerRuntimeDirs(installRoot, statePath, logPath string) []string {
 		filepath.Join(installRoot, "policies"),
 		filepath.Join(installRoot, "policies", "php_relay"),
 	}
+	if peerLogDir != "" {
+		dirs = append(dirs, peerLogDir)
+	}
+	return dirs
 }
+
+// defaultPeerLogDir is where the web server writes the peer log.
+var defaultPeerLogDir = filepath.Dir(webserver.PeerLogFile)
 
 // makeRuntimeDir keeps FHS state ancestors searchable even when MkdirAll
 // would otherwise create them with the private database directory's mode.

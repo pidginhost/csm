@@ -461,3 +461,23 @@ func TestPeerLogGroupFor(t *testing.T) {
 		}
 	}
 }
+
+// Only a directory this install created needs CSM restarted: the sandbox
+// grant applies to directories that existed when the daemon started.
+func TestPeerLogRestartMessageOnlyWhenCreated(t *testing.T) {
+	i := newPeerLogInstaller(t, &fakeHandler{kind: "apache"})
+	res, err := i.InstallPeerLog()
+	if err != nil || !strings.Contains(res.Message, "restart") {
+		t.Fatalf("first install = %+v, %v; want the restart advice", res, err)
+	}
+	j := newPeerLogInstaller(t, &fakeHandler{kind: "apache"})
+	if err := os.MkdirAll(j.PeerLogDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(j.PeerLogDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := j.InstallPeerLog(); err != nil || strings.Contains(res.Message, "restart") {
+		t.Fatalf("install over an existing directory = %+v, %v; want no restart advice", res, err)
+	}
+}
