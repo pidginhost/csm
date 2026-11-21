@@ -45,6 +45,9 @@ type HTTPRewrite struct {
 	// RealIP is nginx's realip setup when the active rewrite is nginx's own
 	// and its configuration was read completely; nil otherwise.
 	RealIP *NginxRealIP
+	// ProxyProtocol marks nginx with a proxy_protocol real_ip_header in any
+	// context: it may take client addresses from PROXY protocol.
+	ProxyProtocol bool
 	// BufferedLogs marks Apache that may hold log lines in per-process
 	// buffers (BufferedLogs On, or a tree CSM could not read whole): its
 	// peer log can lag its access logs without bound.
@@ -180,12 +183,13 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 		unknown = "no Apache configuration file was found"
 	}
 	if src.nginxConfig != "" {
-		directive, file, complete, realIP := nginxClientAddressRewrite(src.nginxConfig)
+		directive, file, complete, realIP, proxyProtocol := nginxClientAddressRewrite(src.nginxConfig)
 		if directive != "" {
 			r.State, r.Directive, r.File, r.Format = RewriteActive, directive, file, formatDirective(directive)
 			if !r.Format && complete && realIP != nil && src.server == platform.WSNginx {
 				r.RealIP = realIP
 			}
+			r.ProxyProtocol = src.server == platform.WSNginx && proxyProtocol
 			return r
 		}
 		if !complete {
@@ -354,7 +358,7 @@ func apacheCloudflareProxyKnown(value string) bool {
 // value where CSM reads the client takes precedence. It also returns the
 // file and whether the tree and its format framing could be read. HTTP
 // and stream have separate namespaces; only HTTP has built-in combined.
-func nginxClientAddressRewrite(path string) (directive, file string, complete bool, realIP *NginxRealIP) {
+func nginxClientAddressRewrite(path string) (directive, file string, complete bool, realIP *NginxRealIP, proxyProtocol bool) {
 	directives, complete := nginxDirectives(path)
 	realIP = &NginxRealIP{}
 	httpHeader := false
@@ -409,6 +413,9 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 		custom[d.Module][strings.ToLower(target[1:])] = true
 	}
 	for _, d := range directives {
+		if d.Name == "real_ip_header" && slices.ContainsFunc(d.Args, func(a string) bool { return strings.EqualFold(a, "proxy_protocol") }) {
+			proxyProtocol = true
+		}
 		if d.Name == "set_real_ip_from" || d.Name == "real_ip_header" {
 			switch {
 			case len(d.Args) != 1 || d.Block || d.Module != "http" ||
@@ -498,7 +505,7 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 	}
 	for _, f := range used {
 		if f.value {
-			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete, nil
+			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete, nil, proxyProtocol
 		}
 	}
 	// A header in a server or location cannot prove the inherited default
@@ -506,7 +513,7 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 	if !httpHeader {
 		realIP = nil
 	}
-	return directive, file, complete, realIP
+	return directive, file, complete, realIP, proxyProtocol
 }
 
 // NginxRealIPVerified reports whether nginx can only log a client address an
@@ -551,11 +558,12 @@ func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
 	return err == nil && entry == ""
 }
 
-// NginxProxyProtocol reports a detected PROXY protocol client-address source.
-// A refused address from this source cannot fall back to legacy blocking:
-// customer code on shared edges can supply arbitrary PROXY headers.
+// NginxProxyProtocol reports nginx that may take client addresses from PROXY
+// protocol in any context. A refused address from it cannot fall back to
+// legacy blocking: customer code on shared edges can supply arbitrary PROXY
+// headers.
 func (r HTTPRewrite) NginxProxyProtocol() bool {
-	return r.Server == platform.WSNginx && r.RealIP != nil && slices.Contains(r.RealIP.Headers, "proxy_protocol")
+	return r.Server == platform.WSNginx && r.ProxyProtocol
 }
 
 // realIPPrefix reads an address or CIDR as a masked prefix.

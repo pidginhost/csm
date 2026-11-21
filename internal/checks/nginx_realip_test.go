@@ -330,9 +330,14 @@ func TestNginxProxyProtocolRefusalStopsLegacyBlocks(t *testing.T) {
 	prev := config.Active()
 	t.Cleanup(func() { config.SetActive(prev) })
 	config.SetActive(&config.Config{})
-	for _, source := range []string{"198.51.100.0/24", "192.0.2.0/24"} {
-		t.Run(source, func(t *testing.T) {
-			withHTTPRewrite(t, nginxRewrite(t, "http { real_ip_header proxy_protocol; set_real_ip_from "+source+"; }"))
+	for _, conf := range []string{
+		"http { real_ip_header proxy_protocol; set_real_ip_from 198.51.100.0/24; }",
+		"http { real_ip_header proxy_protocol; set_real_ip_from 192.0.2.0/24; }",
+		// The layout nginx documents: everything inside the server block.
+		"http { server { listen 443 proxy_protocol; set_real_ip_from 192.0.2.0/24; real_ip_header proxy_protocol; } }",
+	} {
+		t.Run(conf, func(t *testing.T) {
+			withHTTPRewrite(t, nginxRewrite(t, conf))
 			f := httpPeerFinding("203.0.113.70")
 			_, _, err := AdmissionEvidence(f)
 			if admission.CauseOf(err) != admission.CauseRewrittenLog {
