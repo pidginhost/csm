@@ -63,6 +63,9 @@ func Capabilities() []string {
 		"mcp.readonly.v1",          // optional read-only MCP endpoint for support agents (mcp: block)
 		"alerts.daily_summary.v1",  // handled attacks reach operators in one daily summary at 08:00
 		"alerts.customer_block.v1", // an automatic block of a known customer alerts at once (event customer_block)
+		"support_bundle.v1",
+		"store.backup.schedule.v1", // the backup: block runs store export on a schedule and prunes old archives
+		"response.preview_diff.v1",
 	}
 	if firewall.Supported() {
 		caps = append(caps,

@@ -35,6 +35,19 @@ func (v ValidationResult) String() string {
 	return fmt.Sprintf("[%s] %s: %s", strings.ToUpper(v.Level), v.Field, v.Message)
 }
 
+// ValidateDaemonStartup lets monitoring start with a bad optional backup plan.
+// Explicit validation and reload still reject the plan.
+func ValidateDaemonStartup(cfg *Config) []ValidationResult {
+	results := Validate(cfg)
+	for i, r := range results {
+		if r.Field == "backup" && r.Level == "error" {
+			results[i].Level = "warn"
+			results[i].Message = "scheduled backups paused: " + r.Message
+		}
+	}
+	return results
+}
+
 // Validate checks the config for errors, warnings, and emits OK for valid sections.
 func Validate(cfg *Config) []ValidationResult {
 	var results []ValidationResult
@@ -307,6 +320,16 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 	if cfg.Retention.CompactFillRatio < 0 || cfg.Retention.CompactFillRatio > 1 || (cfg.Retention.Enabled && cfg.Retention.CompactFillRatio == 0) {
 		results = append(results, ValidationResult{"error", "retention.compact_fill_ratio", fmt.Sprintf("compact_fill_ratio must be in (0, 1], got %v", cfg.Retention.CompactFillRatio)})
+	}
+
+	// --- Backup ---
+	// Only the values are checked here. Whether the directory is safe to
+	// write is checked before every export: that can change while the
+	// daemon runs and must never stop it from starting.
+	if cfg.Backup.Enabled {
+		if _, err := ParseBackup(cfg); err != nil {
+			results = append(results, ValidationResult{"error", "backup", err.Error()})
+		}
 	}
 
 	results = append(results, confdResults(cfg)...)

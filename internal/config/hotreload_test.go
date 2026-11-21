@@ -224,6 +224,7 @@ func TestDiffAllSafeFieldsClassifiedSafe(t *testing.T) {
 		{"reputation", func(c *Config) { c.Reputation.Whitelist = append(c.Reputation.Whitelist, "10.0.0.1") }},
 		{"email_protection", func(c *Config) { c.EmailProtection.RateWindowMin++ }},
 		{"disabled_checks", func(c *Config) { c.DisabledChecks = append(c.DisabledChecks, "webshell") }},
+		{"backup", func(c *Config) { c.Backup.Enabled = true }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -260,6 +261,7 @@ func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
 		"email_protection",
 		"disabled_checks",
 		"confd",
+		"backup",
 	}
 	for _, field := range wantSafe {
 		policy, ok := got[field]

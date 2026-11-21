@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/pidginhost/csm/internal/mysqlclient"
 )
@@ -23,6 +22,7 @@ type DBCleanResult struct {
 	Success     bool
 	Message     string
 	Details     []string // individual actions taken
+	Diff        string   // terminal-safe unified diff for option previews
 	BackupNames []string // names of backup options created
 }
 
@@ -55,6 +55,10 @@ func DBCleanOption(account, optionName string, preview bool) DBCleanResult {
 		return result
 	}
 
+	if preview && previewTooLarge([]byte(value)) {
+		result.Message = fmt.Sprintf("PREVIEW failed for %q: %v", optionName, errPreviewTooLarge)
+		return result
+	}
 	// Check for malicious content.
 	maliciousURL := extractMaliciousScriptURL(value)
 	if maliciousURL == "" {
@@ -63,38 +67,39 @@ func DBCleanOption(account, optionName string, preview bool) DBCleanResult {
 		return result
 	}
 
-	cleaned := removeMaliciousScripts(value)
-	if cleaned == value {
-		result.Message = "Content unchanged after cleaning"
-		return result
-	}
-	if optionInjectionRemains(optionName, cleaned) {
-		result.Message = "Failed to remove all malicious scripts"
+	cleaned, refusal := cleanOptionValue(optionName, value)
+	if refusal != "" {
+		result.Message = refusal
 		return result
 	}
 
-	result.Details = append(result.Details, fmt.Sprintf("Malicious URL: %s", maliciousURL))
+	result.Details = append(result.Details, fmt.Sprintf("Malicious URL: %s", DisplayField(maliciousURL)))
 	result.Details = append(result.Details, fmt.Sprintf("Original length: %d, Cleaned length: %d", len(value), len(cleaned)))
 
 	if preview {
+		diff, err := renderChangeDiff(optionName, []byte(value), []byte(cleaned))
+		if err != nil {
+			result.Message = fmt.Sprintf("PREVIEW failed for %q: %v", optionName, err)
+			return result
+		}
+		result.Diff = diff
 		result.Message = fmt.Sprintf("PREVIEW: Would clean malicious script from %q", optionName)
 		result.Success = true
 		return result
 	}
 
 	// Backup and clean.
-	if backupAndCleanOption(creds, prefix, optionName, value, maliciousURL) {
-		backupName := fmt.Sprintf("csm_backup_%s_%d", optionName, time.Now().Unix())
-		if len(backupName) > 191 {
-			backupName = backupName[:191]
-		}
+	backupName, err := writeCleanOption(creds, prefix, optionName, value, cleaned)
+	if backupName != "" {
 		result.BackupNames = append(result.BackupNames, backupName)
 		result.Details = append(result.Details, fmt.Sprintf("Backup saved as: %s", backupName))
-		result.Message = fmt.Sprintf("Cleaned malicious script from %q", optionName)
-		result.Success = true
-	} else {
-		result.Message = "Failed to clean option"
 	}
+	if err != nil {
+		result.Message = err.Error()
+		return result
+	}
+	result.Message = fmt.Sprintf("Cleaned malicious script from %q", optionName)
+	result.Success = true
 
 	return result
 }
@@ -347,6 +352,9 @@ func spamPostPossessive(count int) string {
 
 // FormatDBCleanResult formats a DBCleanResult for terminal output.
 func FormatDBCleanResult(r DBCleanResult) string {
+	singleLine := func(s string) string {
+		return strings.ReplaceAll(TerminalSafe(s), "\n", `\n`)
+	}
 	var sb strings.Builder
 
 	status := "FAILED"
@@ -354,14 +362,14 @@ func FormatDBCleanResult(r DBCleanResult) string {
 		status = "OK"
 	}
 
-	fmt.Fprintf(&sb, "[%s] %s — %s\n", status, r.Action, r.Message)
+	fmt.Fprintf(&sb, "[%s] %s - %s\n", status, r.Action, singleLine(r.Message))
 	if r.Database != "" {
-		fmt.Fprintf(&sb, "  Database: %s\n", r.Database)
+		fmt.Fprintf(&sb, "  Database: %s\n", DisplayField(r.Database))
 	}
 	for _, d := range r.Details {
-		fmt.Fprintf(&sb, "  %s\n", d)
+		fmt.Fprintf(&sb, "  %s\n", singleLine(d))
 	}
-
+	sb.WriteString(r.Diff)
 	return sb.String()
 }
 

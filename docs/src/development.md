@@ -22,6 +22,12 @@ CGO, pkg-config, YARA-X 1.23.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a
 stale image fails instead of downloading another toolchain in every job.
+`go.mod` sets the Go release. The Makefile pins the Go analysers. A pipeline
+test checks the image definitions and the versions on this page. When the CI
+tools image tag changes, update the full tag in its build examples too.
+Jobs on the shared Go runner print the Go version. Analyser jobs also print
+the scanner version. The kernel job prints the Go version recorded by the
+test service when its `production-results/kernel/engines.txt` report is available.
 
 ## Build
 
@@ -201,7 +207,7 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 | **build** | amd64 and arm64 release binaries with YARA-X CGO and the `yara journal bpf` build tags. arm64 builds run under QEMU in rootless BuildKit. |
 | **package** | RPM + DEB via nFPM |
 | **integration** | Spin up cloudv-1 AlmaLinux and Ubuntu hosts plus the configured clean cPanel image via phctl, install the pipeline-built amd64 packages, run the integration test binary, collect coverage, and confirm every test server was really deleted. `main` integration is manual and can omit cPanel; version tags require the cPanel image, baseline-to-candidate package upgrade, installer, WHM, mail watcher and forward guard checks. |
-| **sign** | Detached signatures on release artifacts |
+| **sign** | Detached release-key signatures on `main` and tag builds, before anything publishes them |
 | **publish** | Internal GitLab Generic Package Registry (versioned + `latest`) |
 | **repo** | Publish RPM/DEB to the public `mirrors.pidginhost.com` apt/dnf repos |
 | **pages** | Docs + coverage HTML (GitLab Pages preview) |

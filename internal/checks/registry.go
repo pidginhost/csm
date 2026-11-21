@@ -494,6 +494,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "check_timeout", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "config_reload_error", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "config_reload_restart_required", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "backup_export_failed", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "yara_forge_rollback", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "coordinated_attack", Category: CategoryCorrelation, Correlation: CorrelationDerived, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "csm_health", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

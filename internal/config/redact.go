@@ -1,6 +1,17 @@
 package config
 
-import "slices"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
+)
 
 const redactedValue = "***REDACTED***"
 
@@ -118,6 +129,113 @@ func Redact(cfg *Config) *Config {
 	}
 
 	return &c
+}
+
+// SupportBundleKeyFiles lists private files that must stay on the host when
+// diagnostics include its state or signature directories.
+func (cfg *Config) SupportBundleKeyFiles() []string {
+	return []string{filepath.Join(cfg.StatePath, "webui.key"), cfg.WebUI.TLSKey,
+		cfg.Challenge.TLSKey, cfg.Stalwart.APIKeyFile, cfg.EmailProtection.Antispam.Feeds.SpamhausDQSKeyFile}
+}
+
+// SecretValues returns the configured value of every field Redact hides,
+// longest first, so free text such as a log excerpt can be scrubbed of them
+// before it leaves the host. It is derived from Redact, so a field added
+// there is covered here without a second list. The returned values remain usable
+// for structured config when the CLI lacks a configured service environment value.
+func SecretValues(cfg *Config) ([]string, error) {
+	var envErr error
+	var out []string
+	collectRedacted(reflect.ValueOf(cfg).Elem(), reflect.ValueOf(Redact(cfg)).Elem(), &out)
+	// The daemon resolves these credentials at use time.
+	envNames := []string{cfg.Alerts.Webhook.HMACSecretEnv, cfg.AutoResponse.VerdictCallback.HMACSecretEnv,
+		cfg.Reputation.Upstream.TokenEnv, cfg.Reputation.Rspamd.TokenEnv}
+	for _, target := range cfg.Reputation.Report.Targets {
+		envNames = append(envNames, target.KeyEnv, target.TokenEnv)
+	}
+	for _, name := range envNames {
+		if value := os.Getenv(name); value != "" {
+			out = appendSecretValue(out, value, true)
+		} else if name != "" {
+			envErr = errors.New("a configured service credential is unavailable in this environment")
+		}
+	}
+	// Longest first: a token inside a URL must not be replaced before the URL.
+	slices.SortStableFunc(out, func(a, b string) int {
+		if len(a) == len(b) {
+			return strings.Compare(a, b)
+		}
+		return len(b) - len(a)
+	})
+	return slices.Compact(out), envErr
+}
+
+// SecretValuesDigest lets the daemon confirm that its client can scrub the
+// active credentials without sending any of those credentials over the socket.
+func SecretValuesDigest(values []string) string {
+	h := sha256.New()
+	for _, value := range values {
+		_, _ = fmt.Fprintf(h, "%d:%s", len(value), value)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Download and integration URLs can carry credentials even outside fields
+// Redact always hides. Request errors can quote them with userinfo masked.
+func appendSecretValue(out []string, value string, hidden bool) []string {
+	if hidden && value != "" {
+		out = append(out, value)
+	}
+	if !strings.Contains(value, "://") {
+		return out
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" || (u.User == nil && u.RawQuery == "") {
+		return out
+	}
+	if !hidden {
+		out = append(out, value)
+	}
+	for key, values := range u.Query() {
+		switch strings.ToLower(key) {
+		case "access_token", "token", "api_key", "key", "password", "secret", "signature", "sig", "x-amz-signature":
+			for _, v := range values {
+				if v != "" {
+					out = append(out, v)
+				}
+			}
+		}
+	}
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok && password != "" {
+			out = append(out, password)
+		}
+		out = append(out, u.Redacted())
+		u.User = nil
+		if u.RequestURI() != "/" {
+			out = append(out, u.String())
+		}
+	}
+	return out
+}
+
+func collectRedacted(orig, red reflect.Value, out *[]string) {
+	switch orig.Kind() {
+	case reflect.String:
+		*out = appendSecretValue(*out, orig.String(), orig.String() != red.String())
+	case reflect.Pointer:
+		if !orig.IsNil() && !red.IsNil() {
+			collectRedacted(orig.Elem(), red.Elem(), out)
+		}
+	case reflect.Struct:
+		for i := 0; i < orig.NumField(); i++ {
+			collectRedacted(orig.Field(i), red.Field(i), out)
+		}
+	case reflect.Slice:
+		for i := 0; i < min(orig.Len(), red.Len()); i++ {
+			collectRedacted(orig.Index(i), red.Index(i), out)
+		}
+	}
 }
 
 func redactConfigScalarForLog(keyPath, value string) string {

@@ -163,6 +163,23 @@ func PerAccountQuery(ctx context.Context, creds Creds, query string, args ...any
 	return runQuery(ctx, db, query, args...)
 }
 
+// PerAccountExec returns the number of rows changed using the same account
+// and schema as PerAccountQuery.
+func PerAccountExec(ctx context.Context, creds Creds, stmt string, args ...any) (int64, error) {
+	db, err := sql.Open("mysql", creds.dsn())
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = db.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	res, err := db.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // PerAccountQueryFunc is the signature SetPerAccountQueryForTest accepts.
 type PerAccountQueryFunc func(ctx context.Context, creds Creds, query string, args ...any) ([]string, error)
 

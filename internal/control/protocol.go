@@ -396,15 +396,19 @@ type FirewallListResult struct {
 	Lines []string `json:"lines"`
 }
 
-// StoreExportArgs configures CmdStoreExport. DstPath must be an
-// absolute path the daemon can write to; the CLI does not pre-create
-// it.
+// SupportBundleExportName is the fixed basename for a daemon-staged diagnostic export.
+const SupportBundleExportName = "store-export.tar.zst"
+
+// StoreExportArgs configures CmdStoreExport. Ordinary exports use an absolute
+// destination. A support bundle leaves it empty so an older daemon fails closed.
 type StoreExportArgs struct {
 	DstPath string `json:"dst_path"`
 	// Stage asks the daemon to write the archive under its own state
 	// directory (the one place its sandbox guarantees writable) instead of
 	// DstPath; the result's Path names the staged file for the CLI to move.
 	Stage bool `json:"stage,omitempty"`
+	// A digest requests a staged diagnostics export using the collector's redaction set.
+	SupportRedactionSHA256 string `json:"support_redaction_sha256,omitempty"`
 }
 
 // HistorySinceArgs configures CmdHistorySince. Since is RFC 3339; an

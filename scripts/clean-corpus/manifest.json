@@ -35,11 +35,11 @@
   "pending": [
     {
       "cms": "joomla",
-      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
+      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through object properties', 'Content rules versus archive containers'), then add and measure the pinned source."
     },
     {
       "cms": "opencart",
-      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
+      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through object properties', 'Content rules versus archive containers'), then add and measure the pinned source."
     },
     {
       "cms": "prestashop",
@@ -47,7 +47,7 @@
     },
     {
       "cms": "drupal",
-      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through variables', 'Content rules versus archive containers'), then add and measure the pinned source."
+      "reason": "Await all three precision items preceding 'Clean corpus growth and per-detector false-positive tracking' ('Taint laundering through value encoders', 'Local-path provenance through object properties', 'Content rules versus archive containers'), then add and measure the pinned source."
     },
     {
       "cms": "magento",

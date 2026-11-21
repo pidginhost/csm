@@ -363,6 +363,18 @@ var operations = []Op{
 		WithoutPrivilege: "CSM cannot run: without state there is no baseline, no dedup and no incident history",
 	},
 	{
+		ID:               "state.scheduled_backup",
+		Risk:             RiskObserve,
+		Subsystem:        "csm state",
+		Summary:          "export the state store on the backup schedule and delete its own archives older than the retention",
+		Privileges:       []Privilege{Root},
+		Trigger:          Automatic,
+		Writes:           []string{"/var/lib/csm"},
+		DisableKey:       "backup.enabled",
+		DisableValue:     "false",
+		WithoutPrivilege: "state backups need an operator-run csm store export",
+	},
+	{
 		ID:               "state.write_logs",
 		Risk:             RiskObserve,
 		Subsystem:        "csm state",

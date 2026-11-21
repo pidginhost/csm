@@ -1064,19 +1064,12 @@ func TestBackupAndCleanOption_SuccessfulClean(t *testing.T) {
 }
 
 func TestBackupAndCleanOption_AllowsCleanWhenURLRemainsAsText(t *testing.T) {
-	var updateQuery string
-	withMockCmd(t, &mockCmd{
-		runWithEnv: func(name string, args []string, env ...string) ([]byte, error) {
-			if name != "mysql" {
-				return nil, nil
-			}
-			for _, a := range args {
-				if strings.Contains(a, "UPDATE") && strings.Contains(a, "option_value") {
-					updateQuery = a
-				}
-			}
-			return nil, nil
-		},
+	var written any
+	withOptionExec(t, func(stmt string, args []any) (int64, error) {
+		if strings.HasPrefix(stmt, "UPDATE") {
+			written = args[0]
+		}
+		return 1, nil
 	})
 	creds := wpDBCreds{dbName: "db3", dbUser: "u", dbPass: "p", dbHost: "localhost"}
 	original := `text reference https://evil.top/x.js <script src="https://evil.top/x.js"></script>`
@@ -1086,14 +1079,8 @@ func TestBackupAndCleanOption_AllowsCleanWhenURLRemainsAsText(t *testing.T) {
 	if !cleaned {
 		t.Fatal("should clean when the attacker URL remains only as inert text")
 	}
-	if updateQuery == "" {
-		t.Fatal("expected UPDATE for cleaned value")
-	}
-	if strings.Contains(updateQuery, "<script") {
-		t.Fatalf("cleaned UPDATE still contains script tag: %s", updateQuery)
-	}
-	if !strings.Contains(updateQuery, "text reference https://evil.top/x.js") {
-		t.Fatalf("cleaned UPDATE should preserve inert text URL reference: %s", updateQuery)
+	if written != "text reference https://evil.top/x.js" {
+		t.Fatalf("updated value = %q", written)
 	}
 }
 

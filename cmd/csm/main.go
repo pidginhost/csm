@@ -187,6 +187,8 @@ func main() {
 		runBackup()
 	case "forensic-snapshot":
 		runForensicSnapshot()
+	case "support-bundle":
+		runSupportBundle()
 	case "restore":
 		runRestore()
 	case "webserver-integration":
@@ -235,7 +237,7 @@ Commands:
   update-rules  Download latest malware signature rules
   update-geoip  Download latest MaxMind GeoLite2 databases
   update-bot-ranges  Refresh built-in AI-crawler IP ranges from vendor feeds
-  clean <path>  Attempt to clean an infected PHP file (backup created first)
+  clean <path>  Clean an infected PHP file or .htaccess, backup created first (--preview prints the diff only)
   db-clean ...  WordPress database cleanup (see: csm db-clean --help)
   store compact Reclaim unused space in the bbolt state database (daemon must be stopped; add --preview for a dry run)
   store export <path>   Back up bbolt + state + signatures to a tar+zstd archive
@@ -257,6 +259,7 @@ Commands:
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)
+  support-bundle <path>  Store export, journal tail, redacted config and versions in one tar+zstd archive (--journal-lines N)
   restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
   pam ...       Install or remove the pam_csm.so PAM hook (csm pam --help)
@@ -391,7 +394,7 @@ func runDaemon() {
 	defer obs.Flush()
 
 	// Validate config on startup
-	results := config.Validate(cfg)
+	results := config.ValidateDaemonStartup(cfg)
 	hasErrors := false
 	for _, r := range results {
 		switch r.Level {
@@ -1220,20 +1223,6 @@ func refreshBotRanges(ctx context.Context, client *http.Client, sources []threat
 	return threatintel.RefreshFetchedRanges(ctx, client, sources, cachePath)
 }
 
-func runClean() {
-	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "Usage: csm clean <path>\n")
-		os.Exit(1)
-	}
-	path := os.Args[2]
-
-	result := checks.CleanInfectedFile(path)
-	fmt.Fprintln(os.Stderr, checks.FormatCleanResult(result))
-	if !result.Cleaned {
-		os.Exit(1)
-	}
-}
-
 func runDBClean() {
 	if len(os.Args) < 3 {
 		printDBCleanUsage()
@@ -1253,16 +1242,8 @@ func runDBClean() {
 		printDBCleanUsage()
 
 	case "--option":
-		if len(os.Args) < 5 {
-			fmt.Fprintf(os.Stderr, "Usage: csm db-clean --option <account> <option_name> [--preview]\n")
-			os.Exit(1)
-		}
-		account := os.Args[3]
-		optionName := os.Args[4]
-		result := checks.DBCleanOption(account, optionName, preview)
-		fmt.Fprint(os.Stderr, checks.FormatDBCleanResult(result))
-		if !result.Success {
-			os.Exit(1)
+		if code := runDBCleanOptionCommand(os.Args[3:], os.Stderr, checks.DBCleanOption); code != 0 {
+			os.Exit(code)
 		}
 
 	case "--revoke-user":

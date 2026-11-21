@@ -1042,6 +1042,14 @@ retention:
   compact_min_size_mb: 128              # startup compaction floor; 0 disables auto-compaction
   compact_fill_ratio: 0.5               # compact when used_bytes / file_size drops below this
 
+# --- Scheduled backups (csm store export on a schedule) ---
+backup:
+  enabled: false                        # opt-in
+  schedule: "24h"                       # time between exports; at least 1h
+  destination_dir: "/var/lib/csm/backups"  # inside /var/lib/csm, outside state_path and signatures.rules_dir
+  filename: "csm-{date}.csmbak"         # {date} is the run's UTC start time, e.g. 20261121T030000Z
+  retention_days: 14                    # archives older than this are deleted; 1 to 3650
+
 # --- Debug / diagnostics ---
 debug:
   pprof_listen: ""                      # e.g. "127.0.0.1:6060"; MUST be loopback. Empty disables.
@@ -1229,8 +1237,8 @@ workflows depending on which fields you touch.
 
 For fields tagged as hot-reload-safe (`alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, `disabled_checks`, `confd`), the daemon can
-accept the change without a restart:
+`reputation`, `email_protection`, `disabled_checks`, `confd`, `backup`), the
+daemon can accept the change without a restart:
 
 ```bash
 sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
@@ -1273,7 +1281,7 @@ integrity hashes still follow the signed config, so scheduled checks continue.
 
 The tagged-safe top-level fields are `alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, `disabled_checks`, and `confd`. The Settings
+`reputation`, `email_protection`, `disabled_checks`, `confd`, and `backup`. The Settings
 API derives its restart hints from the same manifest that drives
 `config.Diff`, so UI hints and SIGHUP behavior cannot drift silently. A
 save from the Settings page runs the same apply steps as a SIGHUP, so a
