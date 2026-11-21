@@ -27,6 +27,8 @@ type FTPFailWindow struct {
 	mu       sync.Mutex
 	t        *ftpFailTracker
 	reported map[string]time.Time
+	// evicted is the window start, in minutes, the last sweep used.
+	evicted int64
 }
 
 // NewFTPFailWindow returns an empty window.
@@ -41,12 +43,7 @@ func (w *FTPFailWindow) Failure(ip string, at, now time.Time, cfg *config.Config
 	defer w.mu.Unlock()
 	windowMin = effectiveFTPFailWindowMin(cfg)
 	window := time.Duration(windowMin) * time.Minute
-	w.t.evict(now, windowMin)
-	for addr, when := range w.reported {
-		if now.Sub(when) >= window {
-			delete(w.reported, addr)
-		}
-	}
+	w.evict(now, windowMin)
 	if at.After(now) {
 		at = now
 	}
@@ -62,11 +59,29 @@ func (w *FTPFailWindow) Failure(ip string, at, now time.Time, cfg *config.Config
 	}
 	// Reports expire with the window, which bounds them; a cap here would let
 	// a large enough burst stop every later report.
-	if _, done := w.reported[ip]; done {
+	if when, done := w.reported[ip]; done && now.Sub(when) < window {
 		return count, windowMin, false
 	}
 	w.reported[ip] = now
 	return count, windowMin, true
+}
+
+// evict drops failures and reports older than the window. Failures are
+// counted per minute, so one sweep per minute keeps a burst spread over many
+// addresses as cheap per failure as one from a single address.
+func (w *FTPFailWindow) evict(now time.Time, windowMin int) {
+	cutoff := now.Unix()/60 - int64(windowMin)
+	if cutoff == w.evicted {
+		return
+	}
+	w.evicted = cutoff
+	w.t.evict(now, windowMin)
+	window := time.Duration(windowMin) * time.Minute
+	for addr, when := range w.reported {
+		if now.Sub(when) >= window {
+			delete(w.reported, addr)
+		}
+	}
 }
 
 // LoginFinding keeps the live reader's brute-force history in the same login
@@ -77,7 +92,7 @@ func (w *FTPFailWindow) LoginFinding(line string, at time.Time, cfg *config.Conf
 		return f, false
 	}
 	w.mu.Lock()
-	w.t.evict(at, effectiveFTPFailWindowMin(cfg))
+	w.evict(at, effectiveFTPFailWindowMin(cfg))
 	n := w.t.count(f.SourceIP)
 	w.mu.Unlock()
 	if n >= ftpFailThreshold {
