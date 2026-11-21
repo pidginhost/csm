@@ -38,6 +38,7 @@ import (
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/integration/webserver"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/ipmap"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -2543,35 +2544,41 @@ func (d *Daemon) startLogWatchers() {
 	}
 
 	for _, lf := range logFiles {
-		w, err := newObservedLogWatcher(lf, d.cfg, d.alertCh)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// File doesn't exist yet - retry periodically until it appears
-				if lf.name != "" {
-					d.MarkWatcher(lf.name, false)
-				}
-				d.wg.Add(1)
-				spec := lf
-				obs.Go("logwatch-retry", func() { d.retryLogWatcherNamed(spec) })
-			} else {
-				fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
-				if lf.name != "" {
-					d.MarkWatcher(lf.name, false)
-				}
+		d.startLogWatch(lf)
+	}
+}
+
+// startLogWatch watches one log, or retries until it appears. An optional
+// log a host may never have is not a detached watcher while it is absent.
+func (d *Daemon) startLogWatch(lf logWatchSpec) {
+	w, err := newObservedLogWatcher(lf, d.cfg, d.alertCh)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist yet - retry periodically until it appears
+			if lf.name != "" && !lf.optional {
+				d.MarkWatcher(lf.name, false)
 			}
-			continue
+			d.wg.Add(1)
+			obs.Go("logwatch-retry", func() { d.retryLogWatcherNamed(lf) })
+		} else {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
+			if lf.name != "" {
+				d.MarkWatcher(lf.name, false)
+			}
 		}
-		d.logWatchers = append(d.logWatchers, w)
-		d.wg.Add(1)
-		watcher := w
-		obs.Go("logwatch", func() {
-			defer d.wg.Done()
-			watcher.Run(d.stopCh)
-		})
-		csmlog.Info("watching log", "path", lf.path)
-		if lf.name != "" {
-			d.MarkWatcher(lf.name, true)
-		}
+		return
+	}
+	d.logWatchersMu.Lock()
+	d.logWatchers = append(d.logWatchers, w)
+	d.logWatchersMu.Unlock()
+	d.wg.Add(1)
+	obs.Go("logwatch", func() {
+		defer d.wg.Done()
+		w.Run(d.stopCh)
+	})
+	csmlog.Info("watching log", "path", lf.path)
+	if lf.name != "" {
+		d.MarkWatcher(lf.name, true)
 	}
 }
 
@@ -2932,8 +2939,9 @@ func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, exim ObservedLineHandler,
 		specs = append(specs, logWatchSpec{path: eximMainlogPath, producer: checks.ProducerEximLog, observed: exim,
 			handler: func(line string, cfg *config.Config) []alert.Finding { return exim(line, alert.Observation{}, cfg) }})
 	}
-	// Apache and LiteSpeed write the peer log through the CSM snippet.
-	if hostInfo.FrontProxied || hostInfo.WebServer == platform.WSApache || hostInfo.WebServer == platform.WSLiteSpeed {
+	// Apache and cPanel LiteSpeed write the peer log through the CSM snippet;
+	// a cPanel host behind nginx may keep one installed earlier.
+	if webserver.PeerLogPathFor(hostInfo) != "" || hostInfo.FrontProxied {
 		spec := d.webPeer.hostSpec(webPeerLogPath, hostInfo)
 		specs = append(specs, spec)
 	}

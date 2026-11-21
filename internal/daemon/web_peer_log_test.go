@@ -129,7 +129,8 @@ func TestFixedLogSpecsWatchThePeerLog(t *testing.T) {
 	d := &Daemon{webPeer: newWebPeerLog()}
 	for server, want := range map[platform.WebServer]bool{platform.WSApache: true, platform.WSLiteSpeed: true, platform.WSNginx: false, platform.WSNone: false} {
 		found := false
-		for _, s := range d.fixedLogSpecs(platform.Info{WebServer: server}, nil, false) {
+		// The snippet exists only for Apache and LiteSpeed on cPanel.
+		for _, s := range d.fixedLogSpecs(platform.Info{Panel: platform.PanelCPanel, WebServer: server}, nil, false) {
 			if s.path == webPeerLogPath {
 				found = true
 				if !s.optional || s.truncateAt != webPeerLogMaxBytes || s.reset == nil {
@@ -197,7 +198,7 @@ func TestFrontProxiedPeerWatcherBoundsLog(t *testing.T) {
 		{WebServer: platform.WSApache, FrontProxied: true},
 		{WebServer: platform.WSLiteSpeed, FrontProxied: true},
 		{WebServer: platform.WSNginx, FrontProxied: true},
-		{WebServer: platform.WSLiteSpeed, ServerRunsSiteCode: true},
+		{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed, ServerRunsSiteCode: true},
 	} {
 		for _, backlog := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/front=%v/backlog=%v", info.WebServer, info.FrontProxied, backlog), func(t *testing.T) {
@@ -354,7 +355,7 @@ func TestWebPeerSuExecRevokedWhileRunning(t *testing.T) {
 	p.serverRunsSiteCode = func(platform.WebServer) bool { return unsafe.Load() }
 	d := &Daemon{webPeer: p}
 	var spec logWatchSpec
-	for _, s := range d.fixedLogSpecs(platform.Info{WebServer: platform.WSLiteSpeed}, nil, false) {
+	for _, s := range d.fixedLogSpecs(platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed}, nil, false) {
 		if s.path == webPeerLogPath {
 			spec = s
 		}
@@ -575,5 +576,43 @@ func TestWebPeerLogAcceptedSkewPreservesEvidence(t *testing.T) {
 	}
 	if got := checks.WebPeerVerdict(netip.MustParseAddr("203.0.113.82"), later); got != checks.PeerDirect {
 		t.Fatalf("clock skew boundary = %v, want direct", got)
+	}
+}
+
+// A host without the peer log snippet has no peer log, and that is not a
+// detached watcher: health and doctor must not report it as a failure.
+func TestMissingOptionalLogIsNotDetached(t *testing.T) {
+	d := &Daemon{stopCh: make(chan struct{}), webPeer: newWebPeerLog()}
+	spec := d.webPeer.spec(filepath.Join(t.TempDir(), "absent", "peer.log"))
+	d.startLogWatch(spec)
+	close(d.stopCh)
+	d.wg.Wait()
+	if attached, seen := d.WatcherStatuses()[spec.name]; seen && !attached {
+		t.Fatalf("an absent optional log marked %s detached", spec.name)
+	}
+}
+
+// The peer log is watched only where the snippet can exist: Apache, cPanel
+// LiteSpeed, and cPanel hosts behind nginx that may keep an earlier snippet.
+// Standalone LiteSpeed and plain nginx get no watch.
+func TestPeerLogWatchedOnlyWhereTheSnippetCanExist(t *testing.T) {
+	for _, tc := range []struct {
+		info platform.Info
+		want bool
+	}{
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed}, true},
+		{platform.Info{OS: platform.OSDebian, WebServer: platform.WSApache}, true},
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSNginx, FrontProxied: true}, true},
+		{platform.Info{WebServer: platform.WSLiteSpeed}, false},
+		{platform.Info{WebServer: platform.WSNginx}, false},
+	} {
+		d := &Daemon{webPeer: newWebPeerLog()}
+		got := false
+		for _, s := range d.fixedLogSpecs(tc.info, nil, false) {
+			got = got || s.path == webPeerLogPath
+		}
+		if got != tc.want {
+			t.Errorf("%+v: peer log watched = %v, want %v", tc.info, got, tc.want)
+		}
 	}
 }
