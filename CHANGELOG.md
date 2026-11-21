@@ -15,7 +15,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Reputation exemptions require verified mail logins; FTP and cPanel activity cannot erase or renew them.
 - Forged mail log entries no longer influence trusted authentication alerts or suspend mailboxes.
 - Repeated SSH logins now produce separate alerts instead of disappearing from login history.
-- Older SSH incidents no longer authorize automatic blocks from unverified login records.
 - SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks or count as customer logins; they still alert.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
@@ -30,9 +29,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
-- Where syslog goes through journald, CSM reads pure-ftpd logins and failures from its journal entries instead of the system log file.
-- Where syslog goes through journald, CSM reads SSH logins from sshd's journal entries instead of the auth log file.
-- With `mail_logs.source: auto`, CSM now reads Postfix and Dovecot from the journal where syslog goes through journald; mail log files only alert.
+- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 
 ## [4.15.0] - 2026-11-20

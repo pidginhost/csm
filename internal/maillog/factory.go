@@ -37,7 +37,7 @@ func New(cfg config.MailLogsConfig, platformDefaultFile string, queue *Queue) (R
 	case "auto":
 		// Only journald records who wrote a line; a log file takes any
 		// local user's lines under any program name.
-		if len(cfg.Units) > 0 && JournalUsable() && !postfixLogsToFile() && mailUnitsCovered(cfg.Units) {
+		if autoPrefersJournal(cfg) {
 			return NewJournalReader(cfg.Units, queue), nil
 		}
 		if path != "" {
@@ -52,4 +52,22 @@ func New(cfg config.MailLogsConfig, platformDefaultFile string, queue *Queue) (R
 	default:
 		return nil, fmt.Errorf("mail_logs.source=%q: unknown", cfg.Source)
 	}
+}
+
+// autoPrefersJournal reports whether source auto reads the journal: it is
+// usable, Postfix writes no log file of its own, and the configured units
+// cover every running mail master.
+func autoPrefersJournal(cfg config.MailLogsConfig) bool {
+	return len(cfg.Units) > 0 && JournalUsable() && !postfixLogsToFile() && mailUnitsCovered(cfg.Units)
+}
+
+// UsesJournal reports whether mail logs come from the journal with cfg.
+func UsesJournal(cfg config.MailLogsConfig) bool {
+	switch cfg.Source {
+	case "journal":
+		return true
+	case "auto", "":
+		return autoPrefersJournal(cfg)
+	}
+	return false
 }
