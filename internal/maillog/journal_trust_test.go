@@ -117,3 +117,28 @@ func TestJournalMatches(t *testing.T) {
 		}
 	}
 }
+
+// pure-ftpd logs a session's lines after dropping to the logged-in user's
+// uid, and no user code runs in its unit: its own executable is trusted at
+// any uid there, a user's program is not.
+func TestTrustedLineAcceptsServiceExecutable(t *testing.T) {
+	rules := []SenderRule{{Units: []string{"pure-ftpd"}, UIDs: []uint32{0}, Executables: []string{"pure-ftpd"}}}
+	for _, tc := range []struct {
+		unit, uid, exe string
+		want           bool
+	}{
+		{"pure-ftpd.service", "1001", "/usr/sbin/pure-ftpd", true},
+		{"pure-ftpd.service", "0", "", true},
+		{"pure-ftpd.service", "1001", "/usr/bin/logger", false},
+		{"pure-ftpd.service", "1001", "", false},
+		{"", "1001", "/usr/sbin/pure-ftpd", false},
+	} {
+		line := Line{Source: "journal", Unit: tc.unit, UID: tc.uid, Exe: tc.exe, Transport: "syslog"}
+		if got := TrustedLine(line, rules); got != tc.want {
+			t.Errorf("%s uid %s exe %q: trusted %v, want %v", tc.unit, tc.uid, tc.exe, got, tc.want)
+		}
+	}
+	if line := JournalLine(map[string]string{"MESSAGE": "x", "_EXE": "/usr/sbin/pure-ftpd"}, Position{}); line.Exe != "/usr/sbin/pure-ftpd" {
+		t.Fatalf("journal line exe %q", line.Exe)
+	}
+}

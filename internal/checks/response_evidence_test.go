@@ -381,8 +381,9 @@ func TestAddressProducersAreClassified(t *testing.T) {
 	}
 	// The database malware response reports session addresses instead of
 	// emitting an address-bearing finding.
-	if len(producers) != 77 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 77 producers", len(producers))
+	// The pure-ftpd journal reader raises ftp_bruteforce as the FTP scan does.
+	if len(producers) != 78 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 78 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

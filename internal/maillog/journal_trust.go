@@ -2,6 +2,8 @@ package maillog
 
 import (
 	"os/user"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -14,6 +16,9 @@ import (
 type SenderRule struct {
 	Units []string
 	UIDs  []uint32
+	// Executables are program names trusted at any uid in the rule's units:
+	// for a service that drops to a user's uid but runs no user code.
+	Executables []string
 }
 
 // TrustedLine reports whether line is a journal entry one of rules' services
@@ -39,6 +44,9 @@ func TrustedLine(line Line, rules []SenderRule) bool {
 				if uint32(uid) == want {
 					return true
 				}
+			}
+			if line.Exe != "" && slices.Contains(r.Executables, filepath.Base(line.Exe)) {
+				return true
 			}
 		}
 	}

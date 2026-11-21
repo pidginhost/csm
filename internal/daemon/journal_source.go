@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
@@ -39,6 +41,47 @@ var sshJournal = journalSource{
 	rules:       []maillog.SenderRule{{Units: []string{"sshd", "ssh", "sshd@", "ssh@"}, UIDs: []uint32{0}}},
 	producer:    checks.ProducerSSHJournal,
 	handler:     parseSecureLogLine,
+}
+
+// ftpJournal reads pure-ftpd's entries. It logs a failure as root before
+// login and a session's lines as the logged-in user afterwards; no user code
+// runs in its unit, so its own executable is trusted at any uid there.
+var ftpJournal = journalSource{
+	name:        "ftp_journal",
+	units:       []string{"pure-ftpd"},
+	identifiers: []string{"pure-ftpd"},
+	rules:       []maillog.SenderRule{{Units: []string{"pure-ftpd"}, UIDs: []uint32{0}, Executables: []string{"pure-ftpd"}}},
+	producer:    checks.ProducerFTPJournal,
+}
+
+// ftpJournalSource is ftpJournal with the daemon's handler, which also
+// counts failures toward an FTP brute force.
+func (d *Daemon) ftpJournalSource() journalSource {
+	src := ftpJournal
+	src.handler = d.handleFTPJournalLine
+	return src
+}
+
+// handleFTPJournalLine reports each pure-ftpd failure and login, and raises
+// an FTP brute force when an address reaches the threshold, as the scan of
+// the system log file does where the journal is not used.
+func (d *Daemon) handleFTPJournalLine(line string, cfg *config.Config) []alert.Finding {
+	findings := parseFTPLogLine(line, cfg)
+	for _, f := range findings {
+		if f.Check != "ftp_auth_failure_realtime" || isPrivateOrLoopback(f.SourceIP) {
+			continue
+		}
+		n, windowMin, report := d.ftpFails.Failure(f.SourceIP, time.Now(), cfg)
+		if report {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High, Check: "ftp_bruteforce", SourceIP: f.SourceIP,
+				Message:     fmt.Sprintf("FTP brute force from %s: %d failed attempts in %dm", f.SourceIP, n, windowMin),
+				Attribution: admission.AttributionPeer,
+			})
+		}
+		break
+	}
+	return findings
 }
 
 // startJournalSource follows src's units from the journal tail.

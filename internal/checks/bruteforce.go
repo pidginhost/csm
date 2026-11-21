@@ -459,6 +459,11 @@ const syslogMessagesTailLinesDefault = 200
 // /var/log/messages forward-only and accumulates per-IP failures over a sliding
 // window; without a store it falls back to the legacy per-cycle tail.
 func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	// pure-ftpd's own journal entries already report each failure and login
+	// as it happens; a line in the system log file could be anyone's.
+	if ftpLoginsFromJournal.Load() {
+		return nil
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}

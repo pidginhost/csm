@@ -18,7 +18,9 @@ type Line struct {
 	// Transport how the entry reached journald (journal only).
 	UID       string
 	Transport string
-	Message   string // log line (for file: full line; for journal: see JournalLine)
+	// Exe is the sending process's executable as journald recorded it.
+	Exe     string
+	Message string // log line (for file: full line; for journal: see JournalLine)
 	// Position is where the line was read; empty Stream when unknown.
 	Position Position
 	ticket   queuehealth.Ticket

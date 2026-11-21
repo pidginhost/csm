@@ -165,6 +165,9 @@ type Daemon struct {
 	// local user can write.
 	syslogFromJournal bool
 
+	// ftpFails counts pure-ftpd failures read from the journal.
+	ftpFails *checks.FTPFailWindow
+
 	// mailSenders caches the journal sender rules for the configured mail
 	// units; building them looks up the postfix user.
 	mailSenders atomic.Pointer[mailSenderSet]
@@ -418,6 +421,7 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.dovecotSessions = newDovecotSessionVerdicts()
 	d.fileDovecotSessions = newDovecotSessionVerdicts()
 	d.knownCustomers = newKnownCustomers(time.Now)
+	d.ftpFails = checks.NewFTPFailWindow()
 	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
 	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
 	d.mailAuthTracker.SetKnownCustomers(d.knownCustomers)
@@ -2405,9 +2409,11 @@ func (d *Daemon) startLogWatchers() {
 	d.mailboxes = newMailboxResolver(hostInfo)
 	d.syslogFromJournal = journalUsable()
 	checks.SetSSHLoginsFromJournal(d.syslogFromJournal)
+	checks.SetFTPLoginsFromJournal(d.syslogFromJournal)
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if d.syslogFromJournal {
 		d.startJournalSource(sshJournal)
+		d.startJournalSource(d.ftpJournalSource())
 	}
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)
@@ -3059,8 +3065,12 @@ func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, exim ObservedLineHandler,
 			logWatchSpec{path: "/usr/local/cpanel/logs/session_log", handler: d.cpanelSessionLogHandler},
 			logWatchSpec{path: "/usr/local/cpanel/logs/access_log", handler: d.cpanelAccessLogHandler,
 				observed: d.cpanelAccessLogObservedHandler, producer: checks.ProducerCpanelAccessLog},
-			logWatchSpec{path: "/var/log/messages", handler: parseFTPLogLine, producer: checks.ProducerFTPLog},
 		)
+		// Where syslog goes through journald, pure-ftpd's own entries are
+		// read from the journal instead.
+		if !d.syslogFromJournal {
+			specs = append(specs, logWatchSpec{path: "/var/log/messages", handler: parseFTPLogLine, producer: checks.ProducerFTPLog})
+		}
 	}
 	if watchExim {
 		// Observed: the SMTP tracker records which line named each address.
