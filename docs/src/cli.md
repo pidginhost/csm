@@ -87,6 +87,14 @@ scan still has no YARA pass.
 | `csm pam <install\|uninstall\|status>` | Install or remove the `pam_csm.so` PAM hook (`csm pam --help`). |
 | `csm report enroll` | Generate an abuse-reporting node key pair. |
 
+The `deploy scripts verify releases` check looks for shell scripts with `deploy`
+in their names in `/opt/csm`, `/root`, `/usr/local/sbin` and `/usr/local/bin`.
+OK lists copies that match the deploy scripts shipped with this version of CSM.
+FAIL names CSM scripts with a known legacy signature-skip warning. WARN names
+other recognizable CSM copies, including locally edited scripts, and paths
+doctor could not inspect. Compare nonmatching copies with the release scripts
+before deploying. A failure takes precedence over a warning.
+
 `csm doctor` also lists [protection queue health](api.md#protection-queue-health):
 waiting and running work, losses and lag. A sustained backlog or drop rate
 fails the named queue check and includes recovery guidance. Queues whose work
