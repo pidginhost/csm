@@ -22,6 +22,9 @@ CGO, pkg-config, YARA-X 1.23.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a
 stale image fails instead of downloading another toolchain in every job.
+`go.mod` sets the Go release and the Makefile sets the analysers; a pipeline
+test fails when a build image, the CI tools tag or this page disagrees. Lint
+and test job logs print the Go and analyser versions they ran.
 
 ## Build
 
