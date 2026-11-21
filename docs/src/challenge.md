@@ -529,6 +529,32 @@ Requests from this server's own addresses, loopback included, get HTTP 403
 without a check of the secret, because every local account can send from
 them. Request the cookie from the network you browse from.
 
+#### Integration contract
+
+`/challenge/admin-token` is a stable contract. A WordPress companion plugin,
+kept in a separate repository, depends on it, so a change to the path, the
+`secret` form field, the status codes or the cookie attributes below needs a
+roadmap item before it ships.
+
+| Response | When |
+|---|---|
+| 204, with `Set-Cookie` | The secret matches. The cookie carries `cookie_name`, `Path=/`, `Max-Age` equal to `ttl`, `Secure`, `HttpOnly` and `SameSite=Lax`. |
+| 403 | The secret is wrong, or the request comes from this server's own addresses. |
+| 429 | Too many failed attempts from one address. Wait and retry. |
+| 405 | Any method other than `POST`. |
+| 404 | `verified_session` is off. |
+| 503 | CSM cannot read this server's addresses right now. |
+
+Integration notes:
+
+- The plugin cannot fetch the cookie from the server side, because requests
+  from this server's own addresses get 403. The administrator's browser must
+  send the `POST`, so the cookie binds to the address the administrator
+  browses from.
+- `admin_secret` is one secret for the whole server. Whoever holds it can skip
+  challenges on every site on the server from their own address, so give it
+  to the plugin only on sites whose administrators you trust with that.
+
 ### Verified Search Crawlers
 
 Googlebot and Bingbot can be allow-passed by reverse-DNS forward-confirm. CSM looks up the visitor's PTR, checks it ends in a known crawler suffix (e.g. `.googlebot.com`), then forward-resolves that name to confirm the original IP appears in the result. A spoofed `User-Agent: Googlebot` from a residential IP fails forward-confirm and falls through to PoW.
