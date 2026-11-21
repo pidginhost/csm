@@ -58,7 +58,9 @@ APT verifies signed repository metadata through the `signed-by=` keyring. DNF ve
 
 ## Detached Artifact Signatures
 
-Every build operators can install is signed with the release key, whether it comes from a version tag or from `main`, whose builds the internal package registry serves as `latest` between releases. `sign:artifacts` runs on both and signs binaries and packages with the Ed25519 private key in `CSM_SIGNING_KEY`; it fails without the key, and publishing waits for it. The publish and GitHub release jobs create and sign `csm-assets.tar.gz` after assembling it. Each signed file gets a `.sig` sibling uploaded with the artifact, and the publish jobs refuse to upload a file without one. Branch and merge request pipelines never receive the key and neither sign nor publish.
+On `main` and version tags, CI signs each architecture's binary and packages with the Ed25519 release key in `CSM_SIGNING_KEY`. A missing key stops signing. The registry and GitHub release jobs sign their assets tarballs after assembly.
+
+The registry also provides detached signatures for its standalone install and deploy scripts. Its publisher verifies all signatures against the public key embedded in the registry deploy script before replacing `latest`. Each signature must upload successfully before its payload becomes available. Main can publish a signed AMD64 build when ARM64 is unavailable. Version tags require both architectures.
 
 Examples:
 
@@ -93,10 +95,7 @@ openssl pkey -in csm-signing.key -pubout -out csm-signing.pub
 
 Store the private key in GitLab as a protected `CSM_SIGNING_KEY` variable. Keep the private key in an offline password manager and a second secure backup location. Do not commit it.
 
-For standalone script verification, either:
-
-- Embed the public key PEM in `EMBEDDED_SIGNING_KEY` in `scripts/install.sh`, `scripts/deploy.sh`, and `scripts/deploy-gitlab.sh`.
-- Or pass the public key at runtime with `CSM_SIGNING_KEY_PEM`.
+Embed the matching public key in `scripts/install.sh`, `scripts/deploy.sh`, and `scripts/deploy-gitlab.sh`. CI reads the registry deploy script's embedded key when it verifies builds. Operators can override their local verifier key with `CSM_SIGNING_KEY_PEM`.
 
 Signature verification is mandatory for current standalone releases. To also reject missing signatures on historical pre-signing releases:
 
@@ -105,9 +104,9 @@ curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm
 sudo env CSM_REQUIRE_SIGNATURES=1 bash /tmp/csm-install.sh
 ```
 
-Detached verification requires OpenSSL 3.0 or newer because the Ed25519 command uses `pkeyutl -rawin`. The scripts stop on older OpenSSL, including the default on EL8/CloudLinux 8, Ubuntu 20.04 and Debian 11. Use the signed APT/DNF repository on these supported platforms; its GPG verification does not depend on this OpenSSL command. The scripts never download and execute a verifier to bypass this requirement.
+Standalone installs need OpenSSL 3.0 or newer, an installed CSM binary with `verify-release`, or Python with `cryptography`. The signed APT/DNF repository uses GPG.
 
-If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`. A missing `.sig` (HTTP 404) is tolerated only with `CSM_REQUIRE_SIGNATURES=0` and an explicitly selected complete release version older than v2.2.0, with no suffix or leading zeroes; for any later release the scripts abort even without `CSM_REQUIRE_SIGNATURES`, because every such release ships a signature and its absence means the download is incomplete or tampered. An unknown version or `latest` cannot qualify for the exception. This historical exception is checksum-only installation and is reported as unverified, not signature-verified. `scripts/deploy-gitlab.sh` installs only the registry's current build and has no exception: a registry build without a valid signature is refused like a release, whatever `CSM_REQUIRE_SIGNATURES` is set to. `csm doctor` reports a copy of an older registry deploy script that still accepts unsigned builds; replace it before the next upgrade, whose health check runs doctor and rolls back on that failure.
+If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`. A missing `.sig` (HTTP 404) is tolerated only with `CSM_REQUIRE_SIGNATURES=0` and an explicitly selected complete release version older than v2.2.0, with no suffix or leading zeroes; for any later release the scripts abort even without `CSM_REQUIRE_SIGNATURES`, because every such release ships a signature and its absence means the download is incomplete or tampered. An unknown version or `latest` cannot qualify for the exception. This historical exception is checksum-only installation and is reported as unverified, not signature-verified. `scripts/deploy-gitlab.sh` installs only the registry's current build and has no exception: a registry build without a valid signature is refused like a release, whatever `CSM_REQUIRE_SIGNATURES` is set to. `csm doctor` reports older registry deploy scripts that still accept unsigned builds. Replace any reported copy before using it for another upgrade.
 
 The same policy applies to the `csm-assets.tar.gz.sha256` checksum: releases published before checksums existed produce a warning and skip the checksum step, while `CSM_REQUIRE_SIGNATURES=1` makes the missing checksum fatal. A checksum that exists but does not match always aborts.
 
@@ -128,7 +127,7 @@ Detached Ed25519 key rotation:
 
 1. Generate a new Ed25519 key pair.
 2. Replace `CSM_SIGNING_KEY` in protected CI variables.
-3. Update the embedded public key in standalone scripts, or rotate the `CSM_SIGNING_KEY_PEM` value used by automation.
+3. Update the embedded public key in all standalone scripts and any `CSM_SIGNING_KEY_PEM` override used by automation.
 4. Tag a new release.
 
 Old detached signatures remain verifiable only with the old public key. Archive old public keys alongside release metadata so historical releases can still be checked.
