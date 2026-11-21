@@ -219,6 +219,7 @@ func TestFrontProxiedPeerWatcherBoundsLog(t *testing.T) {
 				spec.path, spec.truncateAt = path, 1<<30
 				// A future window avoids startup loss hiding an accidental observation.
 				at := time.Now().Add(3 * time.Hour)
+				d.webPeer.now = func() time.Time { return at }
 				appendRecords := func() {
 					appendLine(t, path, peerLine(at, "site.example", "203.0.113.80", "203.0.113.80"))
 					appendLine(t, path, peerLine(at, "site.example", "192.0.2.10", "192.0.2.60"))
@@ -490,5 +491,89 @@ func TestWebPeerLogRejectsLinesFromTheFuture(t *testing.T) {
 	p.handle(peerLine(now.Add(30*time.Second), "site.example", later.String(), later.String()), &config.Config{})
 	if got := checks.WebPeerVerdict(later, now.Add(30*time.Second)); got != checks.PeerDirect {
 		t.Fatalf("a line 30s ahead of the clock = %v, want direct", got)
+	}
+}
+
+// An append-only writer can join a prefix to the server's timestamp. Even
+// timestamps that wrap time.Time must leave a reader-clock loss, not hide a
+// forged request behind the client's earlier direct evidence.
+func TestWebPeerLogRejectsJoinedTimestamps(t *testing.T) {
+	now := time.Unix(1795200000, 0)
+	victim := netip.MustParseAddr("203.0.113.81")
+	for _, prefix := range []string{"9", "922337203", "+922337203", "000922337203", "-", "1 ", strings.Repeat("9", 512)} {
+		t.Run(prefix[:min(len(prefix), 20)], func(t *testing.T) {
+			t.Cleanup(checks.ResetWebPeersForTest())
+			p := newWebPeerLog()
+			p.now = func() time.Time { return now }
+			p.handle(peerLine(now.Add(-time.Minute), "site.example", victim.String(), victim.String()), nil)
+			if got := checks.WebPeerVerdict(victim, now); got != checks.PeerDirect {
+				t.Fatalf("before joined line = %v, want direct", got)
+			}
+			line := prefix + peerLine(now, "site.example", "192.0.2.10", victim.String())
+			if got := p.handle(line, nil); len(got) != 0 {
+				t.Errorf("invalid timestamp raised %d findings", len(got))
+			}
+			// Later direct records cannot repair the missing forged record.
+			p.handle(peerLine(now, "site.example", victim.String(), victim.String()), nil)
+			for _, at := range []time.Time{now, now.Add(time.Hour)} {
+				if got := checks.WebPeerVerdict(victim, at); got != checks.PeerUnknown {
+					t.Errorf("after joined timestamp at %v = %v, want unknown", at, got)
+				}
+			}
+		})
+	}
+}
+
+// Refused timestamps must neither advance retention nor move a loss beyond
+// the reader's clock. Flood invalid records, then require a fresh window to recover.
+func TestWebPeerLogTimestampBoundsAndRecovery(t *testing.T) {
+	now := time.Unix(1795200000, 0)
+	for _, stamp := range []string{
+		"9223372036854775807", // Largest parsed integer, outside time.Time's range.
+		"9223371974719179007", // Last second before time.Time wraps internally.
+		"9223371974719179008", // First second after the wrap.
+		fmt.Sprint(now.Add(webPeerClockSkew + time.Second).Unix()),
+	} {
+		t.Run(stamp, func(t *testing.T) {
+			now := now
+			t.Cleanup(checks.ResetWebPeersForTest())
+			p := newWebPeerLog()
+			p.now = func() time.Time { return now }
+			victim := netip.MustParseAddr("203.0.113.81")
+			p.handle(peerLine(now, "site.example", "192.0.2.10", victim.String()), nil)
+			for range 4096 {
+				p.handle(stamp+" site.example 203.0.113.82 203.0.113.82", nil)
+			}
+			p.handle(peerLine(now, "site.example", victim.String(), victim.String()), nil)
+			if got := checks.WebPeerVerdict(victim, now); got != checks.PeerUnknown {
+				t.Errorf("refused timestamp left verdict %v, want unknown", got)
+			}
+			now = now.Add(time.Hour + time.Second)
+			p.handle(peerLine(now, "site.example", victim.String(), victim.String()), nil)
+			if got := checks.WebPeerVerdict(victim, now); got != checks.PeerDirect {
+				t.Errorf("after the loss window = %v, want direct", got)
+			}
+		})
+	}
+}
+
+// Accepted clock skew must not prune a current request's forged evidence.
+func TestWebPeerLogAcceptedSkewPreservesEvidence(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	now := time.Unix(1795200000, 0)
+	p := newWebPeerLog()
+	p.now = func() time.Time { return now }
+	victim := netip.MustParseAddr("203.0.113.81")
+	p.handle(peerLine(now.Add(-time.Minute), "site.example", victim.String(), victim.String()), nil)
+	p.handle(peerLine(now, "site.example", "192.0.2.10", victim.String()), nil)
+	later := now.Add(webPeerClockSkew)
+	for range 4096 {
+		p.handle(peerLine(later, "site.example", "203.0.113.82", "203.0.113.82"), nil)
+	}
+	if got := checks.WebPeerVerdict(victim, now); got != checks.PeerForged {
+		t.Fatalf("accepted clock skew displaced forged evidence: %v", got)
+	}
+	if got := checks.WebPeerVerdict(netip.MustParseAddr("203.0.113.82"), later); got != checks.PeerDirect {
+		t.Fatalf("clock skew boundary = %v, want direct", got)
 	}
 }

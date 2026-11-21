@@ -11,6 +11,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- With the web peer log enabled, malformed timestamps no longer let forged requests inherit another client's direct-connection verdict.
+- LiteSpeed hosts lose peer verification and forgery alerts when PHP isolation becomes unsafe, including while CSM runs; peer logs remain bounded.
 - `csm webserver-integration install` and `upgrade` now also set up the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active. Restart CSM after the first install.
 - With the CSM web peer log, web attackers on proxy-header hosts that connect directly are blocked again; proxied clients are only challenged and forged addresses never blocked.
 - With the CSM web peer log, CSM alerts when the web server logs a client address chosen by a local process or an untrusted peer.

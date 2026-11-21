@@ -99,15 +99,18 @@ func (p *webPeerLog) hostSpec(path string, info platform.Info) logWatchSpec {
 }
 
 func (p *webPeerLog) handle(line string, cfg *config.Config) []alert.Finding {
+	now := p.now()
 	at, vhost, peer, client, ok := checks.ParseWebPeerLine(line)
 	// A request starts before its line is written, so a line from the future
 	// is corrupt: code able to append could glue digits onto the next line
 	// and move it out of every verdict window.
-	if !ok || at.After(p.now().Add(webPeerClockSkew)) {
-		checks.MarkWebPeerLoss(p.now())
+	// Compare Unix seconds: large positive integers can wrap time.Time's
+	// internal seconds and appear earlier than now to Time.After.
+	if !ok || at.Unix() > now.Add(webPeerClockSkew).Unix() {
+		checks.MarkWebPeerLoss(now)
 		return nil
 	}
-	if checks.ObserveWebPeer(at, peer, client, cfg) != checks.PeerForged || !p.due(vhost, p.now()) {
+	if checks.ObserveWebPeer(at, peer, client, cfg) != checks.PeerForged || !p.due(vhost, now) {
 		return nil
 	}
 	origin := "remote"
