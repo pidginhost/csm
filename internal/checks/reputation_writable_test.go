@@ -2,14 +2,50 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/config"
 )
+
+// A rewritten HTTP nomination cannot borrow a syslog record as proof that
+// the address connected. A service-written SMTP record can still prove it.
+func TestReputationRewriteCannotLaunderWritableSighting(t *testing.T) {
+	for _, writable := range []string{"SSH login", "mail login"} {
+		for _, smtp := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/smtp=%v", writable, smtp), func(t *testing.T) {
+				withHTTPRewrite(t, activeRewrite)
+				const ip = "203.0.113.91"
+				cfg := listIPs(t, ip)
+				cfg.MailLogs.File = "/var/log/maillog"
+				lines := sightingLines(ip, time.Now().Add(-time.Minute))
+				logs := map[string]string{
+					sightingAccessLog:    lines["HTTP request"] + "\n",
+					logPathFor[writable]: lines[writable] + "\n",
+				}
+				if smtp {
+					logs[reputationEximMainlog] = lines["SMTP auth fail"] + "\n"
+				}
+				sightingLogs(t, logs)
+				f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), ip)
+				_, _, err := mintScanFinding(t, f)
+				if smtp {
+					if err != nil {
+						t.Fatalf("service-written SMTP sighting refused: %v", err)
+					}
+				} else if admission.CauseOf(err) != admission.CauseRewrittenLog {
+					t.Fatalf("rewritten nomination borrowed syslog evidence: %+v, mint error %v", f.Observation, err)
+				}
+			})
+		}
+	}
+}
 
 // A log file any local user can write may name an address, but it never
 // displaces a sighting from a log the service itself wrote: one forged line

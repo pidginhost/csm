@@ -10,7 +10,51 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 )
+
+// An account can forge the message of a root failure. Its alert must not
+// consume the trusted alert's batch identity or persisted notification key.
+func TestFTPJournalUserAlertCannotSuppressRootAlert(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	src := d.ftpJournalSource()
+	at := time.Now()
+	var message string
+	for _, uid := range []string{"1001", "0"} {
+		line := maillog.JournalLine(map[string]string{
+			"MESSAGE":           "(?@198.51.100.32) [WARNING] Authentication failed for user [alice]",
+			"SYSLOG_IDENTIFIER": "pure-ftpd", "_PID": "77", "_SYSTEMD_UNIT": "pure-ftpd.service",
+			"_UID": uid, "_EXE": "/usr/sbin/pure-ftpd", "_TRANSPORT": "syslog",
+		}, maillog.Position{Stream: "journal", Cursor: "s=" + uid, ObservedAt: at})
+		message = line.Message
+		if !d.dispatchJournalLine(src, line) {
+			t.Fatal("dispatch stopped")
+		}
+	}
+	if len(d.alertCh) != 2 {
+		t.Fatalf("got %d alerts, want two", len(d.alertCh))
+	}
+	untrusted, trusted := <-d.alertCh, <-d.alertCh
+	file := parseFTPLogLine(message, d.currentCfg())
+	if len(file) != 1 || file[0].Key() == trusted.Key() {
+		t.Fatal("a file alert shares the root journal alert's notification identity")
+	}
+	if untrusted.Key() == trusted.Key() || untrusted.Fingerprint() == trusted.Fingerprint() {
+		t.Fatal("a user-uid alert shares the root alert's notification identity")
+	}
+	if got := alert.Deduplicate([]alert.Finding{untrusted, trusted}); len(got) != 2 {
+		t.Fatalf("batch deduplication suppressed a root alert: %+v", got)
+	}
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	st.Update([]alert.Finding{untrusted, file[0]})
+	if got := st.FilterNew([]alert.Finding{trusted}); len(got) != 1 {
+		t.Fatal("a user-uid alert suppressed a later root alert in notification history")
+	}
+}
 
 // Where syslog goes through journald, FTP logins come from pure-ftpd's
 // journal entries and the system log file is not watched.

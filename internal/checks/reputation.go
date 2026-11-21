@@ -856,6 +856,14 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		}
 	}
 
+	// Rewritten HTTP nominations do not enter surfaces. They can outrank a
+	// writable nomination in ips, but must never borrow its record as proof
+	// that the address connected. Keep independently trusted records intact.
+	for ip := range records {
+		if writableSighting(surfaces[ip]) && !writableSighting(ips[ip]) {
+			delete(records, ip)
+		}
+	}
 	return ips, records, rewritten
 }
 

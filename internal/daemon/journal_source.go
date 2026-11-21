@@ -155,6 +155,11 @@ func (d *Daemon) dispatchJournalLine(src journalSource, line maillog.Line) bool 
 	return d.dispatchLogLine(src.producer, line, func(msg string, _ alert.Observation, cfg *config.Config) []alert.Finding {
 		findings := src.handler(msg, cfg)
 		for i := range findings {
+			if src.producer == checks.ProducerFTPJournal {
+				// Root FTP entries must not share notification history with
+				// user-uid entries or file alerts saved before journal use.
+				findings[i].DedupKey = "journal:" + findings[i].Key()
+			}
 			if findings[i].Check == "ssh_login_unknown_ip" && line.Position.Cursor != "" {
 				// PIDs and client ports can be reused; the journal cursor
 				// names the login independently of its message text.

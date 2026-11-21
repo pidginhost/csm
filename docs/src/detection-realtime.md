@@ -399,6 +399,11 @@ Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.
 
+Root FTP journal entries have separate notification identities from user-uid
+entries and file alerts. A forged alert cannot silence a root failure alert in
+the same batch or in saved notification history, including after switching from
+file monitoring to the journal.
+
 The FTP and file-based SSH log watchers read the same files as the periodic
 `ftp_logins` and `ssh_logins` checks. Each file login is reported once: the
 watcher and periodic check build the same finding, and the second one is
