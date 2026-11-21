@@ -460,12 +460,12 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 			return nil, fmt.Errorf("parsing args: %w", err)
 		}
 	}
-	if args.DstPath == "" {
-		return nil, fmt.Errorf("dst_path is required")
-	}
 	if args.SupportRedactionSHA256 != "" {
 		args.Stage = true
 		args.DstPath = control.SupportBundleExportName
+	}
+	if args.DstPath == "" {
+		return nil, fmt.Errorf("dst_path is required")
 	}
 
 	cfg := c.d.currentCfg()

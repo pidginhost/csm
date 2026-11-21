@@ -241,10 +241,14 @@ func TestSupportStoreExportRetainsDiagnosticsWithoutKeyFiles(t *testing.T) {
 		if !names["bbolt.snapshot"] || !names["state/diagnostic.txt"] {
 			t.Fatal("missing store diagnostics")
 		}
-		for _, name := range []string{"state/webui.key", "rules/collector", "state/link", "state/alternate"} {
+		for _, name := range []string{"state/webui.key", "rules/collector", "state/alternate"} {
 			if names[name] == support {
 				t.Errorf("support=%v entry %s present=%v", support, name, names[name])
 			}
+		}
+		// No export follows a symbolic link inside the state directory.
+		if names["state/link"] {
+			t.Errorf("support=%v export followed a symbolic link", support)
 		}
 	}
 }
