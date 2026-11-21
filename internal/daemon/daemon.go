@@ -3026,14 +3026,9 @@ func (d *Daemon) mailSenderRules() []maillog.SenderRule {
 // dispatchLogLine runs handler on one positioned line and enqueues its
 // findings, each stamped with producer and the line's position.
 func (d *Daemon) dispatchLogLine(producer admission.ProducerID, line maillog.Line, handler ObservedLineHandler) bool {
-	var obs alert.Observation
-	switch {
-	case line.Position.Stream != "":
+	obs := checks.UnpositionedObservation(producer)
+	if line.Position.Stream != "" {
 		obs = alert.Observation{Producer: string(producer), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
-	case checks.ProducerWritableLog(producer):
-		// Without a position the line still came from a file any local
-		// user can write: it alerts, never blocks and is never a login.
-		obs = alert.Observation{Producer: string(producer)}
 	}
 	findings := handler(line.Message, obs, d.currentCfg())
 	for i, f := range findings {

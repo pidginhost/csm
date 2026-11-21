@@ -62,8 +62,8 @@ func TestReadNewSyslogRecordsDoesNotNameACatchUpFragment(t *testing.T) {
 	if err != nil || len(records) != 2 || records[0].text != "hit suffix" || records[1].text != "hit next" {
 		t.Fatalf("completed read: %+v, error %v", records, err)
 	}
-	if o := records[0].observation(ProducerFTPScan, time.Unix(1, 0)); o != (alert.Observation{}) {
-		t.Errorf("catch-up fragment named %+v, want no observation", o)
+	if o := records[0].observation(ProducerFTPScan, time.Unix(1, 0)); o != (alert.Observation{Producer: string(ProducerFTPScan)}) {
+		t.Errorf("catch-up fragment named %+v, want no position, only its writable producer", o)
 	}
 	offset := int64(len(prefix) + len("hit suffix\n"))
 	o, want := records[1].observation(ProducerFTPScan, time.Unix(1, 0)), syslogTestRef(t, path, offset, "hit next")
@@ -339,10 +339,11 @@ func TestSyslogObservationNamesTheCapturedBytes(t *testing.T) {
 	}
 }
 
-// A record without a known file names no observation.
+// A record without a known file names no position, only the writable log
+// its producer reads.
 func TestSyslogRecordWithoutAFileNamesNothing(t *testing.T) {
-	if o := (syslogRecord{text: "first", offset: 0}).observation(ProducerFTPScan, time.Unix(1, 0)); o != (alert.Observation{}) {
-		t.Fatalf("observation %+v, want none", o)
+	if o := (syslogRecord{text: "first", offset: 0}).observation(ProducerFTPScan, time.Unix(1, 0)); o != (alert.Observation{Producer: string(ProducerFTPScan)}) {
+		t.Fatalf("observation %+v, want no position, only its writable producer", o)
 	}
 }
 

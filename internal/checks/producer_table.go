@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -144,6 +145,16 @@ var writableLogProducers = map[admission.ProducerID]bool{
 // ProducerWritableLog reports whether p reads a syslog file a local user can
 // write.
 func ProducerWritableLog(p admission.ProducerID) bool { return writableLogProducers[p] }
+
+// UnpositionedObservation names a line read without its position: nothing,
+// except that a log any local user can write still names its producer, so
+// the line alerts but never acts.
+func UnpositionedObservation(p admission.ProducerID) alert.Observation {
+	if writableLogProducers[p] {
+		return alert.Observation{Producer: string(p)}
+	}
+	return alert.Observation{}
+}
 
 // UnverifiedAddress reports whether a finding of check stamped by producer
 // cannot attest its address: a syslog file producer stamped it, or no

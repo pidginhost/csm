@@ -531,7 +531,11 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			// The newest new failure is the observation the report names.
 			freshFailures[ip] = rec.observation(ProducerFTPScan, at)
 		case account != "":
-			findings = append(findings, ftpLoginFinding(ip, account, line, tracker.count(ip)))
+			// Any local user can write this log: the login alerts but makes
+			// no customer.
+			login := ftpLoginFinding(ip, account, line, tracker.count(ip))
+			login.Observation = rec.observation(ProducerFTPScan, login.Timestamp)
+			findings = append(findings, login)
 		}
 	}
 

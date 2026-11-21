@@ -267,11 +267,21 @@ func (w *LogWatcher) truncateIfFull() {
 	w.reset()
 }
 
+// lineObservation is observation for a framed line. An unframed line has
+// no position, but a log any local user can write still names its producer.
+func (w *LogWatcher) lineObservation(framed bool, lineStart int64, line string, at time.Time) alert.Observation {
+	if !framed {
+		return checks.UnpositionedObservation(w.producer)
+	}
+	return w.observation(lineStart, line, at)
+}
+
 // observation names the line that starts at lineStart in the current file
-// by its offset and bytes; zero when the log feeds no producer.
+// by its offset and bytes; zero when the log feeds no producer, and only a
+// writable log's producer when the file has no identity.
 func (w *LogWatcher) observation(lineStart int64, line string, at time.Time) alert.Observation {
 	if w.producer == "" || !w.fileID.known {
-		return alert.Observation{}
+		return checks.UnpositionedObservation(w.producer)
 	}
 	// HTTP peer verification is anchored to the request, not to a delayed
 	// read. An undated request cannot borrow a later connection's verdict.
@@ -488,12 +498,10 @@ func (w *LogWatcher) readNewLines() {
 			var findings []alert.Finding
 			var obs alert.Observation
 			if w.observed != nil {
-				if framed {
-					obs = w.observation(lineStart, line, now)
-				}
+				obs = w.lineObservation(framed, lineStart, line, now)
 				findings = w.observed(line, obs, w.currentCfg())
-			} else if findings = w.handler(line, w.currentCfg()); len(findings) > 0 && framed {
-				obs = w.observation(lineStart, line, now)
+			} else if findings = w.handler(line, w.currentCfg()); len(findings) > 0 {
+				obs = w.lineObservation(framed, lineStart, line, now)
 			}
 			for _, f := range findings {
 				if f.Timestamp.IsZero() {

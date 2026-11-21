@@ -299,3 +299,22 @@ func TestUnverifiedAddress(t *testing.T) {
 		}
 	}
 }
+
+// A line read without its position, unframed or from a file of unknown
+// identity, still names a log any local user can write; any other
+// unpositioned line names nothing.
+func TestUnpositionedWritableRecordsKeepTheirProducer(t *testing.T) {
+	now := time.Now()
+	for _, p := range []admission.ProducerID{ProducerSSHLog, ProducerSSHLoginScan, ProducerMailLog, ProducerFTPLog, ProducerFTPScan} {
+		want := alert.Observation{Producer: string(p)}
+		if got := (scanRecord{}).observation(p); got != want {
+			t.Errorf("scan record from %s without a position: %+v", p, got)
+		}
+		if got := (syslogRecord{}).observation(p, now); got != want {
+			t.Errorf("syslog record from %s without a position: %+v", p, got)
+		}
+	}
+	if got := (scanRecord{}).observation(ProducerReputationScan); got != (alert.Observation{}) {
+		t.Errorf("reputation record without a position: %+v", got)
+	}
+}

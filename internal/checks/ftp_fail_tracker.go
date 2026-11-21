@@ -193,7 +193,7 @@ type syslogRecord struct {
 // when the file has no identity.
 func (r syslogRecord) observation(producer admission.ProducerID, at time.Time) alert.Observation {
 	if r.stream == "" {
-		return alert.Observation{}
+		return UnpositionedObservation(producer)
 	}
 	return alert.Observation{Producer: string(producer), Stream: r.stream, Cursor: alert.RecordCursor(r.offset, r.text), ObservedAt: at.UTC()}
 }
