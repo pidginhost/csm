@@ -53,6 +53,10 @@ type Info struct {
 	// FrontProxied marks a cPanel host with nginx, which cPanel runs in
 	// front of Apache or LiteSpeed: every request reaches them from here.
 	FrontProxied bool
+	// ServerRunsSiteCode marks a LiteSpeed host that runs PHP as the web
+	// server's own user (PHP suEXEC off): site code can write what the
+	// server writes.
+	ServerRunsSiteCode bool
 
 	// Config locations for the detected web server.
 	ApacheConfigDir string // e.g. /etc/apache2 or /etc/httpd
@@ -371,6 +375,7 @@ func applyOverrides(info Info, o Overrides) Info {
 		// semantics as Panel: a pointer at WSNone forces "no web server"
 		// instead of being silently ignored.
 		info.WebServer = *o.WebServer
+		info.ServerRunsSiteCode = serverRunsSiteCode(info.WebServer)
 		info.AccessLogPaths = nil
 		info.ErrorLogPaths = nil
 		info.ModSecAuditLogPaths = nil
@@ -516,6 +521,7 @@ func detectWebServer(i *Info) {
 	i.WebServer = selectWebServer(i.Panel, running, i.ApacheBinary != "", i.NginxBinary != "")
 	i.WebServer = liteSpeedBinaryFallback(i.WebServer, running, i.LiteSpeedBinary != "")
 	i.FrontProxied = frontProxied(i.Panel, running, i.NginxBinary != "")
+	i.ServerRunsSiteCode = serverRunsSiteCode(i.WebServer)
 }
 
 // frontProxied reports a cPanel host with nginx running or installed: CSM

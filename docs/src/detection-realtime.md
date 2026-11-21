@@ -864,7 +864,9 @@ minutes while an access log has.
 
 On cPanel hosts with nginx in front, every peer is the server itself: CSM
 keeps the log bounded but takes no verdict or alert from it, and
-`csm webserver-integration remove` still removes an earlier snippet.
+`csm webserver-integration remove` still removes an earlier snippet. The same
+applies where LiteSpeed runs PHP as its own user (PHP suEXEC set to No),
+because site code could then change the log; `csm doctor` says which.
 
 A request logged with a client address chosen by a peer that is neither the
 client nor a trusted proxy raises `http_client_forged` (Critical), at most once

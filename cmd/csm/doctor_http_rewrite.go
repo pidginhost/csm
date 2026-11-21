@@ -64,6 +64,10 @@ func webPeerLogDoctorCheck(info platform.Info, r checks.HTTPRewrite, stat func(s
 		check.Status = "warn"
 		check.Message = "nginx runs in front of the web server, so the peer log cannot tell clients apart; rewritten web client addresses stay unverified"
 		return check
+	case info.ServerRunsSiteCode:
+		check.Status = "warn"
+		check.Message = "LiteSpeed runs PHP as its own user (PHP suEXEC off), so site code could alter the peer log; rewritten web client addresses stay unverified"
+		return check
 	case snippet == "":
 		check.Message = "not used with this web server"
 		return check

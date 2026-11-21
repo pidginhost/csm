@@ -152,33 +152,39 @@ func appendLine(t *testing.T, path, line string) {
 	}
 }
 
-// Behind a local nginx every peer is this host. The daemon still reads the
-// peer log, so the log stays bounded, but it records no verdict and raises
-// no forgery alert from it.
+// Behind a local nginx every peer is this host, and where LiteSpeed runs PHP
+// as its own user site code can rewrite the log. The daemon still reads the
+// peer log there, so it stays bounded, but takes no verdict or forgery alert
+// from it.
 func TestFrontProxiedHostDisablesPeerVerdicts(t *testing.T) {
-	t.Cleanup(checks.ResetWebPeersForTest())
-	d := &Daemon{webPeer: newWebPeerLog()}
-	var spec *logWatchSpec
-	for _, s := range d.fixedLogSpecs(platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache, FrontProxied: true}, nil, false) {
-		if s.path == webPeerLogPath {
-			spec = &s
-		}
-	}
-	if spec == nil || spec.truncateAt == 0 {
-		t.Fatalf("a front-proxied host does not read and bound the peer log: %+v", spec)
-	}
-	at := time.Unix(1795200000, 0)
-	for _, line := range []string{
-		peerLine(at, "site.example", "127.0.0.1:41000", "192.0.2.60"),
-		peerLine(at, "site.example", "203.0.113.80:41000", "203.0.113.80"),
+	for _, info := range []platform.Info{
+		{Panel: platform.PanelCPanel, WebServer: platform.WSApache, FrontProxied: true},
+		{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed, ServerRunsSiteCode: true},
 	} {
-		if got := spec.handler(line, &config.Config{}); len(got) != 0 {
-			t.Fatalf("front-proxied peer log line %q raised %+v", line, got)
+		t.Cleanup(checks.ResetWebPeersForTest())
+		d := &Daemon{webPeer: newWebPeerLog()}
+		var spec *logWatchSpec
+		for _, s := range d.fixedLogSpecs(info, nil, false) {
+			if s.path == webPeerLogPath {
+				spec = &s
+			}
 		}
-	}
-	for _, ip := range []string{"192.0.2.60", "203.0.113.80"} {
-		if got := checks.WebPeerVerdict(netip.MustParseAddr(ip), at); got != checks.PeerUnknown {
-			t.Fatalf("verdict for %s on a front-proxied host = %v, want unknown", ip, got)
+		if spec == nil || spec.truncateAt == 0 {
+			t.Fatalf("%+v does not read and bound the peer log: %+v", info, spec)
+		}
+		at := time.Unix(1795200000, 0)
+		for _, line := range []string{
+			peerLine(at, "site.example", "127.0.0.1:41000", "192.0.2.60"),
+			peerLine(at, "site.example", "203.0.113.80:41000", "203.0.113.80"),
+		} {
+			if got := spec.handler(line, &config.Config{}); len(got) != 0 {
+				t.Fatalf("%+v: peer log line %q raised %+v", info, line, got)
+			}
+		}
+		for _, ip := range []string{"192.0.2.60", "203.0.113.80"} {
+			if got := checks.WebPeerVerdict(netip.MustParseAddr(ip), at); got != checks.PeerUnknown {
+				t.Fatalf("%+v: verdict for %s = %v, want unknown", info, ip, got)
+			}
 		}
 	}
 }

@@ -188,6 +188,8 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 	}
 	fronted := cpanel
 	fronted.FrontProxied = true
+	suexecOff := cpanel
+	suexecOff.ServerRunsSiteCode = true
 	for _, tc := range []struct {
 		name   string
 		info   platform.Info
@@ -198,6 +200,7 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 	}{
 		{"direct host", cpanel, checks.HTTPRewrite{State: checks.RewriteNone}, nil, "ok", "not needed"},
 		{"fronted", fronted, active, fresh, "warn", "nginx"},
+		{"suexec off", suexecOff, active, fresh, "warn", "suEXEC"},
 		{"fronted without rewrite", fronted, checks.HTTPRewrite{State: checks.RewriteNone}, fresh, "warn", "nginx"},
 		{"unsupported", platform.Info{WebServer: platform.WSNginx}, checks.HTTPRewrite{State: checks.RewriteNone}, nil, "ok", "not used"},
 		{"not installed", cpanel, active, nil, "warn", "csm webserver-integration install"},

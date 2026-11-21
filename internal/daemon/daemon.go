@@ -2935,9 +2935,10 @@ func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, exim ObservedLineHandler,
 	// Apache and LiteSpeed write the peer log through the CSM snippet.
 	if hostInfo.FrontProxied || hostInfo.WebServer == platform.WSApache || hostInfo.WebServer == platform.WSLiteSpeed {
 		spec := d.webPeer.spec(webPeerLogPath)
-		if hostInfo.FrontProxied {
-			// Behind a local nginx every peer is this host: read the log
-			// only so it stays bounded.
+		if hostInfo.FrontProxied || hostInfo.ServerRunsSiteCode {
+			// Behind a local nginx every peer is this host, and PHP run as
+			// LiteSpeed's user can rewrite the log: read it only so it
+			// stays bounded.
 			spec.handler = func(string, *config.Config) []alert.Finding { return nil }
 		}
 		specs = append(specs, spec)
