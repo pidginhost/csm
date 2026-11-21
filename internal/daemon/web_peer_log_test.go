@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -190,13 +191,18 @@ func TestFrontProxiedHostDisablesPeerVerdicts(t *testing.T) {
 }
 
 func TestFrontProxiedPeerWatcherBoundsLog(t *testing.T) {
-	for _, server := range []platform.WebServer{platform.WSApache, platform.WSLiteSpeed, platform.WSNginx} {
+	for _, info := range []platform.Info{
+		{WebServer: platform.WSApache, FrontProxied: true},
+		{WebServer: platform.WSLiteSpeed, FrontProxied: true},
+		{WebServer: platform.WSNginx, FrontProxied: true},
+		{WebServer: platform.WSLiteSpeed, ServerRunsSiteCode: true},
+	} {
 		for _, backlog := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/backlog=%v", server, backlog), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/front=%v/backlog=%v", info.WebServer, info.FrontProxied, backlog), func(t *testing.T) {
 				t.Cleanup(checks.ResetWebPeersForTest())
 				d := &Daemon{webPeer: newWebPeerLog()}
 				var spec *logWatchSpec
-				for _, s := range d.fixedLogSpecs(platform.Info{Panel: platform.PanelCPanel, WebServer: server, FrontProxied: true}, nil, false) {
+				for _, s := range d.fixedLogSpecs(info, nil, false) {
 					if s.path == webPeerLogPath {
 						spec = &s
 					}
@@ -323,5 +329,127 @@ func TestWebPeerLateRetryReplacesStoppedDrain(t *testing.T) {
 	stop()
 	if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseRewrittenLog {
 		t.Fatalf("stopped reader admitted direct evidence: %v", err)
+	}
+}
+
+// Revoking suEXEC must stop both observations and previously cached evidence,
+// even when the platform snapshot still says it is enabled.
+func TestWebPeerSuExecRevokedWhileRunning(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	previous := checks.CurrentHTTPRewrite()
+	checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSLiteSpeed})
+	t.Cleanup(func() { checks.SetHTTPRewrite(previous) })
+	var unsafe atomic.Bool
+	p := newWebPeerLog()
+	p.serverRunsSiteCode = func(platform.WebServer) bool { return unsafe.Load() }
+	d := &Daemon{webPeer: p}
+	var spec logWatchSpec
+	for _, s := range d.fixedLogSpecs(platform.Info{WebServer: platform.WSLiteSpeed}, nil, false) {
+		if s.path == webPeerLogPath {
+			spec = s
+		}
+	}
+	path := filepath.Join(t.TempDir(), "peer.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec.path = path
+	findings := make(chan alert.Finding, 4)
+	w, err := newObservedLogWatcher(spec, &config.Config{}, findings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() { w.Run(stop); close(done) }()
+	t.Cleanup(func() { close(stop); <-done })
+	at := time.Now().Add(3 * time.Hour).Truncate(time.Second)
+	appendLine(t, path, peerLine(at, "site.example", "203.0.113.80", "203.0.113.80"))
+	f := alert.Finding{
+		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.80",
+		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now().Add(-time.Minute),
+		Observation: alert.Observation{Producer: string(checks.ProducerAccessLog), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: at},
+	}
+	if _, _, err := checks.AdmissionEvidence(f); err != nil {
+		t.Fatalf("safe peer rejected: %v", err)
+	}
+	unsafe.Store(true)
+	// No new log line: the cached direct verdict must be revoked too.
+	if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("cached peer survived suEXEC revocation: %v", err)
+	}
+	appendLine(t, path, peerLine(at, "site.example", "192.0.2.10", "192.0.2.60"))
+	if !w.Drain(time.Second) {
+		t.Fatal("unsafe log was not drained")
+	}
+	if len(findings) != 0 {
+		t.Fatalf("unsafe log raised %d forgery alerts", len(findings))
+	}
+	for _, ip := range []string{"203.0.113.80", "192.0.2.60"} {
+		if got := checks.WebPeerVerdict(netip.MustParseAddr(ip), at); got != checks.PeerUnknown {
+			t.Fatalf("unsafe verdict: %v", got)
+		}
+	}
+	// Re-enabling the setting cannot authenticate backlog written while off.
+	unsafe.Store(false)
+	appendLine(t, path, peerLine(at.Add(3*time.Hour), "site.example", "203.0.113.80", "203.0.113.80"))
+	f.Observation.ObservedAt = at.Add(3 * time.Hour)
+	if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("untrusted backlog admitted: %v", err)
+	}
+}
+
+func TestWebPeerSuExecPollRevokesAndBounds(t *testing.T) {
+	for _, unsafeAtStart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unsafeAtStart=%v", unsafeAtStart), func(t *testing.T) {
+			t.Cleanup(checks.ResetWebPeersForTest())
+			unsafe := unsafeAtStart
+			p := newWebPeerLog()
+			p.serverRunsSiteCode = func(platform.WebServer) bool { return unsafe }
+			path := filepath.Join(t.TempDir(), "peer.log")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The startup snapshot can predate a change to the XML file.
+			spec := p.hostSpec(path, platform.Info{WebServer: platform.WSLiteSpeed})
+			findings := make(chan alert.Finding, 4)
+			w, err := newObservedLogWatcher(spec, &config.Config{}, findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(w.Stop)
+			at := time.Now().Add(3 * time.Hour)
+			client := netip.MustParseAddr("203.0.113.80")
+			appendLine(t, path, peerLine(at, "site.example", client.String(), client.String()))
+			w.readNewLines()
+			want := checks.PeerDirect
+			if unsafeAtStart {
+				want = checks.PeerUnknown
+			}
+			if got := checks.WebPeerVerdict(client, at); got != want {
+				t.Fatalf("initial verdict = %v, want %v", got, want)
+			}
+			unsafe = true
+			w.readNewLines() // Empty polls must revoke previously cached evidence.
+			if got := checks.WebPeerVerdict(client, at); got != checks.PeerUnknown {
+				t.Fatalf("idle poll retained verdict %v", got)
+			}
+			at = at.Add(3 * time.Hour)
+			appendLine(t, path, peerLine(at, "site.example", client.String(), client.String()))
+			appendLine(t, path, peerLine(at, "site.example", "192.0.2.10", "192.0.2.60"))
+			w.readNewLines()
+			for _, ip := range []string{client.String(), "192.0.2.60"} {
+				if got := checks.WebPeerVerdict(netip.MustParseAddr(ip), at); got != checks.PeerUnknown {
+					t.Fatalf("unsafe observation produced verdict %v", got)
+				}
+			}
+			if len(findings) != 0 {
+				t.Fatalf("unsafe log raised %d findings", len(findings))
+			}
+			w.truncateAt = 1
+			w.readNewLines()
+			if st, err := os.Stat(path); err != nil || st.Size() != 0 {
+				t.Fatalf("revoked log not bounded: %v, %v", st, err)
+			}
+		})
 	}
 }

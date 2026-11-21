@@ -21,6 +21,11 @@ func TestLiteSpeedRunsPHPAsServer(t *testing.T) {
 		{"missing", "<httpServerConfig><user>nobody</user></httpServerConfig>", true},
 		{"twice", "<httpServerConfig><phpSuExec>1</phpSuExec><phpSuExec>0</phpSuExec></httpServerConfig>", true},
 		{"other document", "<vhostConfig><phpSuExec>1</phpSuExec></vhostConfig>", true},
+		{"second document", "<httpServerConfig><phpSuExec>1</phpSuExec></httpServerConfig><httpServerConfig><phpSuExec>0</phpSuExec></httpServerConfig>", true},
+		{"trailing setting", "<httpServerConfig><phpSuExec>1</phpSuExec></httpServerConfig><phpSuExec>0</phpSuExec>", true},
+		{"trailing garbage", "<httpServerConfig><phpSuExec>1</phpSuExec></httpServerConfig>garbage", true},
+		{"nested value", "<httpServerConfig><phpSuExec>1<phpSuExec>0</phpSuExec></phpSuExec></httpServerConfig>", true},
+		{"namespaced setting", "<httpServerConfig xmlns:x='urn:example'><x:phpSuExec>1</x:phpSuExec></httpServerConfig>", true},
 		{"malformed", "<httpServerConfig><phpSuExec>1</phpSuExec>", true},
 	} {
 		path := filepath.Join(dir, tc.name+".xml")

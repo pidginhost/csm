@@ -867,6 +867,13 @@ keeps the log bounded but takes no verdict or alert from it, and
 `csm webserver-integration remove` still removes an earlier snippet. The same
 applies where LiteSpeed runs PHP as its own user (PHP suEXEC set to No),
 because site code could then change the log; `csm doctor` says which.
+CSM requires exactly one `phpSuExec` value of `1` or `2` in LiteSpeed's
+`httpd_config.xml`; missing, repeated, invalid or unreadable settings disable
+peer trust. CSM rechecks before each log read and before using cached peer
+evidence. If isolation becomes unsafe, verdicts and forgery alerts stop while
+the log stays bounded. Trust stays disabled for that daemon run, since lines
+written while PHP shared the server user cannot be authenticated. To restore
+peer verification, enable PHP suEXEC, reload LiteSpeed, then restart CSM.
 
 A request logged with a client address chosen by a peer that is neither the
 client nor a trusted proxy raises `http_client_forged` (Critical), at most once

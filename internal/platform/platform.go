@@ -375,7 +375,7 @@ func applyOverrides(info Info, o Overrides) Info {
 		// semantics as Panel: a pointer at WSNone forces "no web server"
 		// instead of being silently ignored.
 		info.WebServer = *o.WebServer
-		info.ServerRunsSiteCode = serverRunsSiteCode(info.WebServer)
+		info.ServerRunsSiteCode = ServerRunsSiteCode(info.WebServer)
 		info.AccessLogPaths = nil
 		info.ErrorLogPaths = nil
 		info.ModSecAuditLogPaths = nil
@@ -521,7 +521,7 @@ func detectWebServer(i *Info) {
 	i.WebServer = selectWebServer(i.Panel, running, i.ApacheBinary != "", i.NginxBinary != "")
 	i.WebServer = liteSpeedBinaryFallback(i.WebServer, running, i.LiteSpeedBinary != "")
 	i.FrontProxied = frontProxied(i.Panel, running, i.NginxBinary != "")
-	i.ServerRunsSiteCode = serverRunsSiteCode(i.WebServer)
+	i.ServerRunsSiteCode = ServerRunsSiteCode(i.WebServer)
 }
 
 // frontProxied reports a cPanel host with nginx running or installed: CSM

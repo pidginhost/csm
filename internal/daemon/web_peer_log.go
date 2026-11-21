@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/integration/webserver"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/netutil"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // webPeerLogPath is the log the CSM snippet makes the web server write:
@@ -32,15 +33,16 @@ const webPeerAlertMaxVhosts = 10000
 // webPeerLog feeds the peer index and raises one forgery alert per vhost
 // per hour: a tenant script can forge thousands of requests a minute.
 type webPeerLog struct {
-	mu        sync.Mutex
-	alertedAt map[string]time.Time
-	now       func() time.Time
-	pruneAt   time.Time
-	saturated bool
+	serverRunsSiteCode func(platform.WebServer) bool
+	mu                 sync.Mutex
+	alertedAt          map[string]time.Time
+	now                func() time.Time
+	pruneAt            time.Time
+	saturated          bool
 }
 
 func newWebPeerLog() *webPeerLog {
-	return &webPeerLog{alertedAt: make(map[string]time.Time), now: time.Now}
+	return &webPeerLog{alertedAt: make(map[string]time.Time), now: time.Now, serverRunsSiteCode: platform.ServerRunsSiteCode}
 }
 
 // spec is the watch of path: optional, emptied past the cap, every gap in
@@ -52,6 +54,44 @@ func (p *webPeerLog) spec(path string) logWatchSpec {
 		reset:   func() { checks.MarkWebPeerLoss(time.Now()) },
 		onWatch: func(w *LogWatcher) { checks.SetWebPeerDrain(w.Drain) },
 	}
+}
+
+// hostSpec keeps draining an untrusted log for its size bound. Once site code
+// could have changed the log, a later safe setting cannot authenticate backlog;
+// trust stays revoked until a new daemon starts at EOF.
+func (p *webPeerLog) hostSpec(path string, info platform.Info) logWatchSpec {
+	spec := p.spec(path)
+	var mu sync.Mutex
+	blocked := info.FrontProxied || info.ServerRunsSiteCode
+	trusted := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if !blocked {
+			blocked = p.serverRunsSiteCode(info.WebServer)
+		}
+		if blocked {
+			checks.MarkWebPeerLoss(p.now())
+		}
+		return !blocked
+	}
+	spec.beforeRead = func() { trusted() }
+	spec.handler = func(line string, cfg *config.Config) []alert.Finding {
+		mu.Lock()
+		defer mu.Unlock()
+		if blocked {
+			return nil
+		}
+		return p.handle(line, cfg)
+	}
+	spec.onWatch = func(w *LogWatcher) {
+		trusted()
+		checks.SetWebPeerDrain(func(timeout time.Duration) bool {
+			// Check even an idle log: cached direct evidence is unsafe as
+			// soon as PHP can write it. Recheck after a concurrent read too.
+			return trusted() && w.Drain(timeout) && trusted()
+		})
+	}
+	return spec
 }
 
 func (p *webPeerLog) handle(line string, cfg *config.Config) []alert.Finding {

@@ -223,3 +223,13 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorWebPeerUnverifiedSuExecRecovery(t *testing.T) {
+	got := webPeerLogDoctorCheck(platform.Info{WebServer: platform.WSLiteSpeed, ServerRunsSiteCode: true}, checks.HTTPRewrite{}, nil, time.Now())
+	if got.Status != "warn" || !strings.Contains(got.Message, "cannot be verified") {
+		t.Fatalf("unknown isolation must warn without claiming it is known off: %+v", got)
+	}
+	if !strings.Contains(got.Fix, "reload LiteSpeed, then restart CSM") {
+		t.Fatalf("recovery must reload the server before starting a fresh peer reader: %+v", got)
+	}
+}

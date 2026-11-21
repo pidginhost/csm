@@ -57,6 +57,8 @@ type logWatchSpec struct {
 	// reset, when set, is told whenever lines may have been skipped: the
 	// watcher started at the end, or the log was truncated or rotated.
 	reset func()
+	// beforeRead checks source trust even on polls that find no new lines.
+	beforeRead func()
 	// onWatch, when set, receives each watcher created for the spec.
 	onWatch func(*LogWatcher)
 }
@@ -93,6 +95,7 @@ type LogWatcher struct {
 	// truncateAt and onReset come from the spec; see logWatchSpec.
 	truncateAt int64
 	onReset    func()
+	beforeRead func()
 }
 
 type logFileID struct {
@@ -205,6 +208,7 @@ func newObservedLogWatcher(spec logWatchSpec, cfg *config.Config, alertCh chan<-
 	w.producer = spec.producer
 	w.observed = spec.observed
 	w.truncateAt, w.onReset = spec.truncateAt, spec.reset
+	w.beforeRead = spec.beforeRead
 	// The watcher starts at the end: anything before it was never read.
 	w.reset()
 	if spec.onWatch != nil {
@@ -378,6 +382,9 @@ func (w *LogWatcher) closeFile() {
 }
 
 func (w *LogWatcher) readNewLines() {
+	if w.beforeRead != nil {
+		w.beforeRead()
+	}
 	// A loss-sensitive log cannot keep using an old inode until the periodic
 	// reopen: its replacement may already contain a forged-client record.
 	if w.onReset != nil && w.file != nil {

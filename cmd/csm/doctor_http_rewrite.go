@@ -66,7 +66,8 @@ func webPeerLogDoctorCheck(info platform.Info, r checks.HTTPRewrite, stat func(s
 		return check
 	case info.ServerRunsSiteCode:
 		check.Status = "warn"
-		check.Message = "LiteSpeed runs PHP as its own user (PHP suEXEC off), so site code could alter the peer log; rewritten web client addresses stay unverified"
+		check.Message = "LiteSpeed PHP suEXEC is off or cannot be verified, so site code could alter the peer log; rewritten web client addresses stay unverified"
+		check.Fix = "enable PHP suEXEC (1 or 2), reload LiteSpeed, then restart CSM"
 		return check
 	case snippet == "":
 		check.Message = "not used with this web server"
