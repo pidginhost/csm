@@ -104,7 +104,7 @@ func TestParseDovecotLogLine_ProdFormatPassesSuccessGate(t *testing.T) {
 	// GeoIP DB is nil in the unit env, so the detector returns nil after the
 	// gate; the point is it does not panic and does not reject at the gate.
 	cfg := &config.Config{}
-	if got := parseDovecotLogLine(prod, cfg); got != nil {
+	if got := parseDovecotLogLine(prod, cfg, true); got != nil {
 		t.Errorf("expected nil (no GeoIP DB in test env), got %v", got)
 	}
 }

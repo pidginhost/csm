@@ -49,6 +49,9 @@ var stampMechanisms = map[string]string{
 	// line dispatcher that called it.
 	"log watcher":  "TestLogWatcherStampsObservation,TestFixedLogSpecsNameTheirProducers,TestAccessLogWatchersNameTheirProducer,TestModSecWatcherNamesItsProducer,TestMailLogDispatchStampsObservation,TestDispatchLogLineStampsProducer",
 	"pam listener": "TestPAMFailureCarriesItsObservation",
+	// A journal source's dispatcher stamps the findings of entries its
+	// service wrote.
+	"journal reader": "TestSSHJournalLineParses,TestFTPJournalBruteforceBlocks,TestDispatchLogLineStampsProducer",
 	// The realtime sshd reader and the follow scan stamp what this builder
 	// returns; its store-less tail caller, like the FTP one, stamps nothing.
 	"ssh login readers":   "TestSSHLoginScanStampsObservation,TestLogWatcherStampsObservation,TestFixedLogSpecsNameTheirProducers",
@@ -92,6 +95,7 @@ var stampSites = map[string]string{
 	"internal/daemon/handlers.go:parseFTPLogLine":                          "log watcher",
 	"internal/daemon/handlers_accesslog.go:parseAccessLogBruteForceForLog": "log watcher",
 	"internal/daemon/handlers_modsec.go:parseModSecLogLineDeduped":         "log watcher",
+	"internal/daemon/journal_source.go:Daemon.handleFTPJournalLine":        "journal reader",
 	"internal/daemon/mailbrute.go:mailAuthTracker.RecordResolvedObserved":  "log watcher",
 	"internal/daemon/mailbrute.go:mailAuthTracker.recordSuccessAt":         "log watcher",
 	"internal/daemon/mailspray_findings.go:sprayFinding":                   "log watcher",

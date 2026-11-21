@@ -328,11 +328,11 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 |-----|-----------|-----------------|
 | cPanel session log (`/usr/local/cpanel/logs/session_log`) | cPanel only | Logins from non-infra IPs, password changes, File Manager uploads, sessions ended for security token failures |
 | cPanel access log (`/usr/local/cpanel/logs/access_log`) | cPanel only | cPanel-API auth patterns |
-| Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
+| Auth log | All | SSH logins and failures. Where syslog goes through journald, sshd's own journal entries (`sshd.service` or `ssh.service`, sent as root); otherwise `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel, whose lines only alert |
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
 | Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on Postfix hosts with Dovecot |
-| FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
+| FTP log | All with journald, otherwise cPanel only | FTP logins and failures. Where syslog goes through journald, pure-ftpd's own journal entries (`pure-ftpd.service`): failures it sends as root can block, while lines it sends as the logged-in user, logins among them, only alert; otherwise `/var/log/messages`, whose lines only alert |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
 
@@ -399,12 +399,18 @@ Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.
 
-The FTP and SSH log watchers read the same files as the periodic `ftp_logins`
-and `ssh_logins` checks, so both see every login. Each login is reported once:
-the watcher and the periodic check build the same finding, and the second one
-is recognised as a repeat. When the watcher is not running, on a non-cPanel
-host or before the log file appears, the periodic check still reports the
-login on its own.
+Root FTP journal entries have separate notification identities from user-uid
+entries and file alerts. A forged alert cannot silence a root failure alert in
+the same batch or in saved notification history, including after switching from
+file monitoring to the journal.
+
+The FTP and file-based SSH log watchers read the same files as the periodic
+`ftp_logins` and `ssh_logins` checks. Each file login is reported once: the
+watcher and periodic check build the same finding, and the second one is
+recognised as a repeat. When SSH uses the journal, the periodic auth-file scan
+yields to it. Each journal entry has its own alert identity, so a later login
+with the same process ID and client port still alerts. When a file watcher is
+not running, the periodic check still reports file logins on its own.
 
 An SSH login is reported only from sshd's own success record: the sshd program
 tag, then `Accepted <method> for <user> from <address> port <port>`. sshd also
@@ -427,6 +433,12 @@ the findings page, in history, in incident correlation and in the attack
 database, where their value is correlation with other evidence on the same
 account. Failed FTP authentication, FTP brute force, a login from a
 brute-force source, and SSH logins are all still emailed.
+
+The FTP journal reader keeps failure history for `thresholds.ftp_fail_window_min`
+and raises the same critical login-after-brute-force alert as the file scan.
+Busy sources cannot displace another source's failures from this window.
+Journal timestamps date the failures, so delayed delivery does not turn old
+attempts into a fresh burst.
 
 The phpanel webhook and SSE event stream still receive these successful
 operations; the email and operator-webhook filter runs after data delivery.
@@ -469,11 +481,34 @@ Repeated identical errors are not re-emitted. Retries use the current mail
 source configuration and start at the current tail, so delayed attachment does
 not count historical authentication failures as new activity.
 
-With `mail_logs.source: auto`, each retry chooses the configured or platform
-file if present, otherwise the configured journal units. A file missing for
-90 seconds triggers a new selection. The old reader stops before a replacement
-starts. Journal input follows new records from the selected services, including
-services with no prior entries; it does not replay older records on attachment.
+With `mail_logs.source: auto`, each retry reads the configured journal units
+when the journal is usable: syslog goes through journald (`/dev/log` is its
+socket), the running journal service holds an open journal, and Postfix does
+not write its own log file, including secondary instances listed in
+`multi_instance_directories`. The configured `mail_logs.units` must also cover
+all running Postfix and Dovecot master processes; mail services that have not
+started yet do not keep auto on file input. Old journal files alone do
+not qualify, including when journald uses `Storage=none`. If these checks
+cannot confirm coverage, it chooses the configured or platform file if present,
+then the journal units. Set `mail_logs.units` to the actual service names for
+custom Dovecot services or named Postfix instances; unit names are exact, not
+patterns. Postfix units must be named `postfix` or `postfix@<instance>` so their
+unprivileged workers pass the sender filter. Other Postfix unit names keep auto
+on file input. A file missing for 90 seconds triggers a new selection.
+The old reader stops before a replacement starts. Journal input follows new
+records from the selected services, including services with no prior entries;
+it does not replay older records on attachment.
+
+Any local user can write a line into a mail log file under any program name,
+so a line read from a file alerts but never blocks an address, and a login
+read from a file earns no customer standing or mail trust. File alerts use
+separate counters, authentication pairing, outage state and notification
+identities. They cannot trigger or suppress a trusted authentication verdict
+or suspend a mailbox. File lines keep their own password-spray tracking, so a
+file login after file failures still raises a compromise alert, which never
+blocks. Trusted logins after password spraying raise compromise alerts from
+trusted lines alone, including SMTP logins and logins to a different mailbox
+from those that failed.
 
 Explicit `file` and `journal` modes retry their selected source without
 switching, and a working reader stays attached until it stops or loses its file.
@@ -483,8 +518,11 @@ Journal input requires a build with journal support. The default units are
 as `postfix@postfix-out`, in `mail_logs.units`. Each journal record reaches
 the mail detectors with its program name, process id and time, as a mail log
 file records them, so every mail detection works the same with either source.
-Journal selection uses the trusted systemd unit, not the caller-supplied syslog
-identifier. Keep `mail_logs.units` limited to mail services. File input has no
+Journal input requires a configured systemd unit and a root sender, or the
+`postfix` user for Postfix units. Messages must arrive through the syslog socket
+or native journal API. Output streams and entries without these credentials
+are ignored before any mail detector processes them. Keep `mail_logs.units`
+limited to mail services. File input has no
 sender credentials: a local user who can submit mail-facility syslog messages
 can forge failures or successes there. On hosts with untrusted local users,
 use `mail_logs.source: journal` with the mail service units, or restrict the
@@ -584,7 +622,7 @@ A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, ea
 
 The signs cover logins from new countries, forged sender domains, bulk recipients, external redirects, and outbound reputation deferrals. Two new countries seen close together carry more weight. A redirect created soon after a foreign login also carries more weight.
 
-A login from a new country is an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail, IMAP and POP3 logins share the same history and use the login time in the log. Sessions opened by the panel or a reseller do not locate the mailbox owner. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
+A login from a new country is an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail, IMAP and POP3 logins share the same history and use the login time in the log. A login read from a mail log file is checked against that history but never added to it or counted as evidence, and its alerts keep a separate daily limit. Sessions opened by the panel or a reseller do not locate the mailbox owner. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
 
 A mail filter or Sieve script that sends a mailbox's mail to an outside address keeps its own `email_filter_exfil` finding and is also a sign, dated by the script's file time. The incident finding names the script and its target; CSM leaves the script in place as evidence, so remove it after review.
 
@@ -621,8 +659,12 @@ When the mail authentication backend itself fails (for example dovecot cannot re
 Mail login attribution uses the connection fields outside the raw login name.
 Names containing field-like text or angle brackets remain one account name.
 Records without a usable remote address do not count toward IP blocking or
-login trust. Reputation exemptions require a successful Dovecot login summary;
-success wording in a failed login name does not qualify.
+login trust. A reputation exemption requires a mail login in the last day that
+the mail service itself recorded (its own log or journal entry); a line in a
+mail log file, which any local user can write, never qualifies. The last trusted
+mail login is saved independently of FTP and cPanel activity, which cannot erase
+or renew the exemption. Older saved customer summaries without verified mail
+history do not qualify; a new trusted mail login is required.
 
 ## Stalwart Mail Server
 

@@ -121,7 +121,7 @@ func TestParseDovecotLogLine_NonLoginLine(t *testing.T) {
 	cfg := &config.Config{}
 
 	for _, line := range lines {
-		findings := parseDovecotLogLine(line, cfg)
+		findings := parseDovecotLogLine(line, cfg, true)
 		if findings != nil {
 			t.Errorf("parseDovecotLogLine(%q) = %v, want nil", line, findings)
 		}
@@ -133,7 +133,7 @@ func TestParseDovecotLogLine_InfraIP(t *testing.T) {
 
 	cfg := &config.Config{}
 
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	if findings != nil {
 		t.Errorf("parseDovecotLogLine with private IP should return nil, got %v", findings)
 	}

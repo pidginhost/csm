@@ -71,12 +71,12 @@ func sprayFinding(constituents int) alert.Finding {
 	at := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	f := alert.Finding{
 		Check: "mail_subnet_spray", Severity: alert.Critical, Message: "Mail password spray", CIDRs: []string{"198.51.100.0/24"},
-		Observation: alert.Observation{Producer: string(ProducerMailLog), Stream: "maillog", Cursor: "crossing", ObservedAt: at},
+		Observation: alert.Observation{Producer: string(ProducerMailJournal), Stream: "maillog", Cursor: "crossing", ObservedAt: at},
 	}
 	for i := 0; i < constituents; i++ {
 		f.SprayConstituents = append(f.SprayConstituents, alert.SprayConstituent{
 			Address: fmt.Sprintf("198.51.100.%d", i+1), LastSeen: at.Add(-time.Duration(constituents-i) * time.Second),
-			Observation: alert.Observation{Producer: string(ProducerMailLog), Stream: "maillog", Cursor: fmt.Sprintf("line-%02d", i+1), ObservedAt: at.Add(-time.Duration(constituents-i) * time.Second)},
+			Observation: alert.Observation{Producer: string(ProducerMailJournal), Stream: "maillog", Cursor: fmt.Sprintf("line-%02d", i+1), ObservedAt: at.Add(-time.Duration(constituents-i) * time.Second)},
 			Attribution: admission.AttributionPeer,
 		})
 	}

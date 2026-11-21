@@ -115,10 +115,13 @@ const (
 	// whose connecting peer was neither the address nor a trusted proxy:
 	// that peer chose it.
 	CauseForgedClient
+	// CauseWritableLog: the address came from a syslog file line, which any
+	// local user can write with any program name.
+	CauseWritableLog
 	causeEnd
 )
 
-var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable", "proxy_peer", "rewritten_log", "forged_client"}
+var causeNames = [...]string{"", "no_observation", "kind_not_allowed", "target_mismatch", "unreachable", "proxy_peer", "rewritten_log", "forged_client", "writable_log"}
 
 func (c Cause) Valid() bool { return c > 0 && c < causeEnd }
 

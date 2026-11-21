@@ -12,7 +12,7 @@ func observedSSHLogin() alert.Finding {
 	return alert.Finding{
 		Check: "ssh_login_unknown_ip", Severity: alert.Critical, SourceIP: "192.0.2.7",
 		Message: "SSH login from an unknown address", Timestamp: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC),
-		Observation: alert.Observation{Producer: string(ProducerSSHLog), Stream: "secure:dev=2049,ino=77", Cursor: "offset=4096",
+		Observation: alert.Observation{Producer: string(ProducerSSHJournal), Stream: "secure:dev=2049,ino=77", Cursor: "offset=4096",
 			ObservedAt: time.Date(2026, 10, 6, 11, 59, 59, 0, time.UTC)},
 		Claims:      []admission.Claim{{Kind: admission.ClaimAccount, Value: "alice"}},
 		Attribution: admission.AttributionPeer,
@@ -34,8 +34,8 @@ func TestAdmissionEvidenceFromAFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parser, _ := ProducerParser(ProducerSSHLog)
-	if producer != ProducerSSHLog || in.Check != f.Check || in.Severity != admission.SeverityCritical || in.FindingID != alert.FindingID(f) ||
+	parser, _ := ProducerParser(ProducerSSHJournal)
+	if producer != ProducerSSHJournal || in.Check != f.Check || in.Severity != admission.SeverityCritical || in.FindingID != alert.FindingID(f) ||
 		in.Observation != (admission.ObservationRef{Stream: f.Observation.Stream, Cursor: f.Observation.Cursor, Version: 1}) ||
 		!in.ObservedAt.Equal(f.Observation.ObservedAt) || in.Parser != parser || in.Target != target || in.Attribution != admission.AttributionPeer ||
 		len(in.Claims) != 1 || in.Claims[0] != f.Claims[0] || in.Intel != f.Intel || in.Inventory != nil {
@@ -100,7 +100,7 @@ func TestAdmissionRefusesAFindingWithoutAttribution(t *testing.T) {
 		if regErr != nil {
 			t.Fatal(regErr)
 		}
-		if p.Spec.ID == ProducerSSHLog {
+		if p.Spec.ID == ProducerSSHJournal {
 			sshd = registered
 		}
 	}

@@ -20,11 +20,11 @@ func TestSuspiciousGeoFindingStampsTimestamp(t *testing.T) {
 
 	withGlobalStore(t, func(_ *store.DB) {
 		for i := 0; i < geoMinLoginCount+1; i++ {
-			parseDovecotLogLine(dovecotLoginLine("carol@example.com", "203.0.113.5"), cfg)
+			parseDovecotLogLine(dovecotLoginLine("carol@example.com", "203.0.113.5"), cfg, true)
 		}
 
 		before := time.Now()
-		findings := parseDovecotLogLine(dovecotLoginLine("carol@example.com", "198.51.100.7"), cfg)
+		findings := parseDovecotLogLine(dovecotLoginLine("carol@example.com", "198.51.100.7"), cfg, true)
 		after := time.Now()
 
 		if len(findings) != 1 || findings[0].Check != "email_suspicious_geo" {

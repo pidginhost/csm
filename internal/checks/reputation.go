@@ -189,7 +189,6 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		return reputationHealthFindings(ctx, cfg, sdb, scanState, now, quotaExhausted)
 	}
 
-	authenticated := collectAuthenticatedIPs(cfg)
 	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
@@ -227,7 +226,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		// public feed gets a 24h block the instant they open webmail. Genuine
 		// attacks from the same IP are still caught by the brute-force,
 		// compromise, and takeover detectors, which do not honour this exemption.
-		if authenticated[ip] {
+		if recentlyAuthenticated(ip, now) {
 			continue
 		}
 
@@ -274,8 +273,10 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		}
 
 		// Tier 4 candidate; defer the HTTP call to pass 2 unless the
-		// quota / config gates already preclude querying.
-		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || len(pendingQueries) >= maxQueriesPerCycle {
+		// quota / config gates already preclude querying. An address only
+		// a writable log names gets no lookup: forged nominations would
+		// spend the lookups trusted sightings need.
+		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || len(pendingQueries) >= maxQueriesPerCycle || writableSighting(source) {
 			if score, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
 				appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history", time.Now().Add(cacheExpiry))
 			}
@@ -445,7 +446,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	for _, work := range cacheWork {
 		work.finish(saved)
 	}
-	stampReputationSightings(findings, sightings, rewritten)
+	stampReputationSightings(findings, sightings, rewritten, ips)
 	healthNow := time.Now()
 	quotaExhausted = quotaErrorObserved || !abuseQuotaReady(sdb, healthNow)
 	findings = append(findings, reputationHealthFindings(ctx, cfg, sdb, scanState, healthNow, quotaExhausted)...)
@@ -771,7 +772,7 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		if !strings.Contains(rec.text, "Accepted") {
 			continue
 		}
-		if _, ip, ok := sshAcceptedRecord(strings.Fields(rec.text)); ok {
+		if _, ip, _, ok := sshAcceptedRecord(strings.Fields(rec.text)); ok {
 			at, _ := syslogLineTime(rec.text, now)
 			add(ip, "SSH login", scanned(rec, at))
 		}
@@ -855,6 +856,14 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		}
 	}
 
+	// Rewritten HTTP nominations do not enter surfaces. They can outrank a
+	// writable nomination in ips, but must never borrow its record as proof
+	// that the address connected. Keep independently trusted records intact.
+	for ip := range records {
+		if writableSighting(surfaces[ip]) && !writableSighting(ips[ip]) {
+			delete(records, ip)
+		}
+	}
 	return ips, records, rewritten
 }
 
@@ -875,7 +884,7 @@ func accessLogSighting(rec syslogRecord, ip string, cfg *config.Config) scanReco
 // derived evidence. A finding without such a record names none and mints
 // nothing. One a rewritten web log reported is read as that log's client,
 // so admission refuses it for the rewrite rather than for a missing record.
-func stampReputationSightings(findings []alert.Finding, records map[string]scanRecord, rewritten map[string]bool) {
+func stampReputationSightings(findings []alert.Finding, records map[string]scanRecord, rewritten map[string]bool, sources map[string]string) {
 	for i := range findings {
 		if findings[i].Check != "ip_reputation" {
 			continue
@@ -886,44 +895,55 @@ func stampReputationSightings(findings []alert.Finding, records map[string]scanR
 		} else if rewritten[findings[i].SourceIP] {
 			findings[i].Attribution = admission.AttributionHTTPPeer
 		}
+		// A feed match cannot authenticate the syslog line that nominated
+		// this address. Keep its origin even without a dated observation,
+		// so legacy responses also refuse it.
+		switch sources[findings[i].SourceIP] {
+		case "SSH login":
+			findings[i].Observation.Producer = string(ProducerSSHLoginScan)
+		case reputationViaMailLogin:
+			findings[i].Observation.Producer = string(ProducerMailLog)
+		}
 	}
 }
 
-// collectAuthenticatedIPs returns IPs that successfully authenticated to a
-// mailbox in the recent log window. A source that holds valid mail credentials
-// is a real customer, not a drive-by scanner: a threat-feed match on such an IP
-// is almost always a recycled dynamic/CGNAT address rather than the attacker the
-// feed once listed. Romanian and other residential ISPs rotate these pools
-// aggressively, so an IP an attacker used last week routinely lands on a paying
-// customer this week. Webmail authenticates through dovecot, so this also covers
-// Horde/Roundcube users.
+// recentlyAuthenticated reports whether ip logged in to a mailbox in the last
+// day, as the mail service recorded it. A source that holds valid mail
+// credentials is a real customer, not a drive-by scanner: a threat-feed match
+// on such an IP is almost always a recycled dynamic/CGNAT address rather than
+// the attacker the feed once listed. Residential ISPs rotate these pools
+// aggressively, so an IP an attacker used last week routinely lands on a
+// paying customer this week.
 //
 // Successful SSH logins are deliberately excluded: a clean SSH auth from a
 // feed-listed IP is itself a red flag (a cracked or attacker-controlled host),
 // and collectRecentIPs already surfaces those IPs precisely so their reputation
 // is checked. Authenticated mail attackers (compromised accounts) remain covered
 // by the brute-force, compromise, and account-takeover detectors, which do not
-// honour this exemption. The mail window is wider than collectRecentIPs uses so
-// a customer's success is not pushed out of view by a burst of attacker failures
-// occupying the tail.
-func collectAuthenticatedIPs(cfg *config.Config) map[string]bool {
-	authed := make(map[string]bool)
-	info := platform.Detect()
+// honour this exemption. A mail log file line is never such a login: any local
+// user can write one.
+func recentlyAuthenticated(ip string, now time.Time) bool {
+	lookup := trustedMailLogin.Load()
+	return lookup != nil && (*lookup)(ip, now.Add(-trustedLoginExcuse))
+}
 
-	mailLog := reputationMailLogPath(cfg, info)
-	if mailLog == "" {
-		return authed
-	}
-	for _, line := range tailFile(mailLog, 200) {
-		if !DovecotLoginSucceeded(line) {
-			continue
-		}
-		if ip := DovecotRemoteIP(line); ip != "" {
-			authed[ip] = true
-		}
-	}
+// trustedLoginExcuse is how recent a customer's mail login must be to excuse
+// its address.
+const trustedLoginExcuse = 24 * time.Hour
 
-	return authed
+// trustedMailLogin reports whether ip logged in to a mail service since the
+// given time, as the service's own log or journal recorded it. The daemon
+// sets it; a mail log file line, which any local user can write, never
+// counts, and without it no address is excused.
+var trustedMailLogin atomic.Pointer[func(ip string, since time.Time) bool]
+
+// SetTrustedMailLoginLookup installs the daemon's trusted mail login lookup.
+func SetTrustedMailLoginLookup(f func(ip string, since time.Time) bool) {
+	if f == nil {
+		trustedMailLogin.Store(nil)
+		return
+	}
+	trustedMailLogin.Store(&f)
 }
 
 func reputationMailLogPath(cfg *config.Config, info platform.Info) string {
@@ -962,14 +982,30 @@ func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config)
 	if isInfraIP(ip, cfg.InfraIPs) {
 		return false
 	}
-	// One address can appear on several surfaces in the same scan. Keep the
-	// strongest sighting so an earlier passive web request cannot hide a later
-	// authentication attack and downgrade the resulting finding.
+	// One address can appear on several surfaces in the same scan.
 	current, exists := ips[ip]
-	if !exists || reputationSightingSeverity(source) > reputationSightingSeverity(current) {
+	if !exists || sightingOutranks(source, current) {
 		ips[ip] = source
 	}
 	return ips[ip] == source
+}
+
+// sightingOutranks reports whether source replaces current as an address's
+// surface. A log the service wrote outranks one any local user can write, so
+// a forged line cannot make the finding alert-only. Otherwise the stronger
+// sighting wins, so an earlier passive web request cannot hide a later
+// authentication attack and downgrade the resulting finding.
+func sightingOutranks(source, current string) bool {
+	if writableSighting(source) != writableSighting(current) {
+		return writableSighting(current)
+	}
+	return reputationSightingSeverity(source) > reputationSightingSeverity(current)
+}
+
+// writableSighting reports whether source is a log file any local user can
+// write under any program name.
+func writableSighting(source string) bool {
+	return source == "SSH login" || source == reputationViaMailLogin
 }
 
 func firstField(line string) string {

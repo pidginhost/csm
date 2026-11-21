@@ -64,11 +64,11 @@ func keepNewest(newest map[string]scanRecord, key string, r scanRecord, now time
 	}
 }
 
-// observation names r as every reader of its file names it; zero when the
-// file has no identity.
+// observation names r as every reader of its file names it; only a
+// writable log's producer when the file has no identity.
 func (r scanRecord) observation(producer admission.ProducerID) alert.Observation {
 	if r.stream == "" || r.at.IsZero() {
-		return alert.Observation{}
+		return UnpositionedObservation(producer)
 	}
 	return alert.Observation{Producer: string(producer), Stream: r.stream, Cursor: r.cursor, ObservedAt: r.at.UTC()}
 }

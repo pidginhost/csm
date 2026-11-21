@@ -75,14 +75,14 @@ func TestMilterFailureRaisesScanError(t *testing.T) {
 	d := newTestDaemon(t)
 	enableAntispam(t, d, true)
 	echo := "Oct 20 12:10:00 mail postfix/smtpd[4242]: warning: Illegal address syntax from unknown[203.0.113.5] in RCPT command: <warning: milter inet:127.0.0.1:11332: x>"
-	if got := d.handleMailLine(milterFailureLine, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+	if got := d.handleMailLine(milterFailureLine, trustedMailObs, d.currentCfg()); len(got) != 0 {
 		t.Fatalf("failure counted before a pass named rspamd's milters: %+v", got)
 	}
 	d.reportAntispam(reconcile.Outcome{ScanSource: &antispam.ScanSource{Stack: antispam.StackPostfix, Milters: []string{rspamdMilter}, MilterAction: "tempfail"}})
-	if got := d.handleMailLine(echo, alert.Observation{}, d.currentCfg()); len(got) != 0 || len(d.antispamHealth.Active()) != 0 {
+	if got := d.handleMailLine(echo, trustedMailObs, d.currentCfg()); len(got) != 0 || len(d.antispamHealth.Active()) != 0 {
 		t.Fatalf("client text counted as a failure: %+v", got)
 	}
-	got := d.handleMailLine(milterFailureLine, alert.Observation{}, d.currentCfg())
+	got := d.handleMailLine(milterFailureLine, trustedMailObs, d.currentCfg())
 	if len(got) != 1 || got[0].Check != reconcile.CheckScanError {
 		t.Fatalf("milter failure raised %+v, want one %s", got, reconcile.CheckScanError)
 	}
@@ -121,7 +121,7 @@ func TestRspamdLogScanFeedsHealthAndStats(t *testing.T) {
 	}
 	writeLog(rspamdRecord("198.51.100.79"))
 	d.antispamScanSource.Store(&antispam.ScanSource{Log: path, Milters: []string{rspamdMilter}})
-	d.handleMailLine(milterFailureLine, alert.Observation{}, d.currentCfg())
+	d.handleMailLine(milterFailureLine, trustedMailObs, d.currentCfg())
 	if len(d.antispamHealth.Active()) != 1 {
 		t.Fatalf("milter failure not tracked: %+v", d.antispamHealth.Active())
 	}

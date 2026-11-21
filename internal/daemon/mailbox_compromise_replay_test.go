@@ -22,7 +22,7 @@ func replayMailboxIncident(t *testing.T, d *Daemon, exfil alert.Finding, round i
 	var out []alert.Finding
 	for _, mailbox := range []string{"a@victim.example", "b@victim.example", "c@victim.example"} {
 		for range geoMinLoginCount {
-			out = append(out, parseDovecotLogLine(geoDovecotLine(time.Now().Add(-time.Hour), "203.0.113.5", mailbox), cfg)...)
+			out = append(out, parseDovecotLogLine(geoDovecotLine(time.Now().Add(-time.Hour), "203.0.113.5", mailbox), cfg, true)...)
 		}
 	}
 	out = append(out, mailFilterEvidence(cfg, []alert.Finding{exfil})...)

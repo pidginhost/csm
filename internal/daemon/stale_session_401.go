@@ -236,11 +236,11 @@ func (d *Daemon) cpanelSessionLogHandler(line string, cfg *config.Config) []aler
 		if app == "webmaild" {
 			kind = knownCustomerWebmail
 		}
-		d.knownCustomers.Note(ip, kind, account, customerLoginTime(line, time.Now()), serviceLog)
+		d.knownCustomers.NoteTrusted(ip, kind, account, customerLoginTime(line, time.Now()), serviceLog)
 	}
 	findings := parseSessionLogLine(line, cfg)
 	if user, ip, at, ok := webmailLogin(line); ok {
-		findings = append(findings, observeMailboxLoginGeo(cfg, user, ip, at, true)...)
+		findings = append(findings, observeMailboxLoginGeo(cfg, user, ip, at, true, true)...)
 	}
 	return findings
 }

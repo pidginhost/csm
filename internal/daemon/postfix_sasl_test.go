@@ -31,7 +31,7 @@ func TestPostfixSASLAmbiguousWarningsDoNotCount(t *testing.T) {
 			d.smtpAuthTracker = newTestTracker(t, clock)
 			var got []alert.Finding
 			for i := 0; i < 10; i++ {
-				got = append(got, d.handleMailLine(fmt.Sprintf(tc.format, tc.ip), alert.Observation{}, d.currentCfg())...)
+				got = append(got, d.handleMailLine(fmt.Sprintf(tc.format, tc.ip), trustedMailObs, d.currentCfg())...)
 			}
 			if len(got) != 0 {
 				t.Fatalf("ambiguous warnings raised findings: %+v", got)
@@ -82,7 +82,7 @@ func TestPostfixSASLLinesThatMustNotCount(t *testing.T) {
 			d := New(&config.Config{InfraIPs: []string{"192.0.2.10"}}, nil, nil, "")
 			d.smtpAuthTracker = newTestTracker(t, clock)
 			for i := 0; i < 10; i++ {
-				if got := d.handleMailLine(tc.line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				if got := d.handleMailLine(tc.line, trustedMailObs, d.currentCfg()); len(got) != 0 {
 					t.Fatalf("findings = %+v, want none", got)
 				}
 			}

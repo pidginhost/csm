@@ -19,6 +19,9 @@ import (
 // claims against.
 func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.EvidenceInput, error) {
 	producer := admission.ProducerID(f.Observation.Producer)
+	if ProducerWritableLog(producer) {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseWritableLog, Detail: "the address came from a log line any local user can write"}
+	}
 	// A known CDN or website-firewall edge carries every visitor behind it:
 	// blocking it as one of them is never an automatic response, whatever
 	// else is wrong with the finding.

@@ -78,10 +78,10 @@ func TestAddIfNotInfraKeepsHighestSeveritySurface(t *testing.T) {
 	cfg := &config.Config{}
 
 	addIfNotInfra(ips, "203.0.113.7", "HTTP request", cfg)
-	addIfNotInfra(ips, "203.0.113.7", "Dovecot IMAP/POP3 auth failure", cfg)
+	addIfNotInfra(ips, "203.0.113.7", "SMTP auth failure", cfg)
 	addIfNotInfra(ips, "203.0.113.7", "cPanel/WHM access", cfg)
 
-	if got := ips["203.0.113.7"]; got != "Dovecot IMAP/POP3 auth failure" {
+	if got := ips["203.0.113.7"]; got != "SMTP auth failure" {
 		t.Fatalf("surface = %q, want strongest auth surface", got)
 	}
 }

@@ -137,12 +137,12 @@ func TestFunnelSprayQueuesItsPrefixOnAddressRoots(t *testing.T) {
 	spray := alert.Finding{
 		Check: "mail_subnet_spray", Severity: alert.Critical, Timestamp: at, CIDRs: []string{"198.51.100.0/24"},
 		Message:     "Mail password spray from 198.51.100.0/24",
-		Observation: alert.Observation{Producer: string(checks.ProducerMailLog), Stream: "maillog", Cursor: "crossing", ObservedAt: at},
+		Observation: alert.Observation{Producer: string(checks.ProducerMailJournal), Stream: "maillog", Cursor: "crossing", ObservedAt: at},
 	}
 	for i := 1; i <= 3; i++ {
 		spray.SprayConstituents = append(spray.SprayConstituents, alert.SprayConstituent{
 			Address: fmt.Sprintf("198.51.100.%d", i), LastSeen: at,
-			Observation: alert.Observation{Producer: string(checks.ProducerMailLog), Stream: "maillog", Cursor: fmt.Sprintf("line-%d", i), ObservedAt: at},
+			Observation: alert.Observation{Producer: string(checks.ProducerMailJournal), Stream: "maillog", Cursor: fmt.Sprintf("line-%d", i), ObservedAt: at},
 			Attribution: admission.AttributionPeer,
 		})
 	}

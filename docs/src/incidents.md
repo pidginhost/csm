@@ -173,8 +173,11 @@ advisory for an established multi-mailbox source, never make a spray
 incident blockable either.
 
 Incident blocks name the finding that supplied address evidence. The
-attesting check and severity survive trimming and restart and are checked
-again at startup. Retained active proof in older incidents is migrated;
+attesting check, severity and producer survive trimming and restart and are
+checked again at startup. Syslog-file findings cannot attest an address.
+Older SSH, mail and FTP evidence without a recorded producer cannot attest
+one either, including SSH findings saved under their former check name.
+Retained active proof in other older incidents is migrated;
 missing or retired proof cannot authorize another block until a fresh
 qualifying finding arrives. Existing installed blocks keep their expiry,
 and `incidents.auto_block` and `incidents.spray_suppression` still control

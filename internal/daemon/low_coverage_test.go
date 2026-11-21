@@ -434,7 +434,7 @@ func TestParseDovecotLogLine_NoGeoIPDBReturnsNil(t *testing.T) {
 
 	cfg := &config.Config{}
 	line := `Apr 12 10:00:00 host dovecot: imap-login: Login: user=<user@example.com>, rip=203.0.113.5`
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	if findings != nil {
 		t.Errorf("nil GeoIP DB should return nil, got %v", findings)
 	}
@@ -443,7 +443,7 @@ func TestParseDovecotLogLine_NoGeoIPDBReturnsNil(t *testing.T) {
 func TestParseDovecotLogLine_InfraIPWithCIDR(t *testing.T) {
 	cfg := &config.Config{InfraIPs: []string{"203.0.113.0/24"}}
 	line := `Apr 12 10:00:00 host dovecot: imap-login: Login: user=<user@example.com>, rip=203.0.113.42`
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	if findings != nil {
 		t.Errorf("infra CIDR IP should return nil, got %v", findings)
 	}
@@ -453,7 +453,7 @@ func TestParseDovecotLogLine_EmptyUserReturnsNil(t *testing.T) {
 	cfg := &config.Config{}
 	// user=<> triggers empty user
 	line := `dovecot: imap-login: Login: user=<>, rip=203.0.113.5`
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	if findings != nil {
 		t.Errorf("empty user should return nil, got %v", findings)
 	}

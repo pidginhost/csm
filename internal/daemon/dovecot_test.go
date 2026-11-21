@@ -38,14 +38,14 @@ func TestParseDovecotLoginFieldsNoRIP(t *testing.T) {
 
 func TestParseDovecotLogLineNonLogin(t *testing.T) {
 	cfg := &config.Config{}
-	if got := parseDovecotLogLine("just some random log line", cfg); got != nil {
+	if got := parseDovecotLogLine("just some random log line", cfg, true); got != nil {
 		t.Errorf("non-login should return nil, got %v", got)
 	}
 }
 
 func TestParseDovecotLogLineNoDovecot(t *testing.T) {
 	cfg := &config.Config{}
-	if got := parseDovecotLogLine("Login: user=<a@b.com> without dovecot prefix", cfg); got != nil {
+	if got := parseDovecotLogLine("Login: user=<a@b.com> without dovecot prefix", cfg, true); got != nil {
 		t.Errorf("no dovecot prefix should return nil, got %v", got)
 	}
 }
@@ -53,7 +53,7 @@ func TestParseDovecotLogLineNoDovecot(t *testing.T) {
 func TestParseDovecotLogLinePrivateIP(t *testing.T) {
 	cfg := &config.Config{}
 	line := `dovecot: imap-login: Login: user=<alice@example.com>, rip=192.168.1.1`
-	if got := parseDovecotLogLine(line, cfg); got != nil {
+	if got := parseDovecotLogLine(line, cfg, true); got != nil {
 		t.Errorf("private IP should return nil, got %v", got)
 	}
 }
@@ -61,7 +61,7 @@ func TestParseDovecotLogLinePrivateIP(t *testing.T) {
 func TestParseDovecotLogLineInfraIP(t *testing.T) {
 	cfg := &config.Config{InfraIPs: []string{"203.0.113.5"}}
 	line := `dovecot: imap-login: Login: user=<alice@example.com>, rip=203.0.113.5`
-	if got := parseDovecotLogLine(line, cfg); got != nil {
+	if got := parseDovecotLogLine(line, cfg, true); got != nil {
 		t.Errorf("infra IP should return nil, got %v", got)
 	}
 }

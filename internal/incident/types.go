@@ -154,6 +154,8 @@ type Incident struct {
 	// revalidated even after its source event leaves the timeline.
 	RemoteIPEvidenceCheck    string `json:"remote_ip_evidence_check,omitempty"`
 	RemoteIPEvidenceSeverity string `json:"remote_ip_evidence_severity,omitempty"`
+	// RemoteIPEvidenceProducer is the reader that stamped that finding.
+	RemoteIPEvidenceProducer string `json:"remote_ip_evidence_producer,omitempty"`
 }
 
 // AutoBlockState is the escalation ladder's memory for one incident. Count is
@@ -285,6 +287,9 @@ type IncidentEvent struct {
 	Process   string    `json:"process,omitempty"`
 	Path      string    `json:"path,omitempty"`
 	RemoteIP  string    `json:"remote_ip,omitempty"`
+	// Producer is the reader that stamped the finding, kept so a restore
+	// can tell a service's own record from a forged syslog line.
+	Producer string `json:"producer,omitempty"`
 	// root retains the attesting finding's prepared evidence or mint
 	// refusal for the block it may lead to; never stored. It is a pointer
 	// because timelines are copied on every read: most events carry none.

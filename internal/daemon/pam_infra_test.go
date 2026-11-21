@@ -13,7 +13,7 @@ func TestParseDovecotLogLinePublicIP(t *testing.T) {
 	// but still returns nil because getGeoIPDB() is nil.
 	cfg := &config.Config{}
 	line := `Apr 12 10:00:00 host dovecot: imap-login: Login: user=<alice@example.com>, method=PLAIN, rip=203.0.113.5, lip=10.0.0.1`
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	// Without GeoIP DB loaded, returns nil after IP checks pass.
 	if len(findings) != 0 {
 		t.Errorf("no geoip DB should return nil, got %d", len(findings))

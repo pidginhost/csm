@@ -270,7 +270,7 @@ func FuzzParseDovecotLogLine(f *testing.F) {
 				t.Fatalf("parseDovecotLogLine panicked on input %q: %v", line, r)
 			}
 		}()
-		_ = parseDovecotLogLine(line, cfg)
+		_ = parseDovecotLogLine(line, cfg, true)
 	})
 }
 

@@ -33,7 +33,7 @@ func makeDovecotSuccessLine(protocol, ip, account string) string {
 // so email_suspicious_geo continues to fire.
 func buildMailHandler(cfg *config.Config, tr *mailAuthTracker) LogLineHandler {
 	return func(line string, c *config.Config) []alert.Finding {
-		findings := parseDovecotLogLine(line, c)
+		findings := parseDovecotLogLine(line, c, true)
 		authLine := isMailAuthLine(line)
 		if tr != nil && !authLine && isMailAuthBackendError(line) {
 			return append(findings, tr.RecordBackendFailure()...)
@@ -227,7 +227,7 @@ func TestMailHandler_EmailSuspiciousGeoStillFiresThroughWrapper(t *testing.T) {
 	successLine := makeDovecotSuccessLine("imap", "198.51.100.42", "victim@example.com")
 
 	wrapperOut := h(successLine, cfg)
-	geoOut := parseDovecotLogLine(successLine, cfg)
+	geoOut := parseDovecotLogLine(successLine, cfg, true)
 
 	// Compose invariant: wrapper result ⊇ parseDovecotLogLine result.
 	for _, g := range geoOut {

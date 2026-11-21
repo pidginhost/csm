@@ -12,8 +12,14 @@ import (
 
 // Line is one mail-log entry, normalized across file and journal sources.
 type Line struct {
-	Source  string // "file" | "journal"
-	Unit    string // e.g., "postfix", "dovecot" (empty when from a file)
+	Source string // "file" | "journal"
+	Unit   string // e.g., "postfix", "dovecot" (empty when from a file)
+	// UID is the sending process's uid as journald recorded it, and
+	// Transport how the entry reached journald (journal only).
+	UID       string
+	Transport string
+	// Exe is the sending process's executable as journald recorded it.
+	Exe     string
 	Message string // log line (for file: full line; for journal: see JournalLine)
 	// Position is where the line was read; empty Stream when unknown.
 	Position Position

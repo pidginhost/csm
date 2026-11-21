@@ -63,6 +63,7 @@ func TestSupervisorBackoffAndCancellation(t *testing.T) {
 }
 
 func TestSupervisorAutoRepicksAfterAttachmentFailure(t *testing.T) {
+	withJournalUnusable(t)
 	synctest.Test(t, func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "maillog")
 		cfg := config.MailLogsConfig{Source: "auto", File: path, Units: []string{"postfix"}}
@@ -104,6 +105,7 @@ func TestSupervisorAutoRepicksAfterAttachmentFailure(t *testing.T) {
 }
 
 func TestSupervisorSourceMigrationHonorsExplicitMode(t *testing.T) {
+	withJournalUnusable(t)
 	for _, mode := range []string{"auto", "file", "journal"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {

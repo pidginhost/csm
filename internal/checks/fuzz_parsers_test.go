@@ -284,9 +284,11 @@ func FuzzFTPPeerPosition(f *testing.F) {
 			"(unknown)":          "",
 			"":                   "",
 		} {
-			line := "pure-ftpd: " + peer + " [WARNING] Authentication failed for user [" + user + "]"
-			if got := PureFTPDClientIP(line); got != want {
-				t.Fatalf("peer %q, user %q: got %q, want %q", peer, user, got, want)
+			for _, prefix := range []string{"", "2026-11-01T12:00:00Z ", "2026-11-01T12:00:00Z host "} {
+				line := prefix + "pure-ftpd: " + peer + " [WARNING] Authentication failed for user [" + user + "]"
+				if got := PureFTPDClientIP(line); got != want {
+					t.Fatalf("prefix %q, peer %q, user %q: got %q, want %q", prefix, peer, user, got, want)
+				}
 			}
 		}
 	})
@@ -314,6 +316,7 @@ func FuzzFTPLoginAccount(f *testing.F) {
 }
 
 func FuzzFTPLoginFinding(f *testing.F) {
+	f.Add("2026-11-01T12:00:00Z pure-ftpd[1]: (alice@203.0.113.5) [INFO] alice is now logged in")
 	f.Add("Nov  5 09:00:00 host pure-ftpd[1]: (?@203.0.113.5) [INFO] alice is now logged in")
 	f.Add("pure-ftpd: (?@2001:db8::1) [WARNING] Authentication failed for user [x is now logged in]")
 	f.Add("pure-ftpd: (?@203.0.113.5) [DEBUG] Command [USER] [x is now logged in]")

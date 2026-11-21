@@ -517,9 +517,9 @@ func TestMailSuccessRecordsCustomer(t *testing.T) {
 	now := time.Now()
 
 	d.handleEximLine(strings.Replace(eximLoginLine("203.0.113.31", "alice@example.com"), "2026-04-14 12:00:00", now.Format("2006-01-02 15:04:05"), 1), obs, cfg)
-	d.handleMailLine(postfixLoginLine("203.0.113.32", "bob@example.com"), obs, cfg)
-	d.handleMailLine(now.Format(time.Stamp)+" host dovecot: imap-login: Logged in: user=<carol@example.com>, method=PLAIN, rip=2001:db8::33, lip=192.0.2.1, mpid=1, TLS", obs, cfg)
-	d.handleMailLine(now.Format(time.Stamp)+" host dovecot[42]: pop3-login: Login: user=<dave@example.com>, method=PLAIN, rip=203.0.113.34, lip=192.0.2.1, mpid=2, TLS", obs, cfg)
+	d.handleMailLine(postfixLoginLine("203.0.113.32", "bob@example.com"), trustedMailObs, cfg)
+	d.handleMailLine(now.Format(time.Stamp)+" host dovecot: imap-login: Logged in: user=<carol@example.com>, method=PLAIN, rip=2001:db8::33, lip=192.0.2.1, mpid=1, TLS", trustedMailObs, cfg)
+	d.handleMailLine(now.Format(time.Stamp)+" host dovecot[42]: pop3-login: Login: user=<dave@example.com>, method=PLAIN, rip=203.0.113.34, lip=192.0.2.1, mpid=2, TLS", trustedMailObs, cfg)
 
 	// Failed logins never make a customer.
 	d.handleEximLine(makeEximDovecotFailLine("203.0.113.41", "alice@example.com"), obs, cfg)

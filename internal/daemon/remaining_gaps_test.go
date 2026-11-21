@@ -17,7 +17,7 @@ func TestParseDovecotLogLine_MissingDovecotTag(t *testing.T) {
 	// Line has "Login: user=<...>" but no "dovecot:" prefix -> returns nil
 	cfg := &config.Config{}
 	line := `Apr 12 10:00:00 host other: Login: user=<user@example.com>, rip=203.0.113.5`
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	if findings != nil {
 		t.Errorf("non-dovecot line should return nil, got %+v", findings)
 	}
@@ -28,7 +28,7 @@ func TestParseDovecotLogLine_BothFieldsMissing(t *testing.T) {
 	// returns empty strings, so parent bails out.
 	cfg := &config.Config{}
 	line := `Apr 12 10:00:00 host dovecot: imap-login: Login: user=<alice@ex.com>, nothing=here`
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	if findings != nil {
 		t.Errorf("missing rip should return nil, got %+v", findings)
 	}

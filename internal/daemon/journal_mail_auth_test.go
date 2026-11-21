@@ -39,9 +39,10 @@ func mailAuthSequence() []mailLogEntry {
 }
 
 type mailAuthResult struct {
-	smtpFailures, mailFailures int64
-	successes                  []string
-	findings                   []string
+	smtpFailures, mailFailures         int64
+	fileSMTPFailures, fileMailFailures int64
+	successes                          []string
+	findings                           []string
 }
 
 // replayMailLog feeds each line through the mail log dispatcher one second
@@ -50,7 +51,9 @@ func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 	t.Helper()
 	// Spray memory on, its rules off: logins earn trust, findings stay as
 	// the per-IP detectors make them.
-	d, clock := newPairingDaemon(t, sprayTestConfig("off"))
+	cfg := sprayTestConfig("off")
+	cfg.MailLogs.Units = []string{"postfix", "dovecot"}
+	d, clock := newPairingDaemon(t, cfg)
 	var res mailAuthResult
 	for _, line := range lines {
 		clock.advance(time.Second)
@@ -64,6 +67,8 @@ func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 	}
 	res.smtpFailures, _ = d.smtpAuthTracker.Stats()
 	res.mailFailures, _ = d.mailAuthTracker.Stats()
+	res.fileSMTPFailures, _ = d.fileSMTPAuthTracker.Stats()
+	res.fileMailFailures, _ = d.fileMailAuthTracker.Stats()
 	for ip := range smtpSuccessIPs(d) {
 		res.successes = append(res.successes, ip)
 	}
@@ -73,12 +78,15 @@ func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 
 // Mail log lines read from the journal reach the parsers with the same
 // program tags and times as the file, so every detection behaves the same.
+// File failures remain in separate counters, and file logins earn no trust.
 func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 	var file, journal []maillog.Line
 	for i, e := range mailAuthSequence() {
 		file = append(file, maillog.Line{Source: "file", Message: e.at.Format(time.Stamp) + " mail " + e.ident + "[" + e.pid + "]: " + e.text})
 		journal = append(journal, maillog.JournalLine(map[string]string{
 			"_SYSTEMD_UNIT":     e.unit,
+			"_UID":              "0",
+			"_TRANSPORT":        "syslog",
 			"SYSLOG_IDENTIFIER": e.ident,
 			"_PID":              e.pid,
 			"SYSLOG_PID":        e.pid,
@@ -93,8 +101,15 @@ func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 	}
 	for name, lines := range map[string][]maillog.Line{"file": file, "journal": journal} {
 		t.Run(name, func(t *testing.T) {
+			want := want
+			if name == "file" {
+				want.successes = nil
+				want.fileSMTPFailures, want.fileMailFailures = want.smtpFailures, want.mailFailures
+				want.smtpFailures, want.mailFailures = 0, 0
+			}
 			got := replayMailLog(t, lines)
 			if got.smtpFailures != want.smtpFailures || got.mailFailures != want.mailFailures ||
+				got.fileSMTPFailures != want.fileSMTPFailures || got.fileMailFailures != want.fileMailFailures ||
 				!slices.Equal(got.successes, want.successes) || !slices.Equal(got.findings, want.findings) {
 				t.Fatalf("results = %+v, want %+v", got, want)
 			}

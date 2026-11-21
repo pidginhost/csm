@@ -137,7 +137,7 @@ func blockMetricsRegistry(t *testing.T) *admission.Producer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Attribution: admission.Attributions(admission.AttributionPeer)})
+	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_journal", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Attribution: admission.Attributions(admission.AttributionPeer)})
 	if err != nil {
 		t.Fatal(err)
 	}

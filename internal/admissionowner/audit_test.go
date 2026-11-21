@@ -31,7 +31,7 @@ func withTestRegistryBasis(t testing.TB, basis admission.Basis) *admission.Produ
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"},
+	p, err := reg.Register(admission.ProducerSpec{ID: "sshd_journal", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"},
 		Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: admission.Attributions(admission.AttributionPeer)})
 	if err != nil {
 		t.Fatal(err)

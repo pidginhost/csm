@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/sdjournal"
@@ -16,15 +15,22 @@ import (
 // given unit names. Only available on Linux builds with the `journal`
 // tag; default builds get the stub from journal_reader_stub.go.
 type JournalReader struct {
-	units []string
-	queue *Queue
+	units       []string
+	identifiers []string
+	queue       *Queue
 }
 
 // NewJournalReader constructs a JournalReader matching the given systemd
 // unit names (e.g., "postfix", "postfix@-", "dovecot", or full "*.service"
 // names). Journal matches are exact; a name is never a glob.
 func NewJournalReader(units []string, queue *Queue) *JournalReader {
-	return &JournalReader{units: units, queue: queue}
+	return NewJournalReaderFor(units, nil, queue)
+}
+
+// NewJournalReaderFor also selects entries by program identifier, for a
+// service whose instance units no exact unit name covers.
+func NewJournalReaderFor(units, identifiers []string, queue *Queue) *JournalReader {
+	return &JournalReader{units: units, identifiers: identifiers, queue: queue}
 }
 
 func JournalSupported() bool { return true }
@@ -37,14 +43,14 @@ func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 		close(out)
 		return nil, fmt.Errorf("opening journal: %w", err)
 	}
-	for i, unit := range r.units {
-		match := fmt.Sprintf("_SYSTEMD_UNIT=%s", journalUnitName(unit))
+	matches := journalMatches(r.units, r.identifiers)
+	for i, match := range matches {
 		if err = j.AddMatch(match); err != nil {
 			_ = j.Close()
 			close(out)
 			return nil, fmt.Errorf("AddMatch %s: %w", match, err)
 		}
-		if i == len(r.units)-1 {
+		if i == len(matches)-1 {
 			continue
 		}
 		if err = j.AddDisjunction(); err != nil {
@@ -77,14 +83,6 @@ func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 	r.queue.file.replaced()
 	go r.loop(ctx, j, out)
 	return out, nil
-}
-
-func journalUnitName(unit string) string {
-	unit = strings.TrimSpace(unit)
-	if strings.Contains(unit, ".") {
-		return unit
-	}
-	return unit + ".service"
 }
 
 type journalEntries interface {

@@ -42,7 +42,7 @@ func TestDovecotPassdbVerdictsNeverCount(t *testing.T) {
 			d.smtpAuthTracker = newTestTracker(t, clock)
 			d.mailAuthTracker = newTestMailTracker(t, clock)
 			for i := 0; i < 5; i++ {
-				if got := d.handleMailLine(tc.line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				if got := d.handleMailLine(tc.line, trustedMailObs, d.currentCfg()); len(got) != 0 {
 					t.Fatalf("intermediate verdict raised findings: %+v", got)
 				}
 			}
@@ -72,7 +72,7 @@ func TestDovecotVerdictsCannotForgeBackendOutages(t *testing.T) {
 			d.smtpAuthTracker = newTestTracker(t, clock)
 			d.mailAuthTracker = newTestMailTracker(t, clock)
 			for i := 0; i < mailBackendDegradedThreshold; i++ {
-				if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				if got := d.handleMailLine(line, trustedMailObs, d.currentCfg()); len(got) != 0 {
 					t.Fatalf("verdict generated findings: %+v", got)
 				}
 			}
@@ -98,7 +98,7 @@ func TestDovecotVerdictFilterKeepsBackendErrors(t *testing.T) {
 		d.mailAuthTracker = newTestMailTracker(t, clock)
 		var got []alert.Finding
 		for i := 0; i < mailBackendDegradedThreshold; i++ {
-			got = append(got, d.handleMailLine(line, alert.Observation{}, d.currentCfg())...)
+			got = append(got, d.handleMailLine(line, trustedMailObs, d.currentCfg())...)
 		}
 		if len(got) != 1 || got[0].Check != "mail_auth_backend_degraded" {
 			t.Fatalf("backend error %q raised %+v, want one outage warning", line, got)
@@ -123,7 +123,7 @@ func TestDovecotAuthRequestTextCannotPauseProtection(t *testing.T) {
 			d := New(&config.Config{}, nil, nil, "")
 			d.mailAuthTracker = newTestMailTracker(t, clock)
 			for i := 0; i < mailBackendDegradedThreshold; i++ {
-				if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				if got := d.handleMailLine(line, trustedMailObs, d.currentCfg()); len(got) != 0 {
 					t.Fatalf("client text raised findings: %+v", got)
 				}
 			}
@@ -132,7 +132,7 @@ func TestDovecotAuthRequestTextCannotPauseProtection(t *testing.T) {
 			}
 			var got []alert.Finding
 			for i := 0; i < 5; i++ {
-				got = append(got, d.handleMailLine("dovecot: imap-login: Login aborted: (auth failed, 1 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.90", alert.Observation{}, d.currentCfg())...)
+				got = append(got, d.handleMailLine("dovecot: imap-login: Login aborted: (auth failed, 1 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.90", trustedMailObs, d.currentCfg())...)
 			}
 			if len(got) != 1 || got[0].Check != "mail_bruteforce" || got[0].SourceIP != "203.0.113.90" {
 				t.Fatalf("login findings = %+v, want one mail_bruteforce after excluded client text", got)
@@ -148,10 +148,10 @@ func TestDovecotSessionFailuresCountOnlyLoginSummary(t *testing.T) {
 			d := New(&config.Config{}, nil, nil, "")
 			d.mailAuthTracker = newTestMailTracker(t, clock)
 			for i := 0; i < 3; i++ {
-				d.handleMailLine("dovecot: auth: sql(a,203.0.113.90,<session>): Password mismatch", alert.Observation{}, d.currentCfg())
+				d.handleMailLine("dovecot: auth: sql(a,203.0.113.90,<session>): Password mismatch", trustedMailObs, d.currentCfg())
 			}
 			line := "dovecot: " + protocol + "-login: Login aborted: (auth failed, 3 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.90"
-			d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+			d.handleMailLine(line, trustedMailObs, d.currentCfg())
 			if calls, _ := d.mailAuthTracker.Stats(); calls != 3 {
 				t.Fatalf("mail failures = %d, want 3 attempts", calls)
 			}
@@ -170,7 +170,7 @@ func TestDovecotPassdbVerdictsCannotFormAccountSpray(t *testing.T) {
 	var got []alert.Finding
 	for i := 1; i <= 12; i++ {
 		line := fmt.Sprintf("dovecot: auth: sql(Alice@Example.net,203.0.113.%d): Password mismatch", 100+i)
-		got = append(got, d.handleMailLine(line, alert.Observation{}, d.currentCfg())...)
+		got = append(got, d.handleMailLine(line, trustedMailObs, d.currentCfg())...)
 	}
 	if len(got) != 0 {
 		t.Fatalf("intermediate verdicts raised findings: %+v", got)
@@ -218,7 +218,7 @@ func TestDovecotAuthLinesThatMustNotCountAsSMTP(t *testing.T) {
 			d := New(&config.Config{InfraIPs: []string{"192.0.2.10"}}, nil, nil, "")
 			d.smtpAuthTracker = newTestTracker(t, clock)
 			for i := 0; i < 10; i++ {
-				if got := d.handleMailLine(tc.line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				if got := d.handleMailLine(tc.line, trustedMailObs, d.currentCfg()); len(got) != 0 {
 					t.Fatalf("findings = %+v, want none", got)
 				}
 			}
@@ -235,7 +235,7 @@ func TestDovecotRepeatedPassdbVerdictsNeverCount(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
 	d.smtpAuthTracker = newTestTracker(t, clock)
 	for i := 0; i < 10; i++ {
-		if got := d.handleMailLine("dovecot: auth: sql(a,203.0.113.99): unknown user", alert.Observation{}, d.currentCfg()); len(got) != 0 {
+		if got := d.handleMailLine("dovecot: auth: sql(a,203.0.113.99): unknown user", trustedMailObs, d.currentCfg()); len(got) != 0 {
 			t.Fatalf("findings = %+v, want none", got)
 		}
 	}
@@ -255,12 +255,21 @@ func TestDovecotSMTPAuthJournalMessages(t *testing.T) {
 	} {
 		t.Run(tc.unit+tc.message, func(t *testing.T) {
 			clock := &staticClock{t: time.Date(2026, 10, 31, 20, 0, 0, 0, time.UTC)}
-			d := New(&config.Config{}, nil, nil, "")
+			cfg := &config.Config{MailLogs: config.MailLogsConfig{Units: []string{"dovecot", "postfix"}}}
+			d := New(cfg, nil, nil, "")
 			d.smtpAuthTracker = newTestTracker(t, clock)
+			parsed := 0
+			handler := func(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
+				parsed++
+				return d.handleMailLine(line, obs, cfg)
+			}
 			for i := 0; i < 5; i++ {
-				if !d.dispatchMailLogLine(maillog.Line{Source: "journal", Unit: tc.unit, Message: tc.message}, d.handleMailLine) {
+				if !d.dispatchMailLogLine(maillog.Line{Source: "journal", Unit: tc.unit, UID: "0", Transport: "syslog", Message: tc.message}, handler) {
 					t.Fatal("mail dispatch stopped")
 				}
+			}
+			if parsed != 5 {
+				t.Fatalf("parsed %d journal messages, want 5", parsed)
 			}
 			if calls, _ := d.smtpAuthTracker.Stats(); calls != tc.want {
 				t.Fatalf("SMTP failures = %d, want %d", calls, tc.want)
@@ -302,7 +311,7 @@ func TestDovecotPassdbVerdictsExcludedByMailReader(t *testing.T) {
 	appendLog(t, path, "dovecot: auth: sql(a,203.0.113.99): unknown user\n"+
 		"dovecot: imap-login: Login aborted: (auth failed, 1 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.99\n")
 	for {
-		calls, _ := d.mailAuthTracker.Stats()
+		calls, _ := d.fileMailAuthTracker.Stats()
 		if calls == 1 {
 			break
 		}
@@ -310,6 +319,12 @@ func TestDovecotPassdbVerdictsExcludedByMailReader(t *testing.T) {
 			t.Fatalf("mail reader processed %d login failures, want 1", calls)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if calls, _ := d.mailAuthTracker.Stats(); calls != 0 {
+		t.Fatalf("file reader recorded %d trusted mail failures", calls)
+	}
+	if calls, _ := d.fileSMTPAuthTracker.Stats(); calls != 0 {
+		t.Fatalf("Exim host counted %d file SMTP failures", calls)
 	}
 	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
 		t.Fatalf("Exim host counted %d Dovecot SMTP failures", calls)

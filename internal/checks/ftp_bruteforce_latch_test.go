@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
@@ -218,5 +219,28 @@ func TestCheckFTPLoginsConcurrentScanReportsBurstOnce(t *testing.T) {
 	<-finished
 	if got := ftpBruteFindings(findings); len(got) != 0 {
 		t.Fatalf("competing scan re-reported the burst: %+v", got)
+	}
+}
+
+// The scan reads pure-ftpd's logins from a file any local user can write:
+// each login names that file, so it alerts but makes no customer.
+func TestCheckFTPLoginsStampsLogins(t *testing.T) {
+	log, store := ftpLatchFixture(t)
+	line := time.Now().Format("Jan _2 15:04:05") + " host pure-ftpd[4242]: (?@198.51.100.41) [INFO] alice is now logged in\n"
+	if err := os.WriteFile(log, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logins int
+	for _, f := range CheckFTPLogins(context.Background(), &config.Config{}, store) {
+		if f.Check != "ftp_login" {
+			continue
+		}
+		logins++
+		if !ProducerWritableLog(admission.ProducerID(f.Observation.Producer)) {
+			t.Fatalf("scan login stamped %q", f.Observation.Producer)
+		}
+	}
+	if logins != 1 {
+		t.Fatalf("%d scan logins, want one", logins)
 	}
 }

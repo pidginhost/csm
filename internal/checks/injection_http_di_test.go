@@ -135,7 +135,7 @@ func TestCheckIPReputationQuotaExhaustionStopsFurtherQueries(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		lines = append(lines, fmt.Sprintf("Sep 10 10:00:00 host sshd[1]: Accepted publickey for alice from 198.51.100.%d port 22 ssh2", i))
 	}
-	withMockOS(t, mockOSWithAuthLog(t, strings.Join(lines, "\n")+"\n"))
+	withMockOS(t, mockOSWithTrustedSightings(t, strings.Join(lines, "\n")+"\n"))
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.Reputation.AbuseIPDBKey = t.Name()
 	findings := CheckIPReputation(context.Background(), cfg, nil)

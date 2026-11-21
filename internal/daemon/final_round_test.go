@@ -171,7 +171,7 @@ func TestParseDovecotLogLine_NoGeoDBSkips(t *testing.T) {
 	t.Cleanup(func() { setGeoIPDB(prev) })
 
 	// No GeoIP DB = no way to resolve country = no finding.
-	if findings := parseDovecotLogLine(line, cfg); findings != nil {
+	if findings := parseDovecotLogLine(line, cfg, true); findings != nil {
 		t.Fatalf("login with no GeoIP database produced findings: %+v", findings)
 	}
 }
@@ -187,7 +187,7 @@ func TestParseDovecotLogLine_TrustedCountryWithGeoDBNil(t *testing.T) {
 	setGeoIPDB(nil)
 	t.Cleanup(func() { setGeoIPDB(prev) })
 
-	if findings := parseDovecotLogLine(line, cfg); findings != nil {
+	if findings := parseDovecotLogLine(line, cfg, true); findings != nil {
 		t.Fatalf("login with no GeoIP database produced findings: %+v", findings)
 	}
 }
@@ -197,7 +197,7 @@ func TestParseDovecotLogLine_InfraIPSkipped(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.InfraIPs = []string{"198.51.100.0/24"}
 
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	if findings != nil {
 		t.Errorf("infra IP should be skipped, got findings=%+v", findings)
 	}
@@ -320,7 +320,7 @@ func TestParseDovecotLogLine_StoreOpenNoCountry(t *testing.T) {
 	defer store.SetGlobal(nil)
 
 	line := `dovecot: imap-login: Login: user=<bob@example.com>, rip=203.0.113.99`
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, true)
 	// GeoIP DB nil → returns before the store is consulted. This is the
 	// "no country" early-return branch.
 	if findings != nil {

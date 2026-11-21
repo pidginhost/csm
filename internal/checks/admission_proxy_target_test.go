@@ -21,7 +21,7 @@ func TestBlocksAProxy(t *testing.T) {
 	httpRoot := realRoot(t, httpPeerFinding("203.0.113.9"))
 	ssh := httpPeerFinding("203.0.113.9")
 	ssh.Check, ssh.Attribution = "ssh_login_unknown_ip", admission.AttributionPeer
-	ssh.Observation.Producer = string(ProducerSSHLog)
+	ssh.Observation.Producer = string(ProducerSSHJournal)
 	sshRoot := realRoot(t, ssh)
 	block := func(kind admission.Kind, ip string) admission.Candidate {
 		target, err := admission.CanonicalAddress(ip, admission.Caps{IPv6: true})
@@ -119,10 +119,10 @@ func TestQueuedProxyRecheckMatchesEveryProducer(t *testing.T) {
 				mintable++
 			})
 		}
-		if !any && p.Spec.ID != ProducerPHPRelaySpool {
+		if !any && p.Spec.ID != ProducerPHPRelaySpool && !ProducerWritableLog(p.Spec.ID) {
 			t.Errorf("%s reads no address attribution", p.Spec.ID)
 		}
-		if p.Spec.ID == ProducerPHPRelaySpool && any {
+		if (p.Spec.ID == ProducerPHPRelaySpool || ProducerWritableLog(p.Spec.ID)) && any {
 			t.Errorf("%s now reads an address attribution: classify it", p.Spec.ID)
 		}
 	}
@@ -142,7 +142,7 @@ func TestQueuedProxyRecheckAcrossEntriesAndRoots(t *testing.T) {
 	httpRoot := realRoot(t, httpPeerFinding("203.0.113.31"))
 	ssh := httpPeerFinding("203.0.113.31")
 	ssh.Check, ssh.Attribution = "ssh_login_unknown_ip", admission.AttributionPeer
-	ssh.Observation.Producer = string(ProducerSSHLog)
+	ssh.Observation.Producer = string(ProducerSSHJournal)
 	sshRoot := realRoot(t, ssh)
 	target, err := admission.CanonicalAddress("203.0.113.31", admission.Caps{IPv6: true})
 	if err != nil {

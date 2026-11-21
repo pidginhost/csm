@@ -27,7 +27,7 @@ func TestPostfixSilentHandshakeFailureDoesNotBuildEvidence(t *testing.T) {
 				for client := 1; client <= 10; client++ {
 					for attempt := 0; attempt < 10; attempt++ {
 						line := fmt.Sprintf("postfix/smtpd[%d]: warning: unknown[203.0.113.%d]: SASL PLAIN authentication failed: %s%s", client, client, reply, suffix)
-						if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+						if got := d.handleMailLine(line, trustedMailObs, d.currentCfg()); len(got) != 0 {
 							t.Fatalf("silent backend outage raised findings: %+v", got)
 						}
 					}
@@ -54,7 +54,7 @@ func TestPostfixWarningsDoNotAffectOtherMailDetection(t *testing.T) {
 	} {
 		for i := 0; i < 10; i++ {
 			for _, msg := range []string{diagnostic, "unknown[203.0.113.61]: SASL PLAIN authentication failed: authentication failure"} {
-				if got := d.handleMailLine("postfix/smtpd[99]: warning: "+msg, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+				if got := d.handleMailLine("postfix/smtpd[99]: warning: "+msg, trustedMailObs, d.currentCfg()); len(got) != 0 {
 					t.Fatalf("backend outage raised findings: %+v", got)
 				}
 			}

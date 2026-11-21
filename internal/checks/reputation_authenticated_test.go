@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -47,9 +48,35 @@ const reputationDovecotSuccess = "Jun 22 11:02:32 host dovecot[1]: imap-login: "
 
 // A feed-listed IP that is also actively authenticating to a mailbox is a real
 // customer on a recycled dynamic IP, not a drive-by attacker. Reputation
-// auto-block on passive access must not lock that customer out.
+// auto-block on passive access must not lock that customer out. The login is
+// one the mail service recorded, which the daemon looks up.
 func TestCheckIPReputationSkipsAuthenticatedCustomerIP(t *testing.T) {
 	const ip = "198.51.100.7"
+	statePath := t.TempDir()
+	restore := SetGlobalThreatDBForTest(statePath)
+	t.Cleanup(restore)
+	GetThreatDB().badIPs[ip] = "permanent-blocklist"
+	t.Cleanup(func() { SetTrustedMailLoginLookup(nil) })
+	SetTrustedMailLoginLookup(func(addr string, _ time.Time) bool { return addr == ip })
+
+	mailLog := filepath.Join(t.TempDir(), "live-maillog")
+	withMockOS(t, mockOSWithMailLog(t, mailLog, fmt.Sprintf(reputationDovecotFail, ip)))
+
+	cfg := &config.Config{StatePath: statePath}
+	cfg.MailLogs.File = mailLog
+	findings := CheckIPReputation(context.Background(), cfg, nil)
+
+	for _, f := range findings {
+		if f.Check == "ip_reputation" && strings.Contains(f.Message, ip) {
+			t.Fatalf("authenticated customer IP %s must not be flagged by ip_reputation, got: %+v", ip, f)
+		}
+	}
+}
+
+// A success line in the mail log file is not that login: any local user can
+// write one, so it excuses nothing.
+func TestCheckIPReputationIgnoresAFileLoginExcuse(t *testing.T) {
+	const ip = "198.51.100.9"
 	statePath := t.TempDir()
 	restore := SetGlobalThreatDBForTest(statePath)
 	t.Cleanup(restore)
@@ -61,12 +88,12 @@ func TestCheckIPReputationSkipsAuthenticatedCustomerIP(t *testing.T) {
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.MailLogs.File = mailLog
-	findings := CheckIPReputation(context.Background(), cfg, nil)
-
-	for _, f := range findings {
-		if f.Check == "ip_reputation" && strings.Contains(f.Message, ip) {
-			t.Fatalf("authenticated customer IP %s must not be flagged by ip_reputation, got: %+v", ip, f)
-		}
+	flagged := false
+	for _, f := range CheckIPReputation(context.Background(), cfg, nil) {
+		flagged = flagged || (f.Check == "ip_reputation" && strings.Contains(f.Message, ip))
+	}
+	if !flagged {
+		t.Fatalf("a mail log file login excused feed-listed %s", ip)
 	}
 }
 

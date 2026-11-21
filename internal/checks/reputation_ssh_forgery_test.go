@@ -8,8 +8,8 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// The reputation check can block a feed-listed address independently of the
-// login check. Both must require a success record, not client-supplied text.
+// Reputation alerts require a parsed success record, not client-supplied
+// text. Even a feed-listed address from a syslog file cannot authorize blocks.
 func TestSSHReputationRequiresSuccessRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name, line, wantIP string
@@ -56,8 +56,8 @@ func TestSSHReputationRequiresSuccessRecord(t *testing.T) {
 				t.Errorf("reputation finding = %+v, want Critical for %s", reputations[0], tc.wantIP)
 			}
 			AutoBlockIPs(cfg, findings)
-			if len(blocker.blocked) != wantCount || (wantCount == 1 && blocker.blocked[0] != tc.wantIP) {
-				t.Errorf("blocked = %v, want only %q", blocker.blocked, tc.wantIP)
+			if len(blocker.blocked) != 0 {
+				t.Errorf("blocked = %v, want no blocks from syslog file sightings", blocker.blocked)
 			}
 		})
 	}

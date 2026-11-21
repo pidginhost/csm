@@ -48,7 +48,7 @@ func TestParseDovecotLoginFieldsUserNoClose(t *testing.T) {
 func TestParseDovecotLogLineNoDovecotPrefix(t *testing.T) {
 	cfg := &config.Config{}
 	line := `pop3: Login: user=<x@y.com>, rip=203.0.113.5`
-	if got := parseDovecotLogLine(line, cfg); got != nil {
+	if got := parseDovecotLogLine(line, cfg, true); got != nil {
 		t.Errorf("line without 'dovecot:' should return nil, got %v", got)
 	}
 }
@@ -58,7 +58,7 @@ func TestParseDovecotLogLineNoDovecotPrefix(t *testing.T) {
 func TestParseDovecotLogLineEmptyUserReturnsNil(t *testing.T) {
 	cfg := &config.Config{}
 	line := `dovecot: imap-login: Login: user=<>, rip=203.0.113.5`
-	if got := parseDovecotLogLine(line, cfg); got != nil {
+	if got := parseDovecotLogLine(line, cfg, true); got != nil {
 		t.Errorf("empty user should return nil, got %v", got)
 	}
 }
@@ -70,7 +70,7 @@ func TestParseDovecotLogLineEmptyIPReturnsNil(t *testing.T) {
 	// rip= with no value, terminated immediately: parseDovecotLoginFields
 	// returns empty IP which makes parseDovecotLogLine return nil.
 	line := `dovecot: imap-login: Login: user=<x@y.com>, rip=`
-	if got := parseDovecotLogLine(line, cfg); got != nil {
+	if got := parseDovecotLogLine(line, cfg, true); got != nil {
 		t.Errorf("empty IP should return nil, got %v", got)
 	}
 }

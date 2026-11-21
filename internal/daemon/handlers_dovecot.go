@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -33,7 +34,7 @@ var geoLookup = func(ip string) geoip.Info {
 
 // parseDovecotLogLine handles Dovecot login lines from /var/log/maillog.
 // It tracks per-mailbox login countries and alerts on new-country logins.
-func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
+func parseDovecotLogLine(line string, cfg *config.Config, trusted bool) []alert.Finding {
 	// Only process successful login lines. dovecotLoginSucceeded accepts both
 	// the classic "Login: user=<" and the production "Logged in: user=<"
 	// formats so this detector is not silently dead on whichever one the host
@@ -46,8 +47,16 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 	if user == "" || ip == "" {
 		return nil
 	}
-	return observeMailboxLoginGeo(cfg, user, ip, customerLoginTime(line, time.Now()), false)
+	return observeMailboxLoginGeo(cfg, user, ip, customerLoginTime(line, time.Now()), false, trusted)
 }
+
+// unverifiedGeoAlerts holds when each mailbox last had a suspicious-geo
+// alert from a line any local user could have written. Only a mailbox with
+// recorded logins can have one.
+var unverifiedGeoAlerts = struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}{at: make(map[string]time.Time)}
 
 // webmailLogin reads a webmail login from a session_log line. A session a
 // reseller opened or the panel created through the API does not locate
@@ -68,7 +77,7 @@ func webmailLogin(line string) (user, ip string, at time.Time, ok bool) {
 // for the mailbox is compromise evidence and a summary-class
 // email_suspicious_geo finding. A webmail login is also kept as the
 // mailbox's last one, so the loopback sends webmail makes can be placed.
-func observeMailboxLoginGeo(cfg *config.Config, user, ip string, at time.Time, webmail bool) []alert.Finding {
+func observeMailboxLoginGeo(cfg *config.Config, user, ip string, at time.Time, webmail, record bool) []alert.Finding {
 	db := store.Global()
 	if db == nil {
 		return nil
@@ -90,7 +99,28 @@ func observeMailboxLoginGeo(cfg *config.Config, user, ip string, at time.Time, w
 	}
 	trusted := countryTrusted(country, cfg.Suppressions.TrustedCountries)
 	var novel bool
-	result, err := db.UpdateGeoLogin(user, now, geoAlertCooldownH*time.Hour, func(h *store.GeoHistory) bool {
+	apply := db.UpdateGeoLogin
+	if !record {
+		// A line any local user could have written gets the verdict the
+		// history gives, but changes nothing and counts as no evidence.
+		apply = func(account string, now time.Time, cooldown time.Duration, update func(*store.GeoHistory) bool) (store.GeoLoginResult, error) {
+			h, _ := db.GetGeoHistory(account)
+			if !update(&h) {
+				return store.GeoLoginResult{History: h}, nil
+			}
+			// Its own cooldown: sharing the recorded one would let a forged
+			// line silence a real alert, and none would let it flood them.
+			key := store.MailboxEvidenceKey(account)
+			unverifiedGeoAlerts.mu.Lock()
+			defer unverifiedGeoAlerts.mu.Unlock()
+			if now.Sub(unverifiedGeoAlerts.at[key]) < cooldown {
+				return store.GeoLoginResult{History: h}, nil
+			}
+			unverifiedGeoAlerts.at[key] = now
+			return store.GeoLoginResult{History: h, Notify: true}, nil
+		}
+	}
+	result, err := apply(user, now, geoAlertCooldownH*time.Hour, func(h *store.GeoHistory) bool {
 		if country != "" {
 			h.Countries = pruneOldCountries(h.Countries, at.Unix(), geoHistoryMaxAge)
 			seenAt, known := h.Countries[country]
@@ -119,10 +149,13 @@ func observeMailboxLoginGeo(cfg *config.Config, user, ip string, at time.Time, w
 	if webmail {
 		via = "webmail"
 	}
-	findings := observeMailboxSignal(cfg, user, mailboxSignal{
-		kind: signalNewCountry, key: country, at: at,
-		detail: fmt.Sprintf("%s login from %s (%s)", via, countryName, ip),
-	})
+	var findings []alert.Finding
+	if record {
+		findings = observeMailboxSignal(cfg, user, mailboxSignal{
+			kind: signalNewCountry, key: country, at: at,
+			detail: fmt.Sprintf("%s login from %s (%s)", via, countryName, ip),
+		})
+	}
 	if !result.Notify {
 		return findings
 	}

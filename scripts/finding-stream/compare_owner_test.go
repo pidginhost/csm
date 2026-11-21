@@ -71,7 +71,7 @@ func TestCompareCountsOwnerPlacementRefusals(t *testing.T) {
 			finding := alert.Finding{
 				Check: "ssh_login_unknown_ip", Severity: alert.High, Timestamp: compareTS,
 				SourceIP: "192.0.2.10", Message: "Authentication report",
-				Observation: alert.Observation{Producer: string(checks.ProducerSSHLog), Stream: "ssh", Cursor: "offset=1", ObservedAt: compareTS},
+				Observation: alert.Observation{Producer: string(checks.ProducerSSHJournal), Stream: "ssh", Cursor: "offset=1", ObservedAt: compareTS},
 				Attribution: admission.AttributionPeer,
 			}
 			root, err := o.Mint(finding)

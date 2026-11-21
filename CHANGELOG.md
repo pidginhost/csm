@@ -15,6 +15,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Internal registry downloads between releases carry verified signatures even when only the AMD64 build is available.
 - The registry installer refuses unverified builds, and `csm doctor` reports older copies that still accept them.
 - State backups skip symbolic links inside the state and rules directories.
+- A feed-listed address is excused from reputation blocking only by an IPv4 mail login the mail service recorded in the last day.
+- SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks, mailbox suspensions or count as customer logins; they still alert.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
@@ -35,6 +37,9 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Changed
 
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
+- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
+- SSH, mail and FTP logins read from log files now alert without blocking.
+- FTP logins no longer count as known customers in block alerts.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 
 ## [4.15.0] - 2026-11-20

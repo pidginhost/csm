@@ -341,7 +341,9 @@ func TestAccessLogWatchersNameTheirProducer(t *testing.T) {
 // A mail log line's position becomes the observation of every finding the
 // mail handler returns for it.
 func TestMailLogDispatchStampsObservation(t *testing.T) {
-	d := New(&config.Config{}, nil, nil, "")
+	cfg := &config.Config{}
+	cfg.MailLogs.Units = []string{"dovecot"}
+	d := New(cfg, nil, nil, "")
 	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	line := maillog.Line{Message: "dovecot: auth failed", Position: maillog.Position{Stream: "m:2a:x.0", Cursor: "77", ObservedAt: at}}
 	handler := func(string, alert.Observation, *config.Config) []alert.Finding {
@@ -355,11 +357,22 @@ func TestMailLogDispatchStampsObservation(t *testing.T) {
 	if got.Observation != want {
 		t.Fatalf("observation %+v, want %+v", got.Observation, want)
 	}
+	// A file line without a position names no position, but keeps the
+	// producer that makes it alert-only: any local user can write the file.
 	if !d.dispatchMailLogLine(maillog.Line{Message: "dovecot: auth failed"}, handler) {
 		t.Fatal("mail log dispatch stopped")
 	}
+	if got := <-d.alertCh; got.Observation != (alert.Observation{Producer: "mail_log"}) {
+		t.Fatalf("a file line without a position stamped %+v", got.Observation)
+	}
+	// A journal entry a mail service wrote, without a position, stamps
+	// nothing: evidence needs a position to name.
+	entry := maillog.Line{Source: "journal", Unit: "dovecot.service", UID: "0", Transport: "syslog", Message: "dovecot: auth failed"}
+	if !d.dispatchMailLogLine(entry, handler) {
+		t.Fatal("mail log dispatch stopped")
+	}
 	if got := <-d.alertCh; got.Observation != (alert.Observation{}) {
-		t.Fatalf("a line without a position stamped %+v", got.Observation)
+		t.Fatalf("a journal entry without a position stamped %+v", got.Observation)
 	}
 }
 

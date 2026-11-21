@@ -166,10 +166,10 @@ func TestKnownCustomersBufferedLoginsKeepEventTime(t *testing.T) {
 				d.cpanelSessionLogHandler(line, d.currentCfg())
 			case "postfix":
 				line := at.Format(time.RFC3339) + " host postfix/smtpd[1]: 4ABC123: client=unknown[" + ip + "], sasl_method=PLAIN, sasl_username=alice@example.com"
-				d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+				d.handleMailLine(line, trustedMailObs, d.currentCfg())
 			case "imap":
 				line := at.Format(time.RFC3339) + " host dovecot: imap-login: Logged in: user=<alice@example.com>, method=PLAIN, rip=" + ip + ", lip=192.0.2.1, mpid=1, TLS"
-				d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+				d.handleMailLine(line, trustedMailObs, d.currentCfg())
 			case "exim":
 				line := at.Format("2006-01-02 15:04:05") + " 1abc23-000456-AB <= alice@example.com H=mail.example.com [" + ip + "] P=esmtpsa A=dovecot_login:alice@example.com S=100"
 				d.handleEximLine(line, alert.Observation{}, d.currentCfg())

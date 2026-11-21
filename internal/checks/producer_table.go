@@ -4,6 +4,8 @@ import (
 	"slices"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // ProducerEntry is one producer of admission evidence: what it registers,
@@ -16,13 +18,16 @@ type ProducerEntry struct {
 // Producer IDs the readers name when they stamp an observation.
 const (
 	ProducerSSHLog          admission.ProducerID = "sshd_log"
+	ProducerSSHJournal      admission.ProducerID = "sshd_journal"
 	ProducerSSHLoginScan    admission.ProducerID = "ssh_login_scan"
 	ProducerPAMSocket       admission.ProducerID = "pam_socket"
 	ProducerFTPLog          admission.ProducerID = "ftp_log"
 	ProducerFTPScan         admission.ProducerID = "ftp_scan"
+	ProducerFTPJournal      admission.ProducerID = "ftp_journal"
 	ProducerEximLog         admission.ProducerID = "exim_log"
 	ProducerEximHistory     admission.ProducerID = "exim_history"
 	ProducerMailLog         admission.ProducerID = "mail_log"
+	ProducerMailJournal     admission.ProducerID = "mail_journal"
 	ProducerStalwartLog     admission.ProducerID = "stalwart_log"
 	ProducerAccessLog       admission.ProducerID = "access_log"
 	ProducerDomlogScan      admission.ProducerID = "domlog_scan"
@@ -44,6 +49,8 @@ var (
 	mintsDestination = admission.Attributions(admission.AttributionSocketDestination)
 )
 
+// Syslog file producers declare no attribution: their lines can alert but
+// cannot mint evidence, including when a caller bypasses AdmissionEvidence.
 // producerTable lists every producer of address evidence. Realtime and
 // scheduled readers are separate producers because each has its own
 // observation stream. Admission has no realtime entry: both reach the
@@ -52,19 +59,25 @@ var (
 // account or mailbox, a request names a host it chose itself.
 var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerSSHLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: mintsPeer},
+		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}},
 		admission.ParserRef{Name: "sshd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerSSHLoginScan, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
+		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}},
+		admission.ParserRef{Name: "sshd", Version: 1}},
+	{admission.ProducerSpec{ID: ProducerSSHJournal, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"ssh_login_unknown_ip"}, Claims: []admission.ClaimKind{admission.ClaimAccount}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "sshd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerPAMSocket, Entry: admission.EntryScan, Observation: admission.ObservationEventSeq,
 		Checks: []string{"pam_bruteforce", "credential_stuffing"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "pam_csm", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerFTPLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ftp_auth_failure_realtime"}, Attribution: mintsPeer},
+		Checks: []string{"ftp_auth_failure_realtime"}},
 		admission.ParserRef{Name: "pureftpd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerFTPScan, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
-		Checks: []string{"ftp_bruteforce"}, Attribution: mintsPeer},
+		Checks: []string{"ftp_bruteforce"}},
+		admission.ParserRef{Name: "pureftpd", Version: 1}},
+	{admission.ProducerSpec{ID: ProducerFTPJournal, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
+		Checks: []string{"ftp_auth_failure_realtime", "ftp_bruteforce"}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "pureftpd", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerEximLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"smtp_bruteforce", "smtp_subnet_spray", "smtp_probe_abuse", "email_cloud_relay_abuse", "mail_account_compromised"},
@@ -75,6 +88,10 @@ var producerTable = []ProducerEntry{
 		admission.ParserRef{Name: "exim", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerMailLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		// Postfix hosts track SMTP auth failures from the mail log too.
+		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray"},
+		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}},
+		admission.ParserRef{Name: "dovecot", Version: 1}},
+	{admission.ProducerSpec{ID: ProducerMailJournal, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised", "smtp_bruteforce", "smtp_subnet_spray"},
 		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimMailbox}, Attribution: mintsPeer},
 		admission.ParserRef{Name: "dovecot", Version: 1}},
@@ -116,6 +133,49 @@ var producerTable = []ProducerEntry{
 		// attribution kind, and its findings mint nothing.
 		Checks: []string{"email_php_form_relay"}},
 		admission.ParserRef{Name: "exim_spool", Version: 1}},
+}
+
+// writableLogProducers read syslog files. Any local user can write a line
+// there under any program name, so a line names no one who connected: their
+// findings alert and never block, and their successes are not logins.
+var writableLogProducers = map[admission.ProducerID]bool{
+	ProducerSSHLog: true, ProducerSSHLoginScan: true, ProducerMailLog: true, ProducerFTPLog: true, ProducerFTPScan: true,
+}
+
+// ProducerWritableLog reports whether p reads a syslog file a local user can
+// write.
+func ProducerWritableLog(p admission.ProducerID) bool { return writableLogProducers[p] }
+
+// UnpositionedObservation names a line read without its position: nothing,
+// except that a log any local user can write still names its producer, so
+// the line alerts but never acts.
+func UnpositionedObservation(p admission.ProducerID) alert.Observation {
+	if writableLogProducers[p] {
+		return alert.Observation{Producer: string(p)}
+	}
+	return alert.Observation{}
+}
+
+// UnverifiedAddress reports whether a finding of check stamped by producer
+// cannot attest its address: a syslog file producer stamped it, or no
+// producer was recorded for a check one of them emits, as stored evidence
+// older than the producer record looks.
+func UnverifiedAddress(check, producer string) bool {
+	if writableLogProducers[admission.ProducerID(producer)] {
+		return true
+	}
+	if producer != "" {
+		return false
+	}
+	// Persisted names must follow the same aliases as AddressEvidence;
+	// otherwise a renamed syslog check regains authority after restore.
+	check = config.CanonicalCheckName(check)
+	for _, p := range producerTable {
+		if writableLogProducers[p.Spec.ID] && slices.Contains(p.Spec.Checks, check) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProducerTable returns a copy of the producer table.

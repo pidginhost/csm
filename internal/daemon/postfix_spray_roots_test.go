@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,9 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 		"exim host":      {verdict: true, result: true, tag: "postfix/smtpd[99]", exim: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			d, clock := newPairingDaemon(t, &config.Config{})
+			cfg := &config.Config{}
+			cfg.MailLogs.Units = []string{"postfix", "dovecot"}
+			d, clock := newPairingDaemon(t, cfg)
 			d.smtpAuthFromExim = tc.exim
 			wantObservations := map[string]alert.Observation{}
 			var sprays []alert.Finding
@@ -37,8 +40,13 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 			dispatch := func(message string) alert.Observation {
 				cursor++
 				clock.advance(time.Second)
-				pos := maillog.Position{Stream: "m:7:e.0", Cursor: strconv.Itoa(cursor), ObservedAt: clock.Now()}
-				line := maillog.Line{Message: clock.Now().Format(time.RFC3339) + " mail " + message, Position: pos}
+				// Journal lines a service wrote; a file line mints nothing.
+				pos := maillog.Position{Stream: "journal", Cursor: "s=" + strconv.Itoa(cursor), ObservedAt: clock.Now()}
+				unit := "postfix.service"
+				if strings.HasPrefix(message, "dovecot") {
+					unit = "dovecot.service"
+				}
+				line := maillog.Line{Source: "journal", Unit: unit, UID: "0", Transport: "syslog", Message: clock.Now().Format(time.RFC3339) + " mail " + message, Position: pos}
 				if !d.dispatchMailLogLine(line, d.handleMailLine) {
 					t.Fatal("mail dispatch refused")
 				}
@@ -49,7 +57,7 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 							sprays = append(sprays, f)
 						}
 					default:
-						return alert.Observation{Producer: string(checks.ProducerMailLog), Stream: pos.Stream, Cursor: pos.Cursor, ObservedAt: pos.ObservedAt}
+						return alert.Observation{Producer: string(checks.ProducerMailJournal), Stream: pos.Stream, Cursor: pos.Cursor, ObservedAt: pos.ObservedAt}
 					}
 				}
 			}
@@ -81,7 +89,7 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 			}
 			var producer *admission.Producer
 			for _, entry := range checks.ProducerTable() {
-				if entry.Spec.ID == checks.ProducerMailLog {
+				if entry.Spec.ID == checks.ProducerMailJournal {
 					producer, err = reg.Register(entry.Spec)
 					if err != nil {
 						t.Fatal(err)
@@ -97,7 +105,7 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 				root := spray
 				root.SourceIP, root.Observation, root.Attribution = c.Address, c.Observation, c.Attribution
 				id, input, err := checks.AdmissionEvidence(root)
-				if err != nil || id != checks.ProducerMailLog || input.Parser != (admission.ParserRef{Name: "dovecot", Version: 1}) {
+				if err != nil || id != checks.ProducerMailJournal || input.Parser != (admission.ParserRef{Name: "dovecot", Version: 1}) {
 					t.Fatalf("mail evidence changed its producer/parser: %s %+v: %v", id, input, err)
 				}
 				evidence, err := producer.Mint(input)
