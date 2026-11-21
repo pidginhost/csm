@@ -591,6 +591,10 @@ logs: on LiteSpeed that refusal is final as well, and so is one whose
 log format writes request data where CSM reads the client, even when the same
 configuration also enables proxy-header rewriting. `csm doctor` distinguishes
 these final refusals from the Apache and nginx header-only exception.
+A detected nginx `proxy_protocol` source also makes a rewrite refusal final,
+including queued retries and permanent blocks. Only sources covered by
+`web_server.trusted_proxies` can pass verification; shipped CDN ranges alone
+never authorize a PROXY protocol address.
 A challenge whose evidence the ledger refused keeps that refusal, so its
 timeout follows the same rule.
 Permanent blocks, mail spray blocks and derived blocks longer than

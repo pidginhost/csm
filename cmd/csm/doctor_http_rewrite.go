@@ -47,7 +47,7 @@ func webRewriteDoctorCheck(r checks.HTTPRewrite, cfg *config.Config) DoctorCheck
 			break
 		}
 		blocking := "existing blocking is unchanged"
-		if r.Server == platform.WSLiteSpeed || r.Format {
+		if r.Server == platform.WSLiteSpeed || r.Format || r.NginxProxyProtocol() {
 			blocking = "while admission executes blocks, refused IP blocks stay refused; challenges still apply"
 		}
 		check.Message = fmt.Sprintf("%s logs a replaced client address (%s in %s): web findings get no automatic response from admission; %s", r.Server, r.Directive, r.File, blocking)

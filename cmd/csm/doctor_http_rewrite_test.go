@@ -249,3 +249,14 @@ func TestDoctorRewriteRowNginxVerified(t *testing.T) {
 		t.Fatalf("unverified nginx row = %+v", got)
 	}
 }
+
+func TestDoctorNginxProxyProtocolRefusalIsFinal(t *testing.T) {
+	r := checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSNginx,
+		RealIP: &checks.NginxRealIP{Headers: []string{"proxy_protocol"}, From: []string{"198.51.100.0/24"}}}
+	for _, cfg := range []*config.Config{nil, {}} {
+		got := webRewriteDoctorCheck(r, cfg)
+		if !strings.Contains(got.Message, "refused IP blocks stay refused") || strings.Contains(got.Message, "existing blocking is unchanged") {
+			t.Fatalf("unsafe PROXY protocol must not advertise legacy blocks: %+v", got)
+		}
+	}
+}

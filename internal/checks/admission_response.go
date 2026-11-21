@@ -123,13 +123,14 @@ func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 // other than the sender can choose: LiteSpeed applies forwarding headers to
 // requests from the host itself, so any local user chooses it, and a log
 // format that writes request data where CSM reads the client lets any
-// client choose it.
+// client choose it. nginx PROXY protocol also lets customer code on shared
+// edges choose an address unless its configured sources were verified.
 func forgeableRewrite(err error) bool {
 	if admission.CauseOf(err) != admission.CauseRewrittenLog {
 		return false
 	}
 	r := CurrentHTTPRewrite()
-	return r.Server == platform.WSLiteSpeed || r.Format
+	return r.Server == platform.WSLiteSpeed || r.Format || r.NginxProxyProtocol()
 }
 
 // respondSpray asks admission to block a spray's prefix through the mail

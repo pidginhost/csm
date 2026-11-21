@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- With automatic blocking active, refused nginx PROXY protocol addresses stay unblocked, including queued retries and permanent blocks.
 - `csm webserver-integration install` and `upgrade` now also set up the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active. Restart CSM after the first install.
 - On nginx hosts that read client addresses only from Cloudflare's own header and ranges, or from PROXY protocol sent by trusted proxies, web attackers are blocked again.
 - With the CSM web peer log, web attackers on proxy-header hosts that connect directly are blocked again; proxied clients are only challenged and forged addresses never blocked.

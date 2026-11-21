@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/config"
@@ -41,8 +42,8 @@ func nginxRewrite(t *testing.T, conf string) HTTPRewrite {
 // nginx logs only an address an edge vouched for when every real_ip_header
 // is CF-Connecting-IP, which a Cloudflare edge sets itself, and every
 // set_real_ip_from lies in Cloudflare's ranges; or every header is
-// proxy_protocol, which the connecting proxy writes, from shipped edges or
-// trusted proxies. Other headers, the X-Real-IP default, ranges that reach
+// proxy_protocol, which the connecting proxy writes, from trusted proxies.
+// Other headers, the X-Real-IP default, ranges that reach
 // loopback or this host, other sources, and request data in the client field
 // of a log all stay unverified.
 func TestNginxRealIPVerifiedForCDNHeader(t *testing.T) {
@@ -136,9 +137,9 @@ func TestNginxRealIPVerificationScopes(t *testing.T) {
 		{"include safe header", "http { include extra.conf; set_real_ip_from 198.51.100.0/24; }", "real_ip_header CF-Connecting-IP;", true},
 		{"include server header", "http { set_real_ip_from 198.51.100.0/24; server { include extra.conf; } server {} }", "real_ip_header CF-Connecting-IP;", false},
 		{"include override", "http { real_ip_header CF-Connecting-IP; set_real_ip_from 198.51.100.0/24; server { include extra.conf; } }", "location / { real_ip_header X-Real-IP; }", false},
-		{"include local trust", "http { real_ip_header proxy_protocol; set_real_ip_from 198.51.100.0/24; server { include extra.conf; } }", "location / { set_real_ip_from 203.0.113.50; }", false},
-		{"include mapped trust", "http { real_ip_header proxy_protocol; set_real_ip_from 198.51.100.0/24; include extra.conf; }", "server { set_real_ip_from ::ffff:203.0.113.50; }", false},
-		{"include hostname", "http { real_ip_header proxy_protocol; set_real_ip_from 198.51.100.0/24; include extra.conf; }", "server { set_real_ip_from proxy.example; }", false},
+		{"include local trust", "http { real_ip_header proxy_protocol; set_real_ip_from 203.0.113.10; server { include extra.conf; } }", "location / { set_real_ip_from 203.0.113.50; }", false},
+		{"include mapped trust", "http { real_ip_header proxy_protocol; set_real_ip_from 203.0.113.10; include extra.conf; }", "server { set_real_ip_from ::ffff:203.0.113.50; }", false},
+		{"include hostname", "http { real_ip_header proxy_protocol; set_real_ip_from 203.0.113.10; include extra.conf; }", "server { set_real_ip_from proxy.example; }", false},
 		{"missing include", "http { real_ip_header CF-Connecting-IP; set_real_ip_from 198.51.100.0/24; include missing.conf; }", "", false},
 		{"incomplete tree", "http { real_ip_header CF-Connecting-IP; set_real_ip_from 198.51.100.0/24;", "", false},
 		{"header variable", "http { real_ip_header $header; set_real_ip_from 198.51.100.0/24; }", "", false},
@@ -275,5 +276,81 @@ func TestHTTPRewriteEqualComparesTrustValues(t *testing.T) {
 		if a.Equal(b) || b.Equal(a) {
 			t.Fatalf("changed settings compare equal: %+v", b)
 		}
+	}
+}
+
+// A shipped edge list alone must not authorize PROXY protocol through the
+// admission caller, while explicit operator trust still authorizes it.
+func TestAdmissionNginxProxyProtocolRequiresConfiguredTrust(t *testing.T) {
+	withWebPeers(t, 500000)
+	withCloudflarePrefixes(t, "198.51.100.0/24")
+	withKnownProxyPrefixes(t, "198.51.100.0/24", "192.0.2.0/24")
+	withHostAddresses(t, "203.0.113.50")
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	for _, tc := range []struct {
+		name     string
+		trusted  []string
+		noConfig bool
+		want     bool
+	}{
+		{"no configuration", nil, true, false},
+		{"empty trust", nil, false, false},
+		{"only one source trusted", []string{"198.51.100.0/24"}, false, false},
+		{"both sources trusted", []string{"198.51.100.0/24", "192.0.2.0/24"}, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.WebServer.TrustedProxies = tc.trusted
+			cfg.Challenge.TrustedProxies = []string{"198.51.100.0/24", "192.0.2.0/24"}
+			if tc.noConfig {
+				cfg = nil
+			}
+			config.SetActive(cfg)
+			withHTTPRewrite(t, nginxRewrite(t, "http { real_ip_header proxy_protocol; set_real_ip_from 198.51.100.0/24; set_real_ip_from 192.0.2.0/24; }"))
+			_, in, err := AdmissionEvidence(httpPeerFinding("203.0.113.70"))
+			if tc.want {
+				if err != nil || in.Target.Prefix().Addr().String() != "203.0.113.70" {
+					t.Fatalf("trusted sources: input=%+v error=%v", in, err)
+				}
+			} else if admission.CauseOf(err) != admission.CauseRewrittenLog {
+				t.Fatalf("untrusted source: %v, want rewritten_log", err)
+			}
+		})
+	}
+}
+
+// Refusing an edge-supplied PROXY address must also stop the fallback block
+// and its retained retries, rather than just withholding admission evidence.
+func TestNginxProxyProtocolRefusalStopsLegacyBlocks(t *testing.T) {
+	withWebPeers(t, 500000)
+	withCloudflarePrefixes(t, "198.51.100.0/24")
+	withKnownProxyPrefixes(t, "198.51.100.0/24", "192.0.2.0/24")
+	withHostAddresses(t, "203.0.113.50")
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	config.SetActive(&config.Config{})
+	for _, source := range []string{"198.51.100.0/24", "192.0.2.0/24"} {
+		t.Run(source, func(t *testing.T) {
+			withHTTPRewrite(t, nginxRewrite(t, "http { real_ip_header proxy_protocol; set_real_ip_from "+source+"; }"))
+			f := httpPeerFinding("203.0.113.70")
+			_, _, err := AdmissionEvidence(f)
+			if admission.CauseOf(err) != admission.CauseRewrittenLog {
+				t.Fatalf("edge-supplied address: %v, want rewritten_log", err)
+			}
+			a := withAdmission(t)
+			a.executes, a.mintErr = true, err
+			if owned, accepted := respond(admission.KindBlockIP, f, f.SourceIP, 0); !owned || accepted {
+				t.Errorf("refused address returned to legacy: owned=%v accepted=%v", owned, accepted)
+			}
+			for _, ttl := range []time.Duration{time.Minute, 2 * time.Hour, 0} {
+				if !respondDerived(ApplyBlockRequest{IP: f.SourceIP, TTL: ttl, RootFinding: f, RootErr: err, Entry: admission.EntryCentral}, time.Hour) {
+					t.Errorf("refused address returned to legacy with lifetime %v", ttl)
+				}
+			}
+			if len(a.responses()) != 0 || len(a.refused) != 4 {
+				t.Fatalf("responses=%v refusals=%v, want four refusals only", a.responses(), a.refused)
+			}
+		})
 	}
 }

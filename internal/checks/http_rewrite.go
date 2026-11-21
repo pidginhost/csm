@@ -531,6 +531,13 @@ func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
 	return err == nil && entry == ""
 }
 
+// NginxProxyProtocol reports a detected PROXY protocol client-address source.
+// A refused address from this source cannot fall back to legacy blocking:
+// customer code on shared edges can supply arbitrary PROXY headers.
+func (r HTTPRewrite) NginxProxyProtocol() bool {
+	return r.Server == platform.WSNginx && r.RealIP != nil && slices.Contains(r.RealIP.Headers, "proxy_protocol")
+}
+
 // realIPPrefix reads an address or CIDR as a masked prefix.
 func realIPPrefix(s string) (netip.Prefix, bool) {
 	s = strings.TrimSpace(s)
