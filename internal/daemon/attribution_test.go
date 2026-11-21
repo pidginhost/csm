@@ -267,15 +267,15 @@ func TestDovecotGeoFindingCarriesTenant(t *testing.T) {
 		cfg := &config.Config{}
 		for _, user := range []string{"user@example.com", "user@example.org", "bob", "nobody"} {
 			for i := 0; i < geoMinLoginCount; i++ {
-				if got := parseDovecotLogLine(login(user, "198.51.100.20"), cfg); len(got) != 0 {
+				if got := parseDovecotLogLine(login(user, "198.51.100.20"), cfg, true); len(got) != 0 {
 					t.Fatalf("baseline login alerted: %+v", got)
 				}
 			}
 		}
-		requireOwner(t, parseDovecotLogLine(login("user@example.com", "203.0.113.9"), cfg), "email_suspicious_geo", "alice")
-		requireOwner(t, parseDovecotLogLine(login("user@example.org", "203.0.113.9"), cfg), "email_suspicious_geo", "")
-		requireOwner(t, parseDovecotLogLine(login("bob", "203.0.113.9"), cfg), "email_suspicious_geo", "bob")
-		requireOwner(t, parseDovecotLogLine(login("nobody", "203.0.113.9"), cfg), "email_suspicious_geo", "")
+		requireOwner(t, parseDovecotLogLine(login("user@example.com", "203.0.113.9"), cfg, true), "email_suspicious_geo", "alice")
+		requireOwner(t, parseDovecotLogLine(login("user@example.org", "203.0.113.9"), cfg, true), "email_suspicious_geo", "")
+		requireOwner(t, parseDovecotLogLine(login("bob", "203.0.113.9"), cfg, true), "email_suspicious_geo", "bob")
+		requireOwner(t, parseDovecotLogLine(login("nobody", "203.0.113.9"), cfg, true), "email_suspicious_geo", "")
 	})
 }
 

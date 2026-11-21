@@ -2834,7 +2834,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		tracker, smtp, sessions = d.fileMailAuthTracker, d.fileSMTPAuthTracker, d.fileDovecotSessions
 	}
 	d.recordMailStatsMail(line, obs.ObservedAt)
-	findings := parseDovecotLogLine(line, cfg)
+	findings := parseDovecotLogLine(line, cfg, trustedMailLogin(obs))
 	// Mail postfix could not pass to rspamd has no scan record; the
 	// failure counts as a failed scan.
 	if src := d.antispamScanSource.Load(); src != nil && postfixMilterFailure(line, src.Milters) {

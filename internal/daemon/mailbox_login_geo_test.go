@@ -74,9 +74,9 @@ func TestDovecotNewCountryIsEvidence(t *testing.T) {
 	withGeoCountries(t, map[string]string{"203.0.113.5": "RO", "198.51.100.7": "DE"})
 	cfg := eximAutoHoldConfig()
 	for range geoMinLoginCount {
-		parseDovecotLogLine(geoDovecotLine(time.Now(), "203.0.113.5", "real@victim.example"), cfg)
+		parseDovecotLogLine(geoDovecotLine(time.Now(), "203.0.113.5", "real@victim.example"), cfg, true)
 	}
-	got := parseDovecotLogLine(geoDovecotLine(time.Now(), "198.51.100.7", "real@victim.example"), cfg)
+	got := parseDovecotLogLine(geoDovecotLine(time.Now(), "198.51.100.7", "real@victim.example"), cfg, true)
 	if len(got) != 1 || got[0].Check != "email_suspicious_geo" {
 		t.Fatalf("findings = %+v", got)
 	}
@@ -116,7 +116,7 @@ func TestGeoLoginUsesEventTimeAcrossReaders(t *testing.T) {
 		d.cpanelSessionLogHandler(geoSessionLine(older.Add(-time.Hour), "203.0.113.5", account), cfg)
 	}
 	d.cpanelSessionLogHandler(geoSessionLine(now, "198.51.100.7", account), cfg)
-	got := parseDovecotLogLine(geoDovecotLine(older, "192.0.2.9", account), cfg)
+	got := parseDovecotLogLine(geoDovecotLine(older, "192.0.2.9", account), cfg, true)
 	if len(got) != 0 || len(*calls) != 0 {
 		t.Errorf("logins two days apart produced %+v, calls %v", got, *calls)
 	}
@@ -172,7 +172,7 @@ func TestConcurrentMailboxLoginsShareHistoryAndCooldown(t *testing.T) {
 					line := geoSessionLine(time.Now(), "198.51.100.7", "Real@Victim.Example")
 					results <- d.cpanelSessionLogHandler(line, cfg)
 				} else {
-					results <- parseDovecotLogLine(geoDovecotLine(time.Now(), "192.0.2.9", account), cfg)
+					results <- parseDovecotLogLine(geoDovecotLine(time.Now(), "192.0.2.9", account), cfg, true)
 				}
 			})
 		}
@@ -218,10 +218,10 @@ func TestGeoLedgerKeepsAuthenticatedMailboxIdentity(t *testing.T) {
 	cfg := dryRunConfig()
 	const mailbox = "\u212Aim@victim.example"
 	for range geoMinLoginCount {
-		parseDovecotLogLine(geoDovecotLine(time.Now(), "203.0.113.5", mailbox), cfg)
+		parseDovecotLogLine(geoDovecotLine(time.Now(), "203.0.113.5", mailbox), cfg, true)
 	}
-	parseDovecotLogLine(geoDovecotLine(time.Now(), "198.51.100.7", mailbox), cfg)
-	got := parseDovecotLogLine(geoDovecotLine(time.Now(), "192.0.2.9", mailbox), cfg)
+	parseDovecotLogLine(geoDovecotLine(time.Now(), "198.51.100.7", mailbox), cfg, true)
+	got := parseDovecotLogLine(geoDovecotLine(time.Now(), "192.0.2.9", mailbox), cfg, true)
 	if len(got) != 1 || got[0].Check != "email_mailbox_compromise" || got[0].Mailbox != mailbox {
 		t.Fatalf("foreign logins for %q produced %+v", mailbox, got)
 	}
