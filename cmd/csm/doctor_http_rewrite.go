@@ -48,6 +48,9 @@ func webRewriteDoctorCheck(r checks.HTTPRewrite, cfg *config.Config) DoctorCheck
 			break
 		}
 		blocking := "existing blocking is unchanged"
+		if r.Server == platform.WSApache {
+			blocking = "existing blocking is unchanged unless CSM reads a trusted web peer log"
+		}
 		if r.Server == platform.WSLiteSpeed || r.Format || r.NginxProxyProtocol() {
 			blocking = "while admission executes blocks, refused IP blocks stay refused; challenges still apply"
 		}

@@ -76,7 +76,6 @@ func TestHTTPRewriteHeaderExceptionWithoutUnsafeUsedFormat(t *testing.T) {
 		{"apache unused", "RemoteIPHeader X-Real-IP\nLogFormat \"%{X-Client}i %t\" unused\nCustomLog logs/access_log \"%a %t\"\n", "RemoteIPHeader X-Real-IP", platform.WSApache},
 		{"apache unreadable include", "RemoteIPHeader X-Real-IP\nInclude missing.conf\n", "RemoteIPHeader X-Real-IP", platform.WSApache},
 		{"nginx unused", "http { set_real_ip_from 192.0.2.0/24; log_format unused '$http_x_client'; access_log logs/access combined; }\n", "set_real_ip_from 192.0.2.0/24", platform.WSNginx},
-		{"nginx unreadable include", "http { set_real_ip_from 192.0.2.0/24; include missing.conf; }\n", "set_real_ip_from 192.0.2.0/24", platform.WSNginx},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeRewriteFile(t, t.TempDir(), "server.conf", tc.body)
@@ -93,5 +92,47 @@ func TestHTTPRewriteHeaderExceptionWithoutUnsafeUsedFormat(t *testing.T) {
 				t.Fatal("header-only refusal was taken from legacy")
 			}
 		})
+	}
+}
+
+// An nginx tree CSM cannot read whole may hide a proxy_protocol header that
+// customer code on a CDN edge can drive: its refusal is final (operator
+// ruling 2026-11-21).
+func TestNginxUnreadableTreeRefusalIsFinal(t *testing.T) {
+	path := writeRewriteFile(t, t.TempDir(), "server.conf", "http { set_real_ip_from 192.0.2.0/24; include missing.conf; }\n")
+	r := detectHTTPRewrite(rewriteSources{server: platform.WSNginx, nginxConfig: path})
+	if r.State != RewriteActive || r.Format {
+		t.Fatalf("rewrite = %+v, want a header rewrite", r)
+	}
+	withHTTPRewrite(t, r)
+	if !taken(true, admission.KindBlockIP, attributionRefusal(admission.CauseRewrittenLog), nil) {
+		t.Fatal("an unreadable nginx tree's refusal went back to legacy")
+	}
+}
+
+// Where CSM reads and trusts the web peer log, an unknown verdict on an
+// Apache header rewrite refuses for good; without it the Step 1 exception
+// stands (operator ruling 2026-11-21).
+func TestApacheUnknownFinalWherePeerLogActive(t *testing.T) {
+	withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: platform.WSApache, Directive: "RemoteIPHeader X-Forwarded-For"})
+	refusal := attributionRefusal(admission.CauseRewrittenLog)
+	t.Cleanup(ResetWebPeersForTest())
+	SetWebPeerTrust(nil)
+	if taken(true, admission.KindBlockIP, refusal, nil) {
+		t.Fatal("without a peer log the Apache header exception was lost")
+	}
+	trusted := true
+	SetWebPeerTrust(func() bool { return trusted })
+	if !taken(true, admission.KindBlockIP, refusal, nil) {
+		t.Fatal("with an active peer log the unknown refusal went back to legacy")
+	}
+	trusted = false
+	if taken(true, admission.KindBlockIP, refusal, nil) {
+		t.Fatal("an untrusted peer log made the refusal final")
+	}
+	SetWebPeerDrain(nil)
+	trusted = true
+	if taken(true, admission.KindBlockIP, refusal, nil) {
+		t.Fatal("a peer log nobody reads made the refusal final")
 	}
 }

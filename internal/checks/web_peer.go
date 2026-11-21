@@ -69,6 +69,7 @@ var (
 	webPeerDrainMu      sync.Mutex
 	webPeerDrainVersion uint64
 	webPeerDrain        func(timeout time.Duration) bool
+	webPeerTrust        func() bool
 	webPeerSleep        = time.Sleep
 	webPeerClock        = time.Now
 )
@@ -81,6 +82,23 @@ func SetWebPeerDrain(drain func(timeout time.Duration) bool) {
 	defer webPeerDrainMu.Unlock()
 	webPeerDrain = drain
 	webPeerDrainVersion++
+}
+
+// SetWebPeerTrust registers whether the daemon currently trusts the peer
+// log it reads; nil when it reads none.
+func SetWebPeerTrust(trust func() bool) {
+	webPeerDrainMu.Lock()
+	defer webPeerDrainMu.Unlock()
+	webPeerTrust = trust
+}
+
+// WebPeerLogActive reports that the daemon reads a peer log and trusts it:
+// an address it cannot verify is then refused for good.
+func WebPeerLogActive() bool {
+	webPeerDrainMu.Lock()
+	drain, trust := webPeerDrain, webPeerTrust
+	webPeerDrainMu.Unlock()
+	return drain != nil && trust != nil && trust()
 }
 
 func currentWebPeerDrain() (func(time.Duration) bool, uint64) {
@@ -301,7 +319,7 @@ func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict 
 	switch {
 	case v == PeerForged || v == PeerProxied:
 		return v
-	case v == PeerUnknown && rewrittenRefusalFinal(CurrentHTTPRewrite()):
+	case v == PeerUnknown && (rewrittenRefusalFinal(CurrentHTTPRewrite()) || WebPeerLogActive()):
 		// The refusal is final whatever later lines say; waiting would only
 		// hold the alert dispatcher. Elsewhere a forged line that arrives
 		// late turns an unknown refusal the legacy path would act on into
@@ -384,6 +402,9 @@ func (x *webPeerIndex) markLoss(at time.Time) {
 // function that restores the previous state.
 func ResetWebPeersForTest() func() {
 	prevDrain, _ := currentWebPeerDrain()
+	webPeerDrainMu.Lock()
+	prevTrust := webPeerTrust
+	webPeerDrainMu.Unlock()
 	prev, prevSleep, prevClock := webPeers, webPeerSleep, webPeerClock
 	webPeers = newWebPeerIndex()
 	SetWebPeerDrain(func(time.Duration) bool { return true })
@@ -391,6 +412,7 @@ func ResetWebPeersForTest() func() {
 	return func() {
 		webPeers = prev
 		SetWebPeerDrain(prevDrain)
+		SetWebPeerTrust(prevTrust)
 		webPeerSleep, webPeerClock = prevSleep, prevClock
 	}
 }

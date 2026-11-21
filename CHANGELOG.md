@@ -14,9 +14,9 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration install` and `upgrade` now also set up the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
-- With `auto_response.dry_run` off and the CSM web peer log, proxy-header hosts block direct web attackers, only challenge proxied clients and never block addresses shown forged.
+- With `auto_response.dry_run` off and the CSM web peer log, proxy-header hosts block direct web attackers, only challenge proxied clients and never block an address they cannot verify.
 - With the CSM web peer log, CSM alerts when the web server logs a client address chosen by a local process or an untrusted peer.
-- With `auto_response.dry_run` off, an address admission refuses is no longer blocked by the older path or its queued retry, except clients Apache or nginx read from a proxy header.
+- With `auto_response.dry_run` off, a refused address is never blocked by the older path, except proxy-header clients on Apache without the web peer log or on nginx.
 - With `auto_response.dry_run` off, web findings on LiteSpeed hosts that read client addresses from a proxy header no longer firewall-block that address; challenges still apply.
 - With `auto_response.dry_run` off, web findings no longer firewall-block an address the access log takes from request data, even where a proxy header is also trusted; challenges still apply.
 - A known CDN edge is never blocked automatically, including when a forwarded header names it or the web server rewrites client addresses.

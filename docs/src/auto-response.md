@@ -583,9 +583,10 @@ peer line the web server flushed after its access line still decides.
 Reputation sightings use the same check, findings read together share one
 wait, and a finding without a valid read time stays unverified. Two
 refusals still leave the block to the existing
-paths: a client address Apache or nginx may have rewritten from a proxy
-header that the peer log does not cover, and a ledger that could not take
-new work at all. LiteSpeed also applies those headers to
+paths: a client address Apache rewrote from a proxy header while CSM reads
+no trusted web peer log, or nginx read from a proxy header in a configuration
+CSM reads whole without PROXY protocol, and a ledger that could not take new
+work at all. LiteSpeed also applies those headers to
 requests from the host itself, so any local user can choose the address it
 logs: on LiteSpeed that refusal is final as well, and so is one whose
 log format writes request data where CSM reads the client, even when the same

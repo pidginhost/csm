@@ -30,7 +30,7 @@ func TestWebRewriteDoctorCheck(t *testing.T) {
 		{"rewritten", checks.HTTPRewrite{State: checks.RewriteActive, Server: "litespeed", Directive: "useIpInProxyHeader 2", File: "/usr/local/lsws/conf/httpd_config.xml"}, "ok",
 			[]string{"litespeed", "replaced client address", "useIpInProxyHeader 2", "/usr/local/lsws/conf/httpd_config.xml", "no automatic response", "unless the web peer log verifies the client", "refused IP blocks stay refused"}, nil},
 		{"proxy protocol", checks.HTTPRewrite{State: checks.RewriteActive, Server: "apache", Directive: "RemoteIPProxyProtocol On", File: "/etc/apache2/conf.d/proxy.conf"}, "ok",
-			[]string{"apache logs a replaced client address", "RemoteIPProxyProtocol On", "/etc/apache2/conf.d/proxy.conf"}, nil},
+			[]string{"apache logs a replaced client address", "RemoteIPProxyProtocol On", "/etc/apache2/conf.d/proxy.conf", "unless CSM reads a trusted web peer log"}, nil},
 		{"unknown", checks.HTTPRewrite{State: checks.RewriteUnknown, Server: "apache", Reason: "no Apache configuration file was found"}, "warn",
 			[]string{"no Apache configuration file was found", "no automatic response"}, []string{"root", "web server configuration"}},
 		{"apache format", checks.HTTPRewrite{State: checks.RewriteActive, Server: "apache", Format: true}, "ok",

@@ -45,8 +45,9 @@ type HTTPRewrite struct {
 	// RealIP is nginx's realip setup when the active rewrite is nginx's own
 	// and its configuration was read completely; nil otherwise.
 	RealIP *NginxRealIP
-	// ProxyProtocol marks nginx with a proxy_protocol real_ip_header in any
-	// context: it may take client addresses from PROXY protocol.
+	// ProxyProtocol marks nginx that may take client addresses from PROXY
+	// protocol: a proxy_protocol real_ip_header in any context, or
+	// set_real_ip_from in a tree CSM could not read whole.
 	ProxyProtocol bool
 	// BufferedLogs marks Apache that may hold log lines in per-process
 	// buffers (BufferedLogs On, or a tree CSM could not read whole): its
@@ -189,7 +190,7 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 			if !r.Format && complete && realIP != nil && src.server == platform.WSNginx {
 				r.RealIP = realIP
 			}
-			r.ProxyProtocol = src.server == platform.WSNginx && proxyProtocol
+			r.ProxyProtocol = src.server == platform.WSNginx && (proxyProtocol || !complete)
 			return r
 		}
 		if !complete {
@@ -559,9 +560,9 @@ func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
 }
 
 // NginxProxyProtocol reports nginx that may take client addresses from PROXY
-// protocol in any context. A refused address from it cannot fall back to
-// legacy blocking: customer code on shared edges can supply arbitrary PROXY
-// headers.
+// protocol, in any context or in a part of the tree CSM could not read. A
+// refused address from it cannot fall back to legacy blocking: customer code
+// on shared edges can supply arbitrary PROXY headers.
 func (r HTTPRewrite) NginxProxyProtocol() bool {
 	return r.Server == platform.WSNginx && r.ProxyProtocol
 }

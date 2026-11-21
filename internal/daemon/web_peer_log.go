@@ -94,6 +94,8 @@ func (p *webPeerLog) hostSpec(path string, info platform.Info) logWatchSpec {
 			// soon as PHP can write it. Recheck after a concurrent read too.
 			return trusted() && w.Drain(timeout) && trusted()
 		})
+		// A trusted peer log makes an unverified address final on Apache.
+		checks.SetWebPeerTrust(trusted)
 	}
 	return spec
 }

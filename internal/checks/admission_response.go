@@ -128,7 +128,9 @@ func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 // client choose it. nginx PROXY protocol also lets customer code on shared
 // edges choose an address unless its configured sources were verified.
 func forgeableRewrite(err error) bool {
-	return admission.CauseOf(err) == admission.CauseRewrittenLog && rewrittenRefusalFinal(CurrentHTTPRewrite())
+	// Where the daemon reads and trusts the web peer log, an address it
+	// cannot verify is refused for good (operator ruling 2026-11-21).
+	return admission.CauseOf(err) == admission.CauseRewrittenLog && (rewrittenRefusalFinal(CurrentHTTPRewrite()) || WebPeerLogActive())
 }
 
 // rewrittenRefusalFinal reports a rewrite any local process or edge customer

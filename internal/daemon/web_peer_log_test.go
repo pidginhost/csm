@@ -672,3 +672,40 @@ func TestForgeryAlertsLimitedPerOrigin(t *testing.T) {
 		t.Fatalf("remote forgery within the hour alerted again: %+v", again)
 	}
 }
+
+// The peer log watcher tells admission whether it reads a log it trusts:
+// only then does an unverified address on an Apache header host refuse for
+// good. A front-proxied or untrusted host is not active.
+func TestPeerLogWatcherReportsActive(t *testing.T) {
+	for _, tc := range []struct {
+		info platform.Info
+		want bool
+	}{
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache}, true},
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache, FrontProxied: true}, false},
+		{platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed, ServerRunsSiteCode: true}, false},
+	} {
+		t.Cleanup(checks.ResetWebPeersForTest())
+		checks.SetWebPeerTrust(nil)
+		d := &Daemon{webPeer: newWebPeerLog()}
+		path := filepath.Join(t.TempDir(), "peer.log")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var spec logWatchSpec
+		for _, s := range d.fixedLogSpecs(tc.info, nil, false) {
+			if s.path == webPeerLogPath {
+				spec = s
+			}
+		}
+		spec.path = path
+		w, err := newObservedLogWatcher(spec, &config.Config{}, make(chan alert.Finding, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := checks.WebPeerLogActive(); got != tc.want {
+			t.Errorf("%+v: WebPeerLogActive = %v, want %v", tc.info, got, tc.want)
+		}
+		w.Stop()
+	}
+}
