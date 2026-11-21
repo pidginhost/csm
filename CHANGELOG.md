@@ -11,7 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Forged login alerts cannot hide trusted FTP failure alerts or justify reputation blocks for addresses seen only through rewritten web logs.
 - A feed-listed address is excused from reputation blocking only by an IPv4 mail login the mail service recorded in the last day.
 - SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks, mailbox suspensions or count as customer logins; they still alert.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
