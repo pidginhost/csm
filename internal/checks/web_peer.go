@@ -275,7 +275,10 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 		return PeerForged
 	case seen.proxied.within(from, to):
 		return PeerProxied
-	case seen.direct.within(from, to):
+	case seen.direct.within(from, to) && !seen.direct.last.Before(at.Truncate(time.Second)):
+		// Direct lines before the request cannot vouch for it: its own peer
+		// line, or a later direct one, must have been read. Peer lines carry
+		// whole seconds; error logs can stamp the same request finer.
 		return PeerDirect
 	}
 	return PeerUnknown

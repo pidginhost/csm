@@ -71,7 +71,7 @@ func (p *webPeerLog) hostSpec(path string, info platform.Info) logWatchSpec {
 		mu.Lock()
 		defer mu.Unlock()
 		if !blocked {
-			blocked = p.serverRunsSiteCode(info.WebServer)
+			blocked = p.serverRunsSiteCode(info.WebServer) || checks.CurrentHTTPRewrite().BufferedLogs
 		}
 		if blocked {
 			checks.MarkWebPeerLoss(p.now())

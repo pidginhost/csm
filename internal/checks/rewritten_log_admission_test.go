@@ -586,3 +586,36 @@ func TestReputationPeerSightingsShareReadDeadline(t *testing.T) {
 		t.Fatalf("got %d records with wait %v, want 3 with wait %v", len(records), waited, webPeerSettle)
 	}
 }
+
+// A forged request whose peer line never reached the log is not verified by
+// the victim's earlier direct connections.
+func TestAdmissionEvidenceRefusesWithoutTheRequestsOwnLine(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: platform.WSLiteSpeed, Directive: "useIpInProxyHeader 2"})
+	f := httpPeerFinding("203.0.113.91")
+	client := netip.MustParseAddr("203.0.113.91")
+	ObserveWebPeer(f.Observation.ObservedAt.Add(-20*time.Minute), client, client, &config.Config{})
+	if _, _, err := AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("AdmissionEvidence = %v, want the rewritten_log refusal", err)
+	}
+}
+
+// Apache that buffers its logs per process can hold a forged peer line for
+// as long as it likes; such a tree, or one CSM cannot read whole, says so.
+func TestApacheBufferedLogsDetected(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name, conf string
+		want       bool
+	}{
+		{"default", "LogFormat \"%a %l %u %t \\\"%r\\\" %>s %b\" combined\nCustomLog logs/access_log combined\n", false},
+		{"off", "BufferedLogs Off\nCustomLog logs/access_log combined\n", false},
+		{"on", "BufferedLogs On\nCustomLog logs/access_log combined\n", true},
+		{"on in a section", "<IfModule log_config_module>\n  BufferedLogs on\n</IfModule>\n", true},
+	} {
+		conf := writeRewriteFile(t, dir, tc.name+".conf", tc.conf)
+		if got := detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: conf}); got.BufferedLogs != tc.want {
+			t.Errorf("%s: BufferedLogs = %v, want %v", tc.name, got.BufferedLogs, tc.want)
+		}
+	}
+}

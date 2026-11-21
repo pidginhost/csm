@@ -507,7 +507,7 @@ func TestWebPeerLogRejectsJoinedTimestamps(t *testing.T) {
 			p := newWebPeerLog()
 			p.now = func() time.Time { return now }
 			p.handle(peerLine(now.Add(-time.Minute), "site.example", victim.String(), victim.String()), nil)
-			if got := checks.WebPeerVerdict(victim, now); got != checks.PeerDirect {
+			if got := checks.WebPeerVerdict(victim, now.Add(-time.Minute)); got != checks.PeerDirect {
 				t.Fatalf("before joined line = %v, want direct", got)
 			}
 			line := prefix + peerLine(now, "site.example", "192.0.2.10", victim.String())
@@ -614,5 +614,34 @@ func TestPeerLogWatchedOnlyWhereTheSnippetCanExist(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%+v: peer log watched = %v, want %v", tc.info, got, tc.want)
 		}
+	}
+}
+
+// Apache with BufferedLogs On can hold the forged peer line while the access
+// line is read: the daemon reads the log only to bound it.
+func TestBufferedApacheLogsDisablePeerVerdicts(t *testing.T) {
+	t.Cleanup(checks.ResetWebPeersForTest())
+	previous := checks.CurrentHTTPRewrite()
+	checks.SetHTTPRewrite(checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSApache, Directive: "RemoteIPHeader X-Forwarded-For", BufferedLogs: true})
+	t.Cleanup(func() { checks.SetHTTPRewrite(previous) })
+	d := &Daemon{webPeer: newWebPeerLog()}
+	var spec *logWatchSpec
+	for _, s := range d.fixedLogSpecs(platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache}, nil, false) {
+		if s.path == webPeerLogPath {
+			spec = &s
+		}
+	}
+	if spec == nil {
+		t.Fatal("no peer log watch")
+	}
+	if spec.beforeRead != nil {
+		spec.beforeRead()
+	}
+	at := time.Unix(1795200000, 0)
+	if got := spec.handler(peerLine(at, "site.example", "127.0.0.1", "192.0.2.69"), &config.Config{}); len(got) != 0 {
+		t.Fatalf("buffered Apache raised %+v", got)
+	}
+	if got := checks.WebPeerVerdict(netip.MustParseAddr("192.0.2.69"), at); got != checks.PeerUnknown {
+		t.Fatalf("verdict with buffered logs = %v, want unknown", got)
 	}
 }

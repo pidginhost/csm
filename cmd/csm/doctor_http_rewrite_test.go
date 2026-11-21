@@ -202,6 +202,7 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 		{"direct host", cpanel, checks.HTTPRewrite{State: checks.RewriteNone}, nil, "ok", "not needed"},
 		{"fronted", fronted, active, fresh, "warn", "nginx"},
 		{"suexec off", suexecOff, active, fresh, "warn", "suEXEC"},
+		{"buffered logs", cpanel, checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSApache, Directive: "RemoteIPHeader X-Forwarded-For", BufferedLogs: true}, fresh, "warn", "BufferedLogs"},
 		{"fronted without rewrite", fronted, checks.HTTPRewrite{State: checks.RewriteNone}, fresh, "warn", "nginx"},
 		{"unsupported", platform.Info{WebServer: platform.WSNginx}, checks.HTTPRewrite{State: checks.RewriteNone}, nil, "ok", "not used"},
 		{"not installed", cpanel, active, nil, "warn", "csm webserver-integration install"},

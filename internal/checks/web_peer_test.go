@@ -80,8 +80,15 @@ func TestWebPeerVerdictClasses(t *testing.T) {
 		t.Fatalf("untrusted peer line classed %v", got)
 	}
 	for client, want := range map[netip.Addr]PeerVerdict{direct: PeerDirect, proxied: PeerProxied, forged: PeerForged, netip.MustParseAddr("203.0.113.99"): PeerUnknown} {
-		if got := WebPeerVerdict(client, t0.Add(time.Minute)); got != want {
+		if got := WebPeerVerdict(client, t0); got != want {
 			t.Errorf("WebPeerVerdict(%v) = %v, want %v", client, got, want)
+		}
+	}
+	// A minute later only refusals carry over: a direct verdict needs the
+	// finding's own line or a later direct one.
+	for client, want := range map[netip.Addr]PeerVerdict{direct: PeerUnknown, proxied: PeerProxied, forged: PeerForged} {
+		if got := WebPeerVerdict(client, t0.Add(time.Minute)); got != want {
+			t.Errorf("a minute later WebPeerVerdict(%v) = %v, want %v", client, got, want)
 		}
 	}
 	// A line older than the window says nothing about a later finding.
@@ -443,5 +450,38 @@ func TestSettledPeerVerdictEdges(t *testing.T) {
 	SetWebPeerDrain(func(time.Duration) bool { return true })
 	if got := settledWebPeerVerdict(direct, at, at); got != PeerDirect || waits != 1 {
 		t.Fatalf("settled verdict = %v after %d waits, want direct after one wait", got, waits)
+	}
+}
+
+// A direct verdict needs the client seen connecting for itself at or after
+// the finding's own request: earlier direct lines cannot vouch for a request
+// whose peer line never arrived (log removed, disk full, server switched).
+func TestWebPeerDirectNeedsTheRequestsOwnLine(t *testing.T) {
+	withWebPeers(t, 500000)
+	cfg := &config.Config{}
+	at := time.Unix(1795200000, 0)
+	c := netip.MustParseAddr("203.0.113.90")
+	ObserveWebPeer(at.Add(-20*time.Minute), c, c, cfg)
+	if got := WebPeerVerdict(c, at); got != PeerUnknown {
+		t.Fatalf("only an earlier direct line = %v, want unknown", got)
+	}
+	ObserveWebPeer(at, c, c, cfg)
+	if got := WebPeerVerdict(c, at); got != PeerDirect {
+		t.Fatalf("with the request's own direct line = %v, want direct", got)
+	}
+}
+
+// The request's own line counts at second precision: an error log can stamp
+// the same request with a fraction of a second the peer log does not carry.
+func TestWebPeerDirectOwnLineAtSecondPrecision(t *testing.T) {
+	withWebPeers(t, 500000)
+	at := time.Unix(1795200000, 0)
+	c := netip.MustParseAddr("203.0.113.92")
+	ObserveWebPeer(at, c, c, &config.Config{})
+	if got := WebPeerVerdict(c, at.Add(250*time.Millisecond)); got != PeerDirect {
+		t.Fatalf("own line within the same second = %v, want direct", got)
+	}
+	if got := WebPeerVerdict(c, at.Add(time.Second)); got != PeerUnknown {
+		t.Fatalf("a request a second later = %v, want unknown", got)
 	}
 }

@@ -45,6 +45,10 @@ type HTTPRewrite struct {
 	// RealIP is nginx's realip setup when the active rewrite is nginx's own
 	// and its configuration was read completely; nil otherwise.
 	RealIP *NginxRealIP
+	// BufferedLogs marks Apache that may hold log lines in per-process
+	// buffers (BufferedLogs On, or a tree CSM could not read whole): its
+	// peer log can lag its access logs without bound.
+	BufferedLogs bool
 }
 
 // NginxRealIP is every real_ip_header and set_real_ip_from value in an nginx
@@ -140,6 +144,9 @@ func DetectHTTPRewrite(info platform.Info) HTTPRewrite {
 
 func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	r := HTTPRewrite{Server: src.server}
+	if src.server == platform.WSApache && src.apacheConfig != "" {
+		r.BufferedLogs = apacheBufferedLogs(src.apacheConfig)
+	}
 	switch src.server {
 	case platform.WSNone:
 		r.State = RewriteNone
@@ -191,6 +198,19 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	}
 	r.State = RewriteNone
 	return r
+}
+
+// apacheBufferedLogs reports BufferedLogs set to anything but Off, or an
+// Apache tree that could not be read whole.
+func apacheBufferedLogs(path string) bool {
+	lines, complete := assembleApacheConfigWithStatus(path)
+	buffered := false
+	valid := walkApacheLines(lines, func(_ apacheConfigLine, fields []string, _ apacheLineContext) {
+		if len(fields) > 0 && strings.EqualFold(fields[0], "BufferedLogs") && (len(fields) != 2 || !strings.EqualFold(fields[1], "off")) {
+			buffered = true
+		}
+	})
+	return buffered || !complete || !valid
 }
 
 // formatDirective reports whether an active rewrite's directive is a log

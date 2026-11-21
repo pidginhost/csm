@@ -73,6 +73,11 @@ func webPeerLogDoctorCheck(info platform.Info, r checks.HTTPRewrite, stat func(s
 		check.Status = "warn"
 		check.Message = "nginx runs in front of the web server, so the peer log cannot tell clients apart; rewritten web client addresses stay unverified"
 		return check
+	case r.BufferedLogs:
+		check.Status = "warn"
+		check.Message = "Apache may buffer its logs (BufferedLogs On, or a configuration CSM cannot read whole), so a forged request's peer line can arrive late; rewritten web client addresses stay unverified"
+		check.Fix = "set BufferedLogs Off, reload Apache, then restart CSM"
+		return check
 	case info.ServerRunsSiteCode:
 		check.Status = "warn"
 		check.Message = "LiteSpeed PHP suEXEC is off or cannot be verified, so site code could alter the peer log; rewritten web client addresses stay unverified"
