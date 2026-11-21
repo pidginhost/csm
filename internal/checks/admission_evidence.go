@@ -25,6 +25,9 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	if mayBeProxyEdge(f.Attribution, producer) && KnownProxyPeer(f.SourceIP, config.Active()) {
 		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseProxyPeer, Detail: "the address is a known CDN or proxy edge"}
 	}
+	if ProducerWritableLog(producer) {
+		return "", admission.EvidenceInput{}, &admission.Error{Reason: admission.ReasonAttribution, Cause: admission.CauseWritableLog, Detail: "the address came from a log line any local user can write"}
+	}
 	// When the web server may replace the logged address, only the peer log
 	// can verify it. An unknown state is treated the same way.
 	// nginx that only takes an address a CDN edge or a trusted proxy vouched

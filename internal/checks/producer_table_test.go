@@ -94,9 +94,11 @@ func TestProducerTableDeclaresExactClaimKinds(t *testing.T) {
 	want := map[admission.ProducerID][]admission.ClaimKind{
 		ProducerSSHLog:       {account},
 		ProducerSSHLoginScan: {account},
+		ProducerSSHJournal:   {account},
 		ProducerEximLog:      {account, mailbox},
 		ProducerEximHistory:  {account, mailbox},
 		ProducerMailLog:      {account, mailbox},
+		ProducerMailJournal:  {account, mailbox},
 		ProducerStalwartLog:  {account, mailbox},
 		ProducerDomlogScan:   {admission.ClaimDomain},
 		ProducerModSecLog:    {admission.ClaimRequestName},
@@ -117,6 +119,7 @@ func TestProducerTableDeclaresExactAttribution(t *testing.T) {
 		ProducerSSHLog: peer, ProducerSSHLoginScan: peer, ProducerPAMSocket: peer,
 		ProducerFTPLog: peer, ProducerFTPScan: peer, ProducerEximLog: peer, ProducerEximHistory: peer,
 		ProducerMailLog: peer, ProducerStalwartLog: peer, ProducerCpanelAccessLog: peer, ProducerCpanelScan: peer,
+		ProducerSSHJournal: peer, ProducerMailJournal: peer, ProducerFTPJournal: peer,
 		ProducerAccessLog: http, ProducerDomlogScan: chain, ProducerModSecLog: http,
 		ProducerModSecAuditScan: http,
 		// A header any local account writes names the client: no kind.

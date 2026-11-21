@@ -33,7 +33,7 @@ func TestAdmissionEvidenceRefusesAKnownProxyPeer(t *testing.T) {
 	}
 	ssh := httpPeerFinding("198.51.100.7")
 	ssh.Check, ssh.Attribution = "ssh_login_unknown_ip", admission.AttributionPeer
-	ssh.Observation.Producer = string(ProducerSSHLog)
+	ssh.Observation.Producer = string(ProducerSSHJournal)
 	if _, _, err := AdmissionEvidence(ssh); admission.CauseOf(err) == admission.CauseProxyPeer {
 		t.Fatal("a session peer is refused as an HTTP proxy edge")
 	}
@@ -125,21 +125,27 @@ func TestAdmissionEvidencePreservesSessionPeers(t *testing.T) {
 	for _, tc := range []struct {
 		producer admission.ProducerID
 		check    string
+		want     admission.Cause
 	}{
-		{ProducerSSHLog, "ssh_login_unknown_ip"},
-		{ProducerSSHLoginScan, "ssh_login_unknown_ip"},
-		{ProducerPAMSocket, "pam_bruteforce"},
-		{ProducerEximLog, "smtp_bruteforce"},
-		{ProducerEximHistory, "email_cloud_relay_abuse"},
-		{ProducerMailLog, "mail_bruteforce"},
-		{ProducerFTPLog, "ftp_auth_failure_realtime"},
-		{ProducerFTPScan, "ftp_bruteforce"},
+		{ProducerSSHJournal, "ssh_login_unknown_ip", 0},
+		{ProducerPAMSocket, "pam_bruteforce", 0},
+		{ProducerEximLog, "smtp_bruteforce", 0},
+		{ProducerEximHistory, "email_cloud_relay_abuse", 0},
+		{ProducerMailJournal, "mail_bruteforce", 0},
+		{ProducerFTPJournal, "ftp_auth_failure_realtime", 0},
+		{ProducerFTPJournal, "ftp_bruteforce", 0},
+		// Syslog file lines are refused for who wrote them, not as an edge.
+		{ProducerSSHLog, "ssh_login_unknown_ip", admission.CauseWritableLog},
+		{ProducerSSHLoginScan, "ssh_login_unknown_ip", admission.CauseWritableLog},
+		{ProducerMailLog, "mail_bruteforce", admission.CauseWritableLog},
+		{ProducerFTPLog, "ftp_auth_failure_realtime", admission.CauseWritableLog},
+		{ProducerFTPScan, "ftp_bruteforce", admission.CauseWritableLog},
 	} {
-		t.Run(string(tc.producer), func(t *testing.T) {
+		t.Run(string(tc.producer)+"/"+tc.check, func(t *testing.T) {
 			f := httpPeerFinding("198.51.100.7")
 			f.Check, f.Attribution = tc.check, admission.AttributionPeer
 			f.Observation.Producer = string(tc.producer)
-			requireKnownProxyGateOutcome(t, f, 0)
+			requireKnownProxyGateOutcome(t, f, tc.want)
 		})
 	}
 }

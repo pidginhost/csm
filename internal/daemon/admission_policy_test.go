@@ -345,7 +345,7 @@ func TestExecutionPolicyDisablesQueuedCentralBlock(t *testing.T) {
 	f := alert.Finding{
 		Severity: alert.Critical, Check: "ftp_bruteforce", SourceIP: "203.0.113.71", Timestamp: now,
 		Attribution: admission.AttributionPeer,
-		Observation: alert.Observation{Producer: string(checks.ProducerFTPScan), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: now},
+		Observation: alert.Observation{Producer: string(checks.ProducerFTPJournal), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: now},
 	}
 	root, err := d.admission.Mint(f)
 	if err != nil {

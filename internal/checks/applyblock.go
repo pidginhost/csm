@@ -110,6 +110,11 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	if respondDerived(req, parseExpiry(cfg.AutoResponse.BlockExpiry)) {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrBlockTakenByAdmission
 	}
+	// Admission refuses such a root while it applies blocks; this holds when
+	// it does not, during an engine outage or a held policy.
+	if ProducerWritableLog(admission.ProducerID(req.RootFinding.Observation.Producer)) {
+		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, fmt.Errorf("%w: %s came from a log line any local user can write", firewall.ErrIPProtected, req.IP)
+	}
 	blocker := getIPBlocker()
 	if blocker == nil {
 		res := ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}

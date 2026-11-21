@@ -2886,7 +2886,11 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 }
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
-	return d.dispatchLogLine(checks.ProducerMailLog, line, handler)
+	producer := checks.ProducerMailLog
+	if line.Source == "journal" {
+		producer = checks.ProducerMailJournal
+	}
+	return d.dispatchLogLine(producer, line, handler)
 }
 
 // dispatchLogLine runs handler on one positioned line and enqueues its

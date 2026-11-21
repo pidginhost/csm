@@ -236,7 +236,8 @@ func blockableCheck(check string, blockCpanelLogins bool) bool {
 
 func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
 	return blockableCheck(f.Check, blockCpanelLogins) &&
-		(!ResponsePolicyFor(f.Check).CriticalOnly || f.Severity == alert.Critical)
+		(!ResponsePolicyFor(f.Check).CriticalOnly || f.Severity == alert.Critical) &&
+		!ProducerWritableLog(admission.ProducerID(f.Observation.Producer))
 }
 
 // AutoBlockIPs processes all findings, including repeats, for IP blocking.

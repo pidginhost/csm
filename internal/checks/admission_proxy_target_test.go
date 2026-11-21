@@ -21,7 +21,7 @@ func TestBlocksAProxy(t *testing.T) {
 	httpRoot := realRoot(t, httpPeerFinding("203.0.113.9"))
 	ssh := httpPeerFinding("203.0.113.9")
 	ssh.Check, ssh.Attribution = "ssh_login_unknown_ip", admission.AttributionPeer
-	ssh.Observation.Producer = string(ProducerSSHLog)
+	ssh.Observation.Producer = string(ProducerSSHJournal)
 	sshRoot := realRoot(t, ssh)
 	block := func(kind admission.Kind, ip string) admission.Candidate {
 		target, err := admission.CanonicalAddress(ip, admission.Caps{IPv6: true})
@@ -100,6 +100,13 @@ func TestQueuedProxyRecheckMatchesEveryProducer(t *testing.T) {
 				}
 				withKnownProxyPrefixes(t)
 				_, _, err := AdmissionEvidence(f)
+				// A syslog file line names no one who connected.
+				if ProducerWritableLog(p.Spec.ID) {
+					if admission.CauseOf(err) != admission.CauseWritableLog {
+						t.Fatalf("a writable log producer minted: %v", err)
+					}
+					return
+				}
 				if kind == admission.AttributionTrustedHTTPChain {
 					if admission.CauseOf(err) != admission.CauseUnreachable {
 						t.Fatalf("a proxied client minted: %v", err)
@@ -142,7 +149,7 @@ func TestQueuedProxyRecheckAcrossEntriesAndRoots(t *testing.T) {
 	httpRoot := realRoot(t, httpPeerFinding("203.0.113.31"))
 	ssh := httpPeerFinding("203.0.113.31")
 	ssh.Check, ssh.Attribution = "ssh_login_unknown_ip", admission.AttributionPeer
-	ssh.Observation.Producer = string(ProducerSSHLog)
+	ssh.Observation.Producer = string(ProducerSSHJournal)
 	sshRoot := realRoot(t, ssh)
 	target, err := admission.CanonicalAddress("203.0.113.31", admission.Caps{IPv6: true})
 	if err != nil {

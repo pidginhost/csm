@@ -140,21 +140,27 @@ func TestAdmissionEvidenceRefusesRewrittenLogs(t *testing.T) {
 		for _, tc := range []struct {
 			producer admission.ProducerID
 			check    string
+			want     admission.Cause
 		}{
-			{ProducerSSHLog, "ssh_login_unknown_ip"},
-			{ProducerSSHLoginScan, "ssh_login_unknown_ip"},
-			{ProducerPAMSocket, "pam_bruteforce"},
-			{ProducerEximLog, "smtp_bruteforce"},
-			{ProducerMailLog, "mail_bruteforce"},
-			{ProducerFTPLog, "ftp_auth_failure_realtime"},
-			{ProducerFTPScan, "ftp_bruteforce"},
-			{ProducerCpanelAccessLog, "api_auth_failure_realtime"},
-			{ProducerCpanelScan, "api_auth_failure"},
+			{ProducerSSHJournal, "ssh_login_unknown_ip", 0},
+			{ProducerPAMSocket, "pam_bruteforce", 0},
+			{ProducerEximLog, "smtp_bruteforce", 0},
+			{ProducerMailJournal, "mail_bruteforce", 0},
+			{ProducerFTPJournal, "ftp_auth_failure_realtime", 0},
+			{ProducerFTPJournal, "ftp_bruteforce", 0},
+			{ProducerCpanelAccessLog, "api_auth_failure_realtime", 0},
+			{ProducerCpanelScan, "api_auth_failure", 0},
+			// A rewriting web server never changes a syslog file's refusal.
+			{ProducerSSHLog, "ssh_login_unknown_ip", admission.CauseWritableLog},
+			{ProducerSSHLoginScan, "ssh_login_unknown_ip", admission.CauseWritableLog},
+			{ProducerMailLog, "mail_bruteforce", admission.CauseWritableLog},
+			{ProducerFTPLog, "ftp_auth_failure_realtime", admission.CauseWritableLog},
+			{ProducerFTPScan, "ftp_bruteforce", admission.CauseWritableLog},
 		} {
 			f := httpPeerFinding("203.0.113.9")
 			f.Check, f.Attribution = tc.check, admission.AttributionPeer
 			f.Observation.Producer = string(tc.producer)
-			requireKnownProxyGateOutcome(t, f, 0)
+			requireKnownProxyGateOutcome(t, f, tc.want)
 		}
 	}
 	// A cPanel finding from a known edge is a proxy edge, never a rewritten
