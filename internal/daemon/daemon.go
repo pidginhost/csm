@@ -151,6 +151,7 @@ type Daemon struct {
 	fileMailAuthTracker *mailAuthTracker
 	fileSMTPAuthTracker *smtpAuthTracker
 	fileDovecotSessions *dovecotSessionVerdicts
+	fileMailSpray       *mailSpray
 	authBackend         *authBackendHealth
 
 	// stalwart is the Stalwart log state; nil unless this host's mail server
@@ -420,6 +421,14 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.mailAuthTracker.SetSpray(d.mailSpray)
 	d.dovecotSessions = newDovecotSessionVerdicts()
 	d.fileDovecotSessions = newDovecotSessionVerdicts()
+	// Lines read from a mail log file keep a spray memory of their own, in
+	// memory only: they raise alert-only verdicts and never touch trusted
+	// spray state.
+	d.fileMailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
+	d.fileSMTPAuthTracker.SetSpray(d.fileMailSpray)
+	d.fileMailAuthTracker.SetSpray(d.fileMailSpray)
+	d.fileSMTPAuthTracker.SetFileLines()
+	d.fileMailAuthTracker.SetFileLines()
 	d.knownCustomers = newKnownCustomers(time.Now)
 	d.ftpFails = checks.NewFTPFailWindow()
 	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
@@ -518,6 +527,9 @@ func (d *Daemon) reconcileBruteThresholds() {
 	}
 	if d.mailSpray != nil {
 		d.mailSpray.SetConfig(sprayConfigFromThresholds(cfg))
+	}
+	if d.fileMailSpray != nil {
+		d.fileMailSpray.SetConfig(sprayConfigFromThresholds(cfg))
 	}
 }
 
@@ -2587,6 +2599,9 @@ func (d *Daemon) startLogWatchers() {
 				}
 				if d.mailSpray != nil {
 					d.mailSpray.Purge()
+				}
+				if d.fileMailSpray != nil {
+					d.fileMailSpray.Purge()
 				}
 				tick++
 				if tick%mailSprayPersistTicks == 0 {

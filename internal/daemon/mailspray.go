@@ -1219,17 +1219,23 @@ func (d *Daemon) firewallReleased(ip string, kind firewall.ReleaseKind) {
 	if d.mailSpray != nil {
 		d.mailSpray.ForgetBlock(ip)
 	}
+	if d.fileMailSpray != nil {
+		d.fileMailSpray.ForgetBlock(ip)
+	}
 }
 
 // operatorReleased ends the spray history of an address an operator
 // unblocked, allowed or released by undo, or of every address after a
 // flush ("").
 func (d *Daemon) operatorReleased(ip string) {
-	if d.mailSpray != nil {
+	for _, m := range []*mailSpray{d.mailSpray, d.fileMailSpray} {
+		if m == nil {
+			continue
+		}
 		if ip == "" {
-			d.mailSpray.ForgetAll()
+			m.ForgetAll()
 		} else {
-			d.mailSpray.Forget(ip)
+			m.Forget(ip)
 		}
 	}
 	if d.smtpAuthTracker != nil {

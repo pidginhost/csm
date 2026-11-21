@@ -636,6 +636,10 @@ type mailAuthTracker struct {
 	// before log readers begin.
 	spray *mailSpray
 
+	// fileLines marks the tracker that reads only lines from a mail log
+	// file: its spray memory holds those lines alone, so they may feed it.
+	fileLines bool
+
 	// knownCustomers, when set, remembers each successful login's address.
 	// Set once at startup before log readers begin; read without mu.
 	knownCustomers *knownCustomers
@@ -658,6 +662,10 @@ func (t *mailAuthTracker) SetBackendDownCheck(fn func() bool) {
 
 // SetSpray installs the shared spray detector. Set once at startup before log
 // readers begin.
+// SetFileLines marks t as the tracker of lines read from a mail log file,
+// with a spray memory of its own. Set once at startup.
+func (t *mailAuthTracker) SetFileLines() { t.fileLines = true }
+
 func (t *mailAuthTracker) SetSpray(m *mailSpray) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -883,7 +891,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	}
 	// The spray memory is shared with SMTP: a line any local user could
 	// write must not add evidence a real failure would complete.
-	if !degraded && t.spray != nil && trustedMailLogin(obs) {
+	if !degraded && t.spray != nil && (t.fileLines || trustedMailLogin(obs)) {
 		if v := t.spray.Failure(ip, mb.name, mb.exist); v != nil {
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			// One block per suppression window: a Dovecot line can carry
@@ -1158,7 +1166,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	recordGoodSource := !degraded && trusted
 	var sprayed *alert.Finding
 	sprayMailbox := normalizeSprayMailbox(account)
-	if !degraded && trusted && t.spray != nil {
+	if !degraded && (trusted || t.fileLines) && t.spray != nil {
 		clean, v := t.spray.Success(ip, sprayMailbox)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
@@ -1204,7 +1212,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	}
 	// The spray memory saw failures on this mailbox only and called the login
 	// clean; a cracked password earns no trust there either.
-	if !degraded && trusted && t.spray != nil {
+	if !degraded && (trusted || t.fileLines) && t.spray != nil {
 		t.spray.RevokeTrust(ip, sprayMailbox)
 	}
 	a, ok := t.accounts[account]

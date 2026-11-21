@@ -156,6 +156,10 @@ type smtpAuthTracker struct {
 	// startup before log readers begin.
 	spray *mailSpray
 
+	// fileLines marks the tracker that reads only lines from a mail log
+	// file: its spray memory holds those lines alone, so they may feed it.
+	fileLines bool
+
 	// knownCustomers, when set, remembers each successful login's address.
 	// Set once at startup before log readers begin; read without mu.
 	knownCustomers *knownCustomers
@@ -184,6 +188,10 @@ func (t *smtpAuthTracker) SetBackendDownCheck(fn func() bool) {
 
 // SetSpray installs the shared spray detector. Set once at startup before log
 // readers begin.
+// SetFileLines marks t as the tracker of lines read from a mail log file,
+// with a spray memory of its own. Set once at startup.
+func (t *smtpAuthTracker) SetFileLines() { t.fileLines = true }
+
 func (t *smtpAuthTracker) SetSpray(m *mailSpray) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -373,7 +381,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 	}
 	// The spray memory is shared with IMAP: a line any local user could
 	// write must not add evidence a real failure would complete.
-	if !degraded && credential && t.spray != nil && trustedMailLogin(obs) {
+	if !degraded && credential && t.spray != nil && (t.fileLines || trustedMailLogin(obs)) {
 		if names == nil {
 			names = []string{normalizeSprayMailbox(account)}
 		}
@@ -506,7 +514,7 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 	defer t.mu.Unlock()
 	// During an auth outage the failures were kept out of spray memory, so
 	// a login then must not earn trust or raise a finding either.
-	if t.spray == nil || !trusted || (t.backendDownFn != nil && t.backendDownFn()) {
+	if t.spray == nil || (!trusted && !t.fileLines) || (t.backendDownFn != nil && t.backendDownFn()) {
 		return nil
 	}
 	_, v := t.spray.Success(ip, mailbox)

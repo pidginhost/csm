@@ -492,10 +492,11 @@ so a line read from a file alerts but never blocks an address, and a login
 read from a file earns no customer standing or mail trust. File alerts use
 separate counters, authentication pairing, outage state and notification
 identities. They cannot trigger or suppress a trusted authentication verdict
-or suspend a mailbox. File logins can still raise a compromise alert after
-failures against the same mailbox, but do not enter password-spray tracking.
-Trusted logins after password spraying still raise compromise alerts, including
-SMTP logins and logins to a different mailbox from those that failed.
+or suspend a mailbox. File lines keep their own password-spray tracking, so a
+file login after file failures still raises a compromise alert, which never
+blocks. Trusted logins after password spraying raise compromise alerts from
+trusted lines alone, including SMTP logins and logins to a different mailbox
+from those that failed.
 
 Explicit `file` and `journal` modes retry their selected source without
 switching, and a working reader stays attached until it stops or loses its file.
