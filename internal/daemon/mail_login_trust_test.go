@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,81 +70,56 @@ func TestWritableMailSuccessIsNotALogin(t *testing.T) {
 // wrote, for tests about parsing and tracking rather than log trust.
 var trustedMailObs = alert.Observation{Producer: string(checks.ProducerMailJournal)}
 
-func TestFileMailLoginStillAlertsAfterSpray(t *testing.T) {
-	for _, protocol := range []string{"smtp", "imap", "pop3", "managesieve"} {
-		for _, mode := range []string{"off", "observe", "enforce"} {
-			t.Run(protocol+"/"+mode, func(t *testing.T) {
-				d, clock := newPairingDaemon(t, sprayTestConfig(mode))
-				const ip, account = "203.0.113.151", "alice@example.net"
-				for _, other := range []string{"bob@example.net", "carol@example.net"} {
-					clock.advance(time.Second)
-					d.handleMailLine(makeDovecotFailLine("imap", ip, other), alert.Observation{}, d.currentCfg())
-				}
-				line := makeDovecotSuccessLine(protocol, ip, account)
-				if protocol == "smtp" {
-					line = "postfix/smtpd[7]: A123: client=mx.example.net[" + ip + "], sasl_method=PLAIN, sasl_username=" + account
-				}
-				got := d.handleMailLine(line, alert.Observation{}, d.currentCfg())
-				want := 1
-				if mode == "off" {
-					want = 0
-				}
-				if len(got) != want || (want == 1 && (got[0].Check != "mail_account_compromised" || got[0].SourceIP != ip || got[0].Mailbox != account)) {
-					t.Fatalf("findings=%+v, want %d compromise alerts", got, want)
-				}
-				if len(d.mailAuthTracker.ExportGoodSource()) != 0 || len(smtpSuccessIPs(d)) != 0 {
-					t.Fatal("file login trained trust")
-				}
-				if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
-					t.Fatalf("repeated file login bypassed suppression: %+v", got)
-				}
-			})
-		}
-	}
-}
+// fileMailObs stamps a line as read from the mail log file.
+var fileMailObs = alert.Observation{Producer: string(checks.ProducerMailLog), Stream: "m:1:2", Cursor: "1"}
 
-func TestFileMailLoginDoesNotRefreshSprayTrust(t *testing.T) {
-	for _, history := range []string{"new", "recent", "aged", "subnet"} {
-		t.Run(history, func(t *testing.T) {
-			d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
-			const ip, account = "2001:db8::151", "alice@example.net"
-			if history != "new" {
-				trustedIP := ip
-				if history == "subnet" {
-					trustedIP = "2001:db8::152"
-				}
-				d.mailSpray.Success(trustedIP, account)
-				clock.advance(time.Second)
-				if history != "recent" {
-					clock.advance(d.mailSpray.cfg.TrustAge)
-				}
-			}
-			before := maps.Clone(d.mailSpray.trust)
-			d.handleMailLine(makeDovecotSuccessLine("imap", ip, account), alert.Observation{}, d.currentCfg())
-			d.handleMailLine("postfix/smtpd[7]: A123: client=mx.example.net["+ip+"], sasl_method=PLAIN, sasl_username="+account, alert.Observation{}, d.currentCfg())
-			if !reflect.DeepEqual(before, d.mailSpray.trust) {
-				t.Fatal("file login created or refreshed spray trust")
-			}
-		})
-	}
-}
-
-func TestFileSMTPLoginAfterStaleFailuresAlertsOnce(t *testing.T) {
+// The spray memory is shared by the SMTP and IMAP trackers. Lines read from a
+// mail log file, which any local user can write, never enter it: they can
+// neither add failures that a real failure would complete into a verdict nor
+// create, refresh or revoke trust.
+func TestFileLinesNeverEnterSprayMemory(t *testing.T) {
 	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
 	const ip, account = "203.0.113.151", "alice@example.net"
-	for range 2 {
-		d.smtpAuthTracker.RecordFailure(ip, account, mailboxExists, alert.Observation{})
-		clock.advance(time.Hour)
+	for _, other := range []string{"bob@example.net", "carol@example.net"} {
+		clock.advance(time.Second)
+		d.handleMailLine(makeDovecotFailLine("imap", ip, other), fileMailObs, d.currentCfg())
+		d.handleMailLine(fmt.Sprintf(postfixFailFmt, ip, other), fileMailObs, d.currentCfg())
 	}
-	line := "postfix/smtpd[7]: A123: client=mx.example.net[" + ip + "], sasl_method=PLAIN, sasl_username=" + account
-	for _, want := range []int{1, 0} {
-		got := d.handleMailLine(line, alert.Observation{}, d.currentCfg())
-		if len(got) != want || (want == 1 && (got[0].Check != "mail_account_compromised" || got[0].Mailbox != account)) {
-			t.Fatalf("findings=%+v, want %d compromise alerts", got, want)
+	d.mailSpray.mu.Lock()
+	_, evidence := d.mailSpray.ips[sprayEvidenceKey(ip)]
+	d.mailSpray.mu.Unlock()
+	if evidence {
+		t.Fatal("file failures entered the shared spray memory")
+	}
+	before := maps.Clone(d.mailSpray.trust)
+	for _, line := range []string{makeDovecotSuccessLine("imap", ip, account),
+		"postfix/smtpd[7]: A123: client=mx.example.net[" + ip + "], sasl_method=PLAIN, sasl_username=" + account} {
+		for _, f := range d.handleMailLine(line, fileMailObs, d.currentCfg()) {
+			if strings.Contains(f.Details, "spray") || f.BlockTTL > 0 {
+				t.Fatalf("file login raised a spray verdict: %+v", f)
+			}
 		}
 	}
-	if len(smtpSuccessIPs(d)) != 0 {
-		t.Fatal("file login trained trust")
+	if !reflect.DeepEqual(before, d.mailSpray.trust) {
+		t.Fatal("file login changed spray trust")
+	}
+}
+
+// A file login between trusted spray evidence and a trusted compromise login
+// must not suppress the trusted verdict.
+func TestFileLoginDoesNotSuppressATrustedCompromise(t *testing.T) {
+	d, clock := newPairingDaemon(t, sprayTestConfig("enforce"))
+	const ip, account = "203.0.113.152", "alice@example.net"
+	for _, other := range []string{"bob@example.net", "carol@example.net"} {
+		clock.advance(time.Second)
+		d.smtpAuthTracker.RecordFailure(ip, other, mailboxExists, alert.Observation{Producer: string(checks.ProducerEximLog)})
+	}
+	clock.advance(time.Second)
+	d.handleMailLine("postfix/smtpd[7]: A123: client=mx.example.net["+ip+"], sasl_method=PLAIN, sasl_username="+account, fileMailObs, d.currentCfg())
+	clock.advance(time.Second)
+	got := d.smtpAuthTracker.recordSuccessAt(ip, account, clock.Now(), serviceLog, true)
+	if len(got) != 1 || got[0].Check != "mail_account_compromised" {
+		t.Fatalf("trusted compromise after a file login = %+v, want one compromise verdict", got)
 	}
 }
 
@@ -155,9 +131,9 @@ func TestFileMailLoginStillAlertsAfterFailures(t *testing.T) {
 			const ip, account = "203.0.113.151", "alice@example.net"
 			for i := 0; i < 2; i++ {
 				clock.advance(time.Second)
-				d.handleMailLine(makeDovecotFailLine(protocol, ip, account), alert.Observation{}, d.currentCfg())
+				d.handleMailLine(makeDovecotFailLine(protocol, ip, account), fileMailObs, d.currentCfg())
 			}
-			got := d.handleMailLine(makeDovecotSuccessLine(protocol, ip, account), alert.Observation{}, d.currentCfg())
+			got := d.handleMailLine(makeDovecotSuccessLine(protocol, ip, account), fileMailObs, d.currentCfg())
 			if len(got) != 1 || got[0].Check != "mail_account_compromised" || got[0].SourceIP != ip || got[0].Mailbox != account {
 				t.Fatalf("findings=%+v, want one compromise for the source and mailbox", got)
 			}

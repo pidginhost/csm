@@ -546,7 +546,10 @@ type mailAccountEntry struct {
 	ips                  map[string]time.Time
 	suppressed           time.Time
 	compromiseSuppressed time.Time
-	lastSeen             time.Time
+	// untrustedCompromiseSuppressed is the quiet period of alerts from
+	// logins read from a log any local user can write.
+	untrustedCompromiseSuppressed time.Time
+	lastSeen                      time.Time
 }
 
 // mailBackendDegradedThreshold is how many auth-backend failure observations
@@ -878,7 +881,9 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 		// The outage may have begun a while before it was detected.
 		t.spray.ForgetRecentFailures(ip, cutoff)
 	}
-	if !degraded && t.spray != nil {
+	// The spray memory is shared with SMTP: a line any local user could
+	// write must not add evidence a real failure would complete.
+	if !degraded && t.spray != nil && trustedMailLogin(obs) {
 		if v := t.spray.Failure(ip, mb.name, mb.exist); v != nil {
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			// One block per suppression window: a Dovecot line can carry
@@ -1153,8 +1158,8 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	recordGoodSource := !degraded && trusted
 	var sprayed *alert.Finding
 	sprayMailbox := normalizeSprayMailbox(account)
-	if !degraded && t.spray != nil {
-		clean, v := t.spray.success(ip, sprayMailbox, trusted)
+	if !degraded && trusted && t.spray != nil {
+		clean, v := t.spray.Success(ip, sprayMailbox)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
 		}
@@ -1191,11 +1196,15 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		return nil
 	}
 	recordGoodSource = false
-	delete(e.goodFirst, account)
-	delete(e.goodLast, account)
+	// A login read from a log any local user can write still alerts, but it
+	// must not remove standing or trust that real logins earned.
+	if trusted {
+		delete(e.goodFirst, account)
+		delete(e.goodLast, account)
+	}
 	// The spray memory saw failures on this mailbox only and called the login
 	// clean; a cracked password earns no trust there either.
-	if !degraded && t.spray != nil {
+	if !degraded && trusted && t.spray != nil {
 		t.spray.RevokeTrust(ip, sprayMailbox)
 	}
 	a, ok := t.accounts[account]
@@ -1203,10 +1212,16 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		a = &mailAccountEntry{ips: make(map[string]time.Time), lastSeen: now}
 		t.accounts[account] = a
 	}
-	if now.Before(a.compromiseSuppressed) {
+	// Untrusted alerts keep their own quiet period, so one never silences a
+	// trusted compromise that follows.
+	suppressed := &a.compromiseSuppressed
+	if !trusted {
+		suppressed = &a.untrustedCompromiseSuppressed
+	}
+	if now.Before(*suppressed) {
 		return nil
 	}
-	a.compromiseSuppressed = now.Add(t.suppression)
+	*suppressed = now.Add(t.suppression)
 	_, compDomain := alert.SplitEmail(loginAccount)
 	t.findingsEmitted++
 	severity := alert.Critical

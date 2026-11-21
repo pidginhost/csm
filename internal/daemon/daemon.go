@@ -2900,10 +2900,11 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 	return t.RecordFailure(ip, account, exist, obs), true
 }
 
-// trustedMailLogin reports whether a mail log success came from the journal
-// as a mail service wrote it; dispatch dropped every other journal entry.
+// trustedMailLogin reports whether a mail line was not read from a syslog
+// file, which any local user can write: a journal entry a mail service
+// wrote (dispatch dropped every other one) or a service's own log.
 func trustedMailLogin(obs alert.Observation) bool {
-	return obs.Producer == string(checks.ProducerMailJournal)
+	return !checks.ProducerWritableLog(admission.ProducerID(obs.Producer))
 }
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
@@ -2942,8 +2943,13 @@ func (d *Daemon) mailSenderRules() []maillog.SenderRule {
 // findings, each stamped with producer and the line's position.
 func (d *Daemon) dispatchLogLine(producer admission.ProducerID, line maillog.Line, handler ObservedLineHandler) bool {
 	var obs alert.Observation
-	if line.Position.Stream != "" {
+	switch {
+	case line.Position.Stream != "":
 		obs = alert.Observation{Producer: string(producer), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
+	case checks.ProducerWritableLog(producer):
+		// Without a position the line still came from a file any local
+		// user can write: it alerts, never blocks and is never a login.
+		obs = alert.Observation{Producer: string(producer)}
 	}
 	findings := handler(line.Message, obs, d.currentCfg())
 	for i, f := range findings {
