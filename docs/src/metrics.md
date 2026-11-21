@@ -366,7 +366,13 @@ Registered when `reputation.upstream.enabled: true`.
   response adds no sample; selected refusals and responses each add one. Buckets: 0.001 s .. 1 s. The share of
   handoffs at or under 10 ms is
   `csm_admission_handoff_seconds_bucket{le="0.01"} / csm_admission_handoff_seconds_count`;
-  it should stay at or above 0.99.
+  it should stay at or above 0.99. Building the finding's evidence comes
+  before the handoff and is not timed here.
+- `csm_web_peer_settle_seconds` (histogram): how long a web finding's peer
+  verdict waited for the web server to flush its peer log before CSM
+  trusted a direct connection. Buckets: 0.01 s .. 5 s. The wait holds the
+  alert dispatcher, so values near 2 s on most findings show where
+  rewritten web traffic slows alert delivery.
 
 ### Challenge
 

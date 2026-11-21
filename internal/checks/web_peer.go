@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 )
 
 // PeerVerdict is what the web peer log says about the requests a client
@@ -300,6 +301,12 @@ func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict 
 	switch {
 	case v == PeerForged || v == PeerProxied:
 		return v
+	case v == PeerUnknown && rewrittenRefusalFinal(CurrentHTTPRewrite()):
+		// The refusal is final whatever later lines say; waiting would only
+		// hold the alert dispatcher. Elsewhere a forged line that arrives
+		// late turns an unknown refusal the legacy path would act on into
+		// a final one.
+		return v
 	case drain == nil || seenAt.IsZero() || seenAt.After(started):
 		// An invalid read time cannot establish when the request's peer
 		// line will be visible. Refuse without delaying each batch item.
@@ -309,6 +316,7 @@ func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict 
 	if !started.Before(deadline) {
 		return v
 	}
+	defer observeWebPeerSettle(time.Now())
 	if wait := deadline.Sub(webPeerClock()); wait > 0 {
 		webPeerSleep(wait)
 	}
@@ -318,6 +326,22 @@ func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict 
 		return PeerUnknown
 	}
 	return drainedWebPeerVerdict(client, at, version)
+}
+
+var (
+	webPeerSettleOnce    sync.Once
+	webPeerSettleSeconds *metrics.Histogram
+)
+
+// observeWebPeerSettle times a direct verdict's wait for the peer log.
+func observeWebPeerSettle(start time.Time) {
+	webPeerSettleOnce.Do(func() {
+		webPeerSettleSeconds = metrics.NewHistogram("csm_web_peer_settle_seconds",
+			"Time a direct web peer verdict waited for the web server to flush its peer log.",
+			[]float64{.01, .1, .5, 1, 2, 3, 5})
+		metrics.MustRegister("csm_web_peer_settle_seconds", webPeerSettleSeconds)
+	})
+	webPeerSettleSeconds.Observe(time.Since(start).Seconds())
 }
 
 // A replacement watcher has not been drained by this caller. Keep the

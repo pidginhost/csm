@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
@@ -66,5 +67,22 @@ func TestAdmissionHandoffsAreTimed(t *testing.T) {
 	}
 	if got := handoffSample(t, `csm_admission_handoff_seconds_bucket{le="0.01"}`); got-beforeBucket != 4 {
 		t.Fatalf("10 ms bucket = %v", got)
+	}
+}
+
+// Building evidence is not the handoff: a web finding's peer verdict may wait
+// for the web server to flush the peer log, and that wait must not count
+// against admission's handoff latency.
+func TestAdmissionHandoffExcludesEvidence(t *testing.T) {
+	a := withAdmission(t)
+	a.mint = func(alert.Finding) admission.Evidence {
+		time.Sleep(30 * time.Millisecond)
+		return admission.Evidence{}
+	}
+	f := alert.Finding{Check: "ssh_brute", SourceIP: "203.0.113.9", Severity: alert.Critical}
+	before := handoffSample(t, `csm_admission_handoff_seconds_bucket{le="0.01"}`)
+	respond(admission.KindBlockIP, f, f.SourceIP, 0)
+	if got := handoffSample(t, `csm_admission_handoff_seconds_bucket{le="0.01"}`); got-before != 1 {
+		t.Fatalf("a handoff after slow evidence left the 10 ms bucket: delta %v", got-before)
 	}
 }

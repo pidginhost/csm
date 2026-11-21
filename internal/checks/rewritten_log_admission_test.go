@@ -481,7 +481,8 @@ func TestAdmissionEvidenceWaitsForTheRequestsOwnPeerLine(t *testing.T) {
 	f := httpPeerFinding("203.0.113.74")
 	f.Timestamp = f.Observation.ObservedAt.Add(time.Second)
 	client := netip.MustParseAddr("203.0.113.74")
-	ObserveWebPeer(f.Observation.ObservedAt.Add(-time.Minute), client, client, cfg)
+	// The victim's own later request was read; the forged one is in flight.
+	ObserveWebPeer(f.Observation.ObservedAt.Add(time.Second), client, client, cfg)
 	var slept []time.Duration
 	webPeerSleep = func(d time.Duration) { slept = append(slept, d) }
 	webPeerClock = func() time.Time { return f.Timestamp }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // withWebPeers gives a test its own peer index and bound.
@@ -448,8 +449,23 @@ func TestSettledPeerVerdictEdges(t *testing.T) {
 		t.Fatalf("verdict after a failed read = %v, want unknown", got)
 	}
 	SetWebPeerDrain(func(time.Duration) bool { return true })
+	settled := handoffSample(t, "csm_web_peer_settle_seconds_count")
 	if got := settledWebPeerVerdict(direct, at, at); got != PeerDirect || waits != 1 {
 		t.Fatalf("settled verdict = %v after %d waits, want direct after one wait", got, waits)
+	}
+	if got := handoffSample(t, "csm_web_peer_settle_seconds_count"); got != settled+1 {
+		t.Fatalf("settle waits counted %v, want %v", got, settled+1)
+	}
+	// Where the refusal is final anyway, an unknown verdict does not hold
+	// the alert dispatcher; where the legacy path would act on it, it waits
+	// for a forged line that may still arrive.
+	withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: platform.WSLiteSpeed})
+	if got := settledWebPeerVerdict(netip.MustParseAddr("203.0.113.77"), at, at); got != PeerUnknown || waits != 1 {
+		t.Fatalf("unknown verdict on LiteSpeed = %v after %d waits, want unknown without waiting", got, waits)
+	}
+	withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: platform.WSApache})
+	if got := settledWebPeerVerdict(netip.MustParseAddr("203.0.113.77"), at, at); got != PeerUnknown || waits != 2 {
+		t.Fatalf("unknown verdict on Apache = %v after %d waits, want unknown after waiting", got, waits)
 	}
 }
 

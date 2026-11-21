@@ -76,7 +76,6 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 	if a == nil {
 		return false, false
 	}
-	defer timeHandoff(time.Now())
 	executes := a.ExecutesBlocks()
 	// Spray lifetime and budget stay with legacy. Use the handoff's owner
 	// and execution snapshot so a concurrent publication cannot take it.
@@ -84,6 +83,9 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 		return false, false
 	}
 	e, err := a.Mint(f)
+	// Building evidence, including a web peer verdict's wait for the peer
+	// log, takes no admission lock and is not the handoff.
+	defer timeHandoff(time.Now())
 	if err != nil {
 		a.Refuse(kind, f, via, err)
 		return taken(executes, kind, err, nil), false
@@ -126,10 +128,12 @@ func taken(executes bool, kind admission.Kind, mintErr, respondErr error) bool {
 // client choose it. nginx PROXY protocol also lets customer code on shared
 // edges choose an address unless its configured sources were verified.
 func forgeableRewrite(err error) bool {
-	if admission.CauseOf(err) != admission.CauseRewrittenLog {
-		return false
-	}
-	r := CurrentHTTPRewrite()
+	return admission.CauseOf(err) == admission.CauseRewrittenLog && rewrittenRefusalFinal(CurrentHTTPRewrite())
+}
+
+// rewrittenRefusalFinal reports a rewrite any local process or edge customer
+// can drive, whose rewritten_log refusal the legacy path must not override.
+func rewrittenRefusalFinal(r HTTPRewrite) bool {
 	return r.Server == platform.WSLiteSpeed || r.Format || r.NginxProxyProtocol()
 }
 
