@@ -142,19 +142,6 @@ firewall clock backward.
 
 **Depends on:** the firewall slice of the item above. **Size:** M.
 
-### Response previews show intent, not the change
-
-**Problem:** `csm virtual-patch`, `db-clean --preview` and
-`auto_response.dry_run` say what would happen without showing the bytes,
-although the cleaners already compute the new content.
-
-**Acceptance:** the virtual-patch deny block, the surgical PHP clean and the
-`.htaccess` clean each render a unified diff with no write; an applied
-action's diff matches its action log digests; an unrenderable preview fails
-instead of applying.
-
-**Size:** S.
-
 ### Taint laundering through value encoders
 
 **Problem:** Joomla writes `return var_export($strings, true);` into its
@@ -168,16 +155,20 @@ later decoded and executed still reports; the WordPress corpus stays at zero.
 
 **Size:** M.
 
-### Local-path provenance through variables
+### Local-path provenance through object properties
 
-**Problem:** `argLocality` in `internal/phptaint` folds only literals and
-constants, so OpenCart's `$file = DIR_TEMPLATE . $x` still seeds taint.
+**Problem:** OpenCart 4's template engine includes a template whose path is
+held in object properties set from method parameters, in a method that also
+calls `extract()`, so each install reports a low-confidence `include` source.
+A local path held in a plain variable is not the cause: measured on
+WordPress, OpenCart 3 and 4, Joomla and Drupal, no finding depends on one.
+`is_file()` does not prove a path local, because remote wrappers support it.
 
-**Acceptance:** a read through a variable assigned from a local path constant
-is not a source; one assigned from a parameter or unknown constant still is;
-reassignment between the two is handled.
+**Acceptance:** the OpenCart 4 template engine stops reporting; a path built
+from request input, from a parameter the analysis cannot resolve, or from a
+property written from either still reports.
 
-**Size:** S.
+**Size:** M.
 
 ### Content rules versus archive containers
 
@@ -314,30 +305,6 @@ repeats after each major architecture change.
 **Depends on:** [privilege separation](#privilege-separation), first stage.
 **Size:** M.
 
-### Decide the trust model for internal CI builds
-
-**Problem:** release signing runs on tags only, so builds published between
-releases carry no release signature. Options: sign every build with the
-release key; sign CI builds with a separate lower-value key and embed both
-public keys; or document registry authentication as the accepted boundary.
-
-**Acceptance:** the deploy scripts and
-[release signing](docs/src/release-signing.md) state the same contract, and a
-tampered artifact is refused on the path operators actually use.
-
-**Size:** S.
-
-### Operator-copied deploy scripts drift
-
-**Problem:** `csm doctor` reports hand-maintained deploy script copies that
-drifted from the shipped verification contract but prints nothing when every
-copy is current, so an operator cannot tell the check ran.
-
-**Acceptance:** the check reports `[OK]` on a clean host; an installer-owned
-operator copy is refreshed on upgrade.
-
-**Size:** S.
-
 ## Priority 4 -- correlation
 
 The incident correlator in `internal/incident` is extended, not replaced;
@@ -409,12 +376,18 @@ the same findings out of order or far apart do not.
 ### Join findings on file identity
 
 **Problem:** realtime, YARA and the taint engines each flag the same file
-separately.
+separately. Taint runs only in the scheduled deep scan and realtime findings
+never enter the stored findings list, so no existing join point holds both;
+the realtime PHP heuristics also carry no content hash. Decision needed:
+fold same-file rows in the Findings view, which covers the scheduled layers
+and leaves alerts, response and dismissals as they are, or keep a bounded,
+expiring file-evidence index that also covers realtime hits and needs
+retention and quarantine rules.
 
 **Acceptance:** one file tripping three layers yields one finding with three
 pieces of evidence and the strongest severity.
 
-**Size:** S.
+**Size:** M.
 
 ### Spray correlation ingesting HTTP signals
 
@@ -553,38 +526,16 @@ apply; restarting a job never repeats a completed mutation.
 
 **Size:** L.
 
-### csm support-bundle
-
-**Problem:** operators grep the journal and copy state by hand.
-`csm support-bundle <path>` writes a tar+zstd with the store export, the
-last N journal lines, the configuration with secrets redacted and a
-`system.txt` with versions and integrity hashes.
-
-**Acceptance:** the archive holds those parts; a test proves no configured
-secret value appears in it; the journal tail honours the line count.
-
-**Size:** S.
-
 ### Validate CageFS mount points
 
-**Problem:** `csm doctor` checks the PHP Shield event directory mount only;
-entries pointing at missing directories make every `cagefsctl` call print
-errors.
+**Problem:** `csm doctor` checks the PHP Shield event directory mount only.
+A mount-point entry whose source is missing is normal: a stock CloudLinux 8
+cPanel host lists entries for software it does not run, and `cagefsctl`
+prints nothing about them. The `cagefsctl` errors this item was opened for
+have not been reproduced.
 
-**Acceptance:** doctor names configured mount points whose source is missing
-and reports `[OK]` otherwise.
-
-**Size:** S.
-
-### Scheduled backup exports
-
-**Problem:** `store export` needs an operator cron entry. A hot-reloadable
-`backup` block (`enabled`, `schedule`, `destination_dir`, `filename` with
-`{date}`, `retention_days`) lets the daemon export on schedule and prune.
-
-**Acceptance:** an export appears on schedule, archives past retention are
-pruned, a failed export raises a `backup_export_failed` Warning, and the
-block applies on reload.
+**Acceptance:** a reproduced `cagefsctl` error caused by a mount-point entry
+is reported by doctor with the entry named; a missing source alone is not.
 
 **Size:** S.
 
@@ -631,16 +582,6 @@ contention, slow readers and failed writes show in repeatable workloads;
 conformance tests cover each migrated path.
 
 **Size:** M.
-
-### Consolidate bootstrap toolchain pins
-
-**Problem:** `go.mod`, the builder images, the Linux test wrapper and CI each
-carry a Go or linter version; they agree today, and nothing checks drift.
-
-**Acceptance:** version inputs are generated from one source with a drift
-check, and CI records the selected Go and linter versions.
-
-**Size:** S.
 
 ### Configuration defaults from one source
 
