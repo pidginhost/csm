@@ -26,6 +26,7 @@ func TestMailJournalDropsLinesNoServiceWrote(t *testing.T) {
 		{Source: "journal", Unit: "", UID: "1000", Message: msg, Position: pos},
 		{Source: "journal", Unit: "dovecot.service", UID: "1000", Message: msg, Position: pos},
 		{Source: "journal", Unit: "dovecot.service", Message: msg, Position: pos},
+		{Source: "journal", Unit: "dovecot.service", UID: "0", Transport: "stdout", Message: msg, Position: pos},
 	} {
 		if !d.dispatchMailLogLine(line, handler) {
 			t.Fatal("a dropped line stopped delivery")
@@ -34,7 +35,7 @@ func TestMailJournalDropsLinesNoServiceWrote(t *testing.T) {
 	if len(producers) != 0 {
 		t.Fatalf("lines no mail service wrote reached the parsers as %v", producers)
 	}
-	d.dispatchMailLogLine(maillog.Line{Source: "journal", Unit: "dovecot.service", UID: "0", Message: msg, Position: pos}, handler)
+	d.dispatchMailLogLine(maillog.Line{Source: "journal", Unit: "dovecot.service", UID: "0", Transport: "syslog", Message: msg, Position: pos}, handler)
 	d.dispatchMailLogLine(maillog.Line{Source: "file", Message: msg, Position: maillog.Position{Stream: "m:1:2", Cursor: "1"}}, handler)
 	if len(producers) != 2 || producers[0] != string(checks.ProducerMailJournal) || producers[1] != string(checks.ProducerMailLog) {
 		t.Fatalf("producers %v, want the service's journal line as mail_journal and the file line as mail_log", producers)

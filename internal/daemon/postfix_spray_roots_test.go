@@ -46,7 +46,7 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 				if strings.HasPrefix(message, "dovecot") {
 					unit = "dovecot.service"
 				}
-				line := maillog.Line{Source: "journal", Unit: unit, UID: "0", Message: clock.Now().Format(time.RFC3339) + " mail " + message, Position: pos}
+				line := maillog.Line{Source: "journal", Unit: unit, UID: "0", Transport: "syslog", Message: clock.Now().Format(time.RFC3339) + " mail " + message, Position: pos}
 				if !d.dispatchMailLogLine(line, d.handleMailLine) {
 					t.Fatal("mail dispatch refused")
 				}

@@ -28,5 +28,5 @@ func JournalLine(fields map[string]string, pos Position) Line {
 	if !pos.ObservedAt.IsZero() {
 		msg = pos.ObservedAt.Format(time.RFC3339Nano) + " " + msg
 	}
-	return Line{Source: "journal", Unit: fields["_SYSTEMD_UNIT"], UID: fields["_UID"], Message: msg, Position: pos}
+	return Line{Source: "journal", Unit: fields["_SYSTEMD_UNIT"], UID: fields["_UID"], Transport: fields["_TRANSPORT"], Message: msg, Position: pos}
 }

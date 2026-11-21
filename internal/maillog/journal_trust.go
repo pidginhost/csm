@@ -18,9 +18,12 @@ type SenderRule struct {
 
 // TrustedLine reports whether line is a journal entry one of rules' services
 // wrote. A line read from a file is never trusted: any local user can write
-// one under any program name.
+// one under any program name. Only the syslog socket and the native journal
+// API give journald the sender's credentials with each message; an output
+// stream keeps those of the process that opened it, and a child that
+// inherits the stream writes under them.
 func TrustedLine(line Line, rules []SenderRule) bool {
-	if line.Source != "journal" || line.Unit == "" {
+	if line.Source != "journal" || line.Unit == "" || (line.Transport != "syslog" && line.Transport != "journal") {
 		return false
 	}
 	uid, err := strconv.ParseUint(line.UID, 10, 32)

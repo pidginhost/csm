@@ -82,6 +82,7 @@ func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 		journal = append(journal, maillog.JournalLine(map[string]string{
 			"_SYSTEMD_UNIT":     e.unit,
 			"_UID":              "0",
+			"_TRANSPORT":        "syslog",
 			"SYSLOG_IDENTIFIER": e.ident,
 			"_PID":              e.pid,
 			"SYSLOG_PID":        e.pid,
