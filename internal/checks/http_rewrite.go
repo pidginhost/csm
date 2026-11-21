@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -40,6 +42,16 @@ type HTTPRewrite struct {
 	// Format marks an active rewrite found in a log format that writes
 	// request data where CSM reads the client: any client chooses it.
 	Format bool
+	// RealIP is nginx's realip setup when the active rewrite is nginx's own
+	// and its configuration was read completely; nil otherwise.
+	RealIP *NginxRealIP
+}
+
+// NginxRealIP is every real_ip_header and set_real_ip_from value in an nginx
+// configuration tree.
+type NginxRealIP struct {
+	Headers []string
+	From    []string
 }
 
 func (s RewriteState) String() string {
@@ -137,9 +149,12 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 		unknown = "no Apache configuration file was found"
 	}
 	if src.nginxConfig != "" {
-		directive, file, complete := nginxClientAddressRewrite(src.nginxConfig)
+		directive, file, complete, realIP := nginxClientAddressRewrite(src.nginxConfig)
 		if directive != "" {
 			r.State, r.Directive, r.File, r.Format = RewriteActive, directive, file, formatDirective(directive)
+			if !r.Format && complete && realIP != nil && src.server == platform.WSNginx {
+				r.RealIP = realIP
+			}
 			return r
 		}
 		if !complete {
@@ -295,8 +310,9 @@ func apacheCloudflareProxyKnown(value string) bool {
 // value where CSM reads the client takes precedence. It also returns the
 // file and whether the tree and its format framing could be read. HTTP
 // and stream have separate namespaces; only HTTP has built-in combined.
-func nginxClientAddressRewrite(path string) (directive, file string, complete bool) {
+func nginxClientAddressRewrite(path string) (directive, file string, complete bool, realIP *NginxRealIP) {
 	directives, complete := nginxDirectives(path)
+	realIP = &NginxRealIP{}
 	type format struct {
 		directive nginxDirective
 		value     bool
@@ -348,6 +364,17 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 		custom[d.Module][strings.ToLower(target[1:])] = true
 	}
 	for _, d := range directives {
+		if d.Name == "set_real_ip_from" || d.Name == "real_ip_header" {
+			switch {
+			case len(d.Args) != 1:
+				realIP = nil
+			case realIP == nil:
+			case d.Name == "real_ip_header":
+				realIP.Headers = append(realIP.Headers, d.Args[0])
+			default:
+				realIP.From = append(realIP.From, d.Args[0])
+			}
+		}
 		if d.Name == "set_real_ip_from" {
 			if directive == "" {
 				directive, file = strings.Join(append([]string{d.Name}, d.Args...), " "), d.File
@@ -424,10 +451,89 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 	}
 	for _, f := range used {
 		if f.value {
-			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete
+			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete, nil
 		}
 	}
-	return directive, file, complete
+	return directive, file, complete, realIP
+}
+
+// NginxRealIPVerified reports whether nginx can only log a client address an
+// edge vouched for: every real_ip_header is CF-Connecting-IP, which only a
+// Cloudflare edge sets itself, with every set_real_ip_from inside Cloudflare's
+// ranges; or every header is proxy_protocol, which the connecting proxy
+// writes, with every set_real_ip_from inside a shipped edge range or trusted.
+// No range may reach a loopback or host address.
+func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
+	if r.Server != platform.WSNginx || r.State != RewriteActive || r.Format || r.RealIP == nil ||
+		len(r.RealIP.Headers) == 0 || len(r.RealIP.From) == 0 {
+		return false
+	}
+	cloudflare := false
+	for _, h := range r.RealIP.Headers {
+		switch {
+		case strings.EqualFold(h, "CF-Connecting-IP"):
+			cloudflare = true
+		case h != "proxy_protocol":
+			return false
+		}
+	}
+	allowed := cloudflarePrefixes
+	if !cloudflare {
+		allowed = slices.Clone(knownProxyPrefixes)
+		for _, t := range trusted {
+			if p, ok := realIPPrefix(t); ok {
+				allowed = append(allowed, p)
+			}
+		}
+	}
+	hosts := netutil.HostAddresses()
+	for _, from := range r.RealIP.From {
+		p, ok := realIPPrefix(from)
+		if !ok || reachesLocal(p, hosts) || !slices.ContainsFunc(allowed, func(q netip.Prefix) bool {
+			return q.Bits() <= p.Bits() && q.Contains(p.Addr())
+		}) {
+			return false
+		}
+	}
+	return true
+}
+
+// realIPPrefix reads an address or CIDR as a masked prefix.
+func realIPPrefix(s string) (netip.Prefix, bool) {
+	s = strings.TrimSpace(s)
+	if p, err := netip.ParsePrefix(s); err == nil {
+		if p.Addr().Zone() != "" {
+			return netip.Prefix{}, false
+		}
+		if p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		return p.Masked(), true
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil || a.Zone() != "" {
+		return netip.Prefix{}, false
+	}
+	a = a.Unmap()
+	return netip.PrefixFrom(a, a.BitLen()), true
+}
+
+var loopbackPrefixes = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
+
+// reachesLocal reports whether p covers a loopback or host address: a local
+// process could then choose the logged client.
+func reachesLocal(p netip.Prefix, hosts []netip.Addr) bool {
+	for _, l := range loopbackPrefixes {
+		if p.Overlaps(l) {
+			return true
+		}
+	}
+	for _, h := range hosts {
+		if p.Contains(h.Unmap()) {
+			return true
+		}
+	}
+	return false
 }
 
 // These blocks use their own entry handlers, not nginx directive lookup.

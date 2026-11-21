@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,7 @@ func TestWebRewriteDoctorCheck(t *testing.T) {
 			[]string{"refused IP blocks stay refused"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := webRewriteDoctorCheck(tc.in)
+			got := webRewriteDoctorCheck(tc.in, &config.Config{})
 			if got.Name != "web client addresses" || got.Status != tc.status {
 				t.Fatalf("check = %+v, want status %s", got, tc.status)
 			}
@@ -231,5 +232,20 @@ func TestDoctorWebPeerUnverifiedSuExecRecovery(t *testing.T) {
 	}
 	if !strings.Contains(got.Fix, "reload LiteSpeed, then restart CSM") {
 		t.Fatalf("recovery must reload the server before starting a fresh peer reader: %+v", got)
+	}
+}
+
+// The rewrite row says when nginx's real_ip setup lets web findings block as
+// on a direct host.
+func TestDoctorRewriteRowNginxVerified(t *testing.T) {
+	t.Cleanup(checks.SetCloudflarePrefixesForTest([]netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}))
+	r := checks.HTTPRewrite{State: checks.RewriteActive, Server: platform.WSNginx, Directive: "set_real_ip_from 198.51.100.0/24", File: "/etc/nginx/nginx.conf",
+		RealIP: &checks.NginxRealIP{Headers: []string{"CF-Connecting-IP"}, From: []string{"198.51.100.0/24"}}}
+	if got := webRewriteDoctorCheck(r, &config.Config{}); got.Status != "ok" || !strings.Contains(got.Message, "verified") {
+		t.Fatalf("verified nginx row = %+v, want it to say verified", got)
+	}
+	r.RealIP = &checks.NginxRealIP{Headers: []string{"X-Forwarded-For"}, From: []string{"198.51.100.0/24"}}
+	if got := webRewriteDoctorCheck(r, &config.Config{}); strings.Contains(got.Message, "verified") {
+		t.Fatalf("unverified nginx row = %+v", got)
 	}
 }

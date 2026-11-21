@@ -27,8 +27,10 @@ func AdmissionEvidence(f alert.Finding) (admission.ProducerID, admission.Evidenc
 	}
 	// When the web server may replace the logged address, only the peer log
 	// can verify it. An unknown state is treated the same way.
-	if (f.Attribution == admission.AttributionHTTPPeer || f.Attribution == admission.AttributionTrustedHTTPChain) &&
-		CurrentHTTPRewrite().State != RewriteNone {
+	// nginx that only takes an address a CDN edge or a trusted proxy vouched
+	// for needs no peer log.
+	if rw := CurrentHTTPRewrite(); (f.Attribution == admission.AttributionHTTPPeer || f.Attribution == admission.AttributionTrustedHTTPChain) &&
+		rw.State != RewriteNone && !NginxRealIPVerified(rw, webTrustedProxies(config.Active())) {
 		if err := rewrittenPeerRefusal(f, producer); err != nil {
 			return "", admission.EvidenceInput{}, err
 		}
@@ -105,3 +107,12 @@ func AdmissionTarget(raw string, caps admission.Caps) (admission.Target, error) 
 
 // AdmissionSeverity is the admission severity of an alert severity.
 func AdmissionSeverity(s alert.Severity) admission.Severity { return admissionSeverity(s) }
+
+// webTrustedProxies is web_server.trusted_proxies, or nothing without a
+// configuration.
+func webTrustedProxies(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.WebServer.TrustedProxies
+}

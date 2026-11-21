@@ -24,6 +24,26 @@ var knownProxyPrefixes = func() []netip.Prefix {
 	return out
 }()
 
+// cloudflarePrefixes is Cloudflare's own edge ranges: the only edges that set
+// CF-Connecting-IP themselves rather than pass on a client's copy.
+var cloudflarePrefixes = func() []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range emailspool.BuiltInProxyProviders() {
+		if p.Name == "Cloudflare (IPv4)" || p.Name == "Cloudflare (IPv6)" {
+			out = append(out, p.Prefixes...)
+		}
+	}
+	return out
+}()
+
+// SetCloudflarePrefixesForTest replaces Cloudflare's edge ranges and returns
+// the function that restores them.
+func SetCloudflarePrefixesForTest(set []netip.Prefix) func() {
+	prev := cloudflarePrefixes
+	cloudflarePrefixes = set
+	return func() { cloudflarePrefixes = prev }
+}
+
 // KnownProxyPeer reports whether addr, a bare address, is a known CDN or
 // website-firewall edge: inside a built-in edge range, or, when the ASN
 // database names it, in a network cfg lists under

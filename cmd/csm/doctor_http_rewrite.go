@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/daemon"
 	"github.com/pidginhost/csm/internal/integration/webserver"
 	"github.com/pidginhost/csm/internal/platform"
@@ -27,8 +28,8 @@ var doctorHTTPRewrite = func(overridesApplied bool) checks.HTTPRewrite {
 }
 
 // webRewriteDoctorCheck reports the rewriting state and its effect on
-// admission. This build does not read a separate connecting peer field.
-func webRewriteDoctorCheck(r checks.HTTPRewrite) DoctorCheck {
+// admission; the web peer log row reports per-request verification.
+func webRewriteDoctorCheck(r checks.HTTPRewrite, cfg *config.Config) DoctorCheck {
 	check := DoctorCheck{Name: "web client addresses", Status: "ok"}
 	switch r.State {
 	case checks.RewriteNone:
@@ -37,6 +38,14 @@ func webRewriteDoctorCheck(r checks.HTTPRewrite) DoctorCheck {
 			check.Message = string(r.Server) + " configuration sets no client address rewriting"
 		}
 	case checks.RewriteActive:
+		var trusted []string
+		if cfg != nil {
+			trusted = cfg.WebServer.TrustedProxies
+		}
+		if checks.NginxRealIPVerified(r, trusted) {
+			check.Message = fmt.Sprintf("nginx takes client addresses only from CDN edges or trusted proxies that vouch for them (%s in %s): verified, web findings are blocked as on a direct host", r.Directive, r.File)
+			break
+		}
 		blocking := "existing blocking is unchanged"
 		if r.Server == platform.WSLiteSpeed || r.Format {
 			blocking = "while admission executes blocks, refused IP blocks stay refused; challenges still apply"
