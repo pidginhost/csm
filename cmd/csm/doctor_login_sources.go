@@ -8,34 +8,45 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// loginSourcesDoctorCheck says where SSH, mail and FTP logins come from. A
-// journal entry the service wrote can block and counts as a login; a line
-// read from a syslog file, which any local user can write under any program
-// name, only alerts.
-func loginSourcesDoctorCheck(syslogJournal, mailJournal bool) DoctorCheck {
-	c := DoctorCheck{Name: "login sources", Status: "ok", Message: "SSH, mail and FTP logins come from entries the services wrote to the journal"}
-	var files []string
+// Source selection is not a liveness check: watcher health reports failures
+// opening or following the selected source, including Stalwart's own log.
+func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platform.MTAKind, platformDefaultFile string) DoctorCheck {
+	c := DoctorCheck{Name: "login sources", Status: "ok"}
+	var files, fixes []string
+	syslogSource := "journal"
 	if !syslogJournal {
-		files = append(files, "SSH")
+		syslogSource = "syslog files"
+		files = append(files, "SSH", "FTP")
+		fixes = append(fixes, "use a build with journal support and run journald as the syslog socket (/dev/log) with journal storage enabled")
 	}
-	if !mailJournal {
-		files = append(files, "mail")
+
+	mailSource := "Stalwart service log"
+	if mta != platform.MTAStalwart {
+		journal, err := maillog.UsesJournal(cfg.MailLogs, platformDefaultFile)
+		switch {
+		case err != nil:
+			mailSource = "unavailable (" + err.Error() + ")"
+			c.Status = "warn"
+			fixes = append(fixes, "correct mail_logs.source, mail_logs.file and mail_logs.units")
+		case journal:
+			mailSource = "journal"
+			if !maillog.JournalSupported() {
+				mailSource += " (unsupported by this build)"
+				c.Status = "warn"
+				fixes = append(fixes, "use a build with journal support")
+			}
+		default:
+			mailSource = "syslog file"
+			files = append(files, "mail")
+			fixes = append(fixes, "configure Postfix and Dovecot to log through journald, list their units in mail_logs.units, and set mail_logs.source to auto or journal")
+		}
 	}
-	if !syslogJournal {
-		files = append(files, "FTP")
+	c.Message = "Selected login sources: SSH and FTP: " + syslogSource + "; mail: " + mailSource
+	if len(files) > 0 {
+		c.Status = "warn"
+		c.Message += ". " + joinServices(files) + " syslog lines only alert; they never block or count as customer logins"
 	}
-	if len(files) == 0 {
-		return c
-	}
-	c.Status = "warn"
-	c.Message = joinServices(files) + " logins are read from log files any local user can write: they alert but never block or count as logins"
-	var fixes []string
-	if !syslogJournal {
-		fixes = append(fixes, "run journald as the syslog socket (/dev/log) with journal storage enabled")
-	}
-	if !mailJournal {
-		fixes = append(fixes, "leave mail_logs.source as auto or set it to journal, and list every running Postfix and Dovecot unit in mail_logs.units")
-	}
+	c.Message += ". Watcher health reports source availability"
 	c.Fix = strings.Join(fixes, "; ")
 	return c
 }
@@ -46,14 +57,4 @@ func joinServices(s []string) string {
 		return strings.Join(s, "")
 	}
 	return strings.Join(s[:len(s)-1], ", ") + " and " + s[len(s)-1]
-}
-
-// mailLoginsFromJournal reports whether mail logins come from a source a
-// local user cannot write: Stalwart's own log, or the journal as the daemon
-// would choose it.
-func mailLoginsFromJournal(cfg *config.Config) bool {
-	if platform.DetectMTA() == platform.MTAStalwart {
-		return true
-	}
-	return cfg != nil && maillog.UsesJournal(cfg.MailLogs)
 }
