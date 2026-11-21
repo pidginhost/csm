@@ -890,10 +890,7 @@ The daemon empties the peer log once it has read it past 256 MB. After a
 restart, truncation, rotation, read failure, unreadable line or line stamped
 more than five minutes ahead of the clock, any verdict whose one-hour window
 reaches the gap is unknown. This includes verdicts for the hour after the gap.
-Timestamp checks use the logged Unix seconds, including values too large for
-calendar comparisons. Rejected lines mark the gap at the reader's clock and
-cannot advance evidence expiry. Web findings keep the responses they get
-without the peer log. Unchanged files can be reopened without invalidating
+Web findings keep the responses they get without the peer log. Unchanged files can be reopened without invalidating
 verdicts.
 
 ## Direct SMTP Egress
