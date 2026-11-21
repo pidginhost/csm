@@ -18,6 +18,9 @@ type JournalReader struct{}
 // on default builds.
 func NewJournalReader(_ []string, _ *Queue) *JournalReader { return &JournalReader{} }
 
+// NewJournalReaderFor matches the linux+journal constructor.
+func NewJournalReaderFor(_, _ []string, _ *Queue) *JournalReader { return &JournalReader{} }
+
 func JournalSupported() bool { return false }
 
 // ErrJournalUnsupported is returned when the build was produced without

@@ -32,7 +32,7 @@ func TrustedLine(line Line, rules []SenderRule) bool {
 	}
 	for _, r := range rules {
 		for _, u := range r.Units {
-			if journalUnitName(u) != line.Unit {
+			if !unitMatches(u, line.Unit) {
 				continue
 			}
 			for _, want := range r.UIDs {
@@ -43,6 +43,32 @@ func TrustedLine(line Line, rules []SenderRule) bool {
 		}
 	}
 	return false
+}
+
+// unitMatches reports whether journald's unit is rule: a unit name, or a
+// template ending in @ whose service instances all match.
+func unitMatches(rule, unit string) bool {
+	if strings.HasSuffix(rule, "@") {
+		return strings.HasPrefix(unit, rule) && len(unit) > len(rule)+len(".service") && strings.HasSuffix(unit, ".service")
+	}
+	return journalUnitName(rule) == unit
+}
+
+// journalMatches selects a source's entries: each unit exactly, and each
+// program identifier its lines carry. A template has no exact unit name; its
+// instances arrive through the identifiers, and the sender rule decides
+// whether a selected entry is trusted.
+func journalMatches(units, identifiers []string) []string {
+	var out []string
+	for _, u := range units {
+		if !strings.HasSuffix(u, "@") {
+			out = append(out, "_SYSTEMD_UNIT="+journalUnitName(u))
+		}
+	}
+	for _, id := range identifiers {
+		out = append(out, "SYSLOG_IDENTIFIER="+id)
+	}
+	return out
 }
 
 // journalUnitName is the full unit name journald records for unit.

@@ -17,24 +17,28 @@ import (
 // handler; a syslog file would take any local user's lines.
 type journalSource struct {
 	// name is the source's watcher and queue name.
-	name     string
-	units    []string
-	rules    []maillog.SenderRule
-	producer admission.ProducerID
-	handler  LogLineHandler
+	name  string
+	units []string
+	// identifiers also select entries, for instance units of a template.
+	identifiers []string
+	rules       []maillog.SenderRule
+	producer    admission.ProducerID
+	handler     LogLineHandler
 }
 
 // journalUsable probes the host once at start; a variable for tests.
 var journalUsable = maillog.JournalUsable
 
 // sshJournal reads sshd's entries: it logs every login from its privileged
-// process, as root, in sshd.service or, on Debian, ssh.service.
+// process, as root, in sshd.service or, on Debian, ssh.service, or in a
+// per-connection instance of either when socket activation starts one.
 var sshJournal = journalSource{
-	name:     "ssh_journal",
-	units:    []string{"sshd", "ssh"},
-	rules:    []maillog.SenderRule{{Units: []string{"sshd", "ssh"}, UIDs: []uint32{0}}},
-	producer: checks.ProducerSSHJournal,
-	handler:  parseSecureLogLine,
+	name:        "ssh_journal",
+	units:       []string{"sshd", "ssh", "sshd@", "ssh@"},
+	identifiers: []string{"sshd", "sshd-session"},
+	rules:       []maillog.SenderRule{{Units: []string{"sshd", "ssh", "sshd@", "ssh@"}, UIDs: []uint32{0}}},
+	producer:    checks.ProducerSSHJournal,
+	handler:     parseSecureLogLine,
 }
 
 // startJournalSource follows src's units from the journal tail.
@@ -57,7 +61,7 @@ func (d *Daemon) startJournalSource(src journalSource) {
 		defer cancel()
 		defer d.MarkWatcher(src.name, false)
 		maillog.Supervise(ctx, func() (maillog.Reader, error) {
-			return maillog.NewJournalReader(src.units, queue), nil
+			return maillog.NewJournalReaderFor(src.units, src.identifiers, queue), nil
 		}, func(err error) {
 			if err != nil {
 				csmlog.Warn("journal source unavailable; retrying", "source", src.name, "err", err)

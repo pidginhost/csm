@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -83,6 +84,12 @@ var authLogPath = func() string { return platform.Detect().AuthLogPath() }
 // non-infra IPs. With a state store it reads the log forward-only from where
 // the previous cycle stopped; without one it falls back to a per-cycle tail.
 func CheckSSHLogins(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	// sshd's own journal entries already report each login as it happens. A
+	// line in the auth log file, which any local user can write, could
+	// share a login's record and stand in for it.
+	if sshLoginsFromJournal.Load() {
+		return nil
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -100,6 +107,14 @@ func CheckSSHLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 	}
 	return findings
 }
+
+// sshLoginsFromJournal is set once the daemon reads SSH logins from sshd's
+// journal entries.
+var sshLoginsFromJournal atomic.Bool
+
+// SetSSHLoginsFromJournal records whether the daemon reads SSH logins from
+// sshd's journal entries.
+func SetSSHLoginsFromJournal(on bool) { sshLoginsFromJournal.Store(on) }
 
 // SSHAcceptedLoginFinding parses an sshd "Accepted <method> for <user> from
 // <ip> port <n>" line and reports it unless the address is infrastructure.

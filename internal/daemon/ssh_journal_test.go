@@ -83,3 +83,25 @@ func TestSSHLoginRecordKeyIgnoresTheLinePrefix(t *testing.T) {
 		t.Fatal("two sessions share one key")
 	}
 }
+
+// A socket-activated sshd runs each connection in an instance unit; its
+// root entries are logins, a user's entries there are not.
+func TestSSHJournalTrustsSocketActivatedInstances(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	instance := "sshd@3-192.0.2.1:22-198.51.100.9:51234.service"
+	for _, tc := range []struct {
+		uid  string
+		want int
+	}{{"1000", 0}, {"0", 1}} {
+		line := maillog.JournalLine(map[string]string{
+			"MESSAGE": "Accepted publickey for root from 198.51.100.9 port 51234 ssh2", "SYSLOG_IDENTIFIER": "sshd-session",
+			"_PID": "4242", "_SYSTEMD_UNIT": instance, "_UID": tc.uid, "_TRANSPORT": "syslog",
+		}, maillog.Position{Stream: "journal", Cursor: "s=1"})
+		if !d.dispatchJournalLine(sshJournal, line) {
+			t.Fatal("delivery stopped")
+		}
+		if got := len(d.alertCh); got != tc.want {
+			t.Fatalf("uid %s: %d findings, want %d", tc.uid, got, tc.want)
+		}
+	}
+}

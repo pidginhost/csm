@@ -2351,6 +2351,7 @@ func (d *Daemon) startLogWatchers() {
 	d.smtpAuthFromExim = watchExim
 	d.mailboxes = newMailboxResolver(hostInfo)
 	d.syslogFromJournal = journalUsable()
+	checks.SetSSHLoginsFromJournal(d.syslogFromJournal)
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if d.syslogFromJournal {
 		d.startJournalSource(sshJournal)
