@@ -82,10 +82,11 @@ type Manifest struct {
 
 // ExportOptions configures Export.
 type ExportOptions struct {
-	StatePath string   // /var/lib/csm/state, source for state JSON files
-	RulesPath string   // /opt/csm/rules, source for signature cache (empty -> skip)
-	DstPath   string   // .csmbak file to create
-	Manifest  Manifest // caller fills CSMVersion/SourceHostname/SourcePlatform; rest filled here
+	StatePath   string                         // /var/lib/csm/state, source for state JSON files
+	RulesPath   string                         // /opt/csm/rules, source for signature cache (empty -> skip)
+	DstPath     string                         // .csmbak file to create
+	IncludeFile func(string, os.FileInfo) bool // optional selection of regular state and rule files for diagnostics
+	Manifest    Manifest                       // caller fills CSMVersion/SourceHostname/SourcePlatform; rest filled here
 }
 
 // ExportResult summarises a successful export.
@@ -224,19 +225,19 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	}
 
 	// 2. bbolt snapshot (already on disk).
-	if err = streamFileToTar(tw, bboltSnapshotEntry, snapPath, man.ExportTS); err != nil {
+	if err = streamFileToTar(tw, bboltSnapshotEntry, snapPath, man.ExportTS, nil); err != nil {
 		return nil, err
 	}
 
 	// 3. state files (skip runtime-owned files captured separately or not at all).
 	stateSkip := append([]string{"csm.db", stateLockFileName, "exports"}, transientStatePaths...)
-	if err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, stateSkip, man.ExportTS); err != nil {
+	if err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, stateSkip, man.ExportTS, opts.IncludeFile); err != nil {
 		return nil, err
 	}
 
 	// 4. rules files (optional).
 	if opts.RulesPath != "" {
-		if err = walkDirIntoTar(tw, opts.RulesPath, rulesEntryPrefix, nil, man.ExportTS); err != nil {
+		if err = walkDirIntoTar(tw, opts.RulesPath, rulesEntryPrefix, nil, man.ExportTS, opts.IncludeFile); err != nil {
 			return nil, err
 		}
 	}
@@ -612,9 +613,14 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time) error {
+func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time, include func(string, os.FileInfo) bool) error {
+	flags := os.O_RDONLY
+	if include != nil {
+		flags |= syscall.O_NONBLOCK | syscall.O_NOFOLLOW
+	}
+
 	// #nosec G304 -- srcPath is supplied by Export's caller (the daemon's control handler, sourced from cfg.StatePath / cfg.Signatures.RulesDir) or is the bbolt snapshot path created via os.CreateTemp earlier in Export. Both are root-controlled; csm runs as root via systemd. Not attacker-controlled.
-	f, err := os.Open(srcPath)
+	f, err := os.OpenFile(srcPath, flags, 0)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", srcPath, err)
 	}
@@ -622,6 +628,9 @@ func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time) er
 	info, err := f.Stat()
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", srcPath, err)
+	}
+	if include != nil && (!info.Mode().IsRegular() || !include(srcPath, info)) {
+		return nil
 	}
 	hdr := &tar.Header{
 		Name:    name,
@@ -641,7 +650,7 @@ func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time) er
 // walkDirIntoTar streams every regular file under srcDir into the tar
 // under entryPrefix, skipping relative paths in the skip list. A skipped
 // directory excludes its complete tree.
-func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, modTime time.Time) error {
+func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, modTime time.Time, include func(string, os.FileInfo) bool) error {
 	skipSet := map[string]bool{}
 	for _, s := range skip {
 		skipSet[s] = true
@@ -661,11 +670,11 @@ func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, m
 			}
 			return nil
 		}
-		if info.IsDir() {
+		if info.IsDir() || (include != nil && !info.Mode().IsRegular()) {
 			return nil
 		}
 		entry := entryPrefix + filepath.ToSlash(rel)
-		return streamFileToTar(tw, entry, path, modTime)
+		return streamFileToTar(tw, entry, path, modTime, include)
 	})
 	if err != nil && !os.IsNotExist(err) {
 		return err

@@ -163,3 +163,88 @@ func TestAlertDispatcherStopFlushesPendingState(t *testing.T) {
 		t.Fatal("dispatcher stopped without writing the pending state")
 	}
 }
+
+func TestSupportStoreExportRetainsDiagnosticsWithoutKeyFiles(t *testing.T) {
+	dir := t.TempDir()
+	_, restore := openTestBoltStore(t, dir)
+	t.Cleanup(restore)
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	t.Chdir(filepath.Dir(dir))
+	cfg := &config.Config{StatePath: filepath.Base(dir)}
+	cfg.Signatures.RulesDir = t.TempDir()
+	cfg.Stalwart.APIKeyFile = filepath.Join(cfg.Signatures.RulesDir, "collector")
+	prev := config.Active()
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(prev) })
+	for _, path := range []string{filepath.Join(dir, "webui.key"), cfg.Stalwart.APIKeyFile, filepath.Join(dir, "diagnostic.txt")} {
+		if err = os.WriteFile(path, []byte("test entry"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = os.Symlink(cfg.Stalwart.APIKeyFile, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Link(cfg.Stalwart.APIKeyFile, filepath.Join(dir, "alternate")); err != nil {
+		t.Fatal(err)
+	}
+	listener := &ControlListener{d: New(cfg, st, nil, "")}
+	wire, err := listener.handleStoreExport(json.RawMessage(`{"support_redaction_sha256":"different"}`))
+	if err == nil || wire != nil {
+		t.Fatal("daemon accepted a different set of credentials")
+	}
+	for _, support := range []bool{true, false} {
+		req := control.StoreExportArgs{Stage: true, DstPath: "snapshot"}
+		if support {
+			req.DstPath = ""
+			req.SupportRedactionSHA256 = config.SecretValuesDigest(nil)
+		}
+		args, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := listener.handleStoreExport(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := raw.(control.StoreExportResult)
+		if support && !filepath.IsAbs(res.Path) {
+			t.Fatal("collector received a path relative to the daemon working directory")
+		}
+		f, err := os.Open(res.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zr, err := zstd.NewReader(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(zr)
+		names := map[string]bool{}
+		for {
+			h, err := tr.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			names[h.Name] = true
+		}
+		zr.Close()
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !names["bbolt.snapshot"] || !names["state/diagnostic.txt"] {
+			t.Fatal("missing store diagnostics")
+		}
+		for _, name := range []string{"state/webui.key", "rules/collector", "state/link", "state/alternate"} {
+			if names[name] == support {
+				t.Errorf("support=%v entry %s present=%v", support, name, names[name])
+			}
+		}
+	}
+}

@@ -25,6 +25,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A known CDN edge is never blocked automatically, including when a forwarded header names it or the web server rewrites client addresses.
 - Automatic blocks and the Web UI Block button now use only the address a check parsed from its log line, never one quoted in a finding's message.
 
+### Added
+
+- `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
+
 ### Changed
 
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.

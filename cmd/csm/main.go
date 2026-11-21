@@ -187,6 +187,8 @@ func main() {
 		runBackup()
 	case "forensic-snapshot":
 		runForensicSnapshot()
+	case "support-bundle":
+		runSupportBundle()
 	case "restore":
 		runRestore()
 	case "webserver-integration":
@@ -257,6 +259,7 @@ Commands:
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)
+  support-bundle <path>  Store export, journal tail, redacted config and versions in one tar+zstd archive (--journal-lines N)
   restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
   pam ...       Install or remove the pam_csm.so PAM hook (csm pam --help)

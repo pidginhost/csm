@@ -255,3 +255,9 @@ func TestPlacementCapabilityWhenBPFActive(t *testing.T) {
 		t.Error("bpf-file-placement present when placement backend is none")
 	}
 }
+
+func TestSupportBundleCapability(t *testing.T) {
+	if !contains(Capabilities(), "support_bundle.v1") {
+		t.Error("support_bundle.v1 capability missing")
+	}
+}
