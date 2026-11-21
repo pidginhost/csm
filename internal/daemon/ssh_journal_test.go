@@ -63,9 +63,8 @@ func TestSSHJournalLineParses(t *testing.T) {
 	}
 }
 
-// The scheduled login scan still reads the auth log file. A login it finds
-// there and the same login read from the journal are one record, whatever
-// the timestamp and host prefix each source writes.
+// Parsing ignores the optional timestamp and host prefix. Journal dispatch
+// assigns its entry identity after parsing; file consumers share this key.
 func TestSSHLoginRecordKeyIgnoresTheLinePrefix(t *testing.T) {
 	msg := "Accepted publickey for root from 198.51.100.9 port 22 ssh2"
 	file, ok := checks.SSHAcceptedLoginFinding("Nov 21 12:00:00 host sshd[4242]: "+msg, nil)
@@ -103,5 +102,27 @@ func TestSSHJournalTrustsSocketActivatedInstances(t *testing.T) {
 		if got := len(d.alertCh); got != tc.want {
 			t.Fatalf("uid %s: %d findings, want %d", tc.uid, got, tc.want)
 		}
+	}
+}
+
+// PIDs and client ports can be reused. The journal cursor distinguishes
+// separate accepted logins even when their message text is identical.
+func TestSSHJournalLoginsUseEntryIdentity(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	for _, cursor := range []string{"s=first", "s=second", "s=first"} {
+		line := maillog.JournalLine(map[string]string{
+			"MESSAGE":           "Accepted publickey for root from 198.51.100.9 port 51234 ssh2",
+			"SYSLOG_IDENTIFIER": "sshd", "_PID": "4242", "_SYSTEMD_UNIT": "sshd.service", "_UID": "0", "_TRANSPORT": "syslog",
+		}, maillog.Position{Stream: "journal", Cursor: cursor})
+		if !d.dispatchJournalLine(sshJournal, line) {
+			t.Fatal("dispatch stopped")
+		}
+	}
+	first, second, repeated := <-d.alertCh, <-d.alertCh, <-d.alertCh
+	if first.Key() == second.Key() {
+		t.Fatal("separate journal logins share an alert identity")
+	}
+	if first.Key() != repeated.Key() {
+		t.Fatal("the same journal entry acquired a second identity")
 	}
 }

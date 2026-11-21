@@ -11,6 +11,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Forged mail log entries no longer influence trusted authentication alerts or suspend mailboxes.
+- Repeated SSH logins now produce separate alerts instead of disappearing from login history.
 - Older SSH incidents no longer authorize automatic blocks from unverified login records.
 - SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks or count as customer logins; they still alert.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.

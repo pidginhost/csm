@@ -39,9 +39,10 @@ func mailAuthSequence() []mailLogEntry {
 }
 
 type mailAuthResult struct {
-	smtpFailures, mailFailures int64
-	successes                  []string
-	findings                   []string
+	smtpFailures, mailFailures         int64
+	fileSMTPFailures, fileMailFailures int64
+	successes                          []string
+	findings                           []string
 }
 
 // replayMailLog feeds each line through the mail log dispatcher one second
@@ -66,6 +67,8 @@ func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 	}
 	res.smtpFailures, _ = d.smtpAuthTracker.Stats()
 	res.mailFailures, _ = d.mailAuthTracker.Stats()
+	res.fileSMTPFailures, _ = d.fileSMTPAuthTracker.Stats()
+	res.fileMailFailures, _ = d.fileMailAuthTracker.Stats()
 	for ip := range smtpSuccessIPs(d) {
 		res.successes = append(res.successes, ip)
 	}
@@ -75,8 +78,7 @@ func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 
 // Mail log lines read from the journal reach the parsers with the same
 // program tags and times as the file, so every detection behaves the same.
-// Only a login differs: one read from a file, which any local user can
-// write, earns no trust.
+// File failures remain in separate counters, and file logins earn no trust.
 func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 	var file, journal []maillog.Line
 	for i, e := range mailAuthSequence() {
@@ -102,9 +104,12 @@ func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 			want := want
 			if name == "file" {
 				want.successes = nil
+				want.fileSMTPFailures, want.fileMailFailures = want.smtpFailures, want.mailFailures
+				want.smtpFailures, want.mailFailures = 0, 0
 			}
 			got := replayMailLog(t, lines)
 			if got.smtpFailures != want.smtpFailures || got.mailFailures != want.mailFailures ||
+				got.fileSMTPFailures != want.fileSMTPFailures || got.fileMailFailures != want.fileMailFailures ||
 				!slices.Equal(got.successes, want.successes) || !slices.Equal(got.findings, want.findings) {
 				t.Fatalf("results = %+v, want %+v", got, want)
 			}

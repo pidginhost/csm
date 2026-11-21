@@ -311,7 +311,7 @@ func TestDovecotPassdbVerdictsExcludedByMailReader(t *testing.T) {
 	appendLog(t, path, "dovecot: auth: sql(a,203.0.113.99): unknown user\n"+
 		"dovecot: imap-login: Login aborted: (auth failed, 1 attempts in 2 secs): user=<a>, method=PLAIN, rip=203.0.113.99\n")
 	for {
-		calls, _ := d.mailAuthTracker.Stats()
+		calls, _ := d.fileMailAuthTracker.Stats()
 		if calls == 1 {
 			break
 		}
@@ -319,6 +319,12 @@ func TestDovecotPassdbVerdictsExcludedByMailReader(t *testing.T) {
 			t.Fatalf("mail reader processed %d login failures, want 1", calls)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if calls, _ := d.mailAuthTracker.Stats(); calls != 0 {
+		t.Fatalf("file reader recorded %d trusted mail failures", calls)
+	}
+	if calls, _ := d.fileSMTPAuthTracker.Stats(); calls != 0 {
+		t.Fatalf("Exim host counted %d file SMTP failures", calls)
 	}
 	if calls, _ := d.smtpAuthTracker.Stats(); calls != 0 {
 		t.Fatalf("Exim host counted %d Dovecot SMTP failures", calls)

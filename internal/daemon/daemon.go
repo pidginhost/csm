@@ -145,7 +145,13 @@ type Daemon struct {
 	mailSpray        *mailSpray
 	mailboxes        mailboxResolver // nil off cPanel
 	dovecotSessions  *dovecotSessionVerdicts
-	authBackend      *authBackendHealth
+
+	// File alerts have separate counters, pairing and outage state. They must
+	// never supply or suppress evidence from a service-owned source.
+	fileMailAuthTracker *mailAuthTracker
+	fileSMTPAuthTracker *smtpAuthTracker
+	fileDovecotSessions *dovecotSessionVerdicts
+	authBackend         *authBackendHealth
 
 	// stalwart is the Stalwart log state; nil unless this host's mail server
 	// is Stalwart.
@@ -363,6 +369,17 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		cfg.Thresholds.SMTPBruteForceMaxTracked,
 		time.Now,
 	)
+	d.fileSMTPAuthTracker = newSMTPAuthTracker(
+		cfg.Thresholds.SMTPBruteForceThreshold,
+		cfg.Thresholds.SMTPBruteForceSubnetThresh,
+		cfg.Thresholds.SMTPAccountSprayThreshold,
+		time.Duration(cfg.Thresholds.SMTPBruteForceWindowMin)*time.Minute,
+		time.Duration(cfg.Thresholds.SMTPBruteForceSuppressMin)*time.Minute,
+		cfg.Thresholds.SMTPBruteForceSlowThreshold,
+		time.Duration(cfg.Thresholds.SMTPBruteForceSlowWindowMin)*time.Minute,
+		cfg.Thresholds.SMTPBruteForceMaxTracked,
+		time.Now,
+	)
 	d.smtpProbeTracker = newSMTPProbeTracker(
 		cfg.Thresholds.SMTPProbeThreshold,
 		time.Duration(cfg.Thresholds.SMTPProbeWindowMin)*time.Minute,
@@ -382,12 +399,24 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		cfg.Thresholds.MailBruteForceMaxTracked,
 		time.Now,
 	)
+	d.fileMailAuthTracker = newMailAuthTracker(
+		cfg.Thresholds.MailBruteForceThreshold,
+		cfg.Thresholds.MailBruteForceSubnetThresh,
+		cfg.Thresholds.MailAccountSprayThreshold,
+		time.Duration(cfg.Thresholds.MailBruteForceWindowMin)*time.Minute,
+		time.Duration(cfg.Thresholds.MailBruteForceSuppressMin)*time.Minute,
+		cfg.Thresholds.MailBruteForceSlowThreshold,
+		time.Duration(cfg.Thresholds.MailBruteForceSlowWindowMin)*time.Minute,
+		cfg.Thresholds.MailBruteForceMaxTracked,
+		time.Now,
+	)
 	// time.Now is lock-free; mailSpray calls it under its own mutex while a
 	// tracker may hold its lock.
 	d.mailSpray = newMailSpray(sprayConfigFromThresholds(cfg), time.Now)
 	d.smtpAuthTracker.SetSpray(d.mailSpray)
 	d.mailAuthTracker.SetSpray(d.mailSpray)
 	d.dovecotSessions = newDovecotSessionVerdicts()
+	d.fileDovecotSessions = newDovecotSessionVerdicts()
 	d.knownCustomers = newKnownCustomers(time.Now)
 	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
 	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
@@ -439,6 +468,18 @@ func (d *Daemon) reconcileBruteThresholds() {
 			th.SMTPBruteForceMaxTracked,
 		)
 	}
+	if d.fileSMTPAuthTracker != nil {
+		d.fileSMTPAuthTracker.SetThresholds(
+			th.SMTPBruteForceThreshold,
+			th.SMTPBruteForceSubnetThresh,
+			th.SMTPAccountSprayThreshold,
+			time.Duration(th.SMTPBruteForceWindowMin)*time.Minute,
+			time.Duration(th.SMTPBruteForceSuppressMin)*time.Minute,
+			th.SMTPBruteForceSlowThreshold,
+			time.Duration(th.SMTPBruteForceSlowWindowMin)*time.Minute,
+			th.SMTPBruteForceMaxTracked,
+		)
+	}
 	if d.smtpProbeTracker != nil {
 		d.smtpProbeTracker.SetThresholds(
 			th.SMTPProbeThreshold,
@@ -449,6 +490,18 @@ func (d *Daemon) reconcileBruteThresholds() {
 	}
 	if d.mailAuthTracker != nil {
 		d.mailAuthTracker.SetThresholds(
+			th.MailBruteForceThreshold,
+			th.MailBruteForceSubnetThresh,
+			th.MailAccountSprayThreshold,
+			time.Duration(th.MailBruteForceWindowMin)*time.Minute,
+			time.Duration(th.MailBruteForceSuppressMin)*time.Minute,
+			th.MailBruteForceSlowThreshold,
+			time.Duration(th.MailBruteForceSlowWindowMin)*time.Minute,
+			th.MailBruteForceMaxTracked,
+		)
+	}
+	if d.fileMailAuthTracker != nil {
+		d.fileMailAuthTracker.SetThresholds(
 			th.MailBruteForceThreshold,
 			th.MailBruteForceSubnetThresh,
 			th.MailAccountSprayThreshold,
@@ -2470,6 +2523,9 @@ func (d *Daemon) startLogWatchers() {
 			case <-d.stopCh:
 				return
 			case <-ticker.C:
+				if d.fileSMTPAuthTracker != nil {
+					d.fileSMTPAuthTracker.Purge()
+				}
 				if d.smtpAuthTracker != nil {
 					d.smtpAuthTracker.Purge()
 				}
@@ -2516,6 +2572,9 @@ func (d *Daemon) startLogWatchers() {
 				d.persistMailSpray()
 				return
 			case <-ticker.C:
+				if d.fileMailAuthTracker != nil {
+					d.fileMailAuthTracker.Purge()
+				}
 				if d.mailAuthTracker != nil {
 					d.mailAuthTracker.Purge()
 					d.persistMailGoodSource()
@@ -2748,6 +2807,10 @@ func lineReadAt(obs alert.Observation) time.Time {
 // verdict for a login session only tells that session's login summary whether
 // its mailbox exists.
 func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
+	tracker, smtp, sessions := d.mailAuthTracker, d.smtpAuthTracker, d.dovecotSessions
+	if !trustedMailLogin(obs) {
+		tracker, smtp, sessions = d.fileMailAuthTracker, d.fileSMTPAuthTracker, d.fileDovecotSessions
+	}
 	d.recordMailStatsMail(line, obs.ObservedAt)
 	findings := parseDovecotLogLine(line, cfg)
 	// Mail postfix could not pass to rspamd has no scan record; the
@@ -2755,13 +2818,13 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if src := d.antispamScanSource.Load(); src != nil && postfixMilterFailure(line, src.Milters) {
 		return append(findings, d.recordAntispamScan(antispam.Scan{}, lineReadAt(obs))...)
 	}
-	if paired, handled := d.handleSMTPAuthPairing(line, obs, cfg); handled {
+	if paired, handled := d.handleSMTPAuthPairing(smtp, line, obs, cfg); handled {
 		return append(findings, paired...)
 	}
-	if d.noteDovecotSessionVerdict(line, cfg) {
+	if d.noteDovecotSessionVerdict(tracker, sessions, line, cfg) {
 		return findings
 	}
-	d.spoilDovecotSessions(line)
+	d.spoilDovecotSessions(tracker, sessions, line)
 	// Intermediate auth results are not login failures, and their client
 	// text must not reach the outage detector even without a full verdict.
 	if isDovecotAuthRequestInfo(line) {
@@ -2772,8 +2835,8 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	// arrive on their own lines, not login lines. Feed them to the degraded
 	// gate so a backend outage pauses brute-force auto-block instead of
 	// mass-blocking every legitimate user whose login now fails.
-	if d.mailAuthTracker != nil && !authLine && isMailAuthBackendError(line) {
-		return append(findings, d.mailAuthTracker.RecordBackendFailure()...)
+	if tracker != nil && !authLine && isMailAuthBackendError(line) {
+		return append(findings, tracker.RecordBackendFailure()...)
 	}
 	if !authLine {
 		return findings
@@ -2791,22 +2854,22 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return findings
 	}
-	if d.mailAuthTracker == nil {
+	if tracker == nil {
 		return findings
 	}
-	verdict, withheld := d.dovecotSessions.Take(dovecotLoginSession(line), ip, account, customerLoginTime(line, d.mailAuthTracker.now()))
+	verdict, withheld := sessions.Take(dovecotLoginSession(line), ip, account, customerLoginTime(line, tracker.now()))
 	if success {
 		kind := knownCustomerIMAP
 		if strings.HasPrefix(dovecotServiceMessage(line), "pop3-login:") {
 			kind = knownCustomerPOP
 		}
-		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind, trustedMailLogin(obs))...)
+		findings = append(findings, tracker.recordSuccessAt(ip, account, customerLoginTime(line, tracker.now()), kind, trustedMailLogin(obs))...)
 	} else {
 		mb := sprayMailbox{name: normalizeSprayMailbox(account), exist: mailboxExistenceUnknown}
 		if !withheld && extractor.readsWholeLogin() {
 			mb = d.sprayMailboxFor(account, verdict)
 		}
-		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, mb, obs)...)
+		findings = append(findings, recordDovecotFailure(tracker, ip, account, line, mb, obs)...)
 	}
 	return findings
 }
@@ -2815,13 +2878,13 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 // session's login summary. It reports whether the line was such a verdict,
 // which needs no further handling. Log time, as for a login, keeps reading a
 // backlog from making an old verdict fresh.
-func (d *Daemon) noteDovecotSessionVerdict(line string, cfg *config.Config) bool {
+func (d *Daemon) noteDovecotSessionVerdict(tracker *mailAuthTracker, sessions *dovecotSessionVerdicts, line string, cfg *config.Config) bool {
 	session, ip, account, exist, ok := dovecotSessionRejection(line)
 	if !ok {
 		return false
 	}
-	if d.mailAuthTracker != nil && d.sprayRulesOn() && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-		d.dovecotSessions.Note(session, ip, account, exist, customerLoginTime(line, d.mailAuthTracker.now()))
+	if tracker != nil && d.sprayRulesOn() && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+		sessions.Note(session, ip, account, exist, customerLoginTime(line, tracker.now()))
 	}
 	return true
 }
@@ -2829,8 +2892,8 @@ func (d *Daemon) noteDovecotSessionVerdict(line string, cfg *config.Config) bool
 // Unparsed request messages cannot confirm a missing mailbox. They may report
 // a different passdb answer, a backend error or a cut verdict. Diagnostics
 // still carry on to the outage detector.
-func (d *Daemon) spoilDovecotSessions(line string) {
-	if d.mailAuthTracker == nil || !d.sprayRulesOn() {
+func (d *Daemon) spoilDovecotSessions(tracker *mailAuthTracker, verdicts *dovecotSessionVerdicts, line string) {
+	if tracker == nil || !d.sprayRulesOn() {
 		return
 	}
 	sessions := dovecotAuthTroubleSessions(line)
@@ -2839,7 +2902,7 @@ func (d *Daemon) spoilDovecotSessions(line string) {
 		sessions = dovecotSessionsInFields(seg)
 	}
 	for _, session := range sessions {
-		d.dovecotSessions.Spoil(session, customerLoginTime(line, d.mailAuthTracker.now()))
+		verdicts.Spoil(session, customerLoginTime(line, tracker.now()))
 	}
 }
 
@@ -2847,8 +2910,7 @@ func (d *Daemon) spoilDovecotSessions(line string) {
 // SMTP AUTH results do not come from the Exim mainlog. It reports whether the
 // line was a Dovecot verdict or a Postfix result, which need no further
 // handling; Dovecot error lines are noted and still reach the outage detector.
-func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *config.Config) ([]alert.Finding, bool) {
-	t := d.smtpAuthTracker
+func (d *Daemon) handleSMTPAuthPairing(t *smtpAuthTracker, line string, obs alert.Observation, cfg *config.Config) ([]alert.Finding, bool) {
 	if t == nil || d.smtpAuthFromExim {
 		return nil, false
 	}
@@ -2954,6 +3016,11 @@ func (d *Daemon) dispatchLogLine(producer admission.ProducerID, line maillog.Lin
 	findings := handler(line.Message, obs, d.currentCfg())
 	for i, f := range findings {
 		f.Observation = obs
+		if producer == checks.ProducerMailLog {
+			// File mail alerts must not consume a trusted finding's identity in
+			// batch deduplication or the persisted notification history.
+			f.DedupKey = "writable-log:" + f.Key()
+		}
 		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
 			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false

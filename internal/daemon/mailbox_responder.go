@@ -278,7 +278,7 @@ var hostHasMailBackend = func() bool { return platform.Detect().IsCPanel() }
 func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	var out []alert.Finding
 	for _, f := range findings {
-		if f.Check != "mail_account_compromised" || f.Severity != alert.Critical {
+		if f.Check != "mail_account_compromised" || f.Severity != alert.Critical || !trustedMailLogin(f.Observation) {
 			continue
 		}
 		subject := f.Mailbox

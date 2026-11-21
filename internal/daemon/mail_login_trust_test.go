@@ -56,7 +56,11 @@ func TestWritableMailSuccessIsNotALogin(t *testing.T) {
 		if trust[dovecotIP] != journal {
 			t.Errorf("journal=%v: Dovecot spray trust=%v", journal, trust[dovecotIP])
 		}
-		if e := d.mailAuthTracker.ips[dovecotIP]; e == nil || (len(e.succ) != 0) != journal || (len(e.successAccounts) != 0) != journal {
+		tracker := d.fileMailAuthTracker
+		if journal {
+			tracker = d.mailAuthTracker
+		}
+		if e := tracker.ips[dovecotIP]; e == nil || (len(e.succ) != 0) != journal || (len(e.successAccounts) != 0) != journal {
 			t.Errorf("journal=%v: short-term login trust=%+v", journal, e)
 		}
 		if customer != journal || smtpCustomer != journal || good != journal || sprayTrust != journal {

@@ -80,6 +80,14 @@ func (d *Daemon) dispatchJournalLine(src journalSource, line maillog.Line) bool 
 		return true
 	}
 	return d.dispatchLogLine(src.producer, line, func(msg string, _ alert.Observation, cfg *config.Config) []alert.Finding {
-		return src.handler(msg, cfg)
+		findings := src.handler(msg, cfg)
+		for i := range findings {
+			if findings[i].Check == "ssh_login_unknown_ip" && line.Position.Cursor != "" {
+				// PIDs and client ports can be reused; the journal cursor
+				// names the login independently of its message text.
+				findings[i].DedupKey = "journal:" + line.Position.Cursor
+			}
+		}
+		return findings
 	})
 }

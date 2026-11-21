@@ -399,12 +399,13 @@ Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.
 
-The FTP and SSH log watchers read the same files as the periodic `ftp_logins`
-and `ssh_logins` checks, so both see every login. Each login is reported once:
-the watcher and the periodic check build the same finding, and the second one
-is recognised as a repeat. When the watcher is not running, on a non-cPanel
-host or before the log file appears, the periodic check still reports the
-login on its own.
+The FTP and file-based SSH log watchers read the same files as the periodic
+`ftp_logins` and `ssh_logins` checks. Each file login is reported once: the
+watcher and periodic check build the same finding, and the second one is
+recognised as a repeat. When SSH uses the journal, the periodic auth-file scan
+yields to it. Each journal entry has its own alert identity, so a later login
+with the same process ID and client port still alerts. When a file watcher is
+not running, the periodic check still reports file logins on its own.
 
 An SSH login is reported only from sshd's own success record: the sshd program
 tag, then `Accepted <method> for <user> from <address> port <port>`. sshd also
@@ -488,9 +489,13 @@ it does not replay older records on attachment.
 
 Any local user can write a line into a mail log file under any program name,
 so a line read from a file alerts but never blocks an address, and a login
-read from a file earns no customer standing or mail trust. Logins after password
-spraying still raise compromise alerts, including SMTP logins and logins to a
-different mailbox from those that failed.
+read from a file earns no customer standing or mail trust. File alerts use
+separate counters, authentication pairing, outage state and notification
+identities. They cannot trigger or suppress a trusted authentication verdict
+or suspend a mailbox. File logins can still raise a compromise alert after
+failures against the same mailbox, but do not enter password-spray tracking.
+Trusted logins after password spraying still raise compromise alerts, including
+SMTP logins and logins to a different mailbox from those that failed.
 
 Explicit `file` and `journal` modes retry their selected source without
 switching, and a working reader stays attached until it stops or loses its file.
