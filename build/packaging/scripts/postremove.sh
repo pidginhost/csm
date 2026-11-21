@@ -39,8 +39,8 @@ remove_csm_modsec_sections() {
     fi
 }
 
-# The peer log snippet makes the web server write under /var/log/csm, which
-# nothing keeps bounded once CSM is gone.
+# The peer log snippet makes the web server write under /var/log/csm-web,
+# which nothing keeps bounded once CSM is gone.
 remove_peer_log_snippets() {
     local snippet header failed=0
     for snippet in \

@@ -28,7 +28,7 @@ func TestWebRewriteDoctorCheck(t *testing.T) {
 		{"no web server", checks.HTTPRewrite{State: checks.RewriteNone}, "ok", []string{"no web server"}, nil},
 		{"direct", checks.HTTPRewrite{State: checks.RewriteNone, Server: "nginx"}, "ok", []string{"nginx configuration sets no client address rewriting"}, nil},
 		{"rewritten", checks.HTTPRewrite{State: checks.RewriteActive, Server: "litespeed", Directive: "useIpInProxyHeader 2", File: "/usr/local/lsws/conf/httpd_config.xml"}, "ok",
-			[]string{"litespeed", "replaced client address", "useIpInProxyHeader 2", "/usr/local/lsws/conf/httpd_config.xml", "no automatic response", "refused IP blocks stay refused"}, nil},
+			[]string{"litespeed", "replaced client address", "useIpInProxyHeader 2", "/usr/local/lsws/conf/httpd_config.xml", "no automatic response", "unless the web peer log verifies the client", "refused IP blocks stay refused"}, nil},
 		{"proxy protocol", checks.HTTPRewrite{State: checks.RewriteActive, Server: "apache", Directive: "RemoteIPProxyProtocol On", File: "/etc/apache2/conf.d/proxy.conf"}, "ok",
 			[]string{"apache logs a replaced client address", "RemoteIPProxyProtocol On", "/etc/apache2/conf.d/proxy.conf"}, nil},
 		{"unknown", checks.HTTPRewrite{State: checks.RewriteUnknown, Server: "apache", Reason: "no Apache configuration file was found"}, "warn",
@@ -208,6 +208,10 @@ func TestDoctorWebPeerLogRow(t *testing.T) {
 		{"not installed", cpanel, active, nil, "warn", "csm webserver-integration install"},
 		{"not written", cpanel, active, stale, "warn", "not writing"},
 		{"active", cpanel, active, fresh, "ok", "active"},
+		{"never opened", cpanel, active, map[string]time.Time{
+			"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
+			"/usr/local/apache/logs/access_log":     now.Add(-time.Hour),
+		}, "warn", "has not opened"},
 		{"peer still recent", cpanel, active, map[string]time.Time{
 			"/etc/apache2/conf.d/csm-peer-log.conf": now.Add(-time.Hour),
 			"/var/log/csm-web/peer.log":             now.Add(-14 * time.Minute),

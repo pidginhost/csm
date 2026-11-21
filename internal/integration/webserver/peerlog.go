@@ -90,8 +90,12 @@ func (i *Installer) readPeerLog() ([]byte, bool, error) {
 // needs no challenge settings.
 func (i *Installer) InstallPeerLog() (Result, error) {
 	res := i.peerLogResult("install")
-	if i.PeerLogPath == "" || i.hostInfo.FrontProxied {
+	if i.PeerLogPath == "" {
 		res.Status, res.Message = "skipped", "the web peer log is not supported on this web server"
+		return res, nil
+	}
+	if i.hostInfo.FrontProxied {
+		res.Status, res.Message = "skipped", "nginx runs in front of the web server, so every peer is this server and the web peer log cannot tell clients apart"
 		return res, nil
 	}
 	prev, existed, err := i.readPeerLog()

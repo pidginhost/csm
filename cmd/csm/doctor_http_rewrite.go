@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -50,10 +51,10 @@ func webRewriteDoctorCheck(r checks.HTTPRewrite, cfg *config.Config) DoctorCheck
 		if r.Server == platform.WSLiteSpeed || r.Format || r.NginxProxyProtocol() {
 			blocking = "while admission executes blocks, refused IP blocks stay refused; challenges still apply"
 		}
-		check.Message = fmt.Sprintf("%s logs a replaced client address (%s in %s): web findings get no automatic response from admission; %s", r.Server, r.Directive, r.File, blocking)
+		check.Message = fmt.Sprintf("%s logs a replaced client address (%s in %s): web findings get no automatic response from admission unless the web peer log verifies the client; %s", r.Server, r.Directive, r.File, blocking)
 	default:
 		check.Status = "warn"
-		check.Message = "CSM cannot tell whether the web server rewrites client addresses: " + r.Reason + "; web findings get no automatic response from admission"
+		check.Message = "CSM cannot tell whether the web server rewrites client addresses: " + r.Reason + "; web findings get no automatic response from admission unless the web peer log verifies the client"
 		check.Fix = "run csm doctor as root, then correct or make readable the web server configuration it names"
 	}
 	return check
@@ -96,6 +97,13 @@ func webPeerLogDoctorCheck(info platform.Info, r checks.HTTPRewrite, stat func(s
 		return check
 	}
 	logInfo, err := stat(webserver.PeerLogFile)
+	if errors.Is(err, os.ErrNotExist) {
+		// Apache and LiteSpeed open their logs when they start or reload.
+		check.Status = "warn"
+		check.Message = "the web server has not opened " + webserver.PeerLogFile + " since the snippet was installed"
+		check.Fix = "reload the web server, or run csm webserver-integration install again"
+		return check
+	}
 	if err != nil || now.Sub(logInfo.ModTime()) > webPeerLogStale {
 		for _, access := range info.AccessLogPaths {
 			if a, aerr := stat(access); aerr == nil && now.Sub(a.ModTime()) <= webPeerLogStale {
