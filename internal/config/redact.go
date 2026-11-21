@@ -1,6 +1,9 @@
 package config
 
-import "slices"
+import (
+	"reflect"
+	"slices"
+)
 
 const redactedValue = "***REDACTED***"
 
@@ -118,6 +121,39 @@ func Redact(cfg *Config) *Config {
 	}
 
 	return &c
+}
+
+// SecretValues returns the configured value of every field Redact hides,
+// longest first, so free text such as a log excerpt can be scrubbed of them
+// before it leaves the host. It is derived from Redact, so a field added
+// there is covered here without a second list.
+func SecretValues(cfg *Config) []string {
+	var out []string
+	collectRedacted(reflect.ValueOf(cfg).Elem(), reflect.ValueOf(Redact(cfg)).Elem(), &out)
+	// Longest first: a token inside a URL must not be replaced before the URL.
+	slices.SortStableFunc(out, func(a, b string) int { return len(b) - len(a) })
+	return out
+}
+
+func collectRedacted(orig, red reflect.Value, out *[]string) {
+	switch orig.Kind() {
+	case reflect.String:
+		if orig.String() != red.String() {
+			*out = append(*out, orig.String())
+		}
+	case reflect.Pointer:
+		if !orig.IsNil() && !red.IsNil() {
+			collectRedacted(orig.Elem(), red.Elem(), out)
+		}
+	case reflect.Struct:
+		for i := 0; i < orig.NumField(); i++ {
+			collectRedacted(orig.Field(i), red.Field(i), out)
+		}
+	case reflect.Slice:
+		for i := 0; i < min(orig.Len(), red.Len()); i++ {
+			collectRedacted(orig.Index(i), red.Index(i), out)
+		}
+	}
 }
 
 func redactConfigScalarForLog(keyPath, value string) string {
