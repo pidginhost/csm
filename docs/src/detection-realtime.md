@@ -469,9 +469,19 @@ Repeated identical errors are not re-emitted. Retries use the current mail
 source configuration and start at the current tail, so delayed attachment does
 not count historical authentication failures as new activity.
 
-With `mail_logs.source: auto`, each retry chooses the configured or platform
-file if present, otherwise the configured journal units. A file missing for
-90 seconds triggers a new selection. The old reader stops before a replacement
+With `mail_logs.source: auto`, each retry reads the configured journal units
+when the journal is usable: syslog goes through journald (`/dev/log` is its
+socket) and journald stores entries, and Postfix does not write its own log
+file. Otherwise it chooses the configured or platform file if present, then
+the journal units. A file missing for 90 seconds triggers a new selection.
+
+Journal input reaches the detectors only from entries a mail service wrote:
+journald records the sending unit and user itself, and CSM keeps an entry only
+from a configured unit, sent as root (or the postfix user in a Postfix unit)
+through syslog or the journal API. Any local user can write a line into a mail
+log file under any program name, so a file line alerts but never blocks an
+address, and a login read from a file earns no customer standing or mail
+trust. The old reader stops before a replacement
 starts. Journal input follows new records from the selected services, including
 services with no prior entries; it does not replay older records on attachment.
 

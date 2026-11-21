@@ -481,15 +481,19 @@ func slowTrusted(spray *mailSpray, ip string, accounts map[string]time.Time, unv
 // mailboxes earns none and may be reported as a compromise. The tracker keeps
 // no state of its own for it. Callers filter infra/private/loopback IPs first.
 func (t *smtpAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
-	return t.recordSuccessAt(ip, account, t.now(), syslogFed)
+	return t.recordSuccessAt(ip, account, t.now(), syslogFed, true)
 }
 
 // recordSuccessAt retains the source time for customer history while the
 // brute-force tracker continues to process the event at receipt time. src
 // names the log the login came from: the Exim mainlog or Postfix over syslog.
-func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src loginSource) (findings []alert.Finding) {
+// A login that is not trusted, read from a log any local user can write,
+// earns no customer standing or spray trust, as during an auth outage.
+func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src loginSource, trusted bool) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
-	t.knownCustomers.Note(ip, knownCustomerSMTP, account, at, src)
+	if trusted {
+		t.knownCustomers.Note(ip, knownCustomerSMTP, account, at, src)
+	}
 	if ip == "" {
 		return nil
 	}
@@ -500,7 +504,7 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 	defer t.mu.Unlock()
 	// During an auth outage the failures were kept out of spray memory, so
 	// a login then must not earn trust or raise a finding either.
-	if t.spray == nil || (t.backendDownFn != nil && t.backendDownFn()) {
+	if t.spray == nil || !trusted || (t.backendDownFn != nil && t.backendDownFn()) {
 		return nil
 	}
 	_, v := t.spray.Success(ip, mailbox)

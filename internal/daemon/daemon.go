@@ -2612,7 +2612,8 @@ func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAut
 	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 		return nil
 	}
-	return tracker.recordSuccessAt(ip, user, customerLoginTime(line, tracker.now()), serviceLog)
+	// The Exim mainlog is written by Exim alone.
+	return tracker.recordSuccessAt(ip, user, customerLoginTime(line, tracker.now()), serviceLog, true)
 }
 
 func (d *Daemon) emitAuthBackendFindings() bool {
@@ -2789,7 +2790,7 @@ func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.
 		if strings.HasPrefix(dovecotServiceMessage(line), "pop3-login:") {
 			kind = knownCustomerPOP
 		}
-		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind)...)
+		findings = append(findings, d.mailAuthTracker.recordSuccessAt(ip, account, customerLoginTime(line, d.mailAuthTracker.now()), kind, trustedMailLogin(obs))...)
 	} else {
 		mb := sprayMailbox{name: normalizeSprayMailbox(account), exist: mailboxExistenceUnknown}
 		if !withheld && extractor.readsWholeLogin() {
@@ -2857,7 +2858,7 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
 			return nil, true
 		}
-		return t.recordSuccessAt(ip, user, customerLoginTime(line, t.now()), syslogFed), true
+		return t.recordSuccessAt(ip, user, customerLoginTime(line, t.now()), syslogFed, trustedMailLogin(obs)), true
 	}
 	if strings.HasPrefix(msg, "warning: SASL: ") {
 		// A failed backend reconnect can leave smtpd's previous reply
@@ -2887,6 +2888,12 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 		return t.RecordAmbiguousFailure(ip, names, obs), true
 	}
 	return t.RecordFailure(ip, account, exist, obs), true
+}
+
+// trustedMailLogin reports whether a mail log success came from the journal
+// as a mail service wrote it; dispatch dropped every other journal entry.
+func trustedMailLogin(obs alert.Observation) bool {
+	return obs.Producer == string(checks.ProducerMailJournal)
 }
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {

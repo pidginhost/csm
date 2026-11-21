@@ -162,7 +162,8 @@ var httpASNCrawlReverseProxySeed = []uint{13335, 54113, 20940}
 
 // MailLogsConfig controls how postfix/dovecot logs are read.
 //
-//	source: auto    - try file first; fall back to journal if file absent.
+//	source: auto    - journal when syslog goes through journald and journald
+//	                  stores entries; otherwise file, then journal.
 //	source: file    - require log file at the platform-default path.
 //	source: journal - read from systemd-journald (units must be set).
 //

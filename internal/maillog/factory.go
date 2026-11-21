@@ -35,6 +35,11 @@ func New(cfg config.MailLogsConfig, platformDefaultFile string, queue *Queue) (R
 		}
 		return NewJournalReader(cfg.Units, queue), nil
 	case "auto":
+		// Only journald records who wrote a line; a log file takes any
+		// local user's lines under any program name.
+		if len(cfg.Units) > 0 && JournalUsable() && !postfixLogsToFile() {
+			return NewJournalReader(cfg.Units, queue), nil
+		}
 		if path != "" {
 			if _, err := os.Stat(path); err == nil {
 				return NewFileReader(path, queue), nil

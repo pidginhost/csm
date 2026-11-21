@@ -1096,15 +1096,19 @@ func appendMailAccountTime(accounts map[string][]time.Time, account string, ts t
 // ip and account MUST both be non-empty. Caller filters infra/private/loopback
 // IPs before invoking.
 func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Finding) {
-	return t.recordSuccessAt(ip, account, t.now(), knownCustomerIMAP)
+	return t.recordSuccessAt(ip, account, t.now(), knownCustomerIMAP, true)
 }
 
 // recordSuccessAt retains the source time for customer history while the
 // brute-force tracker continues to process the event at receipt time. kind
-// is imap or pop; Dovecot logs both through syslog.
-func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind string) (findings []alert.Finding) {
+// is imap or pop; Dovecot logs both through syslog. A login that is not
+// trusted, read from a log any local user can write, still counts toward a
+// compromise but earns no customer standing, good source or spray trust.
+func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind string, trusted bool) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
-	t.knownCustomers.Note(ip, kind, account, at, syslogFed)
+	if trusted {
+		t.knownCustomers.Note(ip, kind, account, at, syslogFed)
+	}
 	// A tracker key is not an authenticated identity. Keep the logged local
 	// part or hosting-account case for owner lookup and mailbox response.
 	loginAccount := strings.TrimSpace(account)
@@ -1146,10 +1150,10 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
 	// A guessed-password success should not train the long-lived good-source cache.
 	degraded := t.backendDegraded(now) || (t.backendDownFn != nil && t.backendDownFn())
-	recordGoodSource := !degraded
+	recordGoodSource := !degraded && trusted
 	var sprayed *alert.Finding
 	sprayMailbox := normalizeSprayMailbox(account)
-	if !degraded && t.spray != nil {
+	if !degraded && trusted && t.spray != nil {
 		clean, v := t.spray.Success(ip, sprayMailbox)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false

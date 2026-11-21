@@ -68,7 +68,7 @@ func TestPairingAmbiguousBatchBoundsEveryName(t *testing.T) {
 				tr.NoteDovecotRejection(ip, "old@example.net", mailboxExists, at.Add(time.Second))
 			}
 			line := clock.Now().Format(time.RFC3339) + " mail postfix/smtpd[99]: warning: unknown[" + ip + "]: SASL LOGIN authentication failed: (reason unavailable)"
-			got := d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+			got := d.handleMailLine(line, trustedMailObs, d.currentCfg())
 			if hasCheckFinding(got, "smtp_bruteforce") {
 				t.Fatalf("out-of-window name caused a block: %+v", got)
 			}
@@ -78,7 +78,7 @@ func TestPairingAmbiguousBatchBoundsEveryName(t *testing.T) {
 			if boundary == "source future" {
 				clock.advance(2 * time.Second)
 				line = clock.Now().Format(time.RFC3339) + " mail postfix/smtpd[99]: warning: unknown[" + ip + "]: SASL LOGIN authentication failed: (reason unavailable)"
-				d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+				d.handleMailLine(line, trustedMailObs, d.currentCfg())
 				if ev := sprayEvidence(d, ip); len(ev) != 2 || ev["live@example.net"].count != 1 || ev["old@example.net"].count != 1 {
 					t.Fatalf("later reply lost its eligible rejection or repeated the earlier one: %+v", ev)
 				}
@@ -144,7 +144,7 @@ func TestPairingAmbiguousBatchProbeDiscardsLaterSourceTime(t *testing.T) {
 	tr.NoteDovecotRejection(ip, "bob@example.net", mailboxExists, clock.Now().Add(time.Second))
 	failure := func() {
 		line := clock.Now().Format(time.RFC3339) + " mail postfix/smtpd[99]: warning: unknown[" + ip + "]: SASL LOGIN authentication failed: (reason unavailable)"
-		d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+		d.handleMailLine(line, trustedMailObs, d.currentCfg())
 	}
 	failure()
 	down = false
@@ -184,7 +184,7 @@ func TestPairingAmbiguousBatchKeepsEarlierEligibleDuplicate(t *testing.T) {
 	tr.NoteDovecotRejection(ip, "bob@example.net", mailboxExists, clock.Now())
 	tr.NoteDovecotRejection(ip, "alice@example.net", mailboxExists, clock.Now().Add(time.Second))
 	line := clock.Now().Format(time.RFC3339) + " mail postfix/smtpd[99]: warning: unknown[" + ip + "]: SASL LOGIN authentication failed: (reason unavailable)"
-	d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+	d.handleMailLine(line, trustedMailObs, d.currentCfg())
 	if ev := sprayEvidence(d, ip); len(ev) != 2 || ev["alice@example.net"].count != 1 || ev["bob@example.net"].count != 1 {
 		t.Fatalf("later duplicate hid earlier evidence: %+v", ev)
 	}

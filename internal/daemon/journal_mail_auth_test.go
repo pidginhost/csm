@@ -75,6 +75,8 @@ func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 
 // Mail log lines read from the journal reach the parsers with the same
 // program tags and times as the file, so every detection behaves the same.
+// Only a login differs: one read from a file, which any local user can
+// write, earns no trust.
 func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 	var file, journal []maillog.Line
 	for i, e := range mailAuthSequence() {
@@ -97,6 +99,10 @@ func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 	}
 	for name, lines := range map[string][]maillog.Line{"file": file, "journal": journal} {
 		t.Run(name, func(t *testing.T) {
+			want := want
+			if name == "file" {
+				want.successes = nil
+			}
 			got := replayMailLog(t, lines)
 			if got.smtpFailures != want.smtpFailures || got.mailFailures != want.mailFailures ||
 				!slices.Equal(got.successes, want.successes) || !slices.Equal(got.findings, want.findings) {

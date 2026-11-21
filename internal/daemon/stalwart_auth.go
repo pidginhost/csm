@@ -34,7 +34,7 @@ func (d *Daemon) stalwartAuth(ev stalwartlog.Event, s stalwartlog.Session, obs a
 			return nil
 		}
 		if success {
-			return d.smtpAuthTracker.recordSuccessAt(ip, account, ev.Time, serviceLog)
+			return d.smtpAuthTracker.recordSuccessAt(ip, account, ev.Time, serviceLog, true)
 		}
 		return d.smtpAuthTracker.RecordObserved(ip, account, obs)
 	case stalwartlog.ProtoIMAP, stalwartlog.ProtoPOP3, stalwartlog.ProtoSieve:
@@ -46,7 +46,7 @@ func (d *Daemon) stalwartAuth(ev stalwartlog.Event, s stalwartlog.Session, obs a
 			if proto == stalwartlog.ProtoPOP3 {
 				kind = knownCustomerPOP
 			}
-			return d.mailAuthTracker.recordSuccessAt(ip, account, ev.Time, kind)
+			return d.mailAuthTracker.recordSuccessAt(ip, account, ev.Time, kind, true)
 		}
 		return d.mailAuthTracker.RecordObserved(ip, account, obs)
 	case stalwartlog.ProtoHTTP:

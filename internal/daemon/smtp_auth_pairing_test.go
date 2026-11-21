@@ -30,7 +30,7 @@ func feed(d *Daemon, clock *staticClock, lines ...string) []alert.Finding {
 	var got []alert.Finding
 	for _, line := range lines {
 		clock.advance(time.Second)
-		got = append(got, d.handleMailLine(line, alert.Observation{}, d.currentCfg())...)
+		got = append(got, d.handleMailLine(line, trustedMailObs, d.currentCfg())...)
 	}
 	return got
 }
@@ -343,7 +343,7 @@ func TestPairingHonorsNewInfraProtection(t *testing.T) {
 	d, clock := newPairingDaemon(t, &config.Config{})
 	feed(d, clock, "dovecot: auth: sql(alice@example.net,203.0.113.95): unknown user")
 	cfg := &config.Config{InfraIPs: []string{"203.0.113.95"}}
-	d.handleMailLine(fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"), alert.Observation{}, cfg)
+	d.handleMailLine(fmt.Sprintf(postfixFailFmt, "203.0.113.95", "alice@example.net"), trustedMailObs, cfg)
 	if calls := smtpCalls(d); calls != 0 {
 		t.Fatalf("newly protected address recorded %d failures", calls)
 	}

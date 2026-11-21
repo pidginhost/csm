@@ -381,7 +381,7 @@ func FuzzPostfixWarningsNeverBuildEvidence(f *testing.F) {
 			"unknown[203.0.113.66]: SASL PLAIN authentication failed: authentication failure, sasl_username=" + s,
 			s,
 		} {
-			if got := d.handleMailLine("postfix/smtpd[99]: warning: "+msg, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+			if got := d.handleMailLine("postfix/smtpd[99]: warning: "+msg, trustedMailObs, d.currentCfg()); len(got) != 0 {
 				t.Fatalf("Postfix warning raised findings: %+v", got)
 			}
 		}
@@ -412,7 +412,7 @@ func FuzzDovecotPassdbVerdictsNeverBuildEvidence(f *testing.F) {
 			if (!ok || account == "") && exist != mailboxExistenceUnknown {
 				t.Fatalf("unidentified mailbox in %q carried existence %d", line, exist)
 			}
-			if got := d.handleMailLine(line, alert.Observation{}, d.currentCfg()); len(got) != 0 {
+			if got := d.handleMailLine(line, trustedMailObs, d.currentCfg()); len(got) != 0 {
 				t.Fatalf("passdb verdict raised findings: %+v", got)
 			}
 		}
@@ -502,7 +502,7 @@ func FuzzSMTPAuthPairingAddress(f *testing.F) {
 			"postfix/smtpd[9]: warning: unknown[203.0.113.7]: SASL LOGIN authentication failed: x",
 		} {
 			clock.advance(time.Second)
-			d.handleMailLine(line, alert.Observation{}, d.currentCfg())
+			d.handleMailLine(line, trustedMailObs, d.currentCfg())
 		}
 		if calls, _ := d.smtpAuthTracker.Stats(); calls > 1 {
 			t.Fatalf("one verdict counted %d times", calls)
