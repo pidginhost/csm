@@ -647,8 +647,9 @@ When the mail authentication backend itself fails (for example dovecot cannot re
 Mail login attribution uses the connection fields outside the raw login name.
 Names containing field-like text or angle brackets remain one account name.
 Records without a usable remote address do not count toward IP blocking or
-login trust. Reputation exemptions require a successful Dovecot login summary;
-success wording in a failed login name does not qualify.
+login trust. A reputation exemption requires a mail login in the last day that
+the mail service itself recorded (its own log or journal entry); a line in a
+mail log file, which any local user can write, never qualifies.
 
 ## Stalwart Mail Server
 

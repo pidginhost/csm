@@ -2422,6 +2422,7 @@ func (d *Daemon) startLogWatchers() {
 	d.syslogFromJournal = journalUsable()
 	checks.SetSSHLoginsFromJournal(d.syslogFromJournal)
 	checks.SetFTPLoginsFromJournal(d.syslogFromJournal)
+	checks.SetTrustedMailLoginLookup(d.trustedMailLoginSince)
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if d.syslogFromJournal {
 		d.startJournalSource(sshJournal)

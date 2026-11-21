@@ -189,7 +189,6 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		return reputationHealthFindings(ctx, cfg, sdb, scanState, now, quotaExhausted)
 	}
 
-	authenticated := collectAuthenticatedIPs(cfg)
 	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
@@ -227,7 +226,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		// public feed gets a 24h block the instant they open webmail. Genuine
 		// attacks from the same IP are still caught by the brute-force,
 		// compromise, and takeover detectors, which do not honour this exemption.
-		if authenticated[ip] {
+		if recentlyAuthenticated(ip, now) {
 			continue
 		}
 
@@ -898,41 +897,43 @@ func stampReputationSightings(findings []alert.Finding, records map[string]scanR
 	}
 }
 
-// collectAuthenticatedIPs returns IPs that successfully authenticated to a
-// mailbox in the recent log window. A source that holds valid mail credentials
-// is a real customer, not a drive-by scanner: a threat-feed match on such an IP
-// is almost always a recycled dynamic/CGNAT address rather than the attacker the
-// feed once listed. Romanian and other residential ISPs rotate these pools
-// aggressively, so an IP an attacker used last week routinely lands on a paying
-// customer this week. Webmail authenticates through dovecot, so this also covers
-// Horde/Roundcube users.
+// recentlyAuthenticated reports whether ip logged in to a mailbox in the last
+// day, as the mail service recorded it. A source that holds valid mail
+// credentials is a real customer, not a drive-by scanner: a threat-feed match
+// on such an IP is almost always a recycled dynamic/CGNAT address rather than
+// the attacker the feed once listed. Residential ISPs rotate these pools
+// aggressively, so an IP an attacker used last week routinely lands on a
+// paying customer this week.
 //
 // Successful SSH logins are deliberately excluded: a clean SSH auth from a
 // feed-listed IP is itself a red flag (a cracked or attacker-controlled host),
 // and collectRecentIPs already surfaces those IPs precisely so their reputation
 // is checked. Authenticated mail attackers (compromised accounts) remain covered
 // by the brute-force, compromise, and account-takeover detectors, which do not
-// honour this exemption. The mail window is wider than collectRecentIPs uses so
-// a customer's success is not pushed out of view by a burst of attacker failures
-// occupying the tail.
-func collectAuthenticatedIPs(cfg *config.Config) map[string]bool {
-	authed := make(map[string]bool)
-	info := platform.Detect()
+// honour this exemption. A mail log file line is never such a login: any local
+// user can write one.
+func recentlyAuthenticated(ip string, now time.Time) bool {
+	lookup := trustedMailLogin.Load()
+	return lookup != nil && (*lookup)(ip, now.Add(-trustedLoginExcuse))
+}
 
-	mailLog := reputationMailLogPath(cfg, info)
-	if mailLog == "" {
-		return authed
-	}
-	for _, line := range tailFile(mailLog, 200) {
-		if !DovecotLoginSucceeded(line) {
-			continue
-		}
-		if ip := DovecotRemoteIP(line); ip != "" {
-			authed[ip] = true
-		}
-	}
+// trustedLoginExcuse is how recent a customer's mail login must be to excuse
+// its address.
+const trustedLoginExcuse = 24 * time.Hour
 
-	return authed
+// trustedMailLogin reports whether ip logged in to a mail service since the
+// given time, as the service's own log or journal recorded it. The daemon
+// sets it; a mail log file line, which any local user can write, never
+// counts, and without it no address is excused.
+var trustedMailLogin atomic.Pointer[func(ip string, since time.Time) bool]
+
+// SetTrustedMailLoginLookup installs the daemon's trusted mail login lookup.
+func SetTrustedMailLoginLookup(f func(ip string, since time.Time) bool) {
+	if f == nil {
+		trustedMailLogin.Store(nil)
+		return
+	}
+	trustedMailLogin.Store(&f)
 }
 
 func reputationMailLogPath(cfg *config.Config, info platform.Info) string {

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/checks"
@@ -561,14 +562,32 @@ func customerLoginTime(line string, now time.Time) time.Time {
 	return now
 }
 
-// noteFTPCustomers remembers the addresses of successful FTP logins.
+// noteFTPCustomers remembers the addresses of successful FTP logins. A login
+// read from the system log file, which any local user can write, is not one.
 func (d *Daemon) noteFTPCustomers(findings []alert.Finding) {
 	for _, f := range findings {
+		if checks.ProducerWritableLog(admission.ProducerID(f.Observation.Producer)) {
+			continue
+		}
 		switch f.Check {
 		case "ftp_login", "ftp_login_after_bruteforce":
 			d.knownCustomers.Note(f.SourceIP, knownCustomerFTP, ftpCustomerAccount(f), f.Timestamp, syslogFed)
 		}
 	}
+}
+
+// trustedMailLoginSince reports whether ip's last customer login was to a mail
+// service, since since. Only logins a service recorded reach the set.
+func (d *Daemon) trustedMailLoginSince(ip string, since time.Time) bool {
+	hit, ok := d.knownCustomers.Lookup(ip)
+	if !ok || hit.At.Before(since) {
+		return false
+	}
+	switch hit.Kind {
+	case knownCustomerIMAP, knownCustomerPOP, knownCustomerSMTP, knownCustomerWebmail:
+		return true
+	}
+	return false
 }
 
 // ftpCustomerAccount is the account an FTP login is known under: the hosting
