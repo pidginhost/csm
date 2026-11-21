@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Feed-listed addresses are excused from reputation blocking only after recent verified IPv4 mail logins; FTP and cPanel logins grant no exemption.
+- A feed-listed address is excused from reputation blocking only by an IPv4 mail login the mail service recorded in the last day.
 - SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks, mailbox suspensions or count as customer logins; they still alert.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
@@ -26,7 +26,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
-- CSM now prefers verified journal logins for SSH, FTP and `mail_logs.source: auto`; `csm doctor` names selected sources and warns about unavailable mail readers.
+- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 
 ## [4.15.0] - 2026-11-20
