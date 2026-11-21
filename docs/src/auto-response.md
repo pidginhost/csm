@@ -558,13 +558,23 @@ server rewrites client addresses, available web peer observations verify
 each one: an address that connected for itself is blocked as on a direct
 host, a client behind a trusted proxy or a known CDN edge is only challenged,
 and an address another peer chose is refused as `forged_client`. nginx needs
-no peer log when every `real_ip_header` is `CF-Connecting-IP` and every
-`set_real_ip_from` lies in Cloudflare's ranges, or every `real_ip_header` is
-`proxy_protocol` and every `set_real_ip_from` lies in the shipped edge ranges
-or `web_server.trusted_proxies`, and none reaches a loopback or host address:
-its web findings are then blocked as on a direct host. Other edges and
-proxies may pass on a client's own `CF-Connecting-IP`, so that header counts
-only from Cloudflare.
+no peer log when `real_ip_header` is set at `http` scope and every server
+and location uses that same header. For `CF-Connecting-IP`, every
+`set_real_ip_from` must lie in Cloudflare's ranges. For `proxy_protocol`,
+every source must lie in the shipped edge ranges or
+`web_server.trusted_proxies`. No source may reach a loopback, unspecified,
+or host address, including through IPv4-mapped IPv6. Its web findings are
+then blocked as on a direct host. Other edges and proxies may pass on a
+client's own `CF-Connecting-IP`, so that header counts only from Cloudflare.
+Verification requires a fully readable configuration tree, including all
+includes, and no request data in the client field of any used log format.
+Unresolved hostnames or variables, the default `X-Real-IP` header, and
+conflicting per-server or per-location headers leave nginx unverified.
+Admission uses the current `web_server.trusted_proxies` and freshly reads
+host addresses for each verification; a failed address lookup refuses
+verification. Without a loaded CSM configuration, only shipped edge ranges
+can qualify. Repeated configuration reads log a change only when the
+detected settings differ.
 Verification uses the request time in the access or ModSecurity log,
 including delayed reads and scheduled scans. A request without a valid log
 time stays unverified. Before an address counts as connected for itself, CSM

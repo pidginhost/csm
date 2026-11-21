@@ -12,7 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - `csm webserver-integration install` and `upgrade` now also set up the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active. Restart CSM after the first install.
-- On nginx hosts that read client addresses only from Cloudflare's own header and ranges, or from PROXY protocol of known edges or trusted proxies, web attackers are blocked again.
+- On nginx hosts with verified proxy settings, web attackers are blocked again; ambiguous settings or unavailable host addresses cannot authorize blocks.
 - With the CSM web peer log, web attackers on proxy-header hosts that connect directly are blocked again; proxied clients are only challenged and forged addresses never blocked.
 - With the CSM web peer log, CSM alerts when the web server logs a client address chosen by a local process or an untrusted peer.
 - With `auto_response.dry_run` off, an address admission refuses is no longer blocked by the older path or its queued retry, except clients Apache or nginx read from a proxy header.
@@ -20,6 +20,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - With `auto_response.dry_run` off, web findings no longer firewall-block an address the access log takes from request data, even where a proxy header is also trusted; challenges still apply.
 - A known CDN edge is never blocked automatically, including when a forwarded header names it or the web server rewrites client addresses.
 - Automatic blocks and the Web UI Block button now use only the address a check parsed from its log line, never one quoted in a finding's message.
+
+### Fixed
+
+- Repeated nginx checks no longer report unchanged proxy settings as changes.
 
 ## [4.15.0] - 2026-11-20
 

@@ -21,7 +21,7 @@ func (d *Daemon) refreshHTTPRewrite() {
 	rewriteMu.Lock()
 	defer rewriteMu.Unlock()
 	r := detectHostHTTPRewrite()
-	if prev := checks.CurrentHTTPRewrite(); prev != r {
+	if prev := checks.CurrentHTTPRewrite(); !prev.Equal(r) {
 		csmlog.Info("web server client address rewriting", "state", r.State.String(), "server", string(r.Server), "directive", r.Directive, "file", r.File, "reason", r.Reason)
 	}
 	checks.SetHTTPRewrite(r)

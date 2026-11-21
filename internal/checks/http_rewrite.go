@@ -48,7 +48,7 @@ type HTTPRewrite struct {
 }
 
 // NginxRealIP is every real_ip_header and set_real_ip_from value in an nginx
-// configuration tree.
+// configuration tree with an explicit HTTP-level header and valid contexts.
 type NginxRealIP struct {
 	Headers []string
 	From    []string
@@ -68,14 +68,38 @@ func (s RewriteState) String() string {
 var httpRewrite atomic.Pointer[HTTPRewrite]
 
 // SetHTTPRewrite publishes the web server state admission reads.
-func SetHTTPRewrite(r HTTPRewrite) { httpRewrite.Store(&r) }
+func SetHTTPRewrite(r HTTPRewrite) {
+	r = cloneHTTPRewrite(r)
+	httpRewrite.Store(&r)
+}
 
 // CurrentHTTPRewrite is the published state, unknown before the first.
 func CurrentHTTPRewrite() HTTPRewrite {
 	if r := httpRewrite.Load(); r != nil {
-		return *r
+		return cloneHTTPRewrite(*r)
 	}
 	return HTTPRewrite{}
+}
+
+// Equal compares detected settings rather than the storage of their snapshots.
+func (r HTTPRewrite) Equal(other HTTPRewrite) bool {
+	a, b := r.RealIP, other.RealIP
+	r.RealIP, other.RealIP = nil, nil
+	if r != other {
+		return false
+	}
+	if a == nil || b == nil {
+		return a == b
+	}
+	return slices.Equal(a.Headers, b.Headers) && slices.Equal(a.From, b.From)
+}
+
+// Callers must not be able to change trust data already published to admission.
+func cloneHTTPRewrite(r HTTPRewrite) HTTPRewrite {
+	if r.RealIP != nil {
+		r.RealIP = &NginxRealIP{Headers: slices.Clone(r.RealIP.Headers), From: slices.Clone(r.RealIP.From)}
+	}
+	return r
 }
 
 // lswsConfigPath is LiteSpeed's own server configuration.
@@ -313,6 +337,7 @@ func apacheCloudflareProxyKnown(value string) bool {
 func nginxClientAddressRewrite(path string) (directive, file string, complete bool, realIP *NginxRealIP) {
 	directives, complete := nginxDirectives(path)
 	realIP = &NginxRealIP{}
+	httpHeader := false
 	type format struct {
 		directive nginxDirective
 		value     bool
@@ -366,11 +391,13 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 	for _, d := range directives {
 		if d.Name == "set_real_ip_from" || d.Name == "real_ip_header" {
 			switch {
-			case len(d.Args) != 1:
+			case len(d.Args) != 1 || d.Block || d.Module != "http" ||
+				(d.Context != "http" && d.Context != "server" && d.Context != "location"):
 				realIP = nil
 			case realIP == nil:
 			case d.Name == "real_ip_header":
 				realIP.Headers = append(realIP.Headers, d.Args[0])
+				httpHeader = httpHeader || d.Context == "http"
 			default:
 				realIP.From = append(realIP.From, d.Args[0])
 			}
@@ -454,6 +481,11 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 			return strings.Join(append([]string{f.directive.Name}, f.directive.Args...), " "), f.directive.File, complete, nil
 		}
 	}
+	// A header in a server or location cannot prove the inherited default
+	// elsewhere. Require one HTTP-level choice shared by every override.
+	if !httpHeader {
+		realIP = nil
+	}
 	return directive, file, complete, realIP
 }
 
@@ -462,18 +494,15 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 // Cloudflare edge sets itself, with every set_real_ip_from inside Cloudflare's
 // ranges; or every header is proxy_protocol, which the connecting proxy
 // writes, with every set_real_ip_from inside a shipped edge range or trusted.
-// No range may reach a loopback or host address.
+// No range may reach a loopback, unspecified or host address.
 func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
 	if r.Server != platform.WSNginx || r.State != RewriteActive || r.Format || r.RealIP == nil ||
 		len(r.RealIP.Headers) == 0 || len(r.RealIP.From) == 0 {
 		return false
 	}
-	cloudflare := false
+	cloudflare := strings.EqualFold(r.RealIP.Headers[0], "CF-Connecting-IP")
 	for _, h := range r.RealIP.Headers {
-		switch {
-		case strings.EqualFold(h, "CF-Connecting-IP"):
-			cloudflare = true
-		case h != "proxy_protocol":
+		if cloudflare && !strings.EqualFold(h, "CF-Connecting-IP") || !cloudflare && h != "proxy_protocol" {
 			return false
 		}
 	}
@@ -486,16 +515,18 @@ func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
 			}
 		}
 	}
-	hosts := netutil.HostAddresses()
 	for _, from := range r.RealIP.From {
 		p, ok := realIPPrefix(from)
-		if !ok || reachesLocal(p, hosts) || !slices.ContainsFunc(allowed, func(q netip.Prefix) bool {
+		if !ok || !slices.ContainsFunc(allowed, func(q netip.Prefix) bool {
 			return q.Bits() <= p.Bits() && q.Contains(p.Addr())
 		}) {
 			return false
 		}
 	}
-	return true
+	// This lookup is fresh and fails closed, including mapped IPv4 and
+	// unspecified addresses a local process can use.
+	entry, _, err := netutil.HostLocalProxyEntry(r.RealIP.From)
+	return err == nil && entry == ""
 }
 
 // realIPPrefix reads an address or CIDR as a masked prefix.
@@ -516,24 +547,6 @@ func realIPPrefix(s string) (netip.Prefix, bool) {
 	}
 	a = a.Unmap()
 	return netip.PrefixFrom(a, a.BitLen()), true
-}
-
-var loopbackPrefixes = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}
-
-// reachesLocal reports whether p covers a loopback or host address: a local
-// process could then choose the logged client.
-func reachesLocal(p netip.Prefix, hosts []netip.Addr) bool {
-	for _, l := range loopbackPrefixes {
-		if p.Overlaps(l) {
-			return true
-		}
-	}
-	for _, h := range hosts {
-		if p.Contains(h.Unmap()) {
-			return true
-		}
-	}
-	return false
 }
 
 // These blocks use their own entry handlers, not nginx directive lookup.
