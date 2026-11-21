@@ -27,10 +27,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 - A new `backup` setting has the daemon export its state on a schedule, delete archives past retention, and warn when an export fails.
 
-### Fixed
-
-- Only complete scheduled backups appear for restore, and monitoring can start when a backup schedule is invalid.
-
 ### Changed
 
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
