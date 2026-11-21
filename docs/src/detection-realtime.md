@@ -481,7 +481,8 @@ when the journal is usable: syslog goes through journald (`/dev/log` is its
 socket), the running journal service holds an open journal, and Postfix does
 not write its own log file, including secondary instances listed in
 `multi_instance_directories`. The configured `mail_logs.units` must also cover
-all running Postfix and Dovecot master processes. Old journal files alone do
+all running Postfix and Dovecot master processes; mail services that have not
+started yet do not keep auto on file input. Old journal files alone do
 not qualify, including when journald uses `Storage=none`. If these checks
 cannot confirm coverage, it chooses the configured or platform file if present,
 then the journal units. Set `mail_logs.units` to the actual service names for

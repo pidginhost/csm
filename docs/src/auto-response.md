@@ -642,7 +642,7 @@ the C2 connection check blocks it, when `auto_response.block_ips` is on.
 ### Known-customer block alert
 
 When an automatic block applies to an address that logged in successfully as
-a customer in the last 30 days (cPanel, webmail, SMTP, IMAP, POP or FTP), CSM
+a customer in the last 30 days (cPanel, webmail, SMTP, IMAP or POP), CSM
 sends an alert at once: one email, and the generic alert webhook as event
 `customer_block` with the blocks under `csm.customer_blocks` (see the
 [API reference](api.md#summary-and-customer-block-webhooks)). It names the
@@ -653,8 +653,7 @@ message with their count and the five most recent. Every applied block
 counts: scan blocks, permanent promotions, challenge timeouts, central
 intelligence and incident blocks. A customer whose own login caused the block
 is left out, also when the block comes later than its cause: a mail account
-compromise or an FTP login after brute force names that address and account
-in its own Critical alert. This also applies when earlier address blocks
+compromise names that address and account in its own Critical alert. This also applies when earlier address blocks
 escalate to a range block: its count and examples include only the remaining
 customers. Each block names the command that lifts it:
 `csm firewall remove <ip>` for an address,
