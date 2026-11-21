@@ -170,15 +170,14 @@ func TestReputationNamesTheStrongestSightingsNewestRecord(t *testing.T) {
 	// The weaker surface's record is the newest of all: it still loses.
 	newer := sightingLines("203.0.113.62", at.Add(time.Minute))
 	cfg := listIPs(t, "203.0.113.62")
-	cfg.MailLogs.File = "/var/log/maillog"
 	paths := sightingLogs(t, map[string]string{
-		sightingAccessLog:  newer["HTTP request"] + "\n",
-		"/var/log/maillog": older["mail login"] + "\n" + lines["mail login"] + "\n",
+		sightingAccessLog:     newer["HTTP request"] + "\n",
+		reputationEximMainlog: older["SMTP auth fail"] + "\n" + lines["SMTP auth fail"] + "\n",
 	})
 	f := reputationFindingFor(t, CheckIPReputation(context.Background(), cfg, nil), "203.0.113.62")
-	want := syslogTestRef(t, paths["/var/log/maillog"], int64(len(older["mail login"])+1), lines["mail login"])
+	want := syslogTestRef(t, paths[reputationEximMainlog], int64(len(older["SMTP auth fail"])+1), lines["SMTP auth fail"])
 	if f.Severity != alert.Critical || f.Observation.Stream != want.Stream || f.Observation.Cursor != want.Cursor {
-		t.Fatalf("finding %s named %+v, want the newest mail login record %+v", f.Severity, f.Observation, want)
+		t.Fatalf("finding %s named %+v, want the newest SMTP auth failure record %+v", f.Severity, f.Observation, want)
 	}
 }
 
@@ -411,14 +410,15 @@ func TestReputationSightingUsesOnlyItsParsersPeerAndTime(t *testing.T) {
 	}
 }
 
-// The sighting never changes which surface the legacy scan keeps: the
-// strongest, the first of equal strength in scan order. Only that surface
-// names a record, its newest; an unusable stronger record leaves none.
-// Loopback and infrastructure addresses stay out.
+// The sighting never changes which surface the legacy scan keeps: a log
+// the service wrote over one any local user can write, then the strongest,
+// then the first of equal strength in scan order. Only that surface names a
+// record, its newest; an unusable stronger record leaves none. Loopback and
+// infrastructure addresses stay out.
 func TestReputationSightingPreservesLegacySurfaceChoice(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	at := func(ago time.Duration) time.Time { return now.Add(-ago) }
-	const a, b, c, d, e, f, g = "203.0.113.110", "203.0.113.111", "203.0.113.112", "203.0.113.113", "203.0.113.114", "203.0.113.115", "203.0.113.116"
+	const a, b, c, d, e, f, g, h = "203.0.113.110", "203.0.113.111", "203.0.113.112", "203.0.113.113", "203.0.113.114", "203.0.113.115", "203.0.113.116", "203.0.113.117"
 	ssh := []string{
 		sightingLines(a, at(5*time.Minute))["SSH login"],
 		sightingLines(a, at(20*time.Minute))["SSH login"],
@@ -433,14 +433,14 @@ func TestReputationSightingPreservesLegacySurfaceChoice(t *testing.T) {
 	}
 	mail := []string{
 		sightingLines(b, at(time.Minute))["mail login"],
-		sightingLines(d, at(25*time.Hour))["mail login"],
+		sightingLines(h, at(25*time.Hour))["mail login"],
 		strings.TrimPrefix(sightingLines(e, at(time.Minute))["mail login"], now.Add(-time.Minute).Format(time.Stamp)+" "),
 	}
 	cpanel := []string{
 		sightingLines(c, at(time.Minute))["cPanel access"],
 		sightingLines(f, at(time.Minute))["cPanel access"],
 	}
-	exim := []string{sightingLines(g, at(time.Minute))["SMTP auth fail"]}
+	exim := []string{sightingLines(g, at(time.Minute))["SMTP auth fail"], sightingLines(d, at(25*time.Hour))["SMTP auth fail"]}
 	join := func(lines []string) string { return strings.Join(lines, "\n") + "\n" }
 	cfg := &config.Config{InfraIPs: []string{"192.0.2.50"}}
 	cfg.MailLogs.File = "/var/log/maillog"
@@ -452,8 +452,8 @@ func TestReputationSightingPreservesLegacySurfaceChoice(t *testing.T) {
 		reputationEximMainlog:  join(exim),
 	})
 	wantIPs := map[string]string{
-		a: "SSH login", b: "SSH login", c: "HTTP request", d: reputationViaMailLogin,
-		e: reputationViaMailLogin, f: "cPanel/WHM access", g: "SMTP auth failure",
+		a: "SSH login", b: "SSH login", c: "HTTP request", d: "SMTP auth failure",
+		e: "HTTP request", f: "cPanel/WHM access", g: "SMTP auth failure", h: reputationViaMailLogin,
 	}
 	type rec struct {
 		path  string
@@ -465,6 +465,7 @@ func TestReputationSightingPreservesLegacySurfaceChoice(t *testing.T) {
 		a: {"/var/log/secure", ssh, 0, at(5 * time.Minute)},
 		b: {"/var/log/secure", ssh, 2, at(5 * time.Minute)},
 		c: {sightingAccessLog, httpLog, 0, at(3 * time.Minute)},
+		e: {sightingAccessLog, httpLog, 2, at(2 * time.Minute)},
 		f: {reputationWHMAccessLog, cpanel, 1, at(time.Minute)},
 		g: {reputationEximMainlog, exim, 0, at(time.Minute)},
 	}
@@ -486,10 +487,14 @@ func TestReputationSightingPreservesLegacySurfaceChoice(t *testing.T) {
 		}
 	}
 	// The stronger surface keeps the finding's severity although it names
-	// no sighting.
-	listed := listIPs(t, d)
+	// no sighting; a writable one keeps its origin.
+	listed := listIPs(t, d, h)
 	listed.MailLogs.File = "/var/log/maillog"
-	if fd := reputationFindingFor(t, CheckIPReputation(context.Background(), listed, nil), d); fd.Severity != alert.Critical || fd.Observation != (alert.Observation{Producer: string(ProducerMailLog)}) {
-		t.Fatalf("finding %s named %+v, want critical with a writable origin and no sighting", fd.Severity, fd.Observation)
+	findings := CheckIPReputation(context.Background(), listed, nil)
+	if fd := reputationFindingFor(t, findings, d); fd.Severity != alert.Critical || fd.Observation != (alert.Observation{}) {
+		t.Fatalf("finding %s named %+v, want critical with no sighting", fd.Severity, fd.Observation)
+	}
+	if fh := reputationFindingFor(t, findings, h); fh.Severity != alert.Critical || fh.Observation != (alert.Observation{Producer: string(ProducerMailLog)}) {
+		t.Fatalf("finding %s named %+v, want critical with a writable origin and no sighting", fh.Severity, fh.Observation)
 	}
 }

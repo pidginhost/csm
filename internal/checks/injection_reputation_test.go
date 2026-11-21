@@ -41,6 +41,39 @@ func mockOSWithAuthLog(t *testing.T, content string) *mockOS {
 	}
 }
 
+// mockOSWithTrustedSightings is mockOSWithAuthLog for scans that must look
+// addresses up: each address an sshd "Accepted" line in content names also
+// fails SMTP authentication in Exim's main log, a log the mail service
+// writes. An address only the auth log names gets no lookup.
+func mockOSWithTrustedSightings(t *testing.T, content string) *mockOS {
+	t.Helper()
+	m := mockOSWithAuthLog(t, content)
+	var exim strings.Builder
+	for _, line := range strings.Split(content, "\n") {
+		if _, ip, _, ok := sshAcceptedRecord(strings.Fields(line)); ok {
+			exim.WriteString(time.Now().Format(time.DateTime) + " dovecot_login authenticator failed for (helo) [" + ip + "]:5432: 535 Incorrect authentication data (set_id=x@example.com)\n")
+		}
+	}
+	mainlog := filepath.Join(t.TempDir(), "exim_mainlog")
+	if err := os.WriteFile(mainlog, []byte(exim.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	open, stat := m.open, m.stat
+	m.open = func(name string) (*os.File, error) {
+		if name == reputationEximMainlog {
+			return os.Open(mainlog)
+		}
+		return open(name)
+	}
+	m.stat = func(name string) (os.FileInfo, error) {
+		if name == reputationEximMainlog {
+			return os.Stat(mainlog)
+		}
+		return stat(name)
+	}
+	return m
+}
+
 // --- CheckIPReputation: cache hit with high score emits Critical ----
 
 func TestCheckIPReputationCachedHighScoreEmitsCritical(t *testing.T) {
@@ -138,7 +171,7 @@ func TestCheckIPReputationFreshLookupHighScoreEmits(t *testing.T) {
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.7 port 22 ssh2\n"
-	withMockOS(t, mockOSWithAuthLog(t, logContent))
+	withMockOS(t, mockOSWithTrustedSightings(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -322,7 +355,7 @@ func TestCheckIPReputationQuotaExhaustedStopsLookups(t *testing.T) {
 		"Apr 14 10:00:01 host sshd[1]: Accepted publickey for x from 198.51.100.2 port 22 ssh2",
 		"Apr 14 10:00:02 host sshd[1]: Accepted publickey for x from 198.51.100.3 port 22 ssh2",
 	}, "\n") + "\n"
-	withMockOS(t, mockOSWithAuthLog(t, logContent))
+	withMockOS(t, mockOSWithTrustedSightings(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"

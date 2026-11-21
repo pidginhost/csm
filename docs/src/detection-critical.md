@@ -87,7 +87,7 @@ remain reportable.
 
 | Check | Description |
 |-------|-------------|
-| `ip_reputation` | IPs against external threat databases and optional rspamd history. Passive HTTP/cPanel sightings are High; SSH and mail-auth activity is Critical |
+| `ip_reputation` | IPs against external threat databases and optional rspamd history. Passive HTTP/cPanel sightings are High; SSH and mail-auth activity is Critical. A sighting in a log the service wrote outranks one in a log file any local user can write; an address only such a file names never blocks and gets no AbuseIPDB lookup |
 | `modsec_audit` | ModSecurity audit log parsing |
 
 The attack database counts a finding only against the source address the

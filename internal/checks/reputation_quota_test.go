@@ -138,7 +138,7 @@ func TestCheckIPReputationPersistsQuotaOn429(t *testing.T) {
 		"Apr 18 10:00:00 host sshd[1]: Accepted publickey for x from 198.51.100.1 port 22 ssh2",
 		"Apr 18 10:00:01 host sshd[1]: Accepted publickey for x from 198.51.100.2 port 22 ssh2",
 	}, "\n") + "\n"
-	withMockOS(t, mockOSWithAuthLog(t, logContent))
+	withMockOS(t, mockOSWithTrustedSightings(t, logContent))
 
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -214,7 +214,7 @@ func TestCheckIPReputationIncrementsDailyCounter(t *testing.T) {
 		"Apr 18 10:00:01 host sshd[1]: Accepted publickey for x from 198.51.100.2 port 22 ssh2",
 		"Apr 18 10:00:02 host sshd[1]: Accepted publickey for x from 198.51.100.3 port 22 ssh2",
 	}, "\n") + "\n"
-	withMockOS(t, mockOSWithAuthLog(t, logContent))
+	withMockOS(t, mockOSWithTrustedSightings(t, logContent))
 
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -253,7 +253,7 @@ func TestCheckIPReputationNearDailyCapReservesOnlyRemainingSlots(t *testing.T) {
 		"Apr 18 10:00:01 host sshd[1]: Accepted publickey for x from 198.51.100.2 port 22 ssh2",
 		"Apr 18 10:00:02 host sshd[1]: Accepted publickey for x from 198.51.100.3 port 22 ssh2",
 	}, "\n") + "\n"
-	withMockOS(t, mockOSWithAuthLog(t, logContent))
+	withMockOS(t, mockOSWithTrustedSightings(t, logContent))
 
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -294,7 +294,7 @@ func TestCheckIPReputationErrorCacheExpiresQuickly(t *testing.T) {
 
 	statePath := t.TempDir()
 	logContent := "Apr 18 10:00:00 host sshd[1]: Accepted publickey for x from 198.51.100.77 port 22 ssh2\n"
-	withMockOS(t, mockOSWithAuthLog(t, logContent))
+	withMockOS(t, mockOSWithTrustedSightings(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"

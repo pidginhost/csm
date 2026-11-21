@@ -273,8 +273,10 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		}
 
 		// Tier 4 candidate; defer the HTTP call to pass 2 unless the
-		// quota / config gates already preclude querying.
-		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || len(pendingQueries) >= maxQueriesPerCycle {
+		// quota / config gates already preclude querying. An address only
+		// a writable log names gets no lookup: forged nominations would
+		// spend the lookups trusted sightings need.
+		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || len(pendingQueries) >= maxQueriesPerCycle || writableSighting(source) {
 			if score, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
 				appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history", time.Now().Add(cacheExpiry))
 			}
@@ -972,14 +974,30 @@ func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config)
 	if isInfraIP(ip, cfg.InfraIPs) {
 		return false
 	}
-	// One address can appear on several surfaces in the same scan. Keep the
-	// strongest sighting so an earlier passive web request cannot hide a later
-	// authentication attack and downgrade the resulting finding.
+	// One address can appear on several surfaces in the same scan.
 	current, exists := ips[ip]
-	if !exists || reputationSightingSeverity(source) > reputationSightingSeverity(current) {
+	if !exists || sightingOutranks(source, current) {
 		ips[ip] = source
 	}
 	return ips[ip] == source
+}
+
+// sightingOutranks reports whether source replaces current as an address's
+// surface. A log the service wrote outranks one any local user can write, so
+// a forged line cannot make the finding alert-only. Otherwise the stronger
+// sighting wins, so an earlier passive web request cannot hide a later
+// authentication attack and downgrade the resulting finding.
+func sightingOutranks(source, current string) bool {
+	if writableSighting(source) != writableSighting(current) {
+		return writableSighting(current)
+	}
+	return reputationSightingSeverity(source) > reputationSightingSeverity(current)
+}
+
+// writableSighting reports whether source is a log file any local user can
+// write under any program name.
+func writableSighting(source string) bool {
+	return source == "SSH login" || source == reputationViaMailLogin
 }
 
 func firstField(line string) string {
