@@ -427,6 +427,10 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 			return nil, fmt.Errorf("parsing args: %w", err)
 		}
 	}
+	if args.SupportRedactionSHA256 != "" {
+		args.Stage = true
+		args.DstPath = control.SupportBundleExportName
+	}
 	if args.DstPath == "" {
 		return nil, fmt.Errorf("dst_path is required")
 	}
@@ -434,30 +438,25 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 	if sdb == nil {
 		return nil, fmt.Errorf("bbolt store not available")
 	}
+	cfg := c.d.currentCfg()
+	if args.SupportRedactionSHA256 != "" {
+		values, err := config.SecretValues(cfg)
+		if err != nil || args.SupportRedactionSHA256 != config.SecretValuesDigest(values) {
+			return nil, fmt.Errorf("the running daemon and collector have different redaction settings")
+		}
+	}
 	// The alert path saves state.json at most once a minute; write what it
 	// holds so the archive carries the current dedup state.
 	if err := c.d.store.Flush(); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
 	}
-	cfg := c.d.currentCfg()
 	hostname, _ := os.Hostname()
 	pi := platform.Detect()
 
-	dstPath := args.DstPath
-	staged := false
-	var err error
-	if args.Stage {
-		dstPath, err = prepareExportStagingPath(cfg.StatePath, args.DstPath, time.Now())
-		if err != nil {
-			return nil, fmt.Errorf("creating export staging dir: %w", err)
-		}
-		staged = true
-	}
-
-	res, err := sdb.Export(store.ExportOptions{
+	opts := store.ExportOptions{
 		StatePath: cfg.StatePath,
 		RulesPath: cfg.Signatures.RulesDir,
-		DstPath:   dstPath,
+		DstPath:   args.DstPath,
 		Manifest: store.Manifest{
 			CSMVersion:     c.d.version,
 			SourceHostname: hostname,
@@ -468,10 +467,30 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 				"webserver":  string(pi.WebServer),
 			},
 		},
-	})
+	}
+	var err error
+	stageRoot := cfg.StatePath
+	if args.SupportRedactionSHA256 != "" {
+		// The collector can run in a different working directory.
+		stageRoot, err = filepath.Abs(stageRoot)
+		if err != nil {
+			return nil, err
+		}
+		opts.IncludeFile, err = supportExportFileFilter(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if args.Stage {
+		opts.DstPath, err = prepareExportStagingPath(stageRoot, args.DstPath, time.Now())
+		if err != nil {
+			return nil, fmt.Errorf("creating export staging dir: %w", err)
+		}
+	}
+	res, err := sdb.Export(opts)
 	if err != nil {
-		if staged {
-			_ = os.RemoveAll(filepath.Dir(dstPath))
+		if args.Stage {
+			_ = os.RemoveAll(filepath.Dir(opts.DstPath))
 		}
 		return nil, err
 	}

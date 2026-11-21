@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +17,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -30,7 +31,7 @@ const (
 	defaultSupportBundleJournalLines = 1000
 	// supportBundleExportName names the store export in the bundle and in
 	// the daemon's staging directory.
-	supportBundleExportName = "store-export.tar.zst"
+	supportBundleExportName = control.SupportBundleExportName
 )
 
 // supportBundleJournal returns the last lines of the csm unit's journal; a
@@ -39,12 +40,56 @@ var supportBundleJournal = func(lines int) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	// #nosec G204 -- fixed program and unit; lines is a parsed integer.
-	out, err := exec.CommandContext(ctx, "journalctl", "-u", "csm.service", "-n", strconv.Itoa(lines), "--no-pager", "-o", "short-iso").Output()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-		err = fmt.Errorf("journalctl: %w: %s", err, bytes.TrimSpace(exitErr.Stderr))
+	cmd := exec.CommandContext(ctx, "journalctl", "-u", "csm.service", "-n", strconv.Itoa(lines), "--no-pager", "-o", "short-iso")
+	var diagnostic journalStderr
+	cmd.Stderr = &diagnostic
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
 	}
-	return out, err
+	if err = cmd.Start(); err != nil {
+		return nil, err
+	}
+	// One journal entry can span megabytes even when only one line was requested.
+	const limit = 16 << 20
+	out, err := io.ReadAll(io.LimitReader(stdout, limit+1))
+	if len(out) > limit {
+		err = errors.New("journal output exceeds 16 MiB")
+	}
+	if err != nil {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if err != nil {
+		return nil, err
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("journalctl: %w: %s", waitErr, diagnostic.text())
+	}
+	return out, nil
+}
+
+// Keep journalctl's failure reason without buffering unbounded stderr.
+type journalStderr struct {
+	data      []byte
+	truncated bool
+}
+
+func (b *journalStderr) Write(p []byte) (int, error) {
+	const limit = 4096
+	n := min(len(p), limit-len(b.data))
+	b.data = append(b.data, p[:n]...)
+	if n < len(p) {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *journalStderr) text() string {
+	if b.truncated {
+		return "diagnostic exceeds capture limit"
+	}
+	return string(bytes.TrimSpace(b.data))
 }
 
 func runSupportBundle() {
@@ -77,13 +122,13 @@ func printSupportBundleUsage() {
 Usage:
   csm support-bundle <path> [--journal-lines N]
 
-Writes a tar+zstd archive holding the store export (as csm store export
-writes it), the last N lines of the csm.service journal (default %d), the
-configuration with secrets redacted, and system.txt with versions and
-integrity results. Configured secret values are removed from every text
-part. The archive is created with mode 0600 and an existing path is never
-replaced. The store export needs a running daemon; a part that cannot be
-collected is stored as <name>.err with the reason.
+Writes the last N journal lines (default %d), redacted configuration,
+system versions, integrity results and a store export from a running daemon
+that supports diagnostic exports. The archive is created with mode 0600.
+Use a new filename in a directory protected from other accounts.
+Configured credentials are scrubbed from the text. Key files are excluded.
+A part that cannot be collected safely has a <name>.err entry with the reason.
+Review the remaining host data before sharing.
 `, defaultSupportBundleJournalLines)
 }
 
@@ -97,10 +142,13 @@ func parseSupportBundleArgs(args []string) (string, int, error) {
 		case "--config", "--config-dir", "--journal-lines":
 			if !assigned {
 				i++
-				if i == len(args) {
+				if i == len(args) || strings.HasPrefix(args[i], "-") {
 					return "", 0, fmt.Errorf("%s requires a value", name)
 				}
 				value = args[i]
+			}
+			if value == "" {
+				return "", 0, fmt.Errorf("%s requires a value", name)
 			}
 			if name == "--journal-lines" {
 				n, err := strconv.Atoi(value)
@@ -122,17 +170,33 @@ func parseSupportBundleArgs(args []string) (string, int, error) {
 	return path, lines, nil
 }
 
-// writeSupportBundle creates path as a new 0600 file and writes the bundle
-// into it, removing the file again if any step fails. It returns the parts
-// that could not be collected.
+// writeSupportBundle publishes the completed 0600 archive at a new path.
+// It returns the parts that could not be collected.
 //
-// #nosec G304 G703 -- path is the operator's destination; O_EXCL|O_NOFOLLOW
-// refuse anything already there, including a planted symlink.
+// #nosec G703 -- path is checked by assertExportDestination before publication.
 func writeSupportBundle(path string, cfg *config.Config, journalLines int) ([]string, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("creating bundle: %w", err)
+	// Preserve symlink/.. semantics until the shared export destination check resolves the directory.
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		path = cwd + string(os.PathSeparator) + path
 	}
+	path, err := assertExportDestination(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = os.Lstat(path); err == nil {
+		return nil, fmt.Errorf("creating bundle: %w", os.ErrExist)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	f, tmp, err := createExportTemp(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.Remove(tmp) }()
 	failed, err := writeSupportBundleArchive(f, cfg, journalLines)
 	if err == nil {
 		err = f.Sync()
@@ -141,8 +205,14 @@ func writeSupportBundle(path string, cfg *config.Config, journalLines int) ([]st
 		err = closeErr
 	}
 	if err != nil {
-		_ = os.Remove(path)
 		return nil, err
+	}
+	// Link publishes only a complete bundle and fails if a concurrent collector won.
+	if err := os.Link(tmp, path); err != nil {
+		return nil, fmt.Errorf("publishing bundle: %w", err)
+	}
+	if err := syncParentDir(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("bundle is in place at %s but its directory could not be synced: %w", path, err)
 	}
 	return failed, nil
 }
@@ -151,37 +221,58 @@ func writeSupportBundle(path string, cfg *config.Config, journalLines int) ([]st
 // collected is stored as <name>.err. Every text part is scrubbed of the
 // configured secret values: a logged request error quotes a webhook URL
 // with its token, and the integrity result quotes the recorded hashes.
-func writeSupportBundleArchive(w io.Writer, cfg *config.Config, journalLines int) ([]string, error) {
+func writeSupportBundleArchive(w io.Writer, cfg *config.Config, journalLines int) (failed []string, err error) {
 	zw, err := zstd.NewWriter(w)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if closeErr := zw.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 	tw := tar.NewWriter(zw)
-	secrets := config.SecretValues(cfg)
-	var failed []string
+	secrets, secretErr := config.SecretValues(cfg)
+	pairs := make([]string, 0, 2*len(secrets))
+	for _, value := range secrets {
+		pairs = append(pairs, value, config.RedactedValue)
+	}
+	scrub := strings.NewReplacer(pairs...).Replace
 	add := func(name string, data []byte, partErr error) error {
 		if partErr != nil {
 			failed = append(failed, name)
-			name, data = name+".err", []byte(partErr.Error()+"\n")
-		}
-		for _, s := range secrets {
-			data = bytes.ReplaceAll(data, []byte(s), []byte(config.RedactedValue))
+			name, data = name+".err", []byte(scrub(partErr.Error())+"\n")
 		}
 		return addBytes(tw, name, data)
 	}
 
-	export, exportErr := requestSupportBundleExport(cfg.StatePath)
+	var export *control.StoreExportResult
+	var journal []byte
+	exportErr, journalErr := secretErr, secretErr
+	if secretErr == nil {
+		export, exportErr = requestSupportBundleExport(secrets)
+		if exportErr != nil && !errors.Is(exportErr, errDaemonNotRunning) {
+			journalErr = errors.New("could not confirm the running daemon's redaction settings")
+		} else {
+			journal, journalErr = supportBundleJournalTail(journalLines, scrub)
+		}
+	}
 	if exportErr == nil {
 		defer removeStagedExport(export.Path)
+		if checkErr := inspectSupportExport(export, cfg, secrets); checkErr != nil {
+			if !errors.Is(checkErr, errSensitiveExport) && !errors.Is(checkErr, os.ErrNotExist) && !errors.Is(checkErr, os.ErrPermission) {
+				return nil, checkErr
+			}
+			export, exportErr = nil, checkErr
+		}
 	}
-	cfgYAML, cfgErr := yaml.Marshal(config.Redact(cfg))
-	journal, journalErr := supportBundleJournalTail(journalLines)
+	cfgYAML, cfgErr := supportConfigYAML(cfg, scrub)
 	parts := []struct {
 		name string
 		data []byte
 		err  error
 	}{
-		{"system.txt", supportBundleSystem(cfg, export), nil},
+		{"system.txt", []byte(scrub(string(supportBundleSystem(cfg, export)))), nil},
 		{"config.yaml", cfgYAML, cfgErr},
 		{"journal.txt", journal, journalErr},
 	}
@@ -201,33 +292,77 @@ func writeSupportBundleArchive(w io.Writer, cfg *config.Config, journalLines int
 	if err = tw.Close(); err != nil {
 		return nil, err
 	}
-	return failed, zw.Close()
+	return failed, nil
 }
 
-// supportBundleJournalTail trims to the requested line count: journalctl -n
-// counts entries, and one entry can span several lines.
-func supportBundleJournalTail(lines int) ([]byte, error) {
+// Scrub values before YAML quoting or multiline indentation can hide a match.
+func supportConfigYAML(cfg *config.Config, scrub func(string) string) ([]byte, error) {
+	var root yaml.Node
+	if err := root.Encode(config.Redact(cfg)); err != nil {
+		return nil, err
+	}
+	var visit func(*yaml.Node)
+	visit = func(n *yaml.Node) {
+		if n.Kind == yaml.ScalarNode {
+			switch n.ShortTag() {
+			case "!!str":
+				n.Value = scrub(n.Value)
+			case "!!binary":
+				var raw string
+				if err := n.Decode(&raw); err != nil || scrub(raw) != raw {
+					n.SetString(config.RedactedValue)
+				}
+			}
+			return
+		}
+		if n.Kind == yaml.MappingNode {
+			// A map may be keyed by operator data. Omit a sensitive key and
+			// its value together so redacted keys cannot collide.
+			kept := n.Content[:0]
+			for i := 0; i < len(n.Content); i += 2 {
+				key, value := n.Content[i], n.Content[i+1]
+				original := key.Value
+				visit(key)
+				if key.Value != original {
+					continue
+				}
+				visit(value)
+				kept = append(kept, key, value)
+			}
+			n.Content = kept
+			return
+		}
+		for _, child := range n.Content {
+			visit(child)
+		}
+	}
+	visit(&root)
+	return yaml.Marshal(&root)
+}
+
+// journalctl counts entries, including entries with several physical lines.
+func supportBundleJournalTail(lines int, scrub func(string) string) ([]byte, error) {
 	out, err := supportBundleJournal(lines)
 	if err != nil {
 		return nil, err
 	}
-	all := strings.SplitAfter(string(out), "\n")
-	if all[len(all)-1] == "" {
-		all = all[:len(all)-1]
+	data := scrub(string(out))
+	end := len(strings.TrimSuffix(data, "\n"))
+	for range lines {
+		i := strings.LastIndexByte(data[:end], '\n')
+		if i < 0 {
+			return []byte(data), nil
+		}
+		end = i
 	}
-	if len(all) > lines {
-		all = all[len(all)-lines:]
-	}
-	return []byte(strings.Join(all, "")), nil
+	return []byte(data[end+1:]), nil
 }
 
-// requestSupportBundleExport asks the daemon for a staged store export, as
-// csm store export does. A staging daemon uses only the base name; one too
-// old to stage writes the path itself, which keeps it in its state directory.
-func requestSupportBundleExport(statePath string) (*control.StoreExportResult, error) {
+// An older daemon requires DstPath and rejects this request before writing a backup.
+func requestSupportBundleExport(values []string) (*control.StoreExportResult, error) {
 	raw, err := sendControlWithTimeout(control.CmdStoreExport, control.StoreExportArgs{
-		DstPath: filepath.Join(statePath, "exports", supportBundleExportName),
-		Stage:   true,
+		SupportRedactionSHA256: config.SecretValuesDigest(values),
+		Stage:                  true,
 	}, 30*time.Minute)
 	if err != nil {
 		return nil, err
@@ -236,21 +371,32 @@ func requestSupportBundleExport(statePath string) (*control.StoreExportResult, e
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
+	dir := filepath.Dir(res.Path)
+	if !filepath.IsAbs(res.Path) || filepath.Clean(res.Path) != res.Path || filepath.Base(res.Path) != supportBundleExportName ||
+		!strings.HasPrefix(filepath.Base(dir), "export-") || filepath.Base(filepath.Dir(dir)) != "exports" {
+		return nil, errors.New("daemon did not return a staged store export")
+	}
 	return &res, nil
 }
 
-// addVerifiedStoreExport copies the staged export into the bundle once its
-// bytes match the digest the daemon reported, so a staged file damaged or
-// replaced after the daemon wrote it is never handed on.
 func addVerifiedStoreExport(tw *tar.Writer, export *control.StoreExportResult) error {
-	got, err := fileSHA256(export.Path)
+	f, err := openSupportExport(export.Path)
 	if err != nil {
 		return err
 	}
-	if want := strings.ToLower(strings.TrimSpace(export.ArchiveSHA256)); got != want {
-		return fmt.Errorf("staged archive digest %s does not match export digest %s", got, want)
+	defer func() { _ = f.Close() }()
+	if err = tw.WriteHeader(&tar.Header{Name: supportBundleExportName, Size: export.Bytes, Mode: 0o600}); err != nil {
+		return err
 	}
-	return addFile(tw, export.Path, supportBundleExportName)
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(tw, h), f)
+	if err != nil {
+		return err
+	}
+	if n != export.Bytes || !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), export.ArchiveSHA256) {
+		return errors.New("staged archive changed while copying")
+	}
+	return nil
 }
 
 // removeStagedExport drops the staged export, its companion digest and the
@@ -269,6 +415,9 @@ func removeStagedExport(path string) {
 func supportBundleSystem(cfg *config.Config, export *control.StoreExportResult) []byte {
 	var b strings.Builder
 	pi := platform.Detect()
+	if cfg.WebServer.Type != "" {
+		pi.WebServer = platform.WebServer(cfg.WebServer.Type)
+	}
 	fmt.Fprintf(&b, "csm: %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
 	fmt.Fprintf(&b, "go: %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(&b, "os: %s %s\npanel: %s\nweb server: %s\n", pi.OS, pi.OSVersion, pi.Panel, pi.WebServer)

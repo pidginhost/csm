@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Support bundles exclude private key files and withhold diagnostics when configured credentials cannot be removed safely.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
@@ -24,7 +25,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
-- `csm support-bundle <path>` packs the store export, recent service log, redacted configuration and versions into one archive with configured secrets removed.
+- `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
 
 ### Changed
 

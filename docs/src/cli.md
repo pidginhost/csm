@@ -83,10 +83,14 @@ scan still has no YARA pass.
 | `csm capabilities` | Print this build's feature tokens, one per line; `--json` prints a JSON array. Needs no running daemon and no config, so an orchestrator can check a token before it writes a key that depends on it. Tokens for live BPF monitors appear only in the daemon's `GET /api/v1/capabilities`. |
 | `csm incidents ...` | List, show, and update correlated security incidents (`list`, `show <id>`, `status <id> <state>`, `bulk-status`). See [Incidents](incidents.md). |
 | `csm forensic-snapshot <account> --out <archive.tar.gz>` | Evidence archive for incident handoff (triggers, admins, sessions, file mtimes). |
-| `csm support-bundle <path> [--journal-lines N]` | Write a tar+zstd archive for a support request: the store export as `csm store export` writes it, the last N lines of the `csm.service` journal (default 1000), the configuration with secrets redacted, and `system.txt` with the CSM, Go, OS, panel, web server and kernel versions, the integrity check result and the store export digests. Configured secret values are removed from every text part; the store export and the log lines still hold host data such as findings, addresses and account names. The archive is created with mode 0600 and an existing path is never replaced. The store export needs a running daemon; a part that cannot be collected is stored as `<name>.err` with the reason. |
+| `csm support-bundle <path> [--journal-lines N]` | Write a private tar+zstd archive with the recent service log (default 1000 lines), redacted configuration, system versions, integrity results and store diagnostics. |
 | `csm webserver-integration <install\|upgrade\|status\|validate\|remove>` | Install, upgrade, or remove the challenge reverse-proxy snippets for the detected web server. |
 | `csm pam <install\|uninstall\|status>` | Install or remove the `pam_csm.so` PAM hook (`csm pam --help`). |
 | `csm report enroll` | Generate an abuse-reporting node key pair. |
+
+Support bundles use a new filename and mode 0600. Use a directory owned by root or the collecting account, with the same directory protections as `csm store export`. The store part needs a running daemon with the `support_bundle.v1` capability. It omits key files and symbolic links. CSM checks the decompressed contents for configured credentials and private keys and verifies the digest of the bytes it includes.
+
+Run the collector with the service's configured secret environment. The running daemon compares its redaction settings with the collector's before releasing diagnostics. If they differ or a referenced credential is unavailable, the bundle omits the journal and store. With the daemon offline, journal redaction uses the supplied configuration. A journal request above 16 MiB, a store containing detected credentials, or an unavailable part produces a `.err` entry with the reason. Review logs and store data for older credentials, embedded backups, account names and addresses before sharing.
 
 `csm doctor` also lists [protection queue health](api.md#protection-queue-health):
 waiting and running work, losses and lag. A sustained backlog or drop rate
