@@ -541,6 +541,11 @@ An explicit value sets both. Packaged configs used to set 50, which keeps the
 ceiling at 50 until the key is removed; `csm doctor` warns about a configured
 ceiling below 1000. Busy shared hosts reach a few hundred automatic blocks in
 their busiest hour, so a ceiling of 200 can hold blocks back for over an hour.
+On upgrade, an existing ledger using the former default of 2000 adopts 1000
+when the key is omitted or zero. An explicit value keeps its meaning.
+Startup and reload apply the new ceiling without clearing recent spend or
+granting fresh credit. If retained spend exceeds the new allowance, admission
+waits for that spend to age out before admitting more blocks.
 At its first start the ledger imports the current hour's block count, so a
 restart cannot grant a fresh hour; a block count that cannot be read starts
 it without saved credit. Status and `csm doctor` show the ceiling and its

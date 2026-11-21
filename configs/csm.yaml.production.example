@@ -262,7 +262,7 @@ auto_response:
   max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
   block_ips: true
   block_expiry: "24h"
-  # max_blocks_per_hour omitted: scan-driven blocks 50 an hour, admission ceiling 2000.
+  # max_blocks_per_hour omitted: scan-driven blocks 50 an hour, admission ceiling 1000.
   enforce_permissions: true
   block_cpanel_logins: true
   # http_scanner_action: response for http_scanner_profile findings.

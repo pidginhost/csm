@@ -380,7 +380,7 @@ auto_response:
   block_expiry: "24h"         # how long IPs stay blocked
   http_asn_crawl_tempban: "24h"  # ban duration for http_asn_crawl findings
   # max_blocks_per_hour: omitted or 0 caps scan-driven blocks at 50 an hour
-  # and sets the admission ceiling to 2000; a value sets both.
+  # and sets the admission ceiling to 1000; a value sets both.
   # Permit blocks for thresholded cPanel, webmail, FTP and API login abuse.
   # Single direct cPanel form logins stay audit-only.
   block_cpanel_logins: false
