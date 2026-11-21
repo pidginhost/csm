@@ -561,8 +561,9 @@ and an address another peer chose is refused as `forged_client`. nginx needs
 no peer log when `real_ip_header` is set at `http` scope and every server
 and location uses that same header. For `CF-Connecting-IP`, every
 `set_real_ip_from` must lie in Cloudflare's ranges. For `proxy_protocol`,
-every source must lie in the shipped edge ranges or
-`web_server.trusted_proxies`. No source may reach a loopback, unspecified,
+every source must lie in `web_server.trusted_proxies`: code customers run on
+a shared edge can open connections from the edge's own addresses and write
+any PROXY header. No source may reach a loopback, unspecified,
 or host address, including through IPv4-mapped IPv6. Its web findings are
 then blocked as on a direct host. Other edges and proxies may pass on a
 client's own `CF-Connecting-IP`, so that header counts only from Cloudflare.
@@ -572,9 +573,8 @@ Unresolved hostnames or variables, the default `X-Real-IP` header, and
 conflicting per-server or per-location headers leave nginx unverified.
 Admission uses the current `web_server.trusted_proxies` and freshly reads
 host addresses for each verification; a failed address lookup refuses
-verification. Without a loaded CSM configuration, only shipped edge ranges
-can qualify. Repeated configuration reads log a change only when the
-detected settings differ.
+verification. Without a loaded CSM configuration, only Cloudflare's header
+and ranges can qualify.
 Verification uses the request time in the access or ModSecurity log,
 including delayed reads and scheduled scans. A request without a valid log
 time stays unverified. Before an address counts as connected for itself, CSM

@@ -55,7 +55,11 @@ func TestNginxRealIPVerifiedForCDNHeader(t *testing.T) {
 		want       bool
 	}{
 		{"cloudflare header and ranges", "http {\n  real_ip_header CF-Connecting-IP;\n  set_real_ip_from 198.51.100.0/24;\n  set_real_ip_from 198.51.100.64/26;\n}\n", true},
-		{"proxy protocol from an edge", "http {\n  real_ip_header proxy_protocol;\n  set_real_ip_from 192.0.2.128/25;\n}\n", true},
+		// Customer code on a shared edge, such as a Cloudflare Worker's TCP
+		// socket, can open a connection from the edge's own addresses and
+		// write any PROXY header: only the operator's own proxies count.
+		{"proxy protocol from an edge", "http {\n  real_ip_header proxy_protocol;\n  set_real_ip_from 192.0.2.128/25;\n}\n", false},
+		{"proxy protocol from cloudflare", "http {\n  real_ip_header proxy_protocol;\n  set_real_ip_from 198.51.100.0/24;\n}\n", false},
 		{"proxy protocol from a trusted proxy", "http {\n  real_ip_header proxy_protocol;\n  set_real_ip_from 203.0.113.10;\n}\n", true},
 		{"forwarded-for header", "http {\n  real_ip_header X-Forwarded-For;\n  set_real_ip_from 198.51.100.0/24;\n}\n", false},
 		{"real-ip header", "http {\n  real_ip_header X-Real-IP;\n  set_real_ip_from 198.51.100.0/24;\n}\n", false},

@@ -493,7 +493,7 @@ func nginxClientAddressRewrite(path string) (directive, file string, complete bo
 // edge vouched for: every real_ip_header is CF-Connecting-IP, which only a
 // Cloudflare edge sets itself, with every set_real_ip_from inside Cloudflare's
 // ranges; or every header is proxy_protocol, which the connecting proxy
-// writes, with every set_real_ip_from inside a shipped edge range or trusted.
+// writes, with every set_real_ip_from inside web_server.trusted_proxies.
 // No range may reach a loopback, unspecified or host address.
 func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
 	if r.Server != platform.WSNginx || r.State != RewriteActive || r.Format || r.RealIP == nil ||
@@ -508,7 +508,9 @@ func NginxRealIPVerified(r HTTPRewrite, trusted []string) bool {
 	}
 	allowed := cloudflarePrefixes
 	if !cloudflare {
-		allowed = slices.Clone(knownProxyPrefixes)
+		// Customer code on a shared edge can open TCP from the edge's own
+		// addresses and write any PROXY header: only the operator's proxies.
+		allowed = nil
 		for _, t := range trusted {
 			if p, ok := realIPPrefix(t); ok {
 				allowed = append(allowed, p)

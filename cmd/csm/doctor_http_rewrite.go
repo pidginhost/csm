@@ -43,7 +43,7 @@ func webRewriteDoctorCheck(r checks.HTTPRewrite, cfg *config.Config) DoctorCheck
 			trusted = cfg.WebServer.TrustedProxies
 		}
 		if checks.NginxRealIPVerified(r, trusted) {
-			check.Message = fmt.Sprintf("nginx takes client addresses only from CDN edges or trusted proxies that vouch for them (%s in %s): verified, web findings are blocked as on a direct host", r.Directive, r.File)
+			check.Message = fmt.Sprintf("nginx takes client addresses only from Cloudflare's header and ranges or PROXY protocol from trusted proxies (%s in %s): verified, web findings are blocked as on a direct host", r.Directive, r.File)
 			break
 		}
 		blocking := "existing blocking is unchanged"
