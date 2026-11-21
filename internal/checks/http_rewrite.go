@@ -148,8 +148,8 @@ func DetectHTTPRewrite(info platform.Info) HTTPRewrite {
 
 func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 	r := HTTPRewrite{Server: src.server}
-	if src.server == platform.WSApache && src.apacheConfig != "" {
-		r.BufferedLogs = apacheBufferedLogs(src.apacheConfig)
+	if src.server == platform.WSApache {
+		r.BufferedLogs = src.apacheConfig == "" || apacheBufferedLogs(src.apacheConfig)
 	}
 	switch src.server {
 	case platform.WSNone:
@@ -210,7 +210,13 @@ func detectHTTPRewrite(src rewriteSources) HTTPRewrite {
 func apacheBufferedLogs(path string) bool {
 	lines, complete := assembleApacheConfigWithStatus(path)
 	buffered := false
-	valid := walkApacheLines(lines, func(_ apacheConfigLine, fields []string, _ apacheLineContext) {
+	valid := walkApacheLines(lines, func(_ apacheConfigLine, fields []string, ctx apacheLineContext) {
+		fields, resolved := apacheMacroFields(fields, ctx)
+		if !resolved {
+			// A macro parameter may name BufferedLogs itself.
+			buffered = true
+			return
+		}
 		if len(fields) > 0 && strings.EqualFold(fields[0], "BufferedLogs") && (len(fields) != 2 || !strings.EqualFold(fields[1], "off")) {
 			buffered = true
 		}

@@ -69,6 +69,9 @@ func TestParseWebserverIntegrationArgs(t *testing.T) {
 		{[]string{"peer-log", "upgrade"}, "", false, false, false},
 		{[]string{"peer-log"}, "", false, false, false},
 		{[]string{"bogus"}, "", false, false, false},
+		{[]string{"peer-log", "remove", "--dry-run"}, "", false, false, false},
+		{[]string{"peer-log", "install", "remove"}, "", false, false, false},
+		{[]string{"remove", "peer-log"}, "", false, false, false},
 	} {
 		verb, peerLog, asJSON, ok := parseWebserverIntegrationArgs(tc.args)
 		if ok != tc.ok || ok && (verb != tc.verb || peerLog != tc.peerLog || asJSON != tc.json) {

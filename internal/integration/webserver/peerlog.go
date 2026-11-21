@@ -290,7 +290,12 @@ func (i *Installer) Run(verb string) (Result, error) {
 		return i.Install()
 	case "upgrade":
 		res, err := i.Upgrade()
-		if st, _ := i.PeerLogStatus(); st.Status == "ok" || st.Status == "stale" {
+		st, statusErr := i.PeerLogStatus()
+		if statusErr != nil {
+			res.PeerLog = &st
+			return res, errors.Join(err, statusErr)
+		}
+		if st.Status == "ok" || st.Status == "stale" {
 			peer, peerErr := i.InstallPeerLog()
 			res.PeerLog = &peer
 			err = errors.Join(err, peerErr)

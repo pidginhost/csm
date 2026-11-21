@@ -577,15 +577,20 @@ verification. Without a loaded CSM configuration, only Cloudflare's header
 and ranges can qualify.
 Verification uses the request time in the access or ModSecurity log,
 including delayed reads and scheduled scans. A request without a valid log
-time stays unverified. Before an address counts as connected for itself, CSM
+time stays unverified. A direct line must fall between the request's second
+and the end of its forward-skew window; separated direct visits cannot fill
+an empty window. Before an address counts as connected for itself, CSM
 reads the peer log again about two seconds after it read the finding, so a
 peer line the web server flushed after its access line still decides.
 Reputation sightings use the same check, findings read together share one
-wait, and a finding without a valid read time stays unverified. Two
-refusals still leave the block to the existing
-paths: a client address Apache rewrote from a proxy header while CSM reads
-no trusted web peer log, or nginx read from a proxy header in a configuration
-CSM reads whole without PROXY protocol, and a ledger that could not take new
+wait, and a finding without a valid read time stays unverified. Already
+final refusals do not wait for the peer-log reader. Once CSM has trusted a
+peer-log reader, losing that trust keeps unverified addresses refused until
+the daemon restarts; it cannot restore legacy blocking.
+Two refusals still leave the block to the existing
+paths: a client address Apache rewrote from a proxy header while CSM has
+never trusted its current web peer-log reader, or nginx read from a proxy
+header in a configuration CSM reads whole without PROXY protocol, and a ledger that could not take new
 work at all. LiteSpeed also applies those headers to
 requests from the host itself, so any local user can choose the address it
 logs: on LiteSpeed that refusal is final as well, and so is one whose

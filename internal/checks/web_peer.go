@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -85,15 +86,27 @@ func SetWebPeerDrain(drain func(timeout time.Duration) bool) {
 }
 
 // SetWebPeerTrust registers whether the daemon currently trusts the peer
-// log it reads; nil when it reads none.
+// log it reads; nil when it reads none. Once trusted, a reader keeps final
+// refusals even if its log loses trust: losing evidence cannot authorize a block.
 func SetWebPeerTrust(trust func() bool) {
+	if trust != nil {
+		current := trust
+		var trusted atomic.Bool
+		trusted.Store(current())
+		trust = func() bool {
+			if current() {
+				trusted.Store(true)
+			}
+			return trusted.Load()
+		}
+	}
 	webPeerDrainMu.Lock()
 	defer webPeerDrainMu.Unlock()
 	webPeerTrust = trust
 }
 
-// WebPeerLogActive reports that the daemon reads a peer log and trusts it:
-// an address it cannot verify is then refused for good.
+// WebPeerLogActive reports that the daemon reads a peer log it has trusted:
+// an address it cannot verify stays refused even after trust is revoked.
 func WebPeerLogActive() bool {
 	webPeerDrainMu.Lock()
 	drain, trust := webPeerDrain, webPeerTrust
@@ -149,14 +162,13 @@ func parseWebPeerAddr(s string, withPort bool) (netip.Addr, bool) {
 	return a.Unmap(), true
 }
 
-// peerRun bounds observations of one class with no gap wider than a verdict
-// window (including skew). Any verdict window overlapping it contains a line.
+// peerRun bounds observations of one class with no gap wider than its
+// lookup window. Any lookup window overlapping it contains a line.
 type peerRun struct{ first, last time.Time }
 
 // add returns the latest discarded observation, if any. Disjoint runs cannot
 // be joined: their empty gap could otherwise prove a client direct without data.
-func (r *peerRun) add(at time.Time) (lostThrough time.Time) {
-	span := webPeerWindow + webPeerSkew
+func (r *peerRun) add(at time.Time, span time.Duration) (lostThrough time.Time) {
 	switch {
 	case r.first.IsZero():
 		r.first, r.last = at, at
@@ -243,11 +255,13 @@ func (x *webPeerIndex) observe(at time.Time, client netip.Addr, class PeerVerdic
 	var lostThrough time.Time
 	switch class {
 	case PeerDirect:
-		lostThrough = seen.direct.add(at)
+		// Direct evidence uses only the request's forward window. Dropping
+		// an older direct run cannot hide a refusal or authorize an address.
+		seen.direct.add(at, webPeerSkew)
 	case PeerProxied:
-		lostThrough = seen.proxied.add(at)
+		lostThrough = seen.proxied.add(at, webPeerWindow+webPeerSkew)
 	default:
-		lostThrough = seen.forged.add(at)
+		lostThrough = seen.forged.add(at, webPeerWindow+webPeerSkew)
 	}
 	if lostThrough.After(seen.lostThrough) {
 		seen.lostThrough = lostThrough
@@ -294,7 +308,7 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 		return PeerForged
 	case seen.proxied.within(from, to):
 		return PeerProxied
-	case seen.direct.within(from, to) && !seen.direct.last.Before(at.Truncate(time.Second)):
+	case seen.direct.within(at.Truncate(time.Second), to):
 		// Direct lines before the request cannot vouch for it: its own peer
 		// line, or a later direct one, must have been read. Peer lines carry
 		// whole seconds; error logs can stamp the same request finer.
@@ -310,6 +324,12 @@ func (x *webPeerIndex) verdict(client netip.Addr, at time.Time) PeerVerdict {
 // again after a read that starts a settle period after seenAt: a forged line
 // still on its way must not be outvoted by the client's earlier direct lines.
 func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict {
+	// A refusal already established by the index needs no reader round trip.
+	// In particular, a busy reader must not hold the dispatcher for a refusal
+	// that no new line could turn into an authorized block.
+	if v := WebPeerVerdict(client, at); webPeerRefusalReady(v) {
+		return v
+	}
 	started := webPeerClock()
 	drain, version := currentWebPeerDrain()
 	if drain != nil && !drain(webPeerDrainTimeout) {
@@ -317,13 +337,7 @@ func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict 
 	}
 	v := drainedWebPeerVerdict(client, at, version)
 	switch {
-	case v == PeerForged || v == PeerProxied:
-		return v
-	case v == PeerUnknown && (rewrittenRefusalFinal(CurrentHTTPRewrite()) || WebPeerLogActive()):
-		// The refusal is final whatever later lines say; waiting would only
-		// hold the alert dispatcher. Elsewhere a forged line that arrives
-		// late turns an unknown refusal the legacy path would act on into
-		// a final one.
+	case webPeerRefusalReady(v):
 		return v
 	case drain == nil || seenAt.IsZero() || seenAt.After(started):
 		// An invalid read time cannot establish when the request's peer
@@ -344,6 +358,11 @@ func settledWebPeerVerdict(client netip.Addr, at, seenAt time.Time) PeerVerdict 
 		return PeerUnknown
 	}
 	return drainedWebPeerVerdict(client, at, version)
+}
+
+func webPeerRefusalReady(v PeerVerdict) bool {
+	return v == PeerForged || v == PeerProxied ||
+		v == PeerUnknown && (rewrittenRefusalFinal(CurrentHTTPRewrite()) || WebPeerLogActive())
 }
 
 var (
@@ -408,11 +427,14 @@ func ResetWebPeersForTest() func() {
 	prev, prevSleep, prevClock := webPeers, webPeerSleep, webPeerClock
 	webPeers = newWebPeerIndex()
 	SetWebPeerDrain(func(time.Duration) bool { return true })
+	SetWebPeerTrust(nil)
 	webPeerSleep, webPeerClock = func(time.Duration) {}, time.Now
 	return func() {
 		webPeers = prev
 		SetWebPeerDrain(prevDrain)
-		SetWebPeerTrust(prevTrust)
+		webPeerDrainMu.Lock()
+		webPeerTrust = prevTrust
+		webPeerDrainMu.Unlock()
 		webPeerSleep, webPeerClock = prevSleep, prevClock
 	}
 }

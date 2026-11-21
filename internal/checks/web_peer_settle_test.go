@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func TestSettledPeerReadMustStartAfterDeadline(t *testing.T) {
@@ -101,4 +102,22 @@ func TestWebPeerDrainConcurrentRegistration(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestSettledPeerFinalRefusalsDoNotDrain(t *testing.T) {
+	for _, class := range []PeerVerdict{PeerUnknown, PeerProxied, PeerForged} {
+		t.Run(class.String(), func(t *testing.T) {
+			withWebPeers(t, 500000)
+			withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: platform.WSLiteSpeed})
+			at := time.Unix(1795200000, 0)
+			client := netip.MustParseAddr("203.0.113.94")
+			if class != PeerUnknown {
+				webPeers.observe(at, client, class)
+			}
+			SetWebPeerDrain(func(time.Duration) bool { t.Error("a final refusal waited for the reader"); return true })
+			if got := settledWebPeerVerdict(client, at, at); got != class {
+				t.Fatalf("got %v, want %v", got, class)
+			}
+		})
+	}
 }

@@ -348,7 +348,9 @@ has its own verbs: `csm webserver-integration peer-log install`, `status` and
 `remove`. They need no challenge settings. `upgrade` refreshes an installed
 peer log and the other verbs leave it alone; uninstall and package removal
 remove the managed peer log snippet, and files without the CSM header are
-left alone.
+left alone. An unreadable peer-log snippet fails the upgrade and is reported
+in its peer-log result. Unsupported flags or extra arguments are usage errors;
+these commands do not accept `--dry-run`.
 
 The installer auto-detects the active webserver via
 `internal/platform`. Supported stacks and snippet paths:

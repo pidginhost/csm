@@ -611,6 +611,8 @@ func TestApacheBufferedLogsDetected(t *testing.T) {
 	}{
 		{"default", "LogFormat \"%a %l %u %t \\\"%r\\\" %>s %b\" combined\nCustomLog logs/access_log combined\n", false},
 		{"off", "BufferedLogs Off\nCustomLog logs/access_log combined\n", false},
+		{"macro directive", "<Macro Logging Directive>\nDirective On\n</Macro>\nUse Logging BufferedLogs\n", true},
+		{"macro off value", "<Macro Logging Off>\nBufferedLogs Off\n</Macro>\nUse Logging On\n", true},
 		{"on", "BufferedLogs On\nCustomLog logs/access_log combined\n", true},
 		{"on in a section", "<IfModule log_config_module>\n  BufferedLogs on\n</IfModule>\n", true},
 	} {
@@ -618,5 +620,12 @@ func TestApacheBufferedLogsDetected(t *testing.T) {
 		if got := detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheConfig: conf}); got.BufferedLogs != tc.want {
 			t.Errorf("%s: BufferedLogs = %v, want %v", tc.name, got.BufferedLogs, tc.want)
 		}
+	}
+}
+
+func TestApacheMissingConfigCannotRuleOutBufferedLogs(t *testing.T) {
+	r := detectHTTPRewrite(rewriteSources{server: platform.WSApache, apacheRequired: true})
+	if r.State != RewriteUnknown || !r.BufferedLogs {
+		t.Fatalf("missing configuration = %+v, want unknown with possible buffering", r)
 	}
 }

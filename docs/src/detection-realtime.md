@@ -875,6 +875,10 @@ the log stays bounded. Trust stays disabled for that daemon run, since lines
 written while PHP shared the server user cannot be authenticated. To restore
 peer verification, enable PHP suEXEC, reload LiteSpeed, then restart CSM.
 
+Apache peer verification also requires readable configuration with buffering
+disabled. Missing configuration or unresolved macro directives cannot rule
+out buffering, so CSM does not trust the peer log in those cases.
+
 A request logged with a client address chosen by a peer that is neither the
 client nor a trusted proxy raises `http_client_forged` (Critical), at most once
 an hour for peers on this server and once for remote peers, measured when CSM

@@ -121,18 +121,53 @@ func TestApacheUnknownFinalWherePeerLogActive(t *testing.T) {
 	if taken(true, admission.KindBlockIP, refusal, nil) {
 		t.Fatal("without a peer log the Apache header exception was lost")
 	}
-	trusted := true
+	trusted := false
 	SetWebPeerTrust(func() bool { return trusted })
+	if taken(true, admission.KindBlockIP, refusal, nil) {
+		t.Fatal("a log never trusted changed the Apache header exception")
+	}
+	trusted = true
 	if !taken(true, admission.KindBlockIP, refusal, nil) {
 		t.Fatal("with an active peer log the unknown refusal went back to legacy")
 	}
 	trusted = false
-	if taken(true, admission.KindBlockIP, refusal, nil) {
-		t.Fatal("an untrusted peer log made the refusal final")
+	if !taken(true, admission.KindBlockIP, refusal, nil) {
+		t.Fatal("revoking peer trust reopened legacy blocking")
 	}
 	SetWebPeerDrain(nil)
 	trusted = true
 	if taken(true, admission.KindBlockIP, refusal, nil) {
 		t.Fatal("a peer log nobody reads made the refusal final")
+	}
+}
+
+// Revoking the log's authority cannot restore blocking of addresses that
+// only that log could verify, including queued and permanent decisions.
+func TestApachePeerTrustRevocationKeepsRefusalFinal(t *testing.T) {
+	withWebPeers(t, 500000)
+	withHTTPRewrite(t, HTTPRewrite{State: RewriteActive, Server: platform.WSApache})
+	trusted := true
+	SetWebPeerTrust(func() bool { return trusted })
+	// Trust can disappear before the first finding is minted.
+	trusted = false
+	SetWebPeerDrain(func(time.Duration) bool { return false })
+	f := httpPeerFinding("203.0.113.95")
+	_, _, err := AdmissionEvidence(f)
+	if admission.CauseOf(err) != admission.CauseRewrittenLog {
+		t.Fatalf("mint = %v, want rewritten refusal", err)
+	}
+	if !taken(true, admission.KindBlockIP, err, nil) {
+		t.Fatal("revoked peer trust allowed a legacy block")
+	}
+	a := withAdmission(t)
+	a.executes = true
+	for _, ttl := range []time.Duration{0, time.Hour, 2 * time.Hour} {
+		req := ApplyBlockRequest{IP: f.SourceIP, TTL: ttl, RootFinding: f, RootErr: err, Entry: admission.EntryIncident}
+		if !respondDerived(req, time.Hour) {
+			t.Errorf("revoked trust allowed derived block with TTL %v", ttl)
+		}
+	}
+	if calls := a.responses(); len(calls) != 0 {
+		t.Fatalf("refused evidence submitted blocks: %+v", calls)
 	}
 }

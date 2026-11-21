@@ -74,7 +74,7 @@ func runWebserverIntegration() {
 }
 
 // parseWebserverIntegrationArgs reads a challenge verb, or "peer-log" and a
-// peer log verb, and --json; other flags are left to the commands.
+// peer log verb, and --json. Unknown flags and extra words are usage errors.
 func parseWebserverIntegrationArgs(args []string) (verb string, peerLog, asJSON, ok bool) {
 	var words []string
 	for _, a := range args {
@@ -82,6 +82,7 @@ func parseWebserverIntegrationArgs(args []string) (verb string, peerLog, asJSON,
 		case a == "--json":
 			asJSON = true
 		case strings.HasPrefix(a, "-"):
+			return "", false, false, false
 		default:
 			words = append(words, a)
 		}
@@ -89,10 +90,10 @@ func parseWebserverIntegrationArgs(args []string) (verb string, peerLog, asJSON,
 	switch {
 	case len(words) == 0:
 	case words[0] == "peer-log":
-		if len(words) > 1 && slices.Contains([]string{"install", "status", "remove"}, words[1]) {
+		if len(words) == 2 && slices.Contains([]string{"install", "status", "remove"}, words[1]) {
 			return words[1], true, asJSON, true
 		}
-	case validWebserverIntegrationVerb(words[0]):
+	case len(words) == 1 && validWebserverIntegrationVerb(words[0]):
 		return words[0], false, asJSON, true
 	}
 	return "", false, false, false

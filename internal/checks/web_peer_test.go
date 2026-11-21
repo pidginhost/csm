@@ -267,7 +267,8 @@ func TestWebPeerVerdictMatchesHistory(t *testing.T) {
 				at := t0.Add(time.Duration(minute) * time.Minute)
 				want := PeerUnknown
 				for _, h := range history {
-					if !h.at.Before(at.Add(-webPeerWindow)) && !h.at.After(at.Add(webPeerSkew)) && h.class > want {
+					if !h.at.Before(at.Add(-webPeerWindow)) && !h.at.After(at.Add(webPeerSkew)) && h.class > want &&
+						(h.class != PeerDirect || !h.at.Before(at.Truncate(time.Second))) {
 						want = h.class
 					}
 				}
@@ -288,7 +289,7 @@ func TestWebPeerVerdictConcurrent(t *testing.T) {
 		wg.Go(func() {
 			for i := range 100 {
 				x.observe(t0.Add(time.Duration(i)*time.Second), client, class)
-				got := x.verdict(client, t0.Add(2*time.Minute))
+				got := x.verdict(client, t0.Add(time.Duration(i)*time.Second))
 				if got < class {
 					t.Errorf("after observing %v, verdict = %v", class, got)
 				}
@@ -306,8 +307,8 @@ func TestWebPeerVerdictRunIncludesSkew(t *testing.T) {
 	client := netip.MustParseAddr("203.0.113.40")
 	t0 := time.Unix(1795200000, 0)
 	x.observe(t0, client, PeerDirect)
-	x.observe(t0.Add(webPeerWindow+webPeerSkew), client, PeerDirect)
-	for _, at := range []time.Time{t0, t0.Add(webPeerWindow), t0.Add(webPeerWindow + time.Nanosecond)} {
+	x.observe(t0.Add(webPeerSkew), client, PeerDirect)
+	for _, at := range []time.Time{t0, t0.Add(webPeerSkew), t0.Add(time.Nanosecond)} {
 		if got := x.verdict(client, at); got != PeerDirect {
 			t.Errorf("continuous window coverage at %v = %v, want direct", at, got)
 		}
@@ -499,5 +500,21 @@ func TestWebPeerDirectOwnLineAtSecondPrecision(t *testing.T) {
 	}
 	if got := WebPeerVerdict(c, at.Add(time.Second)); got != PeerUnknown {
 		t.Fatalf("a request a second later = %v, want unknown", got)
+	}
+}
+
+// A pair of direct lines must not fill a request's otherwise empty forward
+// window, even though both lines fit in the broader refusal window.
+func TestWebPeerDirectDoesNotBridgeRequestGap(t *testing.T) {
+	x := newWebPeerIndex()
+	at := time.Unix(1795200000, 0)
+	client := netip.MustParseAddr("203.0.113.93")
+	x.observe(at.Add(-time.Minute), client, PeerDirect)
+	x.observe(at.Add(3*time.Minute), client, PeerDirect)
+	if got := x.verdict(client, at); got != PeerUnknown {
+		t.Fatalf("no direct line in the request window: got %v, want unknown", got)
+	}
+	if got := x.verdict(client, at.Add(3*time.Minute)); got != PeerDirect {
+		t.Fatalf("the newest direct request: got %v, want direct", got)
 	}
 }

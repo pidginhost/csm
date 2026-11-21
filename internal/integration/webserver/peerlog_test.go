@@ -495,3 +495,19 @@ func TestPeerLogRestartMessageOnlyWhenCreated(t *testing.T) {
 		t.Fatalf("install over an existing directory = %+v, %v; want no restart advice", res, err)
 	}
 }
+
+func TestUpgradeReportsUnreadablePeerSnippet(t *testing.T) {
+	i := newPeerLogInstaller(t, &fakeHandler{kind: "apache"})
+	failure := errors.New("peer snippet unreadable")
+	read := i.ReadAt
+	i.ReadAt = func(path string) ([]byte, error) {
+		if path == i.PeerLogPath {
+			return nil, failure
+		}
+		return read(path)
+	}
+	res, err := i.Run("upgrade")
+	if !errors.Is(err, failure) || res.PeerLog == nil || res.PeerLog.Status != "fail" {
+		t.Fatalf("upgrade hid the peer failure: %+v, %v", res, err)
+	}
+}

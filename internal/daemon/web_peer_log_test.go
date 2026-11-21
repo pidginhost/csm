@@ -259,7 +259,8 @@ func TestFrontProxiedPeerWatcherBoundsLog(t *testing.T) {
 }
 
 // The peer log watcher registers a reader that brings the index to the end
-// of the log at once, so a verdict does not depend on the next poll.
+// of the log before trusting a cached direct verdict, so a pending forged
+// line does not have to wait for the next poll.
 func TestWebPeerWatcherDrainsForVerdicts(t *testing.T) {
 	t.Cleanup(checks.ResetWebPeersForTest())
 	previous := checks.CurrentHTTPRewrite()
@@ -283,13 +284,22 @@ func TestWebPeerWatcherDrainsForVerdicts(t *testing.T) {
 	// Past the loss the watcher marked when it attached at the end of the log.
 	at := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	appendLine(t, path, peerLine(at, "site.example", "203.0.113.77", "203.0.113.77"))
+	// Establish direct evidence as the background poll would. Unknown final
+	// refusals no longer ask the reader to drain.
+	if !w.Drain(time.Second) {
+		t.Fatal("initial peer read failed")
+	}
 	f := alert.Finding{
 		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.77",
 		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now(),
 		Observation: alert.Observation{Producer: string(checks.ProducerAccessLog), Stream: "f:1:2", Cursor: "0:0123456789abcdef", ObservedAt: at},
 	}
 	if _, _, err := checks.AdmissionEvidence(f); err != nil {
-		t.Fatalf("AdmissionEvidence = %v, want the direct line read without waiting for a poll", err)
+		t.Fatalf("AdmissionEvidence = %v, want the cached direct line verified", err)
+	}
+	appendLine(t, path, peerLine(at, "site.example", "192.0.2.77", "203.0.113.77"))
+	if _, _, err := checks.AdmissionEvidence(f); admission.CauseOf(err) != admission.CauseForgedClient {
+		t.Fatalf("pending forged line did not override cached direct evidence: %v", err)
 	}
 }
 
@@ -328,6 +338,12 @@ func TestWebPeerLateRetryReplacesStoppedDrain(t *testing.T) {
 	// Beyond the startup loss window, as in TestWebPeerWatcherDrainsForVerdicts.
 	at := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	appendLine(t, path, peerLine(at, "site.example", "203.0.113.92", "203.0.113.92"))
+	d.logWatchersMu.Lock()
+	replacement := d.logWatchers[0]
+	d.logWatchersMu.Unlock()
+	if !replacement.Drain(time.Second) {
+		t.Fatal("replacement peer read failed")
+	}
 	f := alert.Finding{
 		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.92",
 		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now().Add(-time.Minute),
@@ -375,6 +391,9 @@ func TestWebPeerSuExecRevokedWhileRunning(t *testing.T) {
 	t.Cleanup(func() { close(stop); <-done })
 	at := time.Now().Add(3 * time.Hour).Truncate(time.Second)
 	appendLine(t, path, peerLine(at, "site.example", "203.0.113.80", "203.0.113.80"))
+	if !w.Drain(time.Second) {
+		t.Fatal("initial peer read failed")
+	}
 	f := alert.Finding{
 		Severity: alert.Critical, Check: "wp_login_bruteforce", SourceIP: "203.0.113.80",
 		Attribution: admission.AttributionHTTPPeer, Timestamp: time.Now().Add(-time.Minute),
