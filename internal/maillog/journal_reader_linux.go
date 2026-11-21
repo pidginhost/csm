@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/sdjournal"
@@ -77,14 +76,6 @@ func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 	r.queue.file.replaced()
 	go r.loop(ctx, j, out)
 	return out, nil
-}
-
-func journalUnitName(unit string) string {
-	unit = strings.TrimSpace(unit)
-	if strings.Contains(unit, ".") {
-		return unit
-	}
-	return unit + ".service"
 }
 
 type journalEntries interface {

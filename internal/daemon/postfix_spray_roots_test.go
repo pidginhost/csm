@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,9 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 		"exim host":      {verdict: true, result: true, tag: "postfix/smtpd[99]", exim: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			d, clock := newPairingDaemon(t, &config.Config{})
+			cfg := &config.Config{}
+			cfg.MailLogs.Units = []string{"postfix", "dovecot"}
+			d, clock := newPairingDaemon(t, cfg)
 			d.smtpAuthFromExim = tc.exim
 			wantObservations := map[string]alert.Observation{}
 			var sprays []alert.Finding
@@ -39,7 +42,11 @@ func TestPostfixSprayRootsFromMailDispatch(t *testing.T) {
 				clock.advance(time.Second)
 				// Journal lines a service wrote; a file line mints nothing.
 				pos := maillog.Position{Stream: "journal", Cursor: "s=" + strconv.Itoa(cursor), ObservedAt: clock.Now()}
-				line := maillog.Line{Source: "journal", Message: clock.Now().Format(time.RFC3339) + " mail " + message, Position: pos}
+				unit := "postfix.service"
+				if strings.HasPrefix(message, "dovecot") {
+					unit = "dovecot.service"
+				}
+				line := maillog.Line{Source: "journal", Unit: unit, UID: "0", Message: clock.Now().Format(time.RFC3339) + " mail " + message, Position: pos}
 				if !d.dispatchMailLogLine(line, d.handleMailLine) {
 					t.Fatal("mail dispatch refused")
 				}

@@ -50,7 +50,9 @@ func replayMailLog(t *testing.T, lines []maillog.Line) mailAuthResult {
 	t.Helper()
 	// Spray memory on, its rules off: logins earn trust, findings stay as
 	// the per-IP detectors make them.
-	d, clock := newPairingDaemon(t, sprayTestConfig("off"))
+	cfg := sprayTestConfig("off")
+	cfg.MailLogs.Units = []string{"postfix", "dovecot"}
+	d, clock := newPairingDaemon(t, cfg)
 	var res mailAuthResult
 	for _, line := range lines {
 		clock.advance(time.Second)
@@ -79,6 +81,7 @@ func TestJournalMailAuthMatchesFileInput(t *testing.T) {
 		file = append(file, maillog.Line{Source: "file", Message: e.at.Format(time.Stamp) + " mail " + e.ident + "[" + e.pid + "]: " + e.text})
 		journal = append(journal, maillog.JournalLine(map[string]string{
 			"_SYSTEMD_UNIT":     e.unit,
+			"_UID":              "0",
 			"SYSLOG_IDENTIFIER": e.ident,
 			"_PID":              e.pid,
 			"SYSLOG_PID":        e.pid,

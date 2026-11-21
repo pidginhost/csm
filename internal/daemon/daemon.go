@@ -154,6 +154,10 @@ type Daemon struct {
 	// this host's mail server is Stalwart.
 	stalwartUnban *stalwartUnban
 
+	// mailSenders caches the journal sender rules for the configured mail
+	// units; building them looks up the postfix user.
+	mailSenders atomic.Pointer[mailSenderSet]
+
 	// smtpAuthFromExim is set before the log readers start when the Exim
 	// mainlog feeds smtpAuthTracker; Postfix pairing is then skipped so one
 	// attempt is not counted twice.
@@ -2888,9 +2892,33 @@ func (d *Daemon) handleSMTPAuthPairing(line string, obs alert.Observation, cfg *
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
 	producer := checks.ProducerMailLog
 	if line.Source == "journal" {
+		// journald recorded the sender's unit and uid itself. A line a mail
+		// service did not write, such as a user's command a service ran,
+		// never reaches the parsers; dropping it is not a delivery failure.
+		if !maillog.TrustedLine(line, d.mailSenderRules()) {
+			return true
+		}
 		producer = checks.ProducerMailJournal
 	}
 	return d.dispatchLogLine(producer, line, handler)
+}
+
+// mailSenderSet is the sender rules built for one list of mail units.
+type mailSenderSet struct {
+	units []string
+	rules []maillog.SenderRule
+}
+
+// mailSenderRules returns the journal sender rules for the configured mail
+// units, rebuilt only when the units change.
+func (d *Daemon) mailSenderRules() []maillog.SenderRule {
+	units := d.currentCfg().MailLogs.Units
+	if set := d.mailSenders.Load(); set != nil && slices.Equal(set.units, units) {
+		return set.rules
+	}
+	set := &mailSenderSet{units: slices.Clone(units), rules: maillog.MailSenderRules(units)}
+	d.mailSenders.Store(set)
+	return set.rules
 }
 
 // dispatchLogLine runs handler on one positioned line and enqueues its
