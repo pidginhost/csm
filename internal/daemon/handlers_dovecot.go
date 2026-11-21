@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -48,6 +49,14 @@ func parseDovecotLogLine(line string, cfg *config.Config, trusted bool) []alert.
 	}
 	return observeMailboxLoginGeo(cfg, user, ip, customerLoginTime(line, time.Now()), false, trusted)
 }
+
+// unverifiedGeoAlerts holds when each mailbox last had a suspicious-geo
+// alert from a line any local user could have written. Only a mailbox with
+// recorded logins can have one.
+var unverifiedGeoAlerts = struct {
+	mu sync.Mutex
+	at map[string]time.Time
+}{at: make(map[string]time.Time)}
 
 // webmailLogin reads a webmail login from a session_log line. A session a
 // reseller opened or the panel created through the API does not locate
@@ -94,9 +103,21 @@ func observeMailboxLoginGeo(cfg *config.Config, user, ip string, at time.Time, w
 	if !record {
 		// A line any local user could have written gets the verdict the
 		// history gives, but changes nothing and counts as no evidence.
-		apply = func(account string, _ time.Time, _ time.Duration, update func(*store.GeoHistory) bool) (store.GeoLoginResult, error) {
+		apply = func(account string, now time.Time, cooldown time.Duration, update func(*store.GeoHistory) bool) (store.GeoLoginResult, error) {
 			h, _ := db.GetGeoHistory(account)
-			return store.GeoLoginResult{History: h, Notify: update(&h)}, nil
+			if !update(&h) {
+				return store.GeoLoginResult{History: h}, nil
+			}
+			// Its own cooldown: sharing the recorded one would let a forged
+			// line silence a real alert, and none would let it flood them.
+			key := store.MailboxEvidenceKey(account)
+			unverifiedGeoAlerts.mu.Lock()
+			defer unverifiedGeoAlerts.mu.Unlock()
+			if now.Sub(unverifiedGeoAlerts.at[key]) < cooldown {
+				return store.GeoLoginResult{History: h}, nil
+			}
+			unverifiedGeoAlerts.at[key] = now
+			return store.GeoLoginResult{History: h, Notify: true}, nil
 		}
 	}
 	result, err := apply(user, now, geoAlertCooldownH*time.Hour, func(h *store.GeoHistory) bool {
