@@ -771,7 +771,7 @@ func collectRecentSightings(cfg *config.Config, now time.Time) (ips map[string]s
 		if !strings.Contains(rec.text, "Accepted") {
 			continue
 		}
-		if _, ip, ok := sshAcceptedRecord(strings.Fields(rec.text)); ok {
+		if _, ip, _, ok := sshAcceptedRecord(strings.Fields(rec.text)); ok {
 			at, _ := syslogLineTime(rec.text, now)
 			add(ip, "SSH login", scanned(rec, at))
 		}

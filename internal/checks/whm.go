@@ -113,7 +113,7 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 	if !strings.Contains(line, "Accepted") {
 		return alert.Finding{}, false
 	}
-	user, ip, ok := sshAcceptedRecord(strings.Fields(line))
+	user, ip, record, ok := sshAcceptedRecord(strings.Fields(line))
 	if !ok || isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 		return alert.Finding{}, false
 	}
@@ -123,7 +123,9 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 	f := alert.Finding{
 		Severity: alert.Critical,
 		Check:    "ssh_login_unknown_ip",
-		DedupKey: loginRecordKey(line),
+		// The record from sshd's tag on is the same whether the auth log
+		// file or the journal supplied the line; their prefixes differ.
+		DedupKey: loginRecordKey(record),
 		Message:  fmt.Sprintf("SSH login from non-infra IP: %s (user: %s)", ip, user),
 		Details:  truncateString(line, 200),
 		SourceIP: ip,
@@ -142,7 +144,7 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 // sshd program token. sshd also logs the login name a client offers, so these
 // words count only at these positions; found anywhere else in a line they
 // would let any client name any address.
-func sshAcceptedRecord(fields []string) (user, ip string, ok bool) {
+func sshAcceptedRecord(fields []string) (user, ip, record string, ok bool) {
 	program := -1
 	switch {
 	case len(fields) > 0 && isSSHDProgramToken(fields[0]):
@@ -158,17 +160,17 @@ func sshAcceptedRecord(fields []string) (user, ip string, ok bool) {
 		}
 	}
 	if program < 0 {
-		return "", "", false
+		return "", "", "", false
 	}
 	m := fields[program+1:]
 	if len(m) < 8 || m[0] != "Accepted" || m[2] != "for" || m[4] != "from" || m[6] != "port" ||
 		m[7] == "" || strings.Trim(m[7], "0123456789") != "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	if _, err := netip.ParseAddr(m[5]); err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
-	return m[3], m[5], true
+	return m[3], m[5], strings.Join(fields[program:], " "), true
 }
 
 func isSSHDProgramToken(field string) bool {

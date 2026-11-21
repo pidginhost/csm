@@ -154,6 +154,11 @@ type Daemon struct {
 	// this host's mail server is Stalwart.
 	stalwartUnban *stalwartUnban
 
+	// syslogFromJournal is set once before the log readers start: SSH and
+	// FTP logins then come from the journal, not from syslog files any
+	// local user can write.
+	syslogFromJournal bool
+
 	// mailSenders caches the journal sender rules for the configured mail
 	// units; building them looks up the postfix user.
 	mailSenders atomic.Pointer[mailSenderSet]
@@ -2345,7 +2350,11 @@ func (d *Daemon) startLogWatchers() {
 	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
 	d.smtpAuthFromExim = watchExim
 	d.mailboxes = newMailboxResolver(hostInfo)
+	d.syslogFromJournal = journalUsable()
 	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
+	if d.syslogFromJournal {
+		d.startJournalSource(sshJournal)
+	}
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)
 		obs.Go("stale-session-401-flush", d.flushStaleSession401)
@@ -2958,9 +2967,15 @@ func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, exim ObservedLineHandler,
 	// Generic Linux auth log. RHEL-family uses /var/log/secure, Debian
 	// family uses /var/log/auth.log. Only register the log appropriate
 	// for the detected OS so we don't spam "not found, retrying" forever.
-	specs := []logWatchSpec{{path: "/var/log/secure", handler: parseSecureLogLine, producer: checks.ProducerSSHLog}}
-	if hostInfo.IsDebianFamily() {
-		specs[0].path = "/var/log/auth.log"
+	// Where syslog goes through journald, sshd's own entries are read from
+	// the journal instead (startJournalSource).
+	var specs []logWatchSpec
+	if !d.syslogFromJournal {
+		auth := logWatchSpec{path: "/var/log/secure", handler: parseSecureLogLine, producer: checks.ProducerSSHLog}
+		if hostInfo.IsDebianFamily() {
+			auth.path = "/var/log/auth.log"
+		}
+		specs = append(specs, auth)
 	}
 	// cPanel-specific logs only watch these on cPanel hosts. On plain
 	// Ubuntu/AlmaLinux they do not exist and the old code spammed

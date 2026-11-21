@@ -26,6 +26,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- Where syslog goes through journald, CSM reads SSH logins from sshd's journal entries instead of the auth log file.
 - With `mail_logs.source: auto`, CSM now reads Postfix and Dovecot from the journal where syslog goes through journald; mail log files only alert.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 

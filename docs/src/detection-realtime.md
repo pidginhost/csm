@@ -328,7 +328,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 |-----|-----------|-----------------|
 | cPanel session log (`/usr/local/cpanel/logs/session_log`) | cPanel only | Logins from non-infra IPs, password changes, File Manager uploads, sessions ended for security token failures |
 | cPanel access log (`/usr/local/cpanel/logs/access_log`) | cPanel only | cPanel-API auth patterns |
-| Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
+| Auth log | All | SSH logins and failures. Where syslog goes through journald, sshd's own journal entries (`sshd.service` or `ssh.service`, sent as root); otherwise `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel, whose lines only alert |
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
 | Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on Postfix hosts with Dovecot |
