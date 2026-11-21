@@ -82,6 +82,7 @@ func TestParseBackupRefusesUnsafeValues(t *testing.T) {
 			c.Signatures.RulesDir = "/var/lib/csm/rules"
 			c.Backup.DestinationDir = "/var/lib/csm/rules/backups"
 		}, "rules_dir"},
+		{"filename breaks checksum line", func(c *Config) { c.Backup.Filename = "{date}\nother" }, "backup.filename"},
 		{"filename without date", func(c *Config) { c.Backup.Filename = "csm.csmbak" }, "backup.filename"},
 		{"filename with two dates", func(c *Config) { c.Backup.Filename = "csm-{date}-{date}.csmbak" }, "backup.filename"},
 		{"filename with a separator", func(c *Config) { c.Backup.Filename = "sub/csm-{date}.csmbak" }, "backup.filename"},
@@ -131,5 +132,22 @@ func TestBackupArchiveNamesRoundTrip(t *testing.T) {
 		if _, ok := plan.ArchiveTime(other); ok {
 			t.Errorf("ArchiveTime accepted %q", other)
 		}
+	}
+}
+
+func TestDaemonStartupWithInvalidBackupPlan(t *testing.T) {
+	cfg := loadBackup(t, "backup:\n  enabled: true\n  schedule: daily\n")
+	cfg.Retention.CompactFillRatio = 2
+	var backup, retention string
+	for _, r := range ValidateDaemonStartup(cfg) {
+		switch r.Field {
+		case "backup":
+			backup = r.Level
+		case "retention.compact_fill_ratio":
+			retention = r.Level
+		}
+	}
+	if backup != "warn" || retention != "error" {
+		t.Fatalf("startup validation: backup %q, retention %q", backup, retention)
 	}
 }

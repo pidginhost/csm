@@ -1252,3 +1252,42 @@ func TestArchiveImportSkipsTransientStateFromOlderArchive(t *testing.T) {
 		t.Fatal("import re-armed a pending firewall configuration rollback from the archive")
 	}
 }
+
+func TestExportOmitsLinksAndContinuesWalk(t *testing.T) {
+	db := openTestDB(t)
+	stateDir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(target, []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(stateDir, "a-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target+"-missing", filepath.Join(stateDir, "b-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "z-state"), []byte("state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := db.Export(ExportOptions{StatePath: stateDir, DstPath: filepath.Join(t.TempDir(), "backup")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := archiveEntryNames(t, res.Path)
+	if names["state/a-link"] || names["state/b-link"] || !names["state/z-state"] {
+		t.Fatalf("unexpected archive entries: %v", names)
+	}
+}
+
+func TestExportRefusesToArchiveItsOwnOutput(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "out.csmbak")
+	_, err := db.Export(ExportOptions{StatePath: dir, DstPath: dst})
+	if err == nil || !strings.Contains(err.Error(), "export destination") {
+		t.Fatalf("export into a source directory: %v", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("partial archive remains: %v", err)
+	}
+}

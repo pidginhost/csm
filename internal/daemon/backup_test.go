@@ -1,6 +1,10 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,7 +105,7 @@ func TestScheduledBackupRunsOnScheduleAndPrunes(t *testing.T) {
 	foreign := []string{"csm-notadate.csmbak", "notes.txt", "other-20261001T000000Z.csmbak", expired + ".old"}
 	writeBackupFixture(t, plan.Dir, append([]string{expired, expired + ".sha256", kept, future}, foreign...)...)
 
-	last := d.runBackupIfDue(backupTestNow, time.Time{})
+	last := d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
 	if !last.Equal(backupTestNow) {
 		t.Fatalf("returned %v, want the run time", last)
 	}
@@ -119,7 +123,7 @@ func TestScheduledBackupRunsOnScheduleAndPrunes(t *testing.T) {
 
 	// A restart forgets the last attempt; the archive on disk still holds
 	// the schedule.
-	if next := d.runBackupIfDue(backupTestNow.Add(time.Hour), time.Time{}); !next.Equal(backupTestNow) {
+	if next := d.runBackupIfDue(d.currentCfg(), backupTestNow.Add(time.Hour), time.Time{}); !next.Equal(backupTestNow) {
 		t.Fatalf("restart inside the schedule returned %v, want the newest archive time", next)
 	}
 	if got := dirNames(t, plan.Dir); !slices.Equal(got, want) {
@@ -127,7 +131,7 @@ func TestScheduledBackupRunsOnScheduleAndPrunes(t *testing.T) {
 	}
 
 	second := backupTestNow.Add(24 * time.Hour)
-	d.runBackupIfDue(second, last)
+	d.runBackupIfDue(d.currentCfg(), second, last)
 	if _, err := os.Stat(filepath.Join(plan.Dir, plan.ArchiveName(second))); err != nil {
 		t.Fatalf("no export once the schedule passed: %v", err)
 	}
@@ -170,7 +174,7 @@ func TestScheduledBackupFailureRaisesWarning(t *testing.T) {
 			writeBackupFixture(t, plan.Dir, expired)
 			tc.setup(t, plan.Dir)
 
-			last := d.runBackupIfDue(backupTestNow, time.Time{})
+			last := d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
 			if !last.Equal(backupTestNow) {
 				t.Fatalf("returned %v, want the attempt time so the retry waits a schedule", last)
 			}
@@ -179,7 +183,7 @@ func TestScheduledBackupFailureRaisesWarning(t *testing.T) {
 				t.Fatalf("finding = %s/%v %q, want backup_export_failed Warning naming %q", f.Check, f.Severity, f.Message, tc.want)
 			}
 			// The retry waits a schedule instead of warning every tick.
-			d.runBackupIfDue(backupTestNow.Add(time.Hour), last)
+			d.runBackupIfDue(d.currentCfg(), backupTestNow.Add(time.Hour), last)
 			assertNoAlert(t, d)
 			if _, err := os.Lstat(filepath.Join(plan.Dir, plan.ArchiveName(backupTestNow))); !os.IsNotExist(err) {
 				t.Fatalf("failed run left an archive: %v", err)
@@ -203,15 +207,230 @@ func TestScheduledBackupFollowsLiveConfig(t *testing.T) {
 	}
 	off.StatePath = cfg.StatePath
 	config.SetActive(off)
-	last := d.runBackupIfDue(backupTestNow, time.Time{})
+	last := d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
 	if names := dirNames(t, plan.Dir); len(names) != 0 {
 		t.Fatalf("disabled block exported: %v", names)
 	}
 
 	config.SetActive(cfg)
-	d.runBackupIfDue(backupTestNow, last)
+	d.runBackupIfDue(d.currentCfg(), backupTestNow, last)
 	if _, err := os.Stat(filepath.Join(plan.Dir, plan.ArchiveName(backupTestNow))); err != nil {
 		t.Fatalf("enabling the block did not export: %v", err)
 	}
 	assertNoAlert(t, d)
+}
+
+func TestScheduledBackupRecoversInterruptedExport(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	name := plan.ArchiveName(backupTestNow)
+	stage := filepath.Join(plan.Dir, ".csm-b-"+name)
+	if err := os.MkdirAll(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeBackupFixture(t, stage, name, name+".sha256", "csm-export-bbolt-123.snap", ".session-free-456")
+	if err := os.Link(filepath.Join(stage, name+".sha256"), filepath.Join(plan.Dir, name+".sha256")); err != nil {
+		t.Fatal(err)
+	}
+	d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
+	assertNoAlert(t, d)
+	if got := dirNames(t, plan.Dir); !slices.Equal(got, []string{name, name + ".sha256"}) {
+		t.Fatalf("after recovery: %v", got)
+	}
+	data, err := os.ReadFile(filepath.Join(plan.Dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := os.ReadFile(filepath.Join(plan.Dir, name+".sha256"))
+	if err != nil || string(sum) != fmt.Sprintf("%x  %s\n", sha256.Sum256(data), name) {
+		t.Fatalf("invalid companion for recovered archive: %v", err)
+	}
+}
+
+func TestScheduledBackupPublicationFailurePreservesFiles(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	name := plan.ArchiveName(backupTestNow)
+	if err := os.MkdirAll(plan.Dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	expired := plan.ArchiveName(backupTestNow.Add(-20 * 24 * time.Hour))
+	writeBackupFixture(t, plan.Dir, name+".sha256", expired)
+	d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
+	if f := drainAlert(t, d, time.Second); f.Check != "backup_export_failed" {
+		t.Fatalf("finding = %s", f.Check)
+	}
+	if files := dirNames(t, plan.Dir); !slices.Equal(files, []string{expired, name + ".sha256"}) {
+		t.Fatalf("failed publication left %v", files)
+	}
+	data, err := os.ReadFile(filepath.Join(plan.Dir, name+".sha256"))
+	if err != nil || string(data) != "fixture" {
+		t.Fatalf("existing companion changed: %v", err)
+	}
+}
+
+func TestScheduledBackupClockMovesBack(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	d.runBackupIfDue(d.currentCfg(), backupTestNow, backupTestNow.Add(48*time.Hour))
+	plan := backupPlan(t, cfg)
+	if _, err := os.Stat(filepath.Join(plan.Dir, plan.ArchiveName(backupTestNow))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScheduledBackupRejectsAliasedSource(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(plan.Root, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Signatures.RulesDir = filepath.Join(alias, filepath.Base(plan.Dir))
+	d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
+	if f := drainAlert(t, d, time.Second); !strings.Contains(f.Message, "rules_dir") {
+		t.Fatalf("expected overlapping rules_dir finding, got %s", f.Message)
+	}
+	if len(dirNames(t, plan.Dir)) != 0 {
+		t.Fatal("export wrote inside its rules source")
+	}
+}
+
+func TestScheduledBackupReloadsDestination(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	var timer backupTimer
+	timer.tick(d, backupTestNow)
+	next := *cfg
+	next.Backup.DestinationDir += "-new"
+	config.SetActive(&next)
+	at := backupTestNow.Add(time.Minute)
+	timer.tick(d, at)
+	plan := backupPlan(t, &next)
+	if _, err := os.Stat(filepath.Join(plan.Dir, plan.ArchiveName(at))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScheduledBackupRecoversLooseSnapshot(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	if err := os.MkdirAll(plan.Dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	const snap = "csm-export-bbolt-1024.snap"
+	const foreign = "csm-export-bbolt-other.snap"
+	incomplete := plan.ArchiveName(backupTestNow.Add(-time.Minute))
+	writeBackupFixture(t, plan.Dir, snap, foreign, incomplete)
+	d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
+	assertNoAlert(t, d)
+	if _, err := os.Stat(filepath.Join(plan.Dir, snap)); !os.IsNotExist(err) {
+		t.Fatalf("abandoned snapshot remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(plan.Dir, foreign)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(plan.Dir, plan.ArchiveName(backupTestNow))); err != nil {
+		t.Fatalf("incomplete archive suppressed the new export: %v", err)
+	}
+}
+
+func TestScheduledBackupSkipsNonRegularState(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	foreign := filepath.Join(t.TempDir(), "outside")
+	writeBackupFixture(t, filepath.Dir(foreign), "outside")
+	if err := os.Symlink(foreign, filepath.Join(cfg.StatePath, "link")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cfg.StatePath)
+	listener, err := net.Listen("unix", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	d.runBackupIfDue(d.currentCfg(), backupTestNow, time.Time{})
+	assertNoAlert(t, d)
+	plan := backupPlan(t, cfg)
+	path := filepath.Join(plan.Dir, plan.ArchiveName(backupTestNow))
+	if len(archiveEntry(t, path, "bbolt.snapshot")) == 0 {
+		t.Fatal("empty snapshot")
+	}
+}
+
+func TestScheduledBackupPreservesExpiredCompanionDirectory(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	expired := plan.ArchiveName(backupTestNow.Add(-30 * 24 * time.Hour))
+	foreignDir := filepath.Join(plan.Dir, expired+".sha256")
+	if err := os.MkdirAll(foreignDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeBackupFixture(t, plan.Dir, expired)
+	d.runBackupIfDue(cfg, backupTestNow, time.Time{})
+	assertNoAlert(t, d)
+	if _, err := os.Stat(filepath.Join(plan.Dir, expired)); !os.IsNotExist(err) {
+		t.Fatalf("expired archive remains: %v", err)
+	}
+	if info, err := os.Stat(foreignDir); err != nil || !info.IsDir() {
+		t.Fatalf("pruning removed an unrelated directory: %v", err)
+	}
+}
+
+func TestScheduledBackupKeepsPartialArchivePrivate(t *testing.T) {
+	_, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	if err := os.MkdirAll(plan.Dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	name := plan.ArchiveName(backupTestNow)
+	final := filepath.Join(plan.Dir, name)
+	stopped := errors.New("export interrupted")
+	_, err := publishBackup(cfg, final, func(_ *config.Config, path string) (*store.ExportResult, error) {
+		writeBackupFixture(t, filepath.Dir(path), filepath.Base(path))
+		if _, err := os.Stat(final); !os.IsNotExist(err) {
+			t.Fatalf("archive visible before export finished: %v", err)
+		}
+		return nil, stopped
+	})
+	if !errors.Is(err, stopped) || len(dirNames(t, plan.Dir)) != 0 {
+		t.Fatalf("interrupted export left %v, error %v", dirNames(t, plan.Dir), err)
+	}
+}
+
+func TestDirectExportSnapshotSurvivesScheduledCleanup(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	if err := os.MkdirAll(plan.Dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	locked, err := lockDirectExport(plan.Dir)
+	if err != nil || locked == nil {
+		t.Fatalf("direct export could not lock its destination: %v", err)
+	}
+	defer locked.Close()
+	const snap = "csm-export-bbolt-12345.snap"
+	writeBackupFixture(t, plan.Dir, snap)
+	if last := d.runBackupIfDue(cfg, backupTestNow, time.Time{}); !last.IsZero() {
+		t.Fatalf("busy destination advanced the schedule: %v", last)
+	}
+	if files := dirNames(t, plan.Dir); !slices.Equal(files, []string{snap}) {
+		t.Fatalf("scheduled export interfered with direct export: %v", files)
+	}
+	assertNoAlert(t, d)
+}
+
+func TestScheduledBackupLeavesForeignStageDirectory(t *testing.T) {
+	d, cfg := newBackupTestDaemon(t)
+	plan := backupPlan(t, cfg)
+	foreign := filepath.Join(plan.Dir, ".csm-b-note-20260101T000000Z")
+	if err := os.MkdirAll(foreign, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeBackupFixture(t, foreign, "notes.txt")
+	d.runBackupIfDue(cfg, backupTestNow, time.Time{})
+	assertNoAlert(t, d)
+	if files := dirNames(t, foreign); !slices.Equal(files, []string{"notes.txt"}) {
+		t.Fatalf("unrelated directory changed: %v", files)
+	}
+	if _, err := os.Stat(filepath.Join(plan.Dir, plan.ArchiveName(backupTestNow))); err != nil {
+		t.Fatal(err)
+	}
 }

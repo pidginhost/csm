@@ -35,6 +35,19 @@ func (v ValidationResult) String() string {
 	return fmt.Sprintf("[%s] %s: %s", strings.ToUpper(v.Level), v.Field, v.Message)
 }
 
+// ValidateDaemonStartup lets monitoring start with a bad optional backup plan.
+// Explicit validation and reload still reject the plan.
+func ValidateDaemonStartup(cfg *Config) []ValidationResult {
+	results := Validate(cfg)
+	for i, r := range results {
+		if r.Field == "backup" && r.Level == "error" {
+			results[i].Level = "warn"
+			results[i].Message = "scheduled backups paused: " + r.Message
+		}
+	}
+	return results
+}
+
 // Validate checks the config for errors, warnings, and emits OK for valid sections.
 func Validate(cfg *Config) []ValidationResult {
 	var results []ValidationResult

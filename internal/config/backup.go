@@ -24,6 +24,9 @@ type BackupConfig struct {
 // belongs to someone else.
 var backupRoot = "/var/lib/csm"
 
+// BackupRoot is the common parent of all scheduled destinations.
+func BackupRoot() string { return backupRoot }
+
 // SetBackupRoot points the backup root elsewhere and returns a func restoring
 // the previous one. Tests use it to stay hermetic.
 func SetBackupRoot(path string) func() {
@@ -66,8 +69,8 @@ func ParseBackup(cfg *Config) (BackupPlan, error) {
 		return BackupPlan{}, fmt.Errorf("backup.destination_dir %s is inside state_path or signatures.rules_dir, which every export copies", dir)
 	}
 	prefix, suffix, found := strings.Cut(b.Filename, "{date}")
-	if !found || strings.Contains(suffix, "{date}") || strings.ContainsAny(b.Filename, "/\x00") {
-		return BackupPlan{}, fmt.Errorf("backup.filename must contain {date} exactly once and no /, got %q", b.Filename)
+	if !found || strings.Contains(suffix, "{date}") || strings.ContainsAny(b.Filename, "/\x00\r\n") {
+		return BackupPlan{}, fmt.Errorf("backup.filename must contain {date} exactly once and be a single filename suitable for a checksum line, got %q", b.Filename)
 	}
 	if b.RetentionDays < 1 || b.RetentionDays > maxBackupRetentionDays {
 		return BackupPlan{}, fmt.Errorf("backup.retention_days must be between 1 and %d, got %d", maxBackupRetentionDays, b.RetentionDays)

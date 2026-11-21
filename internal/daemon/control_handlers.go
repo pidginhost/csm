@@ -422,7 +422,7 @@ func prepareExportStagingPath(statePath, dstPath string, now time.Time) (string,
 
 // exportStore writes the backup archive to dstPath. Both the control command
 // and the backup scheduler export through here.
-func (d *Daemon) exportStore(dstPath string) (*store.ExportResult, error) {
+func (d *Daemon) exportStore(cfg *config.Config, dstPath string) (*store.ExportResult, error) {
 	sdb := store.Global()
 	if sdb == nil {
 		return nil, fmt.Errorf("bbolt store not available")
@@ -432,7 +432,6 @@ func (d *Daemon) exportStore(dstPath string) (*store.ExportResult, error) {
 	if err := d.store.Flush(); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
 	}
-	cfg := d.currentCfg()
 	hostname, _ := os.Hostname()
 	pi := platform.Detect()
 	return sdb.Export(store.ExportOptions{
@@ -463,18 +462,29 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 		return nil, fmt.Errorf("dst_path is required")
 	}
 
+	cfg := c.d.currentCfg()
 	dstPath := args.DstPath
 	staged := false
 	var err error
 	if args.Stage {
-		dstPath, err = prepareExportStagingPath(c.d.currentCfg().StatePath, args.DstPath, time.Now())
+		dstPath, err = prepareExportStagingPath(cfg.StatePath, args.DstPath, time.Now())
 		if err != nil {
 			return nil, fmt.Errorf("creating export staging dir: %w", err)
 		}
 		staged = true
+	} else {
+		// A direct export can share the scheduler's destination. Keep its
+		// live snapshot out of abandoned-file cleanup.
+		lock, lockErr := lockDirectExport(filepath.Dir(dstPath))
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		if lock != nil {
+			defer lock.Close()
+		}
 	}
 
-	res, err := c.d.exportStore(dstPath)
+	res, err := c.d.exportStore(cfg, dstPath)
 	if err != nil {
 		if staged {
 			_ = os.RemoveAll(filepath.Dir(dstPath))

@@ -1046,7 +1046,7 @@ retention:
 backup:
   enabled: false                        # opt-in
   schedule: "24h"                       # time between exports; at least 1h
-  destination_dir: "/var/lib/csm/backups"  # must be inside /var/lib/csm and outside state_path
+  destination_dir: "/var/lib/csm/backups"  # inside /var/lib/csm, outside state_path and signatures.rules_dir
   filename: "csm-{date}.csmbak"         # {date} is the run's UTC start time, e.g. 20261121T030000Z
   retention_days: 14                    # archives older than this are deleted; 1 to 3650
 
