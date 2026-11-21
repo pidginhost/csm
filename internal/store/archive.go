@@ -33,6 +33,10 @@ func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
 		_ = f.Close()
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
 	return f.Close()
 }
 
@@ -143,6 +147,10 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	// Snapshot bbolt to a temp file in the same directory so we can hash it
 	// and stream it into the tar without holding a long bolt transaction.
 	snapDir := filepath.Dir(opts.DstPath)
+	dstDirInfo, err := os.Stat(snapDir)
+	if err != nil {
+		return nil, fmt.Errorf("checking export destination: %w", err)
+	}
 	snap, err := os.CreateTemp(snapDir, "csm-export-bbolt-*.snap")
 	if err != nil {
 		return nil, fmt.Errorf("creating bbolt snapshot temp: %w", err)
@@ -231,13 +239,13 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 
 	// 3. state files (skip runtime-owned files captured separately or not at all).
 	stateSkip := append([]string{"csm.db", stateLockFileName, "exports"}, transientStatePaths...)
-	if err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, stateSkip, man.ExportTS, opts.IncludeFile); err != nil {
+	if err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, stateSkip, man.ExportTS, dstDirInfo, opts.IncludeFile); err != nil {
 		return nil, err
 	}
 
 	// 4. rules files (optional).
 	if opts.RulesPath != "" {
-		if err = walkDirIntoTar(tw, opts.RulesPath, rulesEntryPrefix, nil, man.ExportTS, opts.IncludeFile); err != nil {
+		if err = walkDirIntoTar(tw, opts.RulesPath, rulesEntryPrefix, nil, man.ExportTS, dstDirInfo, opts.IncludeFile); err != nil {
 			return nil, err
 		}
 	}
@@ -614,13 +622,8 @@ func sha256File(path string) (string, error) {
 }
 
 func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time, include func(string, os.FileInfo) bool) error {
-	flags := os.O_RDONLY
-	if include != nil {
-		flags |= syscall.O_NONBLOCK | syscall.O_NOFOLLOW
-	}
-
 	// #nosec G304 -- srcPath is supplied by Export's caller (the daemon's control handler, sourced from cfg.StatePath / cfg.Signatures.RulesDir) or is the bbolt snapshot path created via os.CreateTemp earlier in Export. Both are root-controlled; csm runs as root via systemd. Not attacker-controlled.
-	f, err := os.OpenFile(srcPath, flags, 0)
+	f, err := os.OpenFile(srcPath, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", srcPath, err)
 	}
@@ -629,7 +632,10 @@ func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time, in
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", srcPath, err)
 	}
-	if include != nil && (!info.Mode().IsRegular() || !include(srcPath, info)) {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("archive source %s is no longer a regular file", srcPath)
+	}
+	if include != nil && !include(srcPath, info) {
 		return nil
 	}
 	hdr := &tar.Header{
@@ -650,16 +656,25 @@ func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time, in
 // walkDirIntoTar streams every regular file under srcDir into the tar
 // under entryPrefix, skipping relative paths in the skip list. A skipped
 // directory excludes its complete tree.
-func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, modTime time.Time, include func(string, os.FileInfo) bool) error {
+func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, modTime time.Time, dstDir os.FileInfo, include func(string, os.FileInfo) bool) error {
 	skipSet := map[string]bool{}
 	for _, s := range skip {
 		skipSet[s] = true
 	}
-	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+	// The configured root can be a directory alias. Descendant links and
+	// special files are not restorable state.
+	root, err := filepath.EvalSymlinks(srcDir)
+	if errors.Is(err, os.ErrNotExist) && entryPrefix == rulesEntryPrefix {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(srcDir, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
@@ -670,16 +685,19 @@ func walkDirIntoTar(tw *tar.Writer, srcDir, entryPrefix string, skip []string, m
 			}
 			return nil
 		}
-		if info.IsDir() || (include != nil && !info.Mode().IsRegular()) {
+		// A bind mount can expose the output under another source path.
+		if info.IsDir() && os.SameFile(info, dstDir) {
+			return fmt.Errorf("archive source contains the export destination at %s", path)
+		}
+		if path == root && !info.IsDir() {
+			return fmt.Errorf("archive source %s is not a directory", srcDir)
+		}
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 		entry := entryPrefix + filepath.ToSlash(rel)
 		return streamFileToTar(tw, entry, path, modTime, include)
 	})
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
 }
 
 // atomicReplace renames src over dst, ensuring the parent directory is

@@ -420,45 +420,28 @@ func prepareExportStagingPath(statePath, dstPath string, now time.Time) (string,
 	return filepath.Join(requestDir, base), nil
 }
 
-func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error) {
-	var args control.StoreExportArgs
-	if len(argsRaw) > 0 {
-		if err := json.Unmarshal(argsRaw, &args); err != nil {
-			return nil, fmt.Errorf("parsing args: %w", err)
-		}
-	}
-	if args.SupportRedactionSHA256 != "" {
-		args.Stage = true
-		args.DstPath = control.SupportBundleExportName
-	}
-	if args.DstPath == "" {
-		return nil, fmt.Errorf("dst_path is required")
-	}
+// exportStore writes the backup archive to dstPath. Both the control command
+// and the backup scheduler export through here; include narrows the state and
+// rule files for a support bundle and is nil for a full backup.
+func (d *Daemon) exportStore(cfg *config.Config, dstPath string, include func(string, os.FileInfo) bool) (*store.ExportResult, error) {
 	sdb := store.Global()
 	if sdb == nil {
 		return nil, fmt.Errorf("bbolt store not available")
 	}
-	cfg := c.d.currentCfg()
-	if args.SupportRedactionSHA256 != "" {
-		values, err := config.SecretValues(cfg)
-		if err != nil || args.SupportRedactionSHA256 != config.SecretValuesDigest(values) {
-			return nil, fmt.Errorf("the running daemon and collector have different redaction settings")
-		}
-	}
 	// The alert path saves state.json at most once a minute; write what it
 	// holds so the archive carries the current dedup state.
-	if err := c.d.store.Flush(); err != nil {
+	if err := d.store.Flush(); err != nil {
 		return nil, fmt.Errorf("saving state: %w", err)
 	}
 	hostname, _ := os.Hostname()
 	pi := platform.Detect()
-
-	opts := store.ExportOptions{
-		StatePath: cfg.StatePath,
-		RulesPath: cfg.Signatures.RulesDir,
-		DstPath:   args.DstPath,
+	return sdb.Export(store.ExportOptions{
+		StatePath:   cfg.StatePath,
+		RulesPath:   cfg.Signatures.RulesDir,
+		DstPath:     dstPath,
+		IncludeFile: include,
 		Manifest: store.Manifest{
-			CSMVersion:     c.d.version,
+			CSMVersion:     d.version,
 			SourceHostname: hostname,
 			SourcePlatform: map[string]string{
 				"os":         string(pi.OS),
@@ -467,30 +450,65 @@ func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error
 				"webserver":  string(pi.WebServer),
 			},
 		},
+	})
+}
+
+func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error) {
+	var args control.StoreExportArgs
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &args); err != nil {
+			return nil, fmt.Errorf("parsing args: %w", err)
+		}
 	}
-	var err error
+	if args.DstPath == "" {
+		return nil, fmt.Errorf("dst_path is required")
+	}
+	if args.SupportRedactionSHA256 != "" {
+		args.Stage = true
+		args.DstPath = control.SupportBundleExportName
+	}
+
+	cfg := c.d.currentCfg()
+	var include func(string, os.FileInfo) bool
 	stageRoot := cfg.StatePath
 	if args.SupportRedactionSHA256 != "" {
+		values, err := config.SecretValues(cfg)
+		if err != nil || args.SupportRedactionSHA256 != config.SecretValuesDigest(values) {
+			return nil, fmt.Errorf("the running daemon and collector have different redaction settings")
+		}
 		// The collector can run in a different working directory.
-		stageRoot, err = filepath.Abs(stageRoot)
-		if err != nil {
+		if stageRoot, err = filepath.Abs(stageRoot); err != nil {
 			return nil, err
 		}
-		opts.IncludeFile, err = supportExportFileFilter(cfg)
-		if err != nil {
+		if include, err = supportExportFileFilter(cfg); err != nil {
 			return nil, err
 		}
 	}
+	dstPath := args.DstPath
+	staged := false
+	var err error
 	if args.Stage {
-		opts.DstPath, err = prepareExportStagingPath(stageRoot, args.DstPath, time.Now())
+		dstPath, err = prepareExportStagingPath(stageRoot, args.DstPath, time.Now())
 		if err != nil {
 			return nil, fmt.Errorf("creating export staging dir: %w", err)
 		}
+		staged = true
+	} else {
+		// A direct export can share the scheduler's destination. Keep its
+		// live snapshot out of abandoned-file cleanup.
+		lock, lockErr := lockDirectExport(filepath.Dir(dstPath))
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		if lock != nil {
+			defer lock.Close()
+		}
 	}
-	res, err := sdb.Export(opts)
+
+	res, err := c.d.exportStore(cfg, dstPath, include)
 	if err != nil {
-		if args.Stage {
-			_ = os.RemoveAll(filepath.Dir(opts.DstPath))
+		if staged {
+			_ = os.RemoveAll(filepath.Dir(dstPath))
 		}
 		return nil, err
 	}

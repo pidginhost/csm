@@ -662,6 +662,7 @@ Attribution gaps:
 | `backdoor_binary` | malware artifact |  |  |
 | `backdoor_port` | security event |  |  |
 | `backdoor_port_outbound` | security event |  |  |
+| `backup_export_failed` | ignored | self-health |  |
 | `bad_asn_outbound` | security event |  |  |
 | `bpf_ringbuf_error` | ignored | self-health |  |
 | `bpf_unavailable` | ignored | self-health |  |

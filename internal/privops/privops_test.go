@@ -642,6 +642,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"state.control_socket":          RiskObserve,
 	"state.mail_relay_policies":     RiskObserve,
 	"state.php_shield_events":       RiskObserve,
+	"state.scheduled_backup":        RiskObserve,
 	"state.web_peer_log":            RiskObserve,
 	"state.sign_config":             RiskObserve,
 	"state.update_forge":            RiskObserve,

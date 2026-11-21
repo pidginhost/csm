@@ -23,6 +23,7 @@
       "api_tokens",
       "auto_response_withheld",
       "backdoor_binary",
+      "backup_export_failed",
       "bpf_ringbuf_error",
       "bpf_unavailable",
       "cgi_backdoor_realtime",

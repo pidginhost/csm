@@ -394,7 +394,7 @@ func runDaemon() {
 	defer obs.Flush()
 
 	// Validate config on startup
-	results := config.Validate(cfg)
+	results := config.ValidateDaemonStartup(cfg)
 	hasErrors := false
 	for _, r := range results {
 		switch r.Level {

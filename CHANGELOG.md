@@ -14,6 +14,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
 - Internal registry downloads between releases carry verified signatures even when only the AMD64 build is available.
 - The registry installer refuses unverified builds, and `csm doctor` reports older copies that still accept them.
+- State backups skip symbolic links inside the state and rules directories.
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
@@ -28,6 +29,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Added
 
 - `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
+- A new `backup` setting has the daemon export its state on a schedule, delete archives past retention, and warn when an export fails.
 
 ### Changed
 

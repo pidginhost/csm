@@ -585,3 +585,11 @@ systemctl start csm
 ```
 
 Partial restore: `--only=baseline` restores only the file-hash state (useful after a full re-install where firewall and history should stay fresh); `--only=firewall` merges the firewall buckets into an existing daemon (useful for cloning blocklists across a cluster); a durable firewall journal and its snapshot in the archive replace the target's. It refuses while either side has a durable firewall action unresolved or its audit undelivered.
+
+#### Scheduled backups
+
+Set `backup.enabled: true` and the daemon runs the same export on its own every `backup.schedule` (default `24h`, at least `1h`). Each archive lands in `backup.destination_dir` (default `/var/lib/csm/backups`) under `backup.filename` (default `csm-{date}.csmbak`, where `{date}` is the run's UTC start time such as `20261121T030000Z`), with its `.sha256` companion. Only completed exports appear under their final names. Store exports include regular files and skip symlinks and special files inside the source trees. The newest matching archive with a checksum sets the schedule after a restart. On its next check of that destination, CSM clears temporary files from interrupted exports.
+
+After a successful export the daemon deletes the archives older than `backup.retention_days` (default 14), together with their companions. Retention applies to regular files matching the configured archive and checksum names. A failed export keeps earlier archives. A failed run raises a `backup_export_failed` Warning and is tried again one schedule later. Changes to the block apply on reload.
+
+Choose a destination inside `/var/lib/csm` and outside both `state_path` and `signatures.rules_dir`. Copy archives off the host from there. `csm validate` rejects invalid backup settings, and a rejected reload keeps the current configuration. At startup an invalid backup plan produces a warning and pauses scheduled exports. Monitoring continues. Each directory from `/var/lib/csm` to the destination must be owned by root and writable only by root. The daemon rejects symlinks along that path.
