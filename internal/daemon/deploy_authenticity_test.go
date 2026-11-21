@@ -79,7 +79,7 @@ pkg_download() { /bin/cp "$SOURCE_SIGNATURE" "$2"; printf 200; }`
 					`info() { printf '%s\n' "$1" >&2; }`,
 					"CSM_REQUIRE_SIGNATURES=0",
 					stubs,
-					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "missing_signature_allowed"),
+					optionalShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "missing_signature_allowed"),
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "openssl_verifies_ed25519"),
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "csm_release_verifier"),
 					extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "python_verifies_ed25519"),
@@ -117,22 +117,14 @@ func TestLegacySignatureExceptionRequiresCompletePreSigningVersion(t *testing.T)
 			t.Run(script.name+"/"+version, func(t *testing.T) {
 				stubs := rawinCapableOpenSSL("404") + oldOpenSSL() + "\nCSM_SIGNING_KEY_PEM=''\n"
 				output, code := runVerifySignatureWithVersion(t, script, stubs, nil, version)
-				legacy := version == "v1.0.0" || version == "v2.1.9"
-				excepted, disclosure := false, ""
-				if script.exception != nil {
-					excepted, disclosure = script.exception(version)
-				}
-				allowed := legacy || excepted
-				if (code == 0) != allowed {
+				legacy := script.preSigningReleases && (version == "v1.0.0" || version == "v2.1.9")
+				if (code == 0) != legacy {
 					t.Fatalf("version=%q exit=%d output=%s", version, code, output)
 				}
 				if legacy && !strings.Contains(output, "pre-signing release") {
 					t.Fatalf("legacy bypass not disclosed: %s", output)
 				}
-				if excepted && !strings.Contains(output, disclosure) {
-					t.Fatalf("signature exception not disclosed: %s", output)
-				}
-				if allowed {
+				if legacy {
 					strictOut, strictCode := runVerifySignatureWithVersion(t, script, stubs, []string{"CSM_REQUIRE_SIGNATURES=1"}, version)
 					if strictCode == 0 {
 						t.Fatalf("strict legacy accepted: %s", strictOut)

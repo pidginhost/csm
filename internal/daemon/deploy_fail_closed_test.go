@@ -37,10 +37,7 @@ func runVerifySignatureWithVersion(t *testing.T, script deploySignatureScript, s
 		": \"${CSM_SIGNING_KEY_PEM:=test-key}\"",
 		": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
 		stubs,
-		extractShellFunction(t, scriptPath, "missing_signature_allowed"),
-		// Only the internal-registry script defines this; the public scripts
-		// have no unsigned channel and must not gain one by accident.
-		optionalShellFunction(t, scriptPath, "unsigned_ci_build"),
+		optionalShellFunction(t, scriptPath, "missing_signature_allowed"),
 		extractShellFunction(t, scriptPath, "openssl_verifies_ed25519"),
 		extractShellFunction(t, scriptPath, "csm_release_verifier"),
 		extractShellFunction(t, scriptPath, "python_verifies_ed25519"),
@@ -78,6 +75,12 @@ func TestVerifySignatureMissingSignatureFailsClosedForSignedReleases(t *testing.
 		})
 		t.Run(script.name+"/legacy", func(t *testing.T) {
 			output, code := runVerifySignatureWithVersion(t, script, rawinCapableOpenSSL("404"), nil, "v1.0.0")
+			if !script.preSigningReleases {
+				if code == 0 {
+					t.Fatalf("a script that never installs a pre-signing release must refuse a missing .sig:\n%s", output)
+				}
+				return
+			}
 			if code != 0 {
 				t.Fatalf("a release older than signing may skip with a warning, exit %d:\n%s", code, output)
 			}

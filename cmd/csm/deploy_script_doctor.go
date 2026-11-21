@@ -82,6 +82,8 @@ func deployScriptSkipsVerification(path string) bool {
 	if !strings.Contains(body, "verify_signature") {
 		return false
 	}
+	// unsigned_ci_build is the registry script's former unsigned-build exception.
 	return strings.Contains(body, "skipping signature check") ||
-		strings.Contains(body, "skipping signature verification")
+		strings.Contains(body, "skipping signature verification") ||
+		strings.Contains(body, "unsigned_ci_build")
 }
