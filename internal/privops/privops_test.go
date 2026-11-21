@@ -996,7 +996,7 @@ var reviewedSafetyContracts = map[string]SafetyContract{
 		Limit:     "managed Install skips identical bytes, and nginx map reload skips unchanged maps; there is no shared reload pacing or capacity bound",
 	},
 	"integrate.web_peer_log": {
-		Authority: "only the explicit integration commands install, upgrade or remove the peer log snippet; the daemon never writes it",
+		Authority: "only `csm webserver-integration peer-log install` and `remove`, an upgrade that refreshes an installed snippet, and uninstall change the peer log snippet; the daemon never writes it",
 		Identity:  "the snippet carries a managed version header; files without it are never changed and a newer snippet is never downgraded",
 		Recovery:  "a failed configtest or reload restores the previous snippet bytes or removes a new file; after a failed reload the restored configuration is reloaded only when its configtest passes",
 		Limit:     "Apache skips the log while its directory is missing; there is no reload pacing",

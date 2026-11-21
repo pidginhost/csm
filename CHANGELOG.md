@@ -12,7 +12,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 ### Security
 
 - With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
-- `csm webserver-integration install` and `upgrade` now also set up the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
+- `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
 - With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
 - With `auto_response.dry_run` off and the CSM web peer log, proxy-header hosts block direct web attackers, only challenge proxied clients and never block an address they cannot verify.
 - With the CSM web peer log, CSM alerts when the web server logs a client address chosen by a local process or an untrusted peer.

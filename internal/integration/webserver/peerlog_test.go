@@ -156,29 +156,45 @@ func TestPeerLogUnsupportedIsSkipped(t *testing.T) {
 	}
 }
 
-// The integration command carries the peer log beside the challenge
-// snippet: install and upgrade write it, status reports it, remove takes it
-// away, validate leaves it out. A challenge that cannot install still lets
-// the peer log install, and the command still reports the failure.
-func TestRunAttachesThePeerLog(t *testing.T) {
+// The peer log has its own verbs (operator ruling 2026-11-21): the challenge
+// verbs leave it alone, except that upgrade refreshes an installed one, and
+// its verbs need no challenge settings.
+func TestPeerLogHasItsOwnVerbs(t *testing.T) {
 	h := &fakeHandler{kind: "apache", body: "RewriteEngine On\n"}
 	i := newPeerLogInstaller(t, h)
+	if res, err := i.Run("install"); err != nil || res.PeerLog != nil {
+		t.Fatalf("install = %+v, %v; want the challenge only", res, err)
+	}
+	if _, err := os.Stat(i.PeerLogPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("install added the peer log: %v", err)
+	}
+	if res, err := i.Run("upgrade"); err != nil || res.PeerLog != nil {
+		t.Fatalf("upgrade without a peer log = %+v, %v; want it left alone", res, err)
+	}
 	for _, tc := range []struct{ verb, want string }{
-		{"install", "ok"}, {"status", "ok"}, {"upgrade", "no-op"}, {"remove", "ok"}, {"status", "missing"},
+		{"install", "ok"}, {"status", "ok"}, {"remove", "ok"}, {"status", "missing"}, {"install", "ok"},
 	} {
-		res, err := i.Run(tc.verb)
-		if err != nil || res.PeerLog == nil || res.PeerLog.Status != tc.want {
-			t.Fatalf("Run(%s) = %+v (peer log %+v), %v; want peer log %s", tc.verb, res, res.PeerLog, err, tc.want)
+		res, err := i.RunPeerLog(tc.verb)
+		if err != nil || res.Status != tc.want || res.Action != "peer-log "+tc.verb {
+			t.Fatalf("peer-log %s = %+v, %v; want %s", tc.verb, res, err, tc.want)
 		}
 	}
-	if res, _ := i.Run("validate"); res.PeerLog != nil {
-		t.Fatalf("validate reported a peer log: %+v", res.PeerLog)
+	if res, err := i.Run("upgrade"); err != nil || res.PeerLog == nil || res.PeerLog.Status != "no-op" {
+		t.Fatalf("upgrade with a peer log = %+v (peer log %+v), %v; want it refreshed", res, res.PeerLog, err)
 	}
-	j := newPeerLogInstaller(t, &fakeHandler{kind: "apache", body: "RewriteEngine On\n"})
+	if res, err := i.Run("remove"); err != nil || res.PeerLog != nil {
+		t.Fatalf("remove = %+v, %v; want the challenge only", res, err)
+	}
+	if _, err := os.Stat(i.PeerLogPath); err != nil {
+		t.Fatalf("challenge remove took the peer log: %v", err)
+	}
+	if _, err := i.RunPeerLog("upgrade"); err == nil {
+		t.Fatal("an unknown peer-log verb was accepted")
+	}
+	j := newPeerLogInstaller(t, &fakeHandler{kind: "apache"})
 	j.Config.ChallengePublicURL = ""
-	res, err := j.Run("install")
-	if err == nil || res.PeerLog == nil || res.PeerLog.Status != "ok" {
-		t.Fatalf("install without a challenge URL = %+v (peer log %+v), %v; want the peer log installed and the challenge failure reported", res, res.PeerLog, err)
+	if res, err := j.RunPeerLog("install"); err != nil || res.Status != "ok" {
+		t.Fatalf("peer-log install without a challenge URL = %+v, %v; want ok", res, err)
 	}
 }
 
@@ -371,7 +387,7 @@ func TestPeerLogFrontProxyCanRemoveEarlierSnippet(t *testing.T) {
 	}
 }
 
-func TestRunReportsChallengeFailureForEveryPeerVerb(t *testing.T) {
+func TestRunReportsChallengeFailure(t *testing.T) {
 	for _, verb := range []string{"install", "upgrade", "status", "remove"} {
 		t.Run(verb, func(t *testing.T) {
 			h := &fakeHandler{kind: "apache"}
@@ -390,20 +406,18 @@ func TestRunReportsChallengeFailureForEveryPeerVerb(t *testing.T) {
 			if !errors.Is(err, failure) || res.Status != "fail" {
 				t.Fatalf("challenge error lost: %+v, %v", res, err)
 			}
-			want := "ok"
-			if verb == "install" || verb == "upgrade" {
-				want = "no-op"
-			}
-			if res.PeerLog == nil || res.PeerLog.Status != want {
-				t.Fatalf("peer operation did not finish: %+v", res.PeerLog)
-			}
-			_, statErr := os.Stat(i.PeerLogPath)
-			if verb == "remove" {
-				if !errors.Is(statErr, os.ErrNotExist) {
-					t.Fatalf("peer snippet remains: %v", statErr)
+			// Only upgrade refreshes the installed peer log; the other
+			// challenge verbs leave it to its own verbs (operator ruling
+			// 2026-11-21).
+			if verb == "upgrade" {
+				if res.PeerLog == nil || res.PeerLog.Status != "no-op" {
+					t.Fatalf("upgrade did not refresh the peer log: %+v", res.PeerLog)
 				}
-			} else if statErr != nil {
-				t.Fatal(statErr)
+			} else if res.PeerLog != nil {
+				t.Fatalf("%s touched the peer log: %+v", verb, res.PeerLog)
+			}
+			if _, statErr := os.Stat(i.PeerLogPath); statErr != nil {
+				t.Fatalf("%s removed the peer snippet: %v", verb, statErr)
 			}
 		})
 	}

@@ -282,39 +282,47 @@ func (i *Installer) applyPeerLog(prev []byte, existed bool) error {
 	return nil
 }
 
-// Run performs one integration verb: the challenge snippet's, then the web
-// peer log's for install, upgrade, status and remove. The peer log does not
-// depend on the challenge settings, so it runs even when the challenge
-// part fails; either failure is returned.
+// Run performs one challenge integration verb. The web peer log has its own
+// verbs (RunPeerLog); upgrade only refreshes a peer log already installed.
 func (i *Installer) Run(verb string) (Result, error) {
+	switch verb {
+	case "install":
+		return i.Install()
+	case "upgrade":
+		res, err := i.Upgrade()
+		if st, _ := i.PeerLogStatus(); st.Status == "ok" || st.Status == "stale" {
+			peer, peerErr := i.InstallPeerLog()
+			res.PeerLog = &peer
+			err = errors.Join(err, peerErr)
+		}
+		return res, err
+	case "status":
+		return i.Status()
+	case "validate":
+		return i.Validate()
+	case "remove":
+		return i.Remove()
+	}
+	return Result{Action: verb, Status: "fail"}, fmt.Errorf("webserver integration: unknown verb %q", verb)
+}
+
+// RunPeerLog performs one web peer log verb: install, status or remove. It
+// needs no challenge settings.
+func (i *Installer) RunPeerLog(verb string) (Result, error) {
 	var (
 		res Result
 		err error
 	)
 	switch verb {
 	case "install":
-		res, err = i.Install()
-	case "upgrade":
-		res, err = i.Upgrade()
+		res, err = i.InstallPeerLog()
 	case "status":
-		res, err = i.Status()
-	case "validate":
-		return i.Validate()
+		res, err = i.PeerLogStatus()
 	case "remove":
-		res, err = i.Remove()
+		res, err = i.RemovePeerLog()
 	default:
-		return Result{Action: verb, Status: "fail"}, fmt.Errorf("webserver integration: unknown verb %q", verb)
+		return Result{Action: "peer-log " + verb, Status: "fail"}, fmt.Errorf("webserver integration: unknown peer-log verb %q", verb)
 	}
-	var peer Result
-	var peerErr error
-	switch verb {
-	case "install", "upgrade":
-		peer, peerErr = i.InstallPeerLog()
-	case "status":
-		peer, peerErr = i.PeerLogStatus()
-	case "remove":
-		peer, peerErr = i.RemovePeerLog()
-	}
-	res.PeerLog = &peer
-	return res, errors.Join(err, peerErr)
+	res.Action = "peer-log " + verb
+	return res, err
 }

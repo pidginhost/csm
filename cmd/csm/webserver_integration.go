@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -23,29 +24,19 @@ func runWebserverIntegration() {
 		os.Exit(2)
 	}
 
-	asJSON := false
-	var verb string
-	for _, a := range args {
-		switch a {
-		case "--json":
-			asJSON = true
-		case "-h", "--help":
-			webserverIntegrationUsage(os.Stdout)
-			os.Exit(0)
-		default:
-			if verb == "" {
-				verb = a
-			}
-		}
+	if slices.Contains(args, "-h") || slices.Contains(args, "--help") {
+		webserverIntegrationUsage(os.Stdout)
+		os.Exit(0)
 	}
-	if verb == "" {
+	verb, peerLog, asJSON, ok := parseWebserverIntegrationArgs(args)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "webserver-integration: unknown verb %q\n", strings.Join(args, " "))
 		webserverIntegrationUsage(os.Stderr)
 		os.Exit(2)
 	}
-	if !validWebserverIntegrationVerb(verb) {
-		fmt.Fprintf(os.Stderr, "webserver-integration: unknown verb %q\n", verb)
-		webserverIntegrationUsage(os.Stderr)
-		os.Exit(2)
+	action := verb
+	if peerLog {
+		action = "peer-log " + verb
 	}
 
 	info := platform.Detect()
@@ -55,7 +46,7 @@ func runWebserverIntegration() {
 			// Skipped (not failed) so package post-install hooks on
 			// hosts with no detectable webserver exit 0 cleanly.
 			res := webserver.Result{
-				Action:  verb,
+				Action:  action,
 				Status:  "skipped",
 				Message: err.Error(),
 			}
@@ -65,12 +56,46 @@ func runWebserverIntegration() {
 		fmt.Fprintf(os.Stderr, "webserver-integration: %v\n", err)
 		os.Exit(1)
 	}
-	res, op := runWebserverIntegrationWithConfig(inst, verb, tryLoadConfigLite)
+	var (
+		res webserver.Result
+		op  error
+	)
+	if peerLog {
+		// The peer log needs no challenge settings or CSM configuration.
+		res, op = inst.RunPeerLog(verb)
+	} else {
+		res, op = runWebserverIntegrationWithConfig(inst, verb, tryLoadConfigLite)
+	}
 
 	emitResult(asJSON, res)
 	if op != nil {
 		os.Exit(1)
 	}
+}
+
+// parseWebserverIntegrationArgs reads a challenge verb, or "peer-log" and a
+// peer log verb, and --json; other flags are left to the commands.
+func parseWebserverIntegrationArgs(args []string) (verb string, peerLog, asJSON, ok bool) {
+	var words []string
+	for _, a := range args {
+		switch {
+		case a == "--json":
+			asJSON = true
+		case strings.HasPrefix(a, "-"):
+		default:
+			words = append(words, a)
+		}
+	}
+	switch {
+	case len(words) == 0:
+	case words[0] == "peer-log":
+		if len(words) > 1 && slices.Contains([]string{"install", "status", "remove"}, words[1]) {
+			return words[1], true, asJSON, true
+		}
+	case validWebserverIntegrationVerb(words[0]):
+		return words[0], false, asJSON, true
+	}
+	return "", false, false, false
 }
 
 func validWebserverIntegrationVerb(verb string) bool {
@@ -88,8 +113,7 @@ func runWebserverIntegrationWithConfig(inst *webserver.Installer, verb string, l
 	if verb == "install" || verb == "upgrade" {
 		cfg, err := load()
 		if err != nil {
-			peer, peerErr := inst.InstallPeerLog()
-			return webserver.Result{Action: verb, Webserver: inst.Handler.Kind(), Status: "fail", Message: err.Error(), PeerLog: &peer}, errors.Join(err, peerErr)
+			return webserver.Result{Action: verb, Webserver: inst.Handler.Kind(), Status: "fail", Message: err.Error()}, err
 		}
 		inst.Config = webserver.RenderConfigFromConfig(cfg)
 		// Only explicit installation may rebuild the cPanel site includes.
@@ -139,12 +163,16 @@ func emitResult(asJSON bool, res webserver.Result) {
 
 func webserverIntegrationUsage(w *os.File) {
 	fmt.Fprintln(w, "Usage: csm webserver-integration <install|upgrade|status|validate|remove> [--json]")
+	fmt.Fprintln(w, "       csm webserver-integration peer-log <install|status|remove> [--json]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  install   Write the webserver snippet, validate via configtest, reload on success.")
 	fmt.Fprintln(w, "  upgrade   Same as install; idempotent re-apply that picks up shipped template bumps.")
 	fmt.Fprintln(w, "  status    Print detected webserver, snippet version on disk vs shipped, drift.")
 	fmt.Fprintln(w, "  validate  Run the webserver's configtest against current state. No writes.")
 	fmt.Fprintln(w, "  remove    Delete the snippet, validate, reload. Refuses operator-edited files.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  peer-log  Manage the web peer log CSM uses to verify client addresses on")
+	fmt.Fprintln(w, "            Apache and cPanel LiteSpeed. upgrade refreshes an installed one.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Exit codes: 0 success, 1 failure, 2 usage error.")
 }

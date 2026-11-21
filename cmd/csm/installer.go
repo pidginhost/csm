@@ -76,7 +76,8 @@ func removeWebserverIntegrationSnippet() error {
 		return err
 	}
 	_, err = inst.Run("remove")
-	return err
+	_, peerErr := inst.RunPeerLog("remove")
+	return errors.Join(err, peerErr)
 }
 
 func (inst *Installer) ops() installerOperations {

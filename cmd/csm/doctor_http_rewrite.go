@@ -96,7 +96,7 @@ func webPeerLogDoctorCheck(info platform.Info, r checks.HTTPRewrite, stat func(s
 	}
 	if _, err := stat(snippet); err != nil {
 		check.Status = "warn"
-		check.Message = "not installed: run csm webserver-integration install so CSM can verify rewritten web client addresses"
+		check.Message = "not installed: run csm webserver-integration peer-log install so CSM can verify rewritten web client addresses"
 		return check
 	}
 	logInfo, err := stat(webserver.PeerLogFile)
@@ -104,14 +104,14 @@ func webPeerLogDoctorCheck(info platform.Info, r checks.HTTPRewrite, stat func(s
 		// Apache and LiteSpeed open their logs when they start or reload.
 		check.Status = "warn"
 		check.Message = "the web server has not opened " + webserver.PeerLogFile + " since the snippet was installed"
-		check.Fix = "reload the web server, or run csm webserver-integration install again"
+		check.Fix = "reload the web server, or run csm webserver-integration peer-log install again"
 		return check
 	}
 	if err != nil || now.Sub(logInfo.ModTime()) > webPeerLogStale {
 		for _, access := range info.AccessLogPaths {
 			if a, aerr := stat(access); aerr == nil && now.Sub(a.ModTime()) <= webPeerLogStale {
 				check.Status = "warn"
-				check.Message = "the web server is not writing " + webserver.PeerLogFile + "; reload it or run csm webserver-integration install again"
+				check.Message = "the web server is not writing " + webserver.PeerLogFile + "; reload it or run csm webserver-integration peer-log install again"
 				return check
 			}
 		}

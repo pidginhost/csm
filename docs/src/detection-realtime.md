@@ -846,25 +846,25 @@ connected for themselves, which came through a trusted proxy or a known CDN
 edge, and which another peer chose. Automatic responses use that verdict for
 web findings; see [auto-response](auto-response.md).
 
-`csm webserver-integration install` or `upgrade` sets up the peer log on
-Apache and on cPanel with LiteSpeed, and `csm doctor` shows whether it is
-active. The web server writes it to `/var/log/csm-web/peer.log`. The
+`csm webserver-integration peer-log install` sets up the peer log on Apache
+and on cPanel with LiteSpeed, `upgrade` refreshes it, and `csm doctor` shows
+whether it is active. The web server writes it to `/var/log/csm-web/peer.log`. The
 directory is `0750` and owned by root; with LiteSpeed on cPanel its group is
 `nobody`, because LiteSpeed's workers open the log themselves, and elsewhere
 `root`. Other local users cannot read it. Install and upgrade restore that
-ownership and refuse a symlink in its place; run `install` again after
-switching between Apache and LiteSpeed. On Apache the log also covers virtual
+ownership and refuse a symlink in its place; run `peer-log install` again
+after switching between Apache and LiteSpeed. On Apache the log also covers virtual
 hosts with their own access logs, and Apache skips it rather than failing to
 start when the directory is missing.
 
-The CSM package creates the directory before the daemon starts. If `install`
-has to create it again, restart CSM: the daemon may only empty the log once
+The CSM package creates the directory before the daemon starts. If
+`peer-log install` has to create it again, restart CSM: the daemon may only empty the log once
 the directory existed when it started. `csm doctor` warns when the peer log has not been written for 15
 minutes while an access log has.
 
 On cPanel hosts with nginx in front, every peer is the server itself: CSM
 keeps the log bounded but takes no verdict or alert from it, and
-`csm webserver-integration remove` still removes an earlier snippet. The same
+`csm webserver-integration peer-log remove` still removes an earlier snippet. The same
 applies where LiteSpeed runs PHP as its own user (PHP suEXEC set to No),
 because site code could then change the log; `csm doctor` says which.
 CSM requires exactly one `phpSuExec` value of `1` or `2` in LiteSpeed's
