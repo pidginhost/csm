@@ -25,7 +25,7 @@ const maxDeployScriptBytes = 1 << 20
 func deployScriptStatus(path, resolved string, data []byte) string {
 	switch fmt.Sprintf("%x", sha256.Sum256(data)) {
 	case "1c814b437a4e990c630ccd7de01006f46ec563b2d7357e296af9a73506dff1d6", // deploy.sh
-		"f01e597fa0965e77fda98097fe07e12f6536954fa0f581f392948ff2402d7a53": // deploy-gitlab.sh
+		"3feeddd9638cd0ef56f8b22495691d64db6255bdd01483da20bb1990ecc8177c": // deploy-gitlab.sh
 		return "ok"
 	}
 	body := string(data)

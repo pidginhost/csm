@@ -16,9 +16,9 @@ import (
 type deploySignatureScript struct {
 	name string
 	path string
-	// exception names a version the script may install without a release
-	// signature and the text it must print when it does; nil when none.
-	exception func(version string) (allowed bool, disclosure string)
+	// preSigningReleases marks a script that can install a release published
+	// before detached signatures existed, which therefore has no .sig.
+	preSigningReleases bool
 }
 
 // deployScriptPaths lists the deploy scripts every deploy test covers. A
@@ -1759,8 +1759,8 @@ func TestPosttransReportsImmutabilityFailureWithoutFailing(t *testing.T) {
 
 func deploySignatureScripts() []deploySignatureScript {
 	scripts := []deploySignatureScript{
-		{name: "scripts-deploy", path: "scripts/deploy.sh"},
-		{name: "scripts-install", path: "scripts/install.sh"},
+		{name: "scripts-deploy", path: "scripts/deploy.sh", preSigningReleases: true},
+		{name: "scripts-install", path: "scripts/install.sh", preSigningReleases: true},
 	}
 	return append(scripts, extraDeploySignatureScripts...)
 }
