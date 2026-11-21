@@ -1,10 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -17,19 +19,35 @@ var deployScriptSearchPaths = []string{"/opt/csm", "/root", "/usr/local/sbin", "
 // are tens of kilobytes.
 const maxDeployScriptBytes = 1 << 20
 
-// deployScriptDoctorChecks reports deploy scripts on this host that can install
-// a release without verifying its signature. Versions released before
-// verification became mandatory warn and continue when no verifier is present,
-// and an operator copy is never upgraded in place, so the regression is
-// invisible until it has already installed something unverified. When every
-// script verifies, the OK line names them so the operator sees the check ran.
+// Exact copies have the release's tested verification behavior. A marker in
+// arbitrary shell code cannot establish that the verifier is ever called.
+// Store digests so the internal deploy script stays out of distributed binaries.
+func deployScriptStatus(path, resolved string, data []byte) string {
+	switch fmt.Sprintf("%x", sha256.Sum256(data)) {
+	case "1c814b437a4e990c630ccd7de01006f46ec563b2d7357e296af9a73506dff1d6", // deploy.sh
+		"f01e597fa0965e77fda98097fe07e12f6536954fa0f581f392948ff2402d7a53": // deploy-gitlab.sh
+		return "ok"
+	}
+	body := string(data)
+	hasVerifier := strings.Contains(body, "verify_signature")
+	namedCSM := hasVerifier && strings.Contains(filepath.Base(path), "csm")
+	if path != "/opt/csm/deploy.sh" && resolved != "/opt/csm/deploy.sh" && !namedCSM &&
+		!strings.Contains(body, "# Continuous Security Monitor") && !strings.Contains(body, "CSM_SIGNING_KEY_PEM") {
+		return ""
+	}
+	if hasVerifier && (strings.Contains(body, "skipping signature check") || strings.Contains(body, "skipping signature verification")) {
+		return "fail"
+	}
+	return "warn"
+}
+
 func deployScriptDoctorChecks() []DoctorCheck {
-	var checked, stale []string
+	var current, stale, unknown, unread []string
 	seen := make(map[string]bool)
 	for _, dir := range deployScriptSearchPaths {
 		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			unread = append(unread, strconv.Quote(dir))
 		}
 		for _, entry := range entries {
 			name := entry.Name()
@@ -37,61 +55,58 @@ func deployScriptDoctorChecks() []DoctorCheck {
 				continue
 			}
 			path := filepath.Join(dir, name)
+			label := strconv.Quote(path)
 			resolved, err := filepath.EvalSymlinks(path)
 			if err != nil {
-				resolved = path
+				unread = append(unread, label)
+				continue
 			}
 			if seen[resolved] {
 				continue
 			}
-			seen[resolved] = true
-			verifies, skips := deployScriptVerification(path)
-			if !verifies {
+			data, err := readBoundedFile(resolved, maxDeployScriptBytes)
+			if err != nil {
+				unread = append(unread, label)
 				continue
 			}
-			checked = append(checked, path)
-			if skips {
-				stale = append(stale, path)
+			switch deployScriptStatus(path, resolved, data) {
+			case "ok":
+				current = append(current, label)
+			case "fail":
+				stale = append(stale, label)
+			case "warn":
+				unknown = append(unknown, label)
+			default:
+				continue
 			}
+			seen[resolved] = true
 		}
 	}
-	const checkName = "deploy scripts verify releases"
-	if len(checked) == 0 {
+
+	check := DoctorCheck{Name: "deploy scripts verify releases", Status: "warn"}
+	var messages, fixes []string
+	if len(stale) > 0 {
+		check.Status = "fail"
+		messages = append(messages, "these deploy scripts can install an unverified release: "+strings.Join(stale, ", "))
+		fixes = append(fixes, "replace each stale script with the matching scripts/deploy.sh or scripts/deploy-gitlab.sh from the release, keeping any local registry credentials")
+	}
+	if len(unknown) > 0 {
+		messages = append(messages, "release verification unconfirmed for nonmatching copies: "+strings.Join(unknown, ", "))
+		fixes = append(fixes, "compare the nonmatching scripts with the release copies")
+	}
+	if len(unread) > 0 {
+		messages = append(messages, "could not inspect: "+strings.Join(unread, ", "))
+		fixes = append(fixes, "check directory access, symlink targets, and whether each script is a readable regular file of at most 1 MiB")
+	}
+	switch {
+	case len(messages) > 0:
+		check.Message = strings.Join(messages, ". ")
+		check.Fix = strings.Join(fixes, ", then ") + ", then re-run doctor"
+	case len(current) > 0:
+		check.Status = "ok"
+		check.Message = "checked " + strings.Join(current, ", ")
+	default:
 		return nil
 	}
-	if len(stale) == 0 {
-		return []DoctorCheck{{Name: checkName, Status: "ok", Message: "checked " + strings.Join(checked, ", ")}}
-	}
-	return []DoctorCheck{{
-		Name:    checkName,
-		Status:  "fail",
-		Message: fmt.Sprintf("these deploy scripts can install an unverified release: %s", strings.Join(stale, ", ")),
-		Fix: "replace each with the current scripts/deploy-gitlab.sh or scripts/deploy.sh from the release, " +
-			"keeping any local registry credentials, then re-run doctor",
-	}}
-}
-
-// deployScriptVerification reports whether a script performs release
-// verification and whether it retains a path that continues when it cannot.
-func deployScriptVerification(path string) (verifies, skips bool) {
-	// #nosec G304 -- Fixed operator directories are scanned; the path is not caller-supplied.
-	file, err := os.Open(path)
-	if err != nil {
-		return false, false
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxDeployScriptBytes {
-		return false, false
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxDeployScriptBytes))
-	if err != nil {
-		return false, false
-	}
-	body := string(data)
-	if !strings.Contains(body, "verify_signature") {
-		return false, false
-	}
-	return true, strings.Contains(body, "skipping signature check") ||
-		strings.Contains(body, "skipping signature verification")
+	return []DoctorCheck{check}
 }
