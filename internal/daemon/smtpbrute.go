@@ -594,7 +594,10 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 	// spray memory still calls clean. An address that had standing when the
 	// failures began is the owner.
 	if clean && trusted {
-		if failed, since := t.episodeFailedOn(ip, mailbox); !failed || t.standing.Has(ip, mailbox, since) {
+		failed, since := t.episodeFailedOn(ip, mailbox)
+		// The IMAP tracker's failures reach only the shared spray memory.
+		failed, since = otherProtocolFailures(t.spray, ip, mailbox, max(t.window, t.slowWindow), failed, since)
+		if !failed || t.standing.Has(ip, mailbox, since) {
 			t.standing.Note(ip, mailbox, at)
 		}
 	}
@@ -647,6 +650,21 @@ func (t *smtpAuthTracker) episodeFailedOn(ip, mailbox string) (bool, time.Time) 
 			failedOnMailbox(e.fastAccounts, mailbox, cutoff) || failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
 	}
 	return failed, since
+}
+
+// otherProtocolFailures folds the shared spray memory's failures on mailbox
+// into a tracker's own episode answer: standing is shared by both protocols,
+// so a guess over one must keep the other's login from earning it. The
+// episode start becomes the earlier of the two.
+func otherProtocolFailures(spray *mailSpray, ip, mailbox string, within time.Duration, failed bool, since time.Time) (bool, time.Time) {
+	sprayFailed, first := spray.FailedOn(ip, mailbox, within)
+	if !sprayFailed {
+		return failed, since
+	}
+	if since.IsZero() || first.Before(since) {
+		since = first
+	}
+	return true, since
 }
 
 // failedOnMailbox reports whether accounts holds a failure at or after

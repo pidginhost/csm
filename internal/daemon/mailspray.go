@@ -47,6 +47,9 @@ type sprayConfig struct {
 	Suppression      time.Duration // least gap between verdicts for one IP
 	MaxIPs           int           // tracked IP cap
 	BlockTTL         time.Duration // length of an enforce mode spray block
+	// EpisodeWindow is the longest failure window of the two trackers: how
+	// far back a failure still belongs to an address's current episode.
+	EpisodeWindow time.Duration
 }
 
 // sprayMinTrackedPerTracker is the validated floor of each tracker's
@@ -78,6 +81,8 @@ func sprayConfigFromThresholds(cfg *config.Config) sprayConfig {
 		Suppression:      time.Duration(max(th.SMTPBruteForceSuppressMin, th.MailBruteForceSuppressMin)) * time.Minute,
 		MaxIPs:           maxTracked(th.SMTPBruteForceMaxTracked) + maxTracked(th.MailBruteForceMaxTracked),
 		BlockTTL:         blockTTL,
+		EpisodeWindow: time.Duration(max(th.SMTPBruteForceWindowMin, th.MailBruteForceWindowMin,
+			th.SMTPBruteForceSlowWindowMin, th.MailBruteForceSlowWindowMin)) * time.Minute,
 	}
 }
 
@@ -594,6 +599,40 @@ func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {
 		}
 	}
 	return true
+}
+
+// FailedOn reports whether the address's evidence key failed on the
+// normalised mailbox, with no mailbox named, or past the name cap, within
+// the longer of within and the trackers' episode window, and the earliest
+// start of those failures. Both trackers record failures here, so either
+// can see a failure the other protocol logged.
+func (m *mailSpray) FailedOn(ip, mailbox string, within time.Duration) (bool, time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cfg.Window <= 0 {
+		return false, time.Time{}
+	}
+	e := m.ips[sprayEvidenceKey(sprayAddr(ip))]
+	if e == nil {
+		return false, time.Time{}
+	}
+	now := m.now()
+	window := max(within, m.cfg.EpisodeWindow)
+	since := now.Add(-window)
+	failed, first := false, time.Time{}
+	for _, name := range []string{mailbox, ""} {
+		if f, ok := e.failed[name]; ok && !f.last.Before(since) {
+			failed = true
+			if first.IsZero() || f.first.Before(first) {
+				first = f.first
+			}
+		}
+	}
+	// A failure refused at the name cap has no start: take the window's.
+	if e.hasUntracked(now, window) {
+		failed, first = true, since
+	}
+	return failed, first
 }
 
 // FirstUntrustedFailure returns the start of the address's active untrusted

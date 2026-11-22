@@ -430,3 +430,69 @@ func TestSMTPStandingDecisionUsesEarliestAddressEpisode(t *testing.T) {
 		}
 	}
 }
+
+// Standing is shared by IMAP and SMTP, so the guessed-login gate must see
+// failures on either protocol: guessing over SMTP and logging in over IMAP,
+// or the reverse, earns nothing.
+func TestStandingGateSeesOtherProtocolFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		owner bool
+		aged  bool // aged spray trust makes the spray memory call the login clean
+		fail  func(mail *mailAuthTracker, smtp *smtpAuthTracker)
+		login func(mail *mailAuthTracker, smtp *smtpAuthTracker, at time.Time)
+		want  bool
+	}{
+		{name: "SMTP failures then IMAP login", fail: func(_ *mailAuthTracker, smtp *smtpAuthTracker) {
+			recordSMTP(smtp, standingIP, standingBox, standingBox, standingBox, standingBox)
+		}, login: func(mail *mailAuthTracker, _ *smtpAuthTracker, at time.Time) {
+			mail.recordSuccessAt(standingIP, standingBox, at, knownCustomerIMAP, true)
+		}},
+		{name: "IMAP failure then SMTP login", fail: func(mail *mailAuthTracker, _ *smtpAuthTracker) {
+			mail.Record(standingIP, standingBox)
+		}, login: func(_ *mailAuthTracker, smtp *smtpAuthTracker, at time.Time) {
+			smtp.recordSuccessAt(standingIP, standingBox, at, serviceLog, true)
+		}},
+		{name: "unnamed SMTP failure then IMAP login", fail: func(_ *mailAuthTracker, smtp *smtpAuthTracker) {
+			smtp.Record(standingIP, "")
+		}, login: func(mail *mailAuthTracker, _ *smtpAuthTracker, at time.Time) {
+			mail.recordSuccessAt(standingIP, standingBox, at, knownCustomerIMAP, true)
+		}},
+		{name: "unnamed SMTP failure then IMAP login with aged trust", aged: true, fail: func(_ *mailAuthTracker, smtp *smtpAuthTracker) {
+			smtp.Record(standingIP, "")
+		}, login: func(mail *mailAuthTracker, _ *smtpAuthTracker, at time.Time) {
+			mail.recordSuccessAt(standingIP, standingBox, at, knownCustomerIMAP, true)
+		}},
+		{name: "owner: SMTP failure then IMAP login", owner: true, want: true, fail: func(_ *mailAuthTracker, smtp *smtpAuthTracker) {
+			smtp.Record(standingIP, standingBox)
+		}, login: func(mail *mailAuthTracker, _ *smtpAuthTracker, at time.Time) {
+			mail.recordSuccessAt(standingIP, standingBox, at, knownCustomerIMAP, true)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			s := newLoginStanding(clock.Now)
+			spray := standingSpray(clock)
+			mail := newTestMailTracker(t, clock)
+			mail.SetSpray(spray)
+			mail.SetLoginStanding(s)
+			smtp := newTestTracker(t, clock)
+			smtp.SetSpray(spray)
+			smtp.SetLoginStanding(s)
+			if tc.owner {
+				earnStanding(t, s, standingIP, standingBox)
+			}
+			if tc.aged {
+				ageTrust(t, spray, clock, standingIP, standingBox)
+			}
+			s.Changes()
+			tc.fail(mail, smtp)
+			clock.advance(time.Minute)
+			tc.login(mail, smtp, clock.Now())
+			upserts, _, _ := s.Changes()
+			if _, recorded := upserts[standingIP+" "+standingBox]; recorded != tc.want {
+				t.Fatalf("login recorded = %v, want %v", recorded, tc.want)
+			}
+		})
+	}
+}

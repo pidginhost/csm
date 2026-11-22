@@ -707,7 +707,8 @@ the mail service itself recorded, not a mail log file; not during an
 authentication backend outage; not a login the spray memory calls unclean or the
 tracker calls a cracked password; and not a login after failures on its own
 mailbox, or failures naming no mailbox, from the same address in its current
-failures, unless the address already had standing when they began. An
+failures over any of these protocols, unless the address already had standing
+when they began. An
 IMAP/POP/ManageSieve password crack from an address without prior standing, and any
 mailbox response to a compromise, remove the mailbox's standing from every
 address; the owner earns it again from new logins. Mailbox response withdraws

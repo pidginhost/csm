@@ -1262,6 +1262,10 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	e.times = pruneTimes(e.times, cutoff)
 	sprayMailbox := normalizeSprayMailbox(account)
 	failed, since := t.episodeFailedOn(ip, sprayMailbox, now)
+	if t.spray != nil && (trusted || t.fileLines) {
+		// The SMTP tracker's failures reach only the shared spray memory.
+		failed, since = otherProtocolFailures(t.spray, ip, sprayMailbox, max(t.window, t.slowWindow), failed, since)
+	}
 	standing := t.standing.Has(ip, sprayMailbox, since)
 	// Classify before the spray detector can learn from this login. Standing
 	// softens a compromise but must not turn it into a clean success.
