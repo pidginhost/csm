@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // pure-ftpd reads cPanel's or the packaged configuration file; Debian's
@@ -45,6 +46,29 @@ func PureFTPDDontResolve() (configs, missing []string) {
 		missing = []string{"pure-ftpd's configuration"}
 	}
 	return configs, missing
+}
+
+// PureFTPDConfigChanged returns when the newest configuration source last
+// changed: the latest status change of each path and, for a link, of its
+// target. pure-ftpd reads its configuration only when it starts, and a file
+// copied or moved into place keeps an older modification time but not an
+// older status change. ok is false with no source or one that cannot be read.
+func PureFTPDConfigChanged(configs []string) (changed time.Time, ok bool) {
+	if len(configs) == 0 {
+		return time.Time{}, false
+	}
+	for _, path := range configs {
+		for _, stat := range []func(string) (fs.FileInfo, error){os.Lstat, os.Stat} {
+			fi, err := stat(path)
+			if err != nil {
+				return time.Time{}, false
+			}
+			if at := fileChanged(fi); at.After(changed) {
+				changed = at
+			}
+		}
+	}
+	return changed, true
 }
 
 // pureFTPDConfEnables reports whether a pure-ftpd.conf line turns key on.

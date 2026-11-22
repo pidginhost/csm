@@ -7,13 +7,15 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 // Source selection is not a liveness check: watcher health reports failures
 // opening or following the selected source, including Stalwart's own log.
 // ftpMissing names pure-ftpd configuration sources that leave DontResolve
-// off; FTP failures then only alert.
-func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platform.MTAKind, platformDefaultFile string, ftpMissing []string) DoctorCheck {
+// off, and ftpRestart reports a running server older than its
+// configuration; FTP failures then only alert.
+func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platform.MTAKind, platformDefaultFile string, ftpMissing []string, ftpRestart bool) DoctorCheck {
 	c := DoctorCheck{Name: "login sources", Status: "ok"}
 	var files, fixes []string
 	syslogSource := "journal"
@@ -59,17 +61,27 @@ func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platfor
 				fixes = append(fixes, "set DontResolve yes in "+source+" and restart pure-ftpd")
 			}
 		}
+	} else if ftpRestart {
+		c.Status = "warn"
+		c.Message += ". FTP failures only alert until pure-ftpd restarts and reads its configuration"
+		fixes = append(fixes, "restart pure-ftpd")
 	}
 	c.Message += ". Watcher health reports source availability"
 	c.Fix = strings.Join(fixes, "; ")
 	return c
 }
 
-// pureFTPDMissingDontResolve names the pure-ftpd configuration sources
-// without DontResolve.
-func pureFTPDMissingDontResolve() []string {
-	_, missing := platform.PureFTPDDontResolve()
-	return missing
+// pureFTPDPeerGaps names the pure-ftpd configuration sources without
+// DontResolve. When every source sets it, restart reports a running server
+// that started before they last changed and so may still resolve names.
+func pureFTPDPeerGaps() (missing []string, restart bool) {
+	configs, missing := platform.PureFTPDDontResolve()
+	if len(configs) == 0 || len(missing) > 0 {
+		return missing, false
+	}
+	_, started, running := processctx.EarliestRootStart("/proc", platform.PureFTPDBinaries(), platform.PureFTPDServerTitle)
+	changed, ok := platform.PureFTPDConfigChanged(configs)
+	return nil, running && (!ok || !started.After(changed))
 }
 
 // joinServices names services as "A", "A and B" or "A, B and C".

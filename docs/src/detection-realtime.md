@@ -403,8 +403,18 @@ and an installed server with no known configuration leave FTP alert-only.
 
 Use `DontResolve yes` (also `DontResolve = yes` or `DontResolve : yes`) in a
 pure-ftpd configuration. For Debian's `/etc/pure-ftpd/conf/DontResolve`, write
-only `yes`. Restart pure-ftpd after changing the setting. FTP file findings
-remain alert-only and do not build attack scores, regardless of this setting.
+only `yes`. Restart pure-ftpd after changing the setting: it reads its
+configuration only when it starts. FTP failures also only alert while the
+running server started before any configuration source last changed, even
+when a rewrite left the setting as it was. CSM compares the start of the
+oldest root pure-ftpd process with each source's last change. That process
+must be the standalone server, not a connection worker. With only inetd
+sessions, an unreadable process, or an uncertain configuration, FTP failures
+only alert. Process identity and configuration are rechecked before approval;
+process table scans remain rate-limited. The daemon log warns once when this
+begins. When all sources enable `DontResolve` and a standalone server is
+confirmed, `csm doctor` asks for a restart if its configuration is newer.
+FTP file findings remain alert-only and do not build attack scores, regardless of this setting.
 Addresses in usernames or later message fields never identify the client.
 
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
