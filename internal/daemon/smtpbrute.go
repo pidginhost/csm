@@ -30,7 +30,9 @@ type smtpIPEntry struct {
 	// fastAccounts and fastUnvouched are slowAccounts and slowUnvouched for
 	// the fast window, so a burst confined to mailboxes the address has
 	// login standing on can be told from one that may target anything.
-	fastAccounts  map[string]time.Time
+	// fastAccounts keeps each mailbox's newest failure times, enough to tell
+	// whether standing still excuses it.
+	fastAccounts  map[string][]time.Time
 	fastUnvouched time.Time
 	// suspectedSuppressed rate-limits the login standing advisory on its
 	// own clock, shared by the fast and slow paths, so a later burst on
@@ -108,6 +110,23 @@ func appendSlowFailure(times []time.Time, ts time.Time) []time.Time {
 		times = times[len(times)-slowBruteMaxTimesPerIP:]
 	}
 	return times
+}
+
+// recordFastAccount is recordSlowAccount keeping each mailbox's newest
+// failure times in the window, at most keep of them.
+func recordFastAccount(accounts map[string][]time.Time, account string, now, cutoff time.Time, keep int) (map[string][]time.Time, bool) {
+	pruneMailAccountTimes(accounts, cutoff)
+	if account == "" {
+		return accounts, false
+	}
+	if _, exists := accounts[account]; !exists && len(accounts) >= slowBruteMaxAccountsPerIP {
+		return accounts, false
+	}
+	accounts = appendMailAccountTime(accounts, account, now)
+	if times := accounts[account]; len(times) > keep {
+		accounts[account] = times[len(times)-keep:]
+	}
+	return accounts, true
 }
 
 // recordSlowAccount prunes before insertion and refuses new keys after the
@@ -340,8 +359,10 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		e.episodeStart = now
 	}
 	e.times = append(e.times, now)
+	limit := standingFailureCap * t.perIPThreshold
+	overCap := func(account string) bool { return len(e.fastAccounts[account]) > limit }
 	var trackedFast bool
-	e.fastAccounts, trackedFast = recordSlowAccount(e.fastAccounts, normalizeMailAuthAccount(account), now, cutoff)
+	e.fastAccounts, trackedFast = recordFastAccount(e.fastAccounts, normalizeMailAuthAccount(account), now, cutoff, limit+1)
 	if !trackedFast {
 		e.fastUnvouched = now
 	}
@@ -365,7 +386,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold && !degraded {
 		switch {
-		case standingConfined(t.standing, ip, e.fastAccounts, e.fastUnvouched, standingAsOf()):
+		case standingConfined(t.standing, ip, e.fastAccounts, e.fastUnvouched, standingAsOf(), overCap):
 			// Every failure names a mailbox this address has login standing
 			// on: a device with an old saved password. It never falls
 			// through to the block.
@@ -420,7 +441,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 				switch {
 				case slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched):
 					// Aged login trust on every mailbox: silent, as before.
-				case standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingAsOf()):
+				case standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingAsOf(), overCap):
 					if !now.Before(e.suspectedSuppressed) {
 						e.suspectedSuppressed = now.Add(t.suppression)
 						findings = append(findings, loginStandingAdvisory("SMTP", ip,
@@ -647,7 +668,7 @@ func (t *smtpAuthTracker) episodeFailedOn(ip, mailbox string) (bool, time.Time) 
 		failed = failed ||
 			!e.fastUnvouched.IsZero() && !e.fastUnvouched.Before(cutoff) ||
 			!e.slowUnvouched.IsZero() && !e.slowUnvouched.Before(slowCutoff) ||
-			failedOnMailbox(e.fastAccounts, mailbox, cutoff) || failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
+			failedOnMailboxSince(e.fastAccounts, mailbox, cutoff) || failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
 	}
 	return failed, since
 }
@@ -672,6 +693,16 @@ func otherProtocolFailures(spray *mailSpray, ip, mailbox string, within time.Dur
 func failedOnMailbox(accounts map[string]time.Time, mailbox string, cutoff time.Time) bool {
 	for account, at := range accounts {
 		if !at.Before(cutoff) && normalizeSprayMailbox(account) == mailbox {
+			return true
+		}
+	}
+	return false
+}
+
+// failedOnMailboxSince is failedOnMailbox for per-mailbox failure times.
+func failedOnMailboxSince(accounts map[string][]time.Time, mailbox string, cutoff time.Time) bool {
+	for account, times := range accounts {
+		if hasTimeAtOrAfter(times, cutoff) && normalizeSprayMailbox(account) == mailbox {
 			return true
 		}
 	}
@@ -773,7 +804,7 @@ func (t *smtpAuthTracker) Purge() {
 
 	for k, e := range t.ips {
 		e.times = pruneTimes(e.times, now.Add(-t.window))
-		pruneSlowAccounts(e.fastAccounts, now.Add(-t.window))
+		pruneMailAccountTimes(e.fastAccounts, now.Add(-t.window))
 		if e.fastUnvouched.Before(now.Add(-t.window)) {
 			e.fastUnvouched = time.Time{}
 		}

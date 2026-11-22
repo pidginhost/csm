@@ -702,6 +702,13 @@ apply. Standing never excuses failures on any other mailbox, failures that name
 no mailbox, spray, subnet or account-spray detection, or SSH, FTP and cPanel
 logins.
 
+Standing excuses at most ten times the brute-force threshold
+(`mail_bruteforce_threshold`, or `smtp_bruteforce_threshold` for SMTP) of
+failures on one mailbox within the brute-force window. A device retrying an old
+saved password stays far below that; a guessing tool does not. Past it the
+mailbox has no standing for that address: the failures block as they would
+without standing, and a login after them is reported as a password crack.
+
 Standing is earned only from trusted logins the trackers treat as clean: lines
 the mail service itself recorded, not a mail log file; not during an
 authentication backend outage; not a login the spray memory calls unclean or the

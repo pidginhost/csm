@@ -164,16 +164,17 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 }
 
 // confinedToStanding is establishedGoodConfined where a failing mailbox may
-// also be one the address has login standing on (has). Caller must hold
-// t.mu and must have pruned the window state.
-func (e *mailIPEntry) confinedToStanding(now time.Time, window time.Duration, has func(account string) bool) bool {
+// also be one the address has login standing on (has), while its failures in
+// the window stay within limit. Caller must hold t.mu and must have pruned
+// the window state.
+func (e *mailIPEntry) confinedToStanding(now time.Time, window time.Duration, limit int, has func(account string) bool) bool {
 	if len(e.failedAccounts) == 0 {
 		return false
 	}
 	named := 0
 	for account, times := range e.failedAccounts {
 		named += len(times)
-		if !e.establishedGood(account, now, window) && !has(account) {
+		if !e.establishedGood(account, now, window) && (len(times) > limit || !has(account)) {
 			return false
 		}
 	}
@@ -820,6 +821,8 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 		}
 		return standingStart
 	}
+	limit := standingFailureCap * t.perIPThreshold
+	overCap := func(account string) bool { return len(e.failedAccounts[account]) > limit }
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold {
 		e.succ = pruneTimes(e.succ, cutoff)
@@ -851,7 +854,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 					Timestamp: now,
 					SourceIP:  ip,
 				})
-			case e.confinedToStanding(now, t.window, func(account string) bool {
+			case e.confinedToStanding(now, t.window, limit, func(account string) bool {
 				return t.standing.Has(ip, account, standingAsOf())
 			}):
 				// The same shape from a source whose standing on a mailbox rests on
@@ -917,7 +920,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 				len(e.slowAccounts) >= slowBruteMinAccounts {
 				safeSource := e.slowConfinedToEstablishedGood(now, t.window) ||
 					slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched)
-				standing := !safeSource && standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingAsOf())
+				standing := !safeSource && standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingAsOf(), overCap)
 				switch {
 				case safeSource && !now.Before(e.suspectedSuppressed):
 					e.suspectedSuppressed = now.Add(t.suppression)
@@ -1265,7 +1268,8 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	// Spray evidence also includes other IPv6 addresses in the /64. It
 	// gates new standing, but cannot revoke this address's exemption from
 	// the IMAP compromise response for its own current failure episode.
-	standing := t.standing.Has(ip, sprayMailbox, since)
+	// Failures past the cap are a guessing tool, not a stale saved password.
+	standing := len(e.failedAccounts[account]) <= standingFailureCap*t.perIPThreshold && t.standing.Has(ip, sprayMailbox, since)
 	if t.spray != nil && (trusted || t.fileLines) {
 		// The SMTP tracker's failures reach only the shared spray memory.
 		failed, since = otherProtocolFailures(t.spray, ip, sprayMailbox, max(t.window, t.slowWindow), failed, since)

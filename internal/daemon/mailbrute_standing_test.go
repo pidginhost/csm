@@ -771,3 +771,77 @@ func TestMailStandingCompromiseIgnoresNeighborEpisode(t *testing.T) {
 		t.Fatal("a neighboring address's spray episode revoked the owner's standing")
 	}
 }
+
+// A stale saved password retries far slower than a guessing tool. Standing
+// excuses up to ten times the brute-force threshold of failures on a mailbox
+// in the window; one more blocks the address as it would without standing.
+func TestMailStandingFailureCap(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		threshold int
+	}{{"default threshold", 5}, {"reloaded threshold", 3}} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr, s := newStandingMailTracker(t, clock)
+			tr.SetThresholds(tc.threshold, 8, 12, 10*time.Minute, time.Hour, 40, 6*time.Hour, 20000)
+			earnStanding(t, s, standingIP, standingBox)
+			out := recordMail(tr, standingIP, slices.Repeat([]string{standingBox}, 10*tc.threshold)...)
+			isStandingAdvisory(t, findCheck(out, "mail_bruteforce_suspected"), standingBox)
+			if findCheck(out, "mail_bruteforce") != nil {
+				t.Fatal("failures within the cap were blocked")
+			}
+			if f := findCheck(tr.Record(standingIP, standingBox), "mail_bruteforce"); f == nil || f.Severity != alert.Critical {
+				t.Fatal("a failure past the cap was not blocked")
+			}
+		})
+	}
+}
+
+// Past the cap the slow path does not excuse the address either: a sustained
+// flood on one mailbox is never advised as a stale password once the quiet
+// period of the paced advisory ends.
+func TestMailStandingSlowPathRespectsFailureCap(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	boxes := []string{"m1@example.com", "m2@example.com", "m3@example.com"}
+	earnStanding(t, s, standingIP, boxes...)
+	if out := slowCycle(tr, clock, standingIP, boxes, 40); findCheck(out, "mail_bruteforce_suspected") == nil {
+		t.Fatalf("setup: no paced advisory: %+v", out)
+	}
+	flood := clock.Now().Add(3 * time.Minute)
+	var out []alert.Finding
+	for minute := range 75 {
+		clock.t = flood.Add(time.Duration(minute) * time.Minute)
+		out = append(out, recordMail(tr, standingIP, slices.Repeat([]string{boxes[0]}, 6)...)...)
+	}
+	first := slices.IndexFunc(out, func(f alert.Finding) bool { return f.Check == "mail_bruteforce" })
+	if first < 0 {
+		t.Fatalf("a flood past the cap was not blocked: %+v", out)
+	}
+	if i := slices.IndexFunc(out[first:], func(f alert.Finding) bool { return f.Check == "mail_bruteforce_suspected" }); i >= 0 {
+		t.Fatalf("a flood past the cap was advised as a stale password: %+v", out[first+i])
+	}
+}
+
+// A login after failures past the cap is a guessed password, whatever the
+// address's standing; at the cap it is still the owner.
+func TestMailStandingCrackPastFailureCap(t *testing.T) {
+	for _, tc := range []struct {
+		failures int
+		want     alert.Severity
+	}{{50, alert.High}, {51, alert.Critical}} {
+		t.Run(fmt.Sprint(tc.failures), func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr, s := newStandingMailTracker(t, clock)
+			earnStanding(t, s, standingIP, standingBox)
+			recordMail(tr, standingIP, slices.Repeat([]string{standingBox}, tc.failures)...)
+			f := findCheck(tr.recordSuccessAt(standingIP, standingBox, clock.Now(), knownCustomerIMAP, true), "mail_account_compromised")
+			if f == nil || f.Severity != tc.want {
+				t.Fatalf("compromise = %+v, want severity %v", f, tc.want)
+			}
+			if kept := hasRow(s, standingIP, standingBox); kept != (tc.want == alert.High) {
+				t.Fatalf("standing kept = %v after a %v compromise", kept, tc.want)
+			}
+		})
+	}
+}

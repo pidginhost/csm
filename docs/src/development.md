@@ -1606,7 +1606,11 @@ failure, preserves it across saves, and retains failures for the longer of the
 spray and tracker windows. Overflow cannot move a known episode's start forward.
 Shared IPv6 /64 evidence gates earning standing only. Fast and slow block
 decisions and IMAP compromise severity use the tracker's earliest active
-exact-address episode, so a later address spelling cannot move the cutoff. The daemon
+exact-address episode, so a later address spelling cannot move the cutoff.
+Those decisions also drop standing for a mailbox whose failures in the
+tracker's fast window exceed `standingFailureCap` times its per-address
+threshold. The mail tracker counts them from its per-mailbox window lists; the
+SMTP tracker keeps the newest of them per mailbox in `fastAccounts`. The daemon
 loads the index before log readers start, saves it on the known-customer cycle,
 and mailbox response revokes the mailbox it acts on.
 

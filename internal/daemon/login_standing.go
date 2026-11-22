@@ -521,15 +521,22 @@ func (s *loginStanding) markCurrentLocked(raw string) {
 	s.queueDeleteLocked(raw)
 }
 
+// standingFailureCap bounds the failures standing excuses on one mailbox
+// within a tracker's brute-force window, as a multiple of that tracker's
+// per-address threshold. Devices retrying an old saved password stay far
+// below it; a guessing tool runs far faster. Past it the mailbox has no
+// standing for the address, so the cap only ever turns blocking back on.
+const standingFailureCap = 10
+
 // standingConfined reports whether every mailbox in accounts is one ip had
 // standing on as of asOf, the start of the failures, and no failure went
 // unvouched: one naming no mailbox or one the bounded map could not hold.
-func standingConfined(s *loginStanding, ip string, accounts map[string]time.Time, unvouched, asOf time.Time) bool {
+func standingConfined[V any](s *loginStanding, ip string, accounts map[string]V, unvouched, asOf time.Time, overCap func(account string) bool) bool {
 	if s == nil || len(accounts) == 0 || !unvouched.IsZero() {
 		return false
 	}
 	for account := range accounts {
-		if !s.Has(ip, account, asOf) {
+		if overCap(account) || !s.Has(ip, account, asOf) {
 			return false
 		}
 	}
@@ -555,7 +562,7 @@ func loginStandingAdvisory(service, ip, burst, targets string, now time.Time) al
 
 // formatStandingTargets names the mailboxes of a bounded failure map, at
 // most maxMailTargetsListed of them.
-func formatStandingTargets(accounts map[string]time.Time) string {
+func formatStandingTargets[V any](accounts map[string]V) string {
 	if len(accounts) == 0 {
 		return ""
 	}

@@ -538,3 +538,40 @@ func TestStandingGateUsesCurrentOtherProtocolEpisode(t *testing.T) {
 		})
 	}
 }
+
+func TestSMTPStandingFailureCap(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingSMTPTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	out := recordSMTP(tr, standingIP, slices.Repeat([]string{standingBox}, 50)...)
+	isStandingAdvisory(t, findCheck(out, "mail_bruteforce_suspected"), standingBox)
+	if findCheck(out, "smtp_bruteforce") != nil {
+		t.Fatal("failures within the cap were blocked")
+	}
+	if f := findCheck(tr.Record(standingIP, standingBox), "smtp_bruteforce"); f == nil || f.Severity != alert.Critical {
+		t.Fatal("a failure past the cap was not blocked")
+	}
+}
+
+func TestSMTPStandingSlowPathRespectsFailureCap(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingSMTPTracker(t, clock)
+	boxes := []string{"m1@example.com", "m2@example.com", "m3@example.com"}
+	earnStanding(t, s, standingIP, boxes...)
+	if out := smtpSlowCycle(tr, clock, standingIP, boxes, 40); findCheck(out, "mail_bruteforce_suspected") == nil {
+		t.Fatalf("setup: no paced advisory: %+v", out)
+	}
+	flood := clock.Now().Add(3 * time.Minute)
+	var out []alert.Finding
+	for minute := range 75 {
+		clock.t = flood.Add(time.Duration(minute) * time.Minute)
+		out = append(out, recordSMTP(tr, standingIP, slices.Repeat([]string{boxes[0]}, 6)...)...)
+	}
+	first := slices.IndexFunc(out, func(f alert.Finding) bool { return f.Check == "smtp_bruteforce" })
+	if first < 0 {
+		t.Fatalf("a flood past the cap was not blocked: %+v", out)
+	}
+	if i := slices.IndexFunc(out[first:], func(f alert.Finding) bool { return f.Check == "mail_bruteforce_suspected" }); i >= 0 {
+		t.Fatalf("a flood past the cap was advised as a stale password: %+v", out[first+i])
+	}
+}
