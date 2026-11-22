@@ -167,3 +167,32 @@ func TestLoginStandingSaveFailureRetriesCurrentState(t *testing.T) {
 		t.Fatalf("retry lost a login or restored revoked standing: %+v", saved)
 	}
 }
+
+// Scored compromise evidence suspends a mailbox without going through
+// respondToCompromise; it withdraws the mailbox's standing the same way.
+func TestMailboxEvidenceRevokesStanding(t *testing.T) {
+	for name, cfg := range map[string]*config.Config{
+		"enabled":  eximAutoHoldConfig(),
+		"dry-run":  dryRunConfig(),
+		"disabled": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			evidenceCase(t)
+			clock := &staticClock{t: standingBase}
+			s := newLoginStanding(clock.Now)
+			withMailboxResponseStanding(t, s)
+			const box = "real@victim.example"
+			earnStanding(t, s, standingIP, box, otherBox)
+			earnStanding(t, s, "198.51.100.1", box)
+			at := time.Now()
+			observeMailboxSignal(cfg, box, newCountry("DE", at.Add(-3*time.Hour)))
+			onlyIncident(t, observeMailboxSignal(cfg, box, newCountry("BR", at)))
+			if hasRow(s, standingIP, box) || hasRow(s, "198.51.100.1", box) {
+				t.Fatal("a mailbox CSM declared compromised kept its standing")
+			}
+			if !hasRow(s, standingIP, otherBox) {
+				t.Fatal("the response revoked another mailbox")
+			}
+		})
+	}
+}
