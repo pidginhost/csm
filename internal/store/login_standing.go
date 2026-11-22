@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,36 +78,36 @@ func (db *DB) SaveLoginStanding(upserts map[string]LoginStanding, deletes []stri
 // the records are still returned when that deletion fails.
 func (db *DB) LoadLoginStanding() (map[string]LoginStanding, error) {
 	out := make(map[string]LoginStanding)
-	var drop [][]byte
-	err := db.bolt.View(func(tx *bolt.Tx) error {
+	// Keep selection and pruning in the same transaction so a concurrent
+	// save cannot replace a rejected row before we delete it. Prune in
+	// place rather than retaining an unbounded list of rejected keys.
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(loginStandingBucket))
 		if b == nil {
 			return nil
 		}
-		return b.ForEach(func(k, v []byte) error {
-			row, ok := decodeLoginStanding(k, v)
-			if !ok || len(out) >= maxLoginStandingRecords {
-				drop = append(drop, append([]byte(nil), k...))
-				return nil
-			}
-			out[string(k)] = row
-			return nil
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(drop) > 0 {
-		err = db.bolt.Update(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte(loginStandingBucket))
-			for _, k := range drop {
-				if derr := b.Delete(k); derr != nil {
-					return derr
+		c := b.Cursor()
+		for k, v := c.First(); k != nil; {
+			if len(out) < maxLoginStandingRecords {
+				if row, ok := decodeLoginStanding(k, v); ok {
+					out[string(k)] = row
+					k, v = c.Next()
+					continue
 				}
 			}
-			return nil
-		})
-	}
+			key := bytes.Clone(k)
+			if v == nil {
+				if err := b.DeleteBucket(key); err != nil {
+					return err
+				}
+			} else if err := c.Delete(); err != nil {
+				return err
+			}
+			// Deletion shifts the cursor; seek to avoid skipping its successor.
+			k, v = c.Seek(key)
+		}
+		return nil
+	})
 	return out, err
 }
 
@@ -127,12 +128,12 @@ func DisarmLoginStandingSnapshot(path string) error {
 	if err := verifySnapshot(path); err != nil {
 		return err
 	}
-	snapshot, err := bolt.Open(path, 0o600, nil)
+	snapshot, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true})
 	if err != nil {
 		return fmt.Errorf("opening state snapshot: %w", err)
 	}
 	held := false
-	if err := snapshot.View(func(tx *bolt.Tx) error {
+	if err = snapshot.View(func(tx *bolt.Tx) error {
 		if b := tx.Bucket([]byte(loginStandingBucket)); b != nil {
 			k, _ := b.Cursor().First()
 			held = k != nil
@@ -142,20 +143,25 @@ func DisarmLoginStandingSnapshot(path string) error {
 		_ = snapshot.Close()
 		return fmt.Errorf("checking login standing snapshot: %w", err)
 	}
-	// A write transaction rewrites metadata: leave a clean snapshot as it is.
+	if err = snapshot.Close(); err != nil {
+		return fmt.Errorf("closing state snapshot: %w", err)
+	}
+	// Even opening writable can persist a missing freelist and rewrite
+	// metadata. Only reopen for writing when standing must be removed.
 	if !held {
-		if err := snapshot.Close(); err != nil {
-			return fmt.Errorf("closing state snapshot: %w", err)
-		}
 		return nil
 	}
-	if err := snapshot.Update(func(tx *bolt.Tx) error {
+	snapshot, err = bolt.Open(path, 0o600, nil)
+	if err != nil {
+		return fmt.Errorf("opening state snapshot for disarming: %w", err)
+	}
+	if err = snapshot.Update(func(tx *bolt.Tx) error {
 		return tx.DeleteBucket([]byte(loginStandingBucket))
 	}); err != nil {
 		_ = snapshot.Close()
 		return fmt.Errorf("disarming login standing snapshot: %w", err)
 	}
-	if err := snapshot.Close(); err != nil {
+	if err = snapshot.Close(); err != nil {
 		return fmt.Errorf("closing state snapshot: %w", err)
 	}
 	return nil

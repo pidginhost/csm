@@ -178,6 +178,9 @@ func checkDamagedSnapshotReaders(t *testing.T, noFreelistSync bool, damage func(
 		{"disarm firewall rollback", false, func(snapshot, _ string) error {
 			return DisarmFirewallRollbackSnapshot(snapshot)
 		}},
+		{"disarm login standing", false, func(snapshot, _ string) error {
+			return DisarmLoginStandingSnapshot(snapshot)
+		}},
 		{"disarm browser sessions", false, func(snapshot, _ string) error {
 			return DisarmBrowserSessionsSnapshot(snapshot)
 		}},

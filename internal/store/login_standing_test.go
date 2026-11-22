@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -153,5 +154,117 @@ func TestDisarmLoginStandingSnapshotLeavesCleanSnapshot(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("disarming a snapshot without login standing rewrote it")
+	}
+}
+
+// Nested buckets are damaged records too, and must not roll back cleanup.
+func TestLoginStandingLoadDropsNestedBuckets(t *testing.T) {
+	db := openTestDB(t)
+	want := map[string]LoginStanding{"opaque mailbox with spaces": {First: 1, Days: []int64{1}}}
+	if err := db.SaveLoginStanding(want, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(loginStandingBucket))
+		for _, key := range []string{"a", "b", "z"} {
+			child, err := b.CreateBucket([]byte(key))
+			if err != nil {
+				return err
+			}
+			if err := child.Put([]byte("child"), []byte("damage")); err != nil {
+				return err
+			}
+		}
+		return b.Put([]byte("c"), []byte("not json"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LoadLoginStanding()
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("load = %v, %v; want %v", got, err, want)
+	}
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(loginStandingBucket))
+		if n := b.Stats().KeyN; n != 1 {
+			t.Errorf("retained %d keys, want one valid row", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoginStandingLoadPrunesSurplus(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(loginStandingBucket))
+		for i := 0; i < maxLoginStandingRecords+10; i++ {
+			if err := b.Put(fmt.Appendf(nil, "%06d", i), []byte(`{"first":1,"days":[1]}`)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LoadLoginStanding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != maxLoginStandingRecords {
+		t.Fatalf("loaded %d rows", len(got))
+	}
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(loginStandingBucket))
+		if n := b.Stats().KeyN; n != maxLoginStandingRecords {
+			t.Errorf("retained %d rows", n)
+		}
+		return b.ForEach(func(k, v []byte) error {
+			if _, ok := got[string(k)]; !ok {
+				t.Errorf("unloaded row retained: %s", k)
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDisarmLoginStandingSnapshotPreservesUnsyncedFreelist(t *testing.T) {
+	for _, bucketPresent := range []bool{false, true} {
+		t.Run(fmt.Sprint(bucketPresent), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "csm.db")
+			db, openErr := bolt.Open(path, 0600, &bolt.Options{NoFreelistSync: true})
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			if err := db.Update(func(tx *bolt.Tx) error {
+				name := "unrelated"
+				if bucketPresent {
+					name = loginStandingBucket
+				}
+				_, err := tx.CreateBucket([]byte(name))
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = DisarmLoginStandingSnapshot(path); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("disarming a clean snapshot changed its bytes")
+			}
+		})
 	}
 }

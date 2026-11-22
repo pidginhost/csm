@@ -122,6 +122,8 @@ pointer to the startup log.
 
 `csm store export` / `csm store import` (below) is the lower-level alternative: tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
 
+Login standing is excluded from backups and exports, and removed from snapshots during restore and full store import. This removal leaves snapshots with missing or empty login standing unchanged. Loading standing discards damaged and surplus records while preserving concurrent login updates.
+
 Restore and `csm store import` refuse an archive whose admission ledger is behind this host's once the ledger has started live: the archive's ledger never started live, or its clock is behind. Restoring it would spend an hour's block budget twice and replay the live start from older blocks. `--only=baseline` is refused too when it carries the firewall state, because it puts that file beside the newer ledger; `--only=firewall` is not. A host whose ledger never started live, or that has none, is not subject to this comparison. A host ledger this build cannot read, including a truncated database, does not refuse, so a restore can repair it. Pass `--force` to either command to bypass this comparison.
 
 `csm store import` rejects archives that place `csm.db` among state files; the database belongs only in `bbolt.snapshot`. A baseline import carrying `firewall/state.json` also verifies the snapshot's checksum when the manifest provides one. `--force` does not bypass either format or checksum validation. Baseline imports without firewall state still ignore the unused snapshot.
