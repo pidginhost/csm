@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -166,8 +167,8 @@ func TestSMTPStandingSuccessAfterFirstFailureEarnsNothing(t *testing.T) {
 	tr.Record(standingIP, standingBox)
 	clock.advance(time.Minute)
 	tr.recordSuccessAt(standingIP, standingBox, clock.Now(), serviceLog, true)
-	if s.Has(standingIP, standingBox, standingBase) || !s.Has(standingIP, standingBox, standingBase.Add(25*time.Hour)) {
-		t.Fatal("setup: the login was not recorded for later episodes only")
+	if s.Has(standingIP, standingBox, standingBase.Add(25*time.Hour)) {
+		t.Fatal("a login after failures on its own mailbox earned standing")
 	}
 	clock.advance(time.Minute)
 	if out := recordSMTP(tr, standingIP, standingBox, standingBox, standingBox, standingBox); findCheck(out, "smtp_bruteforce") == nil {
@@ -236,5 +237,58 @@ func TestStandingSharedAcrossMailAndSMTP(t *testing.T) {
 	out = recordMail(mail, "198.51.100.1", otherBox, otherBox, otherBox, otherBox, otherBox)
 	if findCheck(out, "mail_bruteforce_suspected") == nil || findCheck(out, "mail_bruteforce") != nil {
 		t.Fatalf("SMTP standing did not cover IMAP failures: %+v", out)
+	}
+}
+
+// The spray memory calls a login after failures on its own mailbox clean,
+// but that login may be a guessed password: it earns no standing unless
+// the address already had standing when the failures began.
+func TestSMTPStandingGuessedLoginEarnsNothing(t *testing.T) {
+	for name, fail := range map[string]func(tr *smtpAuthTracker, clock *staticClock){
+		"same mailbox": func(tr *smtpAuthTracker, _ *staticClock) { recordSMTP(tr, standingIP, standingBox, standingBox) },
+		"no mailbox":   func(tr *smtpAuthTracker, _ *staticClock) { recordSMTP(tr, standingIP, "", "") },
+		// A temporary reply is never spray evidence, so only the tracker
+		// remembers this failure.
+		"no mailbox, unseen by spray": func(tr *smtpAuthTracker, _ *staticClock) {
+			tr.RecordTemporaryFailure(standingIP, "", alert.Observation{})
+		},
+		"same mailbox, earlier in the slow window": func(tr *smtpAuthTracker, clock *staticClock) {
+			recordSMTP(tr, standingIP, standingBox)
+			clock.advance(time.Hour)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr, s := newStandingSMTPTracker(t, clock)
+			tr.SetSpray(standingSpray(clock))
+			fail(tr, clock)
+			clock.advance(time.Minute)
+			tr.recordSuccessAt(standingIP, standingBox, clock.Now(), serviceLog, true)
+			if n := s.Len(); n != 0 {
+				t.Fatalf("rows = %d after a login that may be guessed, want 0", n)
+			}
+		})
+	}
+}
+
+// Failures on another mailbox leave a clean login's standing alone, and an
+// address that had standing before its failures keeps earning it.
+func TestSMTPStandingOwnerLoginStillEarns(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingSMTPTracker(t, clock)
+	tr.SetSpray(standingSpray(clock))
+	recordSMTP(tr, "198.51.100.1", otherBox)
+	tr.recordSuccessAt("198.51.100.1", standingBox, clock.Now(), serviceLog, true)
+	if !hasRow(s, "198.51.100.1", standingBox) {
+		t.Fatal("failures on another mailbox stopped a clean login earning standing")
+	}
+
+	earnStanding(t, s, standingIP, standingBox)
+	recordSMTP(tr, standingIP, standingBox)
+	clock.advance(time.Minute)
+	tr.recordSuccessAt(standingIP, standingBox, clock.Now(), serviceLog, true)
+	upserts, _, _ := s.Changes()
+	if row := upserts[standingIP+" "+standingBox]; !slices.Contains(row.Days, clock.Now().Unix()) {
+		t.Fatalf("the owner's login after a mistype was not recorded: %+v", row)
 	}
 }

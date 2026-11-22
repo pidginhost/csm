@@ -575,15 +575,50 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 		return nil
 	}
 	clean, v := t.spray.Success(ip, mailbox)
-	// Only a clean login from the service's own log earns login standing.
+	// Only a clean login from the service's own log earns login standing,
+	// and not one after failures on its own mailbox, or ones naming none, in
+	// the address's current episode: that may be a guessed password the
+	// spray memory still calls clean. An address that had standing when the
+	// failures began is the owner.
 	if clean && trusted {
-		t.standing.Note(ip, mailbox, at)
+		if failed, since := t.episodeFailedOn(ip, mailbox); !failed || t.standing.Has(ip, mailbox, since) {
+			t.standing.Note(ip, mailbox, at)
+		}
 	}
 	if v == nil {
 		return nil
 	}
 	t.findingsEmitted++
 	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
+}
+
+// episodeFailedOn reports whether ip's current failures include one on the
+// normalised mailbox or one that named none, and when that episode began.
+// Caller must hold t.mu.
+func (t *smtpAuthTracker) episodeFailedOn(ip, mailbox string) (bool, time.Time) {
+	e := t.ips[ip]
+	if e == nil {
+		return false, time.Time{}
+	}
+	now := t.now()
+	for _, w := range []struct {
+		accounts  map[string]time.Time
+		unvouched time.Time
+		cutoff    time.Time
+	}{
+		{e.fastAccounts, e.fastUnvouched, now.Add(-t.window)},
+		{e.slowAccounts, e.slowUnvouched, now.Add(-t.slowWindow)},
+	} {
+		if !w.unvouched.IsZero() && !w.unvouched.Before(w.cutoff) {
+			return true, e.episodeStart
+		}
+		for account, at := range w.accounts {
+			if !at.Before(w.cutoff) && normalizeSprayMailbox(account) == mailbox {
+				return true, e.episodeStart
+			}
+		}
+	}
+	return false, e.episodeStart
 }
 
 // Forget drops ip's failure counts and pending rejections after an operator
