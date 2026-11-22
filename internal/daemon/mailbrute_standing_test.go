@@ -668,3 +668,60 @@ func TestMailStandingAddressSpellingsKeepEarliestEpisode(t *testing.T) {
 		t.Fatalf("login after the earlier episode began changed standing: %+v", row)
 	}
 }
+
+// Standing earned after an address started failing cannot soften the same
+// episode when the log later uses another spelling of that address.
+func TestMailStandingDecisionsUseEarliestAddressEpisode(t *testing.T) {
+	for _, kind := range []string{"fast", "slow", "compromise"} {
+		for _, prior := range []bool{false, true} {
+			t.Run(fmt.Sprint(kind, "/prior=", prior), func(t *testing.T) {
+				clock := &staticClock{t: standingBase}
+				tr, s := newStandingMailTracker(t, clock)
+				boxes := []string{standingBox, otherBox, "third@example.com"}
+				if prior {
+					earnStanding(t, s, standingIP, boxes...)
+				}
+				for _, box := range boxes {
+					s.Note(standingIP, box, standingD2)
+				}
+				tr.Record(standingIP, otherBox)
+				clock.advance(time.Minute)
+				for _, box := range boxes {
+					s.Note(standingIP, box, clock.Now())
+				}
+				clock.advance(time.Minute)
+				alias := "::ffff:" + standingIP
+				var out []alert.Finding
+				switch kind {
+				case "compromise":
+					recordMail(tr, alias, standingBox, standingBox)
+					out = tr.RecordSuccess(alias, standingBox)
+				case "slow":
+					for i := range 40 {
+						out = append(out, tr.Record(alias, boxes[i%len(boxes)])...)
+						clock.advance(3 * time.Minute)
+					}
+				default:
+					out = recordMail(tr, alias, standingBox, standingBox, standingBox, standingBox, standingBox)
+				}
+				check := "mail_bruteforce"
+				if kind == "compromise" {
+					check = "mail_account_compromised"
+				}
+				severity := alert.Critical
+				if prior {
+					severity = alert.High
+					if kind != "compromise" {
+						check = "mail_bruteforce_suspected"
+					}
+				}
+				if f := findCheck(out, check); len(out) != 1 || f == nil || f.Severity != severity {
+					t.Fatalf("want one %s at %v, got %+v", check, severity, out)
+				}
+				if kind == "compromise" && hasRow(s, standingIP, standingBox) != prior {
+					t.Fatal("compromise did not revoke exactly the standing earned during the episode")
+				}
+			})
+		}
+	}
+}

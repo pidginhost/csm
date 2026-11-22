@@ -807,6 +807,10 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	e.times = append(e.times, now)
 	e.failedAccounts = appendMailAccountTime(e.failedAccounts, account, now)
 	e.lastSeen = now
+	standingStart := e.episodeStart
+	if t.standing != nil && t.aliased {
+		_, standingStart = t.episodeFailedOn(ip, "", now)
+	}
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold {
 		e.succ = pruneTimes(e.succ, cutoff)
@@ -839,7 +843,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 					SourceIP:  ip,
 				})
 			case e.confinedToStanding(now, t.window, func(account string) bool {
-				return t.standing.Has(ip, account, e.episodeStart)
+				return t.standing.Has(ip, account, standingStart)
 			}):
 				// The same shape from a source whose standing on a mailbox rests on
 				// earlier days of trusted logins. It never falls through to the block.
@@ -904,7 +908,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 				len(e.slowAccounts) >= slowBruteMinAccounts {
 				safeSource := e.slowConfinedToEstablishedGood(now, t.window) ||
 					slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched)
-				standing := !safeSource && standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, e.episodeStart)
+				standing := !safeSource && standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingStart)
 				switch {
 				case safeSource && !now.Before(e.suspectedSuppressed):
 					e.suspectedSuppressed = now.Add(t.suppression)
@@ -1248,7 +1252,8 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
 	e.times = pruneTimes(e.times, cutoff)
 	sprayMailbox := normalizeSprayMailbox(account)
-	standing := t.standing.Has(ip, sprayMailbox, e.episodeStart)
+	failed, since := t.episodeFailedOn(ip, sprayMailbox, now)
+	standing := t.standing.Has(ip, sprayMailbox, since)
 	// Classify before the spray detector can learn from this login. Standing
 	// softens a compromise but must not turn it into a clean success.
 	// A mailbox that already succeeds from this IP, or that it held good
@@ -1278,7 +1283,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 			// A login after failures on its own mailbox, or ones naming none,
 			// in this episode may be a password guessed below the crack
 			// threshold; an address that had standing then is the owner.
-			if failed, since := t.episodeFailedOn(ip, sprayMailbox, now); !failed || t.standing.Has(ip, sprayMailbox, since) {
+			if !failed || t.standing.Has(ip, sprayMailbox, since) {
 				t.standing.Note(ip, sprayMailbox, at)
 			}
 		}

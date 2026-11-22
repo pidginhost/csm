@@ -683,18 +683,23 @@ history do not qualify; a new trusted mail login is required.
 An address has login standing on a mailbox when trusted logins from that exact
 address to that mailbox began at least a day before its current failures, fall
 on at least two different days (UTC), and the latest of them was within two
-weeks of the failures starting. Logins after the failures began never count, so
-a login cannot excuse the attack it follows. IMAP, POP, ManageSieve and SMTP
+weeks of the failures starting. The earliest active failure episode across all
+spellings of that address sets this cutoff for both earning standing and
+softening findings. Logins after the failures began never count, so a login
+cannot excuse the attack it follows. IMAP, POP, ManageSieve and SMTP
 share one standing per mailbox, since they use one password. An IPv6 address is
 judged on its own, not by its /64.
 
 A burst of failed logins, fast or paced, from an address that only fails on
 mailboxes it has standing on raises `mail_bruteforce_suspected` instead of a
 block: the usual cause is a device still trying an old saved password. A login
-after failures on a mailbox the address had standing on before they began
-raises `mail_account_compromised` at High: no block, no mailbox suspension, and
-the address keeps its trust. Standing never excuses failures on any other
-mailbox, failures that name no mailbox, spray, subnet or account-spray
+that the IMAP/POP/ManageSieve tracker would otherwise report as a password crack
+raises `mail_account_compromised` at High when the address had standing on that
+mailbox before the failures: no block or mailbox suspension from that finding,
+and the address keeps its trust. The existing good-source and success-dominance
+exemptions still raise no compromise finding. Separate spray verdicts still
+apply. Standing never excuses failures on any other mailbox, failures that name
+no mailbox, spray, subnet or account-spray
 detection, or SSH, FTP and cPanel logins.
 
 Standing is earned only from trusted logins the trackers treat as clean: lines
@@ -702,9 +707,12 @@ the mail service itself recorded, not a mail log file; not during an
 authentication backend outage; not a login the spray memory calls unclean or the
 tracker calls a cracked password; and not a login after failures on its own
 mailbox, or failures naming no mailbox, from the same address in its current
-failures, unless the address already had standing when they began. A detected
-cracked password and any mailbox response to a compromise remove the mailbox's
-standing from every address; the owner earns it again from new logins.
+failures, unless the address already had standing when they began. An IMAP/POP/
+ManageSieve password crack from an address without prior standing, and any
+mailbox response to a compromise, remove the mailbox's standing from every
+address; the owner earns it again from new logins. Mailbox response withdraws
+standing even in dry run or with auto-response disabled. SMTP has no separate
+password-crack detector that revokes standing.
 
 Standing is saved every minute and at shutdown, and is never written to backups
 or exports. The index is bounded: a mailbox drops its least recently used

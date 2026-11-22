@@ -1599,7 +1599,9 @@ trust or standing, and revokes neither. Spray verdicts still apply.
 
 Both trackers withhold standing from a login that follows failures on its own
 mailbox, or failures naming none, in the address's active episode under any
-spelling, unless the address had standing when that episode began. The daemon
+spelling, unless the address had standing when that episode began. Fast and
+slow block decisions and IMAP compromise severity use that same earliest
+active episode, so a later address spelling cannot move the cutoff. The daemon
 loads the index before log readers start, saves it on the known-customer cycle,
 and mailbox response revokes the mailbox it acts on.
 

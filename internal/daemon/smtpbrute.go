@@ -349,10 +349,14 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		e.fastUnvouched = time.Time{}
 	}
 	e.lastSeen = now
+	standingStart := e.episodeStart
+	if t.standing != nil && t.aliased {
+		_, standingStart = t.episodeFailedOn(ip, "")
+	}
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold && !degraded {
 		switch {
-		case standingConfined(t.standing, ip, e.fastAccounts, e.fastUnvouched, e.episodeStart):
+		case standingConfined(t.standing, ip, e.fastAccounts, e.fastUnvouched, standingStart):
 			// Every failure names a mailbox this address has login standing
 			// on: a device with an old saved password. It never falls
 			// through to the block.
@@ -407,7 +411,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 				switch {
 				case slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched):
 					// Aged login trust on every mailbox: silent, as before.
-				case standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, e.episodeStart):
+				case standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingStart):
 					if !now.Before(e.suspectedSuppressed) {
 						e.suspectedSuppressed = now.Add(t.suppression)
 						findings = append(findings, loginStandingAdvisory("SMTP", ip,

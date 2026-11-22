@@ -392,3 +392,41 @@ func TestSMTPStandingAddressSpellingsIgnoreExpiredAndOtherSources(t *testing.T) 
 		})
 	}
 }
+
+func TestSMTPStandingDecisionUsesEarliestAddressEpisode(t *testing.T) {
+	for _, slow := range []bool{false, true} {
+		for _, prior := range []bool{false, true} {
+			t.Run(fmt.Sprint("slow=", slow, "/prior=", prior), func(t *testing.T) {
+				clock := &staticClock{t: standingBase}
+				tr, s := newStandingSMTPTracker(t, clock)
+				boxes := []string{standingBox, otherBox, "third@example.com"}
+				if prior {
+					earnStanding(t, s, standingIP, boxes...)
+				}
+				for _, box := range boxes {
+					s.Note(standingIP, box, standingD2)
+				}
+				tr.Record(standingIP, otherBox)
+				clock.advance(time.Minute)
+				for _, box := range boxes {
+					s.Note(standingIP, box, clock.Now())
+				}
+				clock.advance(time.Minute)
+				alias := "::ffff:" + standingIP
+				var out []alert.Finding
+				if slow {
+					out = smtpSlowCycle(tr, clock, alias, boxes, 40)
+				} else {
+					out = recordSMTP(tr, alias, standingBox, standingBox, standingBox, standingBox, standingBox)
+				}
+				check, severity := "smtp_bruteforce", alert.Critical
+				if prior {
+					check, severity = "mail_bruteforce_suspected", alert.High
+				}
+				if f := findCheck(out, check); len(out) != 1 || f == nil || f.Severity != severity {
+					t.Fatalf("want one %s at %v, got %+v", check, severity, out)
+				}
+			})
+		}
+	}
+}

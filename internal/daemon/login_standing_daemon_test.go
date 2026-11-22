@@ -112,3 +112,58 @@ func TestMailboxResponseRevokesStanding(t *testing.T) {
 		})
 	}
 }
+
+func TestLoginStandingShutdownSavesLateChanges(t *testing.T) {
+	withGlobalStore(t, func(db *store.DB) {
+		clock := &staticClock{t: standingBase}
+		d := &Daemon{loginStanding: newLoginStanding(clock.Now)}
+		d.loadLoginStanding()
+		earnStanding(t, d.loginStanding, standingIP, standingBox)
+		d.persistLoginStanding()
+		// Log readers and response can finish after the periodic saver exits.
+		earnStanding(t, d.loginStanding, standingIP, otherBox)
+		d.loginStanding.Revoke(standingBox)
+		d.flushPendingAlertsOnShutdown()
+		saved, err := db.LoadLoginStanding()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := saved[standingIP+" "+otherBox]; !ok || len(saved) != 1 {
+			t.Fatalf("shutdown did not save the late login and revocation: %+v", saved)
+		}
+	})
+}
+
+func TestLoginStandingSaveFailureRetriesCurrentState(t *testing.T) {
+	dir := t.TempDir()
+	db, restore := openTestBoltStore(t, dir)
+	t.Cleanup(restore)
+	clock := &staticClock{t: standingBase}
+	d := &Daemon{loginStanding: newLoginStanding(clock.Now)}
+	d.loadLoginStanding()
+	earnStanding(t, d.loginStanding, standingIP, standingBox, otherBox)
+	d.persistLoginStanding()
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const newIP = "198.51.100.1"
+	earnStanding(t, d.loginStanding, newIP, otherBox)
+	d.persistLoginStanding() // Closed store: the extracted changes must be retried.
+	d.loginStanding.Revoke(standingBox)
+	reopened, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	store.SetGlobal(reopened)
+	d.persistLoginStanding()
+	saved, err := reopened.LoadLoginStanding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, oldLogin := saved[standingIP+" "+otherBox]
+	_, newLogin := saved[newIP+" "+otherBox]
+	if len(saved) != 2 || !oldLogin || !newLogin {
+		t.Fatalf("retry lost a login or restored revoked standing: %+v", saved)
+	}
+}
