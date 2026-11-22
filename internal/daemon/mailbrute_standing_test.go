@@ -725,3 +725,23 @@ func TestMailStandingDecisionsUseEarliestAddressEpisode(t *testing.T) {
 		}
 	}
 }
+
+// Without standing, a login after repeated failures still reaches the spray
+// memory's single-mailbox advisory, as before login standing: it can be the
+// only alert naming a second address in a cracked mailbox's quiet period.
+func TestMailCompromiseKeepsSpraySingleMailboxAdvisory(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr := newTestMailTracker(t, clock)
+	tr.SetSpray(newMailSpray(sprayConfig{Mode: sprayObserve, Window: 7 * 24 * time.Hour, TrustAge: 10 * time.Minute, Suppression: time.Hour, MaxIPs: 20000}, clock.Now))
+	const first, second = "203.0.113.5", "198.51.100.2"
+	tr.Record(second, standingBox)
+	clock.advance(61 * time.Minute)
+	recordMail(tr, first, standingBox, standingBox)
+	if f := findCheck(tr.RecordSuccess(first, standingBox), "mail_account_compromised"); f == nil || f.Severity != alert.Critical {
+		t.Fatalf("setup: crack = %+v, want Critical", f)
+	}
+	recordMail(tr, second, standingBox, standingBox)
+	if f := findCheck(tr.RecordSuccess(second, standingBox), "mail_account_compromised"); f == nil || f.SourceIP != second {
+		t.Fatalf("the advisory for the second address was lost: %+v", f)
+	}
+}
