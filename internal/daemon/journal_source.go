@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,6 +89,13 @@ func newFTPNumericPeerProbe(probe func() ([]string, []string)) func() bool {
 			}
 			return false
 		}
+		// Scanning can overlap a config edit and restart. Do not combine an
+		// earlier enabled setting with a newly started process.
+		current, missing := probe()
+		if len(missing) > 0 || !slices.Equal(configs, current) {
+			stale.Store(false)
+			return false
+		}
 		stale.Store(false)
 		return true
 	}
@@ -96,8 +104,10 @@ func newFTPNumericPeerProbe(probe func() ([]string, []string)) func() bool {
 // pureFTPDServerFresh reports whether a pure-ftpd server runs and started
 // after configs last changed. A variable for tests.
 var pureFTPDServerFresh = newPureFTPDFreshness(func() (int, time.Time, bool) {
-	return processctx.EarliestRootStart("/proc", platform.PureFTPDBinaries())
-}, processctx.NewProcReader("/proc", time.Second).ReadStartedAt, time.Now)
+	return processctx.EarliestRootStart("/proc", platform.PureFTPDBinaries(), platform.PureFTPDServerTitle)
+}, func(pid int) (time.Time, bool) {
+	return processctx.NewProcReader("/proc", time.Second).ReadRootServerStart(pid, platform.PureFTPDBinaries(), platform.PureFTPDServerTitle)
+}, time.Now)
 
 // pureFTPDRescanEvery bounds process table scans while no remembered server
 // runs, as under inetd, where each connection is a new process.
@@ -116,24 +126,29 @@ func newPureFTPDFreshness(scan func() (int, time.Time, bool), startedAt func(pid
 		nextScan time.Time
 	)
 	return func(configs []string) bool {
-		changed, ok := platform.PureFTPDConfigChanged(configs)
-		if !ok {
-			return false
-		}
 		mu.Lock()
 		defer mu.Unlock()
 		// A pid and its start time name one process; a reused pid has another.
-		if at, alive := startedAt(pid); pid != 0 && (!alive || !at.Equal(started)) {
-			pid = 0
+		if pid != 0 {
+			if at, alive := startedAt(pid); !alive || !at.Equal(started) {
+				pid = 0
+			}
 		}
 		if at := now(); pid == 0 && !at.Before(nextScan) {
 			nextScan = at.Add(pureFTPDRescanEvery)
 			var found bool
 			if pid, started, found = scan(); !found {
 				pid = 0
+			} else if at, alive := startedAt(pid); !alive || !at.Equal(started) {
+				pid = 0
 			}
 		}
-		return pid != 0 && started.After(changed)
+		if pid == 0 {
+			return false
+		}
+		// A scan may take long enough for a source to change or disappear.
+		changed, ok := platform.PureFTPDConfigChanged(configs)
+		return ok && started.After(changed)
 	}
 }
 

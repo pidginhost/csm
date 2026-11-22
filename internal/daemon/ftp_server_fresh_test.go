@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -106,5 +107,95 @@ func TestPureFTPDFreshness(t *testing.T) {
 	}
 	if !fresh([]string{conf}) {
 		t.Fatal("a server started after the configuration was rejected after a rescan")
+	}
+}
+
+func TestPureFTPDFreshnessChangeDuringScan(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "pure-ftpd.conf")
+	if err := os.WriteFile(conf, []byte("DontResolve yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(time.Hour)
+	scans := 0
+	fresh := newPureFTPDFreshness(func() (int, time.Time, bool) {
+		scans++
+		later := started.Add(time.Hour)
+		if err := os.Chtimes(conf, later, later); err != nil {
+			t.Fatal(err)
+		}
+		return 10, started, true
+	}, func(int) (time.Time, bool) { return started, true }, time.Now)
+	if fresh([]string{conf}) {
+		t.Fatal("a configuration changed during the scan was approved")
+	}
+	if fresh([]string{conf}) || scans != 1 {
+		t.Fatal("a future modification time bypassed freshness or caused a rescan")
+	}
+}
+
+func TestPureFTPDFreshnessValidatesScannedProcess(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "pure-ftpd.conf")
+	if err := os.WriteFile(conf, []byte("DontResolve yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(time.Hour)
+	fresh := newPureFTPDFreshness(func() (int, time.Time, bool) { return 10, started, true },
+		func(int) (time.Time, bool) { return time.Time{}, false }, time.Now)
+	if fresh([]string{conf}) {
+		t.Fatal("a process that exited during the scan was approved")
+	}
+}
+
+func TestFTPNumericPeerProbeChangeDuringFreshness(t *testing.T) {
+	enabled := true
+	old := pureFTPDServerFresh
+	pureFTPDServerFresh = func([]string) bool { enabled = false; return true }
+	t.Cleanup(func() { pureFTPDServerFresh = old })
+	probe := newFTPNumericPeerProbe(func() ([]string, []string) {
+		if enabled {
+			return []string{"pure-ftpd.conf"}, nil
+		}
+		return []string{"pure-ftpd.conf"}, []string{"pure-ftpd.conf"}
+	})
+	if probe() {
+		t.Fatal("DontResolve disabled during the process probe was approved")
+	}
+}
+
+func TestPureFTPDFreshnessConcurrentSourceChanges(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "pure-ftpd.conf")
+	if err := os.WriteFile(conf, []byte("DontResolve yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().Add(time.Hour)
+	scans := 0
+	fresh := newPureFTPDFreshness(func() (int, time.Time, bool) {
+		scans++
+		return 10, started, true
+	}, func(int) (time.Time, bool) { return started, true }, time.Now)
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Go(func() {
+			if !fresh([]string{conf}) {
+				t.Error("a confirmed server was rejected")
+			}
+		})
+	}
+	wg.Wait()
+	if scans != 1 {
+		t.Fatalf("concurrent entries caused %d scans, want 1", scans)
+	}
+	// Equality must fail closed: whole-second boot time cannot prove that
+	// this process began after the source changed.
+	for _, changed := range []time.Time{started, started.Add(time.Second)} {
+		if err := os.Chtimes(conf, changed, changed); err != nil {
+			t.Fatal(err)
+		}
+		if fresh([]string{conf}) {
+			t.Fatal("a remembered process cached approval across a source change")
+		}
+	}
+	if scans != 1 {
+		t.Fatalf("source changes caused %d scans, want 1", scans)
 	}
 }

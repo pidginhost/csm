@@ -35,3 +35,6 @@ func PureFTPDInstalled() bool {
 func PureFTPDBinaries() []string {
 	return []string{"pure-ftpd", "pure-ftpd-mysql", "pure-ftpd-postgresql", "pure-ftpd-ldap"}
 }
+
+// PureFTPDServerTitle identifies the standalone listener, not an inetd session.
+const PureFTPDServerTitle = "pure-ftpd (SERVER)"

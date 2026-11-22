@@ -79,7 +79,7 @@ func pureFTPDPeerGaps() (missing []string, restart bool) {
 	if len(configs) == 0 || len(missing) > 0 {
 		return missing, false
 	}
-	_, started, running := processctx.EarliestRootStart("/proc", platform.PureFTPDBinaries())
+	_, started, running := processctx.EarliestRootStart("/proc", platform.PureFTPDBinaries(), platform.PureFTPDServerTitle)
 	changed, ok := platform.PureFTPDConfigChanged(configs)
 	return nil, running && (!ok || !started.After(changed))
 }
