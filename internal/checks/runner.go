@@ -720,7 +720,7 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 		coverage,
 		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
-			res := defaultCorrelator.Correlate(merged, now)
+			res := defaultCorrelator.Correlate(undismissed(st, merged), now)
 			for i := range res.Derived {
 				if res.Derived[i].Timestamp.IsZero() {
 					res.Derived[i].Timestamp = now
@@ -738,6 +738,21 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 	warnings := reporter.record(unattributed, true)
 	latestScanMergeMu.Unlock()
 	reporter.warnCounts(warnings)
+}
+
+// undismissed drops findings the operator dismissed: they stop alerting while
+// unchanged, so they must not raise a cross-account aggregate either.
+func undismissed(st *state.Store, findings []alert.Finding) []alert.Finding {
+	if st == nil {
+		return findings
+	}
+	out := make([]alert.Finding, 0, len(findings))
+	for _, f := range findings {
+		if !st.Acknowledged(f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // clearedFindings keeps the retired rows whose return should alert again.
@@ -1229,7 +1244,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	if len(findings) > 0 {
 		annotateModsecDisabledMalware(platform.Detect(), findings)
 	}
-	correlated := CorrelateBatchFindings(findings)
+	correlated := CorrelateBatchFindings(undismissed(store, findings))
 	for i := range correlated.Derived {
 		if correlated.Derived[i].Timestamp.IsZero() {
 			correlated.Derived[i].Timestamp = now

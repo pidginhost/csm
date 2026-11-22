@@ -444,6 +444,8 @@ realtime dispatcher derive two findings from the findings they see:
   `new_executable_in_config`) is present on two or more accounts at any
   severity. Different malware checks on different accounts do not combine.
 
+A dismissed finding counts toward neither aggregate while it stays unchanged.
+
 Over the persisted latest-state set, both aggregates only combine findings
 whose condition was **first observed** in the last hour. A scan re-emits every
 finding it still sees and the merge refreshes its report time, so judging by
