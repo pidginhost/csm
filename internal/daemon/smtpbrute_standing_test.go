@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -157,8 +158,7 @@ func TestSMTPStandingSharedAdvisoryClock(t *testing.T) {
 	}
 }
 
-// A login after the failures began counts for later episodes, never for
-// the one in progress.
+// A login after failures on its own mailbox earns no standing.
 func TestSMTPStandingSuccessAfterFirstFailureEarnsNothing(t *testing.T) {
 	clock := &staticClock{t: standingBase}
 	tr, s := newStandingSMTPTracker(t, clock)
@@ -311,6 +311,83 @@ func TestSMTPStandingFastWindowBlocksFeedWithoutSlowTracking(t *testing.T) {
 			tr.recordSuccessAt(standingIP, standingBox, clock.Now(), serviceLog, true)
 			if n := s.Len(); n != 0 {
 				t.Fatalf("rows = %d after a login following a failure, want 0", n)
+			}
+		})
+	}
+}
+
+// Log sources may spell the same address differently. The standing index
+// folds those spellings, so its failed-login gate must do the same.
+func TestSMTPStandingGuessedLoginAcrossAddressSpellings(t *testing.T) {
+	for _, pair := range [][2]string{
+		{standingIP, "::ffff:" + standingIP},
+		{"::ffff:" + standingIP, standingIP},
+		{"2001:db8::5", "2001:0db8:0:0:0:0:0:5"},
+		{"2001:0db8:0:0:0:0:0:5", "2001:db8::5"},
+	} {
+		for _, owner := range []bool{false, true} {
+			t.Run(pair[0]+"/"+pair[1]+fmt.Sprint("/owner=", owner), func(t *testing.T) {
+				clock := &staticClock{t: standingBase}
+				tr, s := newStandingSMTPTracker(t, clock)
+				tr.SetSpray(standingSpray(clock))
+				if owner {
+					earnStanding(t, s, pair[0], standingBox)
+				}
+				tr.Record(pair[0], standingBox)
+				clock.advance(time.Minute)
+				tr.recordSuccessAt(pair[1], standingBox, clock.Now(), serviceLog, true)
+				upserts, _, _ := s.Changes()
+				row := upserts[sprayAddr(pair[0])+" "+standingBox]
+				if got := slices.Contains(row.Days, clock.Now().Unix()); got != owner {
+					t.Fatalf("login recorded = %v, want %v; row = %+v", got, owner, row)
+				}
+			})
+		}
+	}
+}
+
+// A later spelling must not move an active episode past the point at which
+// the address gained standing from another protocol.
+func TestSMTPStandingAddressSpellingsKeepEarliestEpisode(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingSMTPTracker(t, clock)
+	tr.SetSpray(standingSpray(clock))
+	s.Note(standingIP, standingBox, standingD2)
+	tr.RecordTemporaryFailure(standingIP, otherBox, alert.Observation{})
+	clock.advance(time.Minute)
+	earnedAt := clock.Now()
+	s.Note(standingIP, standingBox, earnedAt)
+	clock.advance(time.Minute)
+	tr.Record("::ffff:"+standingIP, standingBox)
+	clock.advance(time.Minute)
+	tr.recordSuccessAt("::ffff:"+standingIP, standingBox, clock.Now(), serviceLog, true)
+	upserts, _, _ := s.Changes()
+	if row := upserts[standingIP+" "+standingBox]; !slices.Equal(row.Days, []int64{standingD2.Unix(), earnedAt.Unix()}) || len(row.Lasts) != 0 {
+		t.Fatalf("login after the earlier episode began changed standing: %+v", row)
+	}
+}
+
+func TestSMTPStandingAddressSpellingsIgnoreExpiredAndOtherSources(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failureIP string
+		loginIP   string
+		expired   bool
+	}{
+		{"expired alias", "2001:0db8:0:0:0:0:0:5", "2001:db8::5", true},
+		{"other host in subnet", "2001:0db8:0:0:0:0:0:5", "2001:db8::6", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr, s := newStandingSMTPTracker(t, clock)
+			tr.SetSpray(standingSpray(clock))
+			tr.RecordTemporaryFailure(tc.failureIP, "", alert.Observation{})
+			if tc.expired {
+				clock.advance(tr.slowWindow + time.Second)
+			}
+			tr.recordSuccessAt(tc.loginIP, standingBox, clock.Now(), serviceLog, true)
+			if !hasRow(s, tc.loginIP, standingBox) {
+				t.Fatal("unrelated or expired failures prevented standing")
 			}
 		})
 	}

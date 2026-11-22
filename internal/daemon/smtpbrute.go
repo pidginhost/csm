@@ -614,21 +614,24 @@ func aliasEntries[E any](ips map[string]E, ip string, aliased bool) []E {
 
 // episodeFailedOn reports whether ip's current failures, under any spelling
 // of the address, include one on the normalised mailbox or one that named
-// none, and the earliest start of those episodes. Caller must hold t.mu.
+// none, and when the address's active episode began. Caller must hold t.mu.
 func (t *smtpAuthTracker) episodeFailedOn(ip, mailbox string) (bool, time.Time) {
 	now := t.now()
 	cutoff, slowCutoff := now.Add(-t.window), now.Add(-t.slowWindow)
 	failed, since := false, time.Time{}
 	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
-		hit := !e.fastUnvouched.IsZero() && !e.fastUnvouched.Before(cutoff) ||
+		if !hasTimeAtOrAfter(e.times, cutoff) && !hasTimeAtOrAfter(e.slowTimes, slowCutoff) {
+			continue
+		}
+		// The address's episode began at its earliest active failure under
+		// any spelling, whichever mailbox that failure named.
+		if since.IsZero() || e.episodeStart.Before(since) {
+			since = e.episodeStart
+		}
+		failed = failed ||
+			!e.fastUnvouched.IsZero() && !e.fastUnvouched.Before(cutoff) ||
 			!e.slowUnvouched.IsZero() && !e.slowUnvouched.Before(slowCutoff) ||
 			failedOnMailbox(e.fastAccounts, mailbox, cutoff) || failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
-		if hit {
-			failed = true
-			if since.IsZero() || e.episodeStart.Before(since) {
-				since = e.episodeStart
-			}
-		}
 	}
 	return failed, since
 }
