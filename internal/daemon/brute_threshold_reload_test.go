@@ -239,6 +239,8 @@ func TestSprayConfigFromThresholds(t *testing.T) {
 	th.MailSprayBlockExpiry = "48h"
 	th.SMTPBruteForceWindowMin = 10
 	th.MailBruteForceWindowMin = 15
+	th.SMTPBruteForceSlowWindowMin = 360
+	th.MailBruteForceSlowWindowMin = 240
 	th.SMTPBruteForceSuppressMin = 90
 	th.MailBruteForceSuppressMin = 60
 	th.SMTPBruteForceMaxTracked = 3000
@@ -252,6 +254,7 @@ func TestSprayConfigFromThresholds(t *testing.T) {
 		Suppression:      90 * time.Minute, // the longer suppression
 		MaxIPs:           5000,             // both trackers' caps
 		BlockTTL:         48 * time.Hour,
+		EpisodeWindow:    360 * time.Minute, // the longest failure window
 	}
 	if got := sprayConfigFromThresholds(cfg); got != want {
 		t.Fatalf("sprayConfigFromThresholds = %+v, want %+v", got, want)
