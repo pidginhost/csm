@@ -80,3 +80,30 @@ func TestFTPScansUseOnlyPeerAddress(t *testing.T) {
 		})
 	}
 }
+
+// Both scheduled readers must keep their alert-only origin. In particular,
+// the no-store reader must not hand an unmarked PTR address to legacy blocks.
+func TestFTPScanFindingsKeepUnverifiedOrigin(t *testing.T) {
+	path, st := ftpLatchFixture(t)
+	appendFTPFailures(t, path, "198.51.100.7", ftpFailThreshold)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("pure-ftpd: (alice@198.51.100.7) [INFO] alice is now logged in\n")
+	closeErr := f.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("write login: %v, close: %v", err, closeErr)
+	}
+	for _, store := range []*state.Store{nil, st} {
+		findings := CheckFTPLogins(context.Background(), &config.Config{}, store)
+		if len(findings) != 2 {
+			t.Fatalf("got %d findings, want login and brute force", len(findings))
+		}
+		for _, finding := range findings {
+			if finding.Observation.Producer != string(ProducerFTPScan) || blockableFinding(finding, true) {
+				t.Fatalf("scan lost its alert-only origin: %+v", finding)
+			}
+		}
+	}
+}

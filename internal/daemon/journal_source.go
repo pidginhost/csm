@@ -12,6 +12,7 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // journalSource is a service log the daemon reads from the journal when
@@ -59,6 +60,19 @@ var ftpJournal = journalSource{
 		rules:    []maillog.SenderRule{{Units: []string{"pure-ftpd"}, Executables: []string{"pure-ftpd"}}},
 		producer: checks.ProducerFTPLog,
 	},
+}
+
+// pureFTPDNumericPeers reports whether every known configuration source
+// disables DNS. A variable for tests.
+var pureFTPDNumericPeers = newFTPNumericPeerProbe(platform.PureFTPDDontResolve)
+
+func newFTPNumericPeerProbe(probe func() ([]string, []string)) func() bool {
+	return func() bool {
+		// A cached approval would survive an operator disabling DontResolve
+		// and restarting pure-ftpd, admitting attacker-chosen PTR names.
+		configs, missing := probe()
+		return len(configs) > 0 && len(missing) == 0
+	}
 }
 
 // ftpJournalSource is ftpJournal with the daemon's handlers: root entries
@@ -151,6 +165,12 @@ func (d *Daemon) dispatchJournalLine(src journalSource, line maillog.Line) bool 
 			return true
 		}
 		src = *src.session
+	}
+	if (src.producer == checks.ProducerFTPJournal || src.producer == checks.ProducerFTPLog) && !pureFTPDNumericPeers() {
+		// A numeric PTR name is not a peer: it must neither add failures nor
+		// borrow a real peer's earlier failures to escalate a login.
+		src.producer = checks.ProducerFTPLog
+		src.handler = parseFTPLogLine
 	}
 	return d.dispatchLogLine(src.producer, line, func(msg string, _ alert.Observation, cfg *config.Config) []alert.Finding {
 		findings := src.handler(msg, cfg)

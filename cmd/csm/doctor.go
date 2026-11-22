@@ -108,7 +108,7 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 	report.Checks = append(report.Checks, doctorAccountRootAccess(cfg)...)
 	rewrite := doctorHTTPRewrite(overridesApplied)
 	report.Checks = append(report.Checks, webRewriteDoctorCheck(rewrite, cfg), webPeerLogDoctorCheck(platform.Detect(), rewrite, os.Stat, time.Now()),
-		loginSourcesDoctorCheck(maillog.JournalUsable(), cfg, platform.DetectMTA(), platform.Detect().MailLogPath()))
+		loginSourcesDoctorCheck(maillog.JournalUsable(), cfg, platform.DetectMTA(), platform.Detect().MailLogPath(), pureFTPDMissingDontResolve()))
 
 	// 2. Daemon reachable
 	resp, err := readStatus()

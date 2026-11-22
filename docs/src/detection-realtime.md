@@ -332,7 +332,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log`, then `/var/log/apache2/access_log` and `/etc/apache2/logs/access_log` (cPanel, also written by LiteSpeed). Automatic candidates exclude the cPanel access log |
 | Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force; SMTP brute force on Postfix hosts with Dovecot |
-| FTP log | All with journald, otherwise cPanel only | FTP logins and failures. Where syslog goes through journald, pure-ftpd's own journal entries (`pure-ftpd.service`): failures it sends as root can block, while lines it sends as the logged-in user, logins among them, only alert; otherwise `/var/log/messages`, whose lines only alert |
+| FTP log | All with journald, otherwise cPanel only | FTP logins and failures. Where syslog goes through journald, pure-ftpd's own journal entries (`pure-ftpd.service`): failures it sends as root can block when pure-ftpd's `DontResolve yes` is set, while lines it sends as the logged-in user, logins among them, only alert; otherwise `/var/log/messages`, whose lines only alert |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
 
@@ -392,8 +392,20 @@ retention period.
 FTP findings use only the peer field directly after the pure-ftpd program tag,
 in both realtime monitoring and scheduled scans. Missing or malformed peers and
 hostname peers produce no finding. To record numeric peers, use pure-ftpd's
-existing `DontResolve yes` setting. Addresses in usernames or later message
-fields never identify the client.
+existing `DontResolve yes` setting. Without it, a numeric peer can be a reverse
+DNS name its owner chose to read as another address, so FTP failures only alert
+and never count toward a block or attack score. A journal login in this mode
+cannot inherit earlier brute-force history. CSM checks the setting for each journal
+entry; disabling it takes effect without restarting CSM. Every configuration
+source present must enable it. Unreadable sources, including broken symlinks,
+and an installed server with no known configuration leave FTP alert-only.
+`csm doctor` names the sources that need attention.
+
+Use `DontResolve yes` (also `DontResolve = yes` or `DontResolve : yes`) in a
+pure-ftpd configuration. For Debian's `/etc/pure-ftpd/conf/DontResolve`, write
+only `yes`. Restart pure-ftpd after changing the setting. FTP file findings
+remain alert-only and do not build attack scores, regardless of this setting.
+Addresses in usernames or later message fields never identify the client.
 
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
@@ -429,9 +441,9 @@ same address is a new finding, even within the 24-hour history reminder window.
 A successful FTP login and a cPanel File Manager write are not emailed. On
 shared hosting every customer connects from an address that is not
 infrastructure, so both fire on ordinary use of a core feature. They stay on
-the findings page, in history, in incident correlation and in the attack
-database, where their value is correlation with other evidence on the same
-account. Failed FTP authentication, FTP brute force, a login from a
+the findings page, in history and in incident correlation. File Manager activity
+also enters the attack database; FTP activity from unverified sources does not.
+Failed FTP authentication, FTP brute force, a login from a
 brute-force source, and SSH logins are all still emailed.
 
 The FTP journal reader keeps failure history for `thresholds.ftp_fail_window_min`

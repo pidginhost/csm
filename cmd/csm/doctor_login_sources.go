@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -10,7 +11,9 @@ import (
 
 // Source selection is not a liveness check: watcher health reports failures
 // opening or following the selected source, including Stalwart's own log.
-func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platform.MTAKind, platformDefaultFile string) DoctorCheck {
+// ftpMissing names pure-ftpd configuration sources that leave DontResolve
+// off; FTP failures then only alert.
+func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platform.MTAKind, platformDefaultFile string, ftpMissing []string) DoctorCheck {
 	c := DoctorCheck{Name: "login sources", Status: "ok"}
 	var files, fixes []string
 	syslogSource := "journal"
@@ -46,9 +49,27 @@ func loginSourcesDoctorCheck(syslogJournal bool, cfg *config.Config, mta platfor
 		c.Status = "warn"
 		c.Message += ". " + joinServices(files) + " syslog lines only alert; they never block or count as customer logins"
 	}
+	if len(ftpMissing) > 0 {
+		c.Status = "warn"
+		c.Message += ". FTP failures only alert while pure-ftpd logs client host names"
+		for _, source := range ftpMissing {
+			if filepath.Base(source) == "DontResolve" {
+				fixes = append(fixes, "write yes to "+source+" and restart pure-ftpd")
+			} else {
+				fixes = append(fixes, "set DontResolve yes in "+source+" and restart pure-ftpd")
+			}
+		}
+	}
 	c.Message += ". Watcher health reports source availability"
 	c.Fix = strings.Join(fixes, "; ")
 	return c
+}
+
+// pureFTPDMissingDontResolve names the pure-ftpd configuration sources
+// without DontResolve.
+func pureFTPDMissingDontResolve() []string {
+	_, missing := platform.PureFTPDDontResolve()
+	return missing
 }
 
 // joinServices names services as "A", "A and B" or "A, B and C".

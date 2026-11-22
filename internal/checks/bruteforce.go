@@ -633,6 +633,9 @@ func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 		}
 	}
 
+	for i := range findings {
+		findings[i].Observation = UnpositionedObservation(ProducerFTPScan)
+	}
 	return findings
 }
 
