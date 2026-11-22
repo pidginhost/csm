@@ -445,6 +445,8 @@ realtime dispatcher derive two findings from the findings they see:
   severity. Different malware checks on different accounts do not combine.
 
 A dismissed finding counts toward neither aggregate while it stays unchanged.
+A fresh scan that observes different file content can count that finding again.
+Dismissed rows with no identifiable account still count toward attribution health.
 
 Over the persisted latest-state set, both aggregates only combine findings
 whose condition was **first observed** in the last hour. A scan re-emits every

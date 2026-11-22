@@ -70,20 +70,28 @@ func CorrelateFindings(findings []alert.Finding) CorrelationResult {
 // CorrelateBatchFindings preserves dispatch grouping even when a scan carries
 // forward a prior finding whose original timestamp lies outside the window.
 func CorrelateBatchFindings(findings []alert.Finding) CorrelationResult {
+	return correlateBatchFindings(findings, nil)
+}
+
+func correlateBatchFindings(findings []alert.Finding, acknowledged []bool) CorrelationResult {
 	batch := defaultCorrelator
 	batch.window = 0
-	return batch.Correlate(findings, time.Time{})
+	return batch.correlate(findings, time.Time{}, acknowledged)
 }
 
 // Correlate derives aggregates at the supplied observation time. A zero time
 // uses the newest non-derived input as its reference. Persisted state supplies
 // the merge time so even an empty scan can expire old evidence.
 func (c Correlator) Correlate(findings []alert.Finding, at time.Time) CorrelationResult {
+	return c.correlate(findings, at, nil)
+}
+
+func (c Correlator) correlate(findings []alert.Finding, at time.Time, acknowledged []bool) CorrelationResult {
 	res := CorrelationResult{Unattributed: make(map[string]int)}
 	accounts := make(map[string]bool)
 	malwareByCheck := make(map[string]map[string]bool)
 	cutoff := c.cutoff(findings, at)
-	for _, f := range findings {
+	for i, f := range findings {
 		class := correlationClassOf(f.Check)
 		if class != CorrelationSecurityEvent && class != CorrelationMalwareArtifact {
 			continue
@@ -99,6 +107,9 @@ func (c Correlator) Correlate(findings []alert.Finding, at time.Time) Correlatio
 		account := c.accountOf(f)
 		if account == "" {
 			res.Unattributed[f.Check]++
+			continue
+		}
+		if acknowledged != nil && acknowledged[i] {
 			continue
 		}
 		if countsForAttack {

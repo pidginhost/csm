@@ -859,9 +859,64 @@ func (s *Store) Entries() map[string]*Entry {
 func (s *Store) Acknowledged(f alert.Finding) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.acknowledgedLocked(f, nil, s.clock())
+}
+
+// ScanAcknowledgements reports which rows are covered by a dismissal or
+// baseline. The original observations supply content evidence before a merge
+// collapses duplicate keys. Correlation must leave reconciliation to dispatch.
+// A nil store has no acknowledgements.
+func (s *Store) ScanAcknowledgements(rows, observed []alert.Finding) []bool {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// ReconcileDismissedContent adopts the first fresh hash for a legacy
+	// dismissal. Only other hashes actually observed in this scan prove a
+	// change. A merge can retain an older row when a path was not examined.
+	firstContent := make(map[string]string)
+	changed := make(map[contentVersion]bool)
+	for _, f := range observed {
+		if f.ContentSHA256 == "" || f.ScanCarryForward {
+			continue
+		}
+		key := findingKey(f)
+		e := s.entries[key]
+		if e == nil || !e.IsBaseline || e.ContentSHA256 != "" {
+			continue
+		}
+		if firstContent[key] == "" {
+			firstContent[key] = f.ContentSHA256
+		} else if firstContent[key] != f.ContentSHA256 {
+			changed[contentVersion{key, f.ContentSHA256}] = true
+		}
+	}
+	now := s.clock()
+	covered := make([]bool, len(rows))
+	for i, f := range rows {
+		covered[i] = s.acknowledgedLocked(f, changed, now)
+	}
+	return covered
+}
+
+type contentVersion struct {
+	key, hash string
+}
+
+func (s *Store) acknowledgedLocked(f alert.Finding, changed map[contentVersion]bool, now time.Time) bool {
 	key := findingKey(f)
 	e, ok := s.entries[key]
-	return ok && e.IsBaseline && e.Hash == findingHash(f) && !e.cleared(key, s.clock())
+	if !ok || !e.IsBaseline || e.Hash != findingHash(f) || e.cleared(key, now) {
+		return false
+	}
+	if f.ScanCarryForward || f.ContentSHA256 == "" {
+		return true
+	}
+	if e.ContentSHA256 == "" {
+		return !changed[contentVersion{key, f.ContentSHA256}]
+	}
+	return e.ContentSHA256 == f.ContentSHA256
 }
 
 // EntryForKey returns the dedup entry for a finding key (check:message).
