@@ -807,9 +807,18 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	e.times = append(e.times, now)
 	e.failedAccounts = appendMailAccountTime(e.failedAccounts, account, now)
 	e.lastSeen = now
-	standingStart := e.episodeStart
-	if t.standing != nil && t.aliased {
-		_, standingStart = t.episodeFailedOn(ip, "", now)
+	// Standing is judged as of the address's earliest active episode under
+	// any spelling. Finding it scans the aliases, so only a standing
+	// decision asks for it, not every failure of a flood.
+	var standingStart time.Time
+	standingAsOf := func() time.Time {
+		if standingStart.IsZero() {
+			standingStart = e.episodeStart
+			if t.standing != nil && t.aliased {
+				_, standingStart = t.episodeFailedOn(ip, "", now)
+			}
+		}
+		return standingStart
 	}
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold {
@@ -843,7 +852,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 					SourceIP:  ip,
 				})
 			case e.confinedToStanding(now, t.window, func(account string) bool {
-				return t.standing.Has(ip, account, standingStart)
+				return t.standing.Has(ip, account, standingAsOf())
 			}):
 				// The same shape from a source whose standing on a mailbox rests on
 				// earlier days of trusted logins. It never falls through to the block.
@@ -908,7 +917,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 				len(e.slowAccounts) >= slowBruteMinAccounts {
 				safeSource := e.slowConfinedToEstablishedGood(now, t.window) ||
 					slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched)
-				standing := !safeSource && standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingStart)
+				standing := !safeSource && standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingAsOf())
 				switch {
 				case safeSource && !now.Before(e.suspectedSuppressed):
 					e.suspectedSuppressed = now.Add(t.suppression)
