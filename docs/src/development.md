@@ -1610,7 +1610,12 @@ exact-address episode, so a later address spelling cannot move the cutoff.
 Those decisions also drop standing for a mailbox whose failures in the
 tracker's fast window exceed `standingFailureCap` times its per-address
 threshold. The mail tracker counts them from its per-mailbox window lists; the
-SMTP tracker keeps the newest of them per mailbox in `fastAccounts`. The daemon
+SMTP tracker keeps the newest of them per mailbox in `fastAccounts`, bounded
+by at least `slowBruteMaxTimesPerIP` so every validated fast threshold can be
+applied on reload without losing relevant counts. Both counters combine address
+aliases and exclude expired timestamps even on entries not yet purged. Standing
+compromise advisories have separate suppression clocks from cracks, for both
+trusted and untrusted logins. The daemon
 loads the index before log readers start, saves it on the known-customer cycle,
 and mailbox response revokes the mailbox it acts on.
 

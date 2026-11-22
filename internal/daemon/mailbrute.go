@@ -164,17 +164,17 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 }
 
 // confinedToStanding is establishedGoodConfined where a failing mailbox may
-// also be one the address has login standing on (has), while its failures in
-// the window stay within limit. Caller must hold t.mu and must have pruned
-// the window state.
-func (e *mailIPEntry) confinedToStanding(now time.Time, window time.Duration, limit int, has func(account string) bool) bool {
+// also be one the address has login standing on (has). The caller applies
+// the failure cap across address aliases in has, holds t.mu and prunes the
+// window state.
+func (e *mailIPEntry) confinedToStanding(now time.Time, window time.Duration, has func(account string) bool) bool {
 	if len(e.failedAccounts) == 0 {
 		return false
 	}
 	named := 0
 	for account, times := range e.failedAccounts {
 		named += len(times)
-		if !e.establishedGood(account, now, window) && (len(times) > limit || !has(account)) {
+		if !e.establishedGood(account, now, window) && !has(account) {
 			return false
 		}
 	}
@@ -571,7 +571,11 @@ type mailAccountEntry struct {
 	// untrustedCompromiseSuppressed is the quiet period of alerts from
 	// logins read from a log any local user can write.
 	untrustedCompromiseSuppressed time.Time
-	lastSeen                      time.Time
+	// Standing advisories cannot silence a later crack after the cap is
+	// exceeded. Keep trusted and untrusted logins independent here too.
+	standingCompromiseSuppressed          time.Time
+	untrustedStandingCompromiseSuppressed time.Time
+	lastSeen                              time.Time
 }
 
 // mailBackendDegradedThreshold is how many auth-backend failure observations
@@ -821,8 +825,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 		}
 		return standingStart
 	}
-	limit := standingFailureCap * t.perIPThreshold
-	overCap := func(account string) bool { return len(e.failedAccounts[account]) > limit }
+	overCap := func(account string) bool { return t.standingFailureOverCap(ip, account, cutoff) }
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold {
 		e.succ = pruneTimes(e.succ, cutoff)
@@ -854,8 +857,8 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 					Timestamp: now,
 					SourceIP:  ip,
 				})
-			case e.confinedToStanding(now, t.window, limit, func(account string) bool {
-				return t.standing.Has(ip, account, standingAsOf())
+			case e.confinedToStanding(now, t.window, func(account string) bool {
+				return !overCap(account) && t.standing.Has(ip, account, standingAsOf())
 			}):
 				// The same shape from a source whose standing on a mailbox rests on
 				// earlier days of trusted logins. It never falls through to the block.
@@ -1049,6 +1052,20 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	t.enforceMaxTracked(ip)
 	t.findingsEmitted += int64(len(findings))
 	return findings
+}
+
+// standingFailureOverCap counts one mailbox across spellings of the same
+// address. Alias entries may not have been pruned yet. Caller holds t.mu.
+func (t *mailAuthTracker) standingFailureOverCap(ip, account string, cutoff time.Time) bool {
+	limit := standingFailureCap * t.perIPThreshold
+	n := 0
+	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		n += countTimesAtOrAfter(e.failedAccounts[account], cutoff)
+		if n > limit {
+			return true
+		}
+	}
+	return false
 }
 
 // episodeFailedOn reports whether ip's current failures, under any spelling
@@ -1269,7 +1286,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	// gates new standing, but cannot revoke this address's exemption from
 	// the IMAP compromise response for its own current failure episode.
 	// Failures past the cap are a guessing tool, not a stale saved password.
-	standing := len(e.failedAccounts[account]) <= standingFailureCap*t.perIPThreshold && t.standing.Has(ip, sprayMailbox, since)
+	standing := !t.standingFailureOverCap(ip, account, cutoff) && t.standing.Has(ip, sprayMailbox, since)
 	if t.spray != nil && (trusted || t.fileLines) {
 		// The SMTP tracker's failures reach only the shared spray memory.
 		failed, since = otherProtocolFailures(t.spray, ip, sprayMailbox, max(t.window, t.slowWindow), failed, since)
@@ -1352,6 +1369,12 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	suppressed := &a.compromiseSuppressed
 	if !trusted {
 		suppressed = &a.untrustedCompromiseSuppressed
+	}
+	if standing {
+		suppressed = &a.standingCompromiseSuppressed
+		if !trusted {
+			suppressed = &a.untrustedStandingCompromiseSuppressed
+		}
 	}
 	if now.Before(*suppressed) {
 		return nil
