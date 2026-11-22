@@ -256,6 +256,10 @@ func TestSMTPStandingGuessedLoginEarnsNothing(t *testing.T) {
 			recordSMTP(tr, standingIP, standingBox)
 			clock.advance(time.Hour)
 		},
+		// Logs can spell one address two ways.
+		"same mailbox, other spelling": func(tr *smtpAuthTracker, _ *staticClock) {
+			recordSMTP(tr, "::ffff:"+standingIP, standingBox, standingBox)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			clock := &staticClock{t: standingBase}
@@ -290,5 +294,24 @@ func TestSMTPStandingOwnerLoginStillEarns(t *testing.T) {
 	upserts, _, _ := s.Changes()
 	if row := upserts[standingIP+" "+standingBox]; !slices.Contains(row.Days, clock.Now().Unix()) {
 		t.Fatalf("the owner's login after a mistype was not recorded: %+v", row)
+	}
+}
+
+// With slow tracking off, only the fast window remembers the failures.
+func TestSMTPStandingFastWindowBlocksFeedWithoutSlowTracking(t *testing.T) {
+	for name, failed := range map[string]string{"same mailbox": standingBox, "no mailbox": ""} {
+		t.Run(name, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 0, 0, 20000, clock.Now)
+			tr.SetSpray(standingSpray(clock))
+			s := newLoginStanding(clock.Now)
+			tr.SetLoginStanding(s)
+			tr.RecordTemporaryFailure(standingIP, failed, alert.Observation{})
+			clock.advance(time.Minute)
+			tr.recordSuccessAt(standingIP, standingBox, clock.Now(), serviceLog, true)
+			if n := s.Len(); n != 0 {
+				t.Fatalf("rows = %d after a login following a failure, want 0", n)
+			}
+		})
 	}
 }

@@ -1035,6 +1035,33 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	return findings
 }
 
+// episodeFailedOn reports whether ip's current failures, under any spelling
+// of the address, include one on the normalised mailbox or one that named
+// none, and the earliest start of those episodes. Caller must hold t.mu.
+func (t *mailAuthTracker) episodeFailedOn(ip, mailbox string, now time.Time) (bool, time.Time) {
+	cutoff, slowCutoff := now.Add(-t.window), now.Add(-t.slowWindow)
+	failed, since := false, time.Time{}
+	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		hit := !e.slowUnvouched.IsZero() && !e.slowUnvouched.Before(slowCutoff) ||
+			failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
+		named := 0
+		for account, times := range e.failedAccounts {
+			n := countTimesAtOrAfter(times, cutoff)
+			named += n
+			hit = hit || n > 0 && normalizeSprayMailbox(account) == mailbox
+		}
+		// A failure in the window with no mailbox could have been on this one.
+		hit = hit || countTimesAtOrAfter(e.times, cutoff) > named
+		if hit {
+			failed = true
+			if since.IsZero() || e.episodeStart.Before(since) {
+				since = e.episodeStart
+			}
+		}
+	}
+	return failed, since
+}
+
 // Forget drops ip's failure history after an operator release, or every
 // address's when ip is empty. Successful logins and good standing stay:
 // they describe the mailboxes it logs in to, not the block.
@@ -1246,7 +1273,12 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 			e.succ = append(e.succ, now)
 			e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
 			e.recordGoodAuth(account, now)
-			t.standing.Note(ip, sprayMailbox, at)
+			// A login after failures on its own mailbox, or ones naming none,
+			// in this episode may be a password guessed below the crack
+			// threshold; an address that had standing then is the owner.
+			if failed, since := t.episodeFailedOn(ip, sprayMailbox, now); !failed || t.standing.Has(ip, sprayMailbox, since) {
+				t.standing.Note(ip, sprayMailbox, at)
+			}
 		}
 		e.lastSeen = now
 		switch {

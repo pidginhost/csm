@@ -592,33 +592,56 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
 }
 
-// episodeFailedOn reports whether ip's current failures include one on the
-// normalised mailbox or one that named none, and when that episode began.
-// Caller must hold t.mu.
-func (t *smtpAuthTracker) episodeFailedOn(ip, mailbox string) (bool, time.Time) {
-	e := t.ips[ip]
-	if e == nil {
-		return false, time.Time{}
-	}
-	now := t.now()
-	for _, w := range []struct {
-		accounts  map[string]time.Time
-		unvouched time.Time
-		cutoff    time.Time
-	}{
-		{e.fastAccounts, e.fastUnvouched, now.Add(-t.window)},
-		{e.slowAccounts, e.slowUnvouched, now.Add(-t.slowWindow)},
-	} {
-		if !w.unvouched.IsZero() && !w.unvouched.Before(w.cutoff) {
-			return true, e.episodeStart
+// aliasEntries returns the entries ips holds for ip's address under every
+// spelling: only the canonical key until the map holds an alias, then every
+// key with the same canonical address. Logs can spell one address two ways.
+func aliasEntries[E any](ips map[string]E, ip string, aliased bool) []E {
+	canon := sprayAddr(ip)
+	if !aliased {
+		if e, ok := ips[canon]; ok {
+			return []E{e}
 		}
-		for account, at := range w.accounts {
-			if !at.Before(w.cutoff) && normalizeSprayMailbox(account) == mailbox {
-				return true, e.episodeStart
+		return nil
+	}
+	var out []E
+	for addr, e := range ips {
+		if sprayAddr(addr) == canon {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// episodeFailedOn reports whether ip's current failures, under any spelling
+// of the address, include one on the normalised mailbox or one that named
+// none, and the earliest start of those episodes. Caller must hold t.mu.
+func (t *smtpAuthTracker) episodeFailedOn(ip, mailbox string) (bool, time.Time) {
+	now := t.now()
+	cutoff, slowCutoff := now.Add(-t.window), now.Add(-t.slowWindow)
+	failed, since := false, time.Time{}
+	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		hit := !e.fastUnvouched.IsZero() && !e.fastUnvouched.Before(cutoff) ||
+			!e.slowUnvouched.IsZero() && !e.slowUnvouched.Before(slowCutoff) ||
+			failedOnMailbox(e.fastAccounts, mailbox, cutoff) || failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
+		if hit {
+			failed = true
+			if since.IsZero() || e.episodeStart.Before(since) {
+				since = e.episodeStart
 			}
 		}
 	}
-	return false, e.episodeStart
+	return failed, since
+}
+
+// failedOnMailbox reports whether accounts holds a failure at or after
+// cutoff on the normalised mailbox.
+func failedOnMailbox(accounts map[string]time.Time, mailbox string, cutoff time.Time) bool {
+	for account, at := range accounts {
+		if !at.Before(cutoff) && normalizeSprayMailbox(account) == mailbox {
+			return true
+		}
+	}
+	return false
 }
 
 // Forget drops ip's failure counts and pending rejections after an operator

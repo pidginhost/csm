@@ -197,8 +197,8 @@ func TestMailStandingSuccessAfterFirstFailureEarnsNothing(t *testing.T) {
 	if findCheck(out, "mail_bruteforce") == nil {
 		t.Fatalf("a login during the burst excused it: %+v", out)
 	}
-	if s.Has(standingIP, standingBox, standingBase) || !s.Has(standingIP, standingBox, standingBase.Add(25*time.Hour)) {
-		t.Fatal("the login was not kept for later episodes only")
+	if s.Has(standingIP, standingBox, standingBase.Add(25*time.Hour)) {
+		t.Fatal("a login after failures on its own mailbox earned standing")
 	}
 }
 
@@ -581,5 +581,70 @@ func TestMailFileLineCrackRevokesFileSprayTrust(t *testing.T) {
 	tr.recordSuccessAt(ip, box, clock.Now(), knownCustomerIMAP, false)
 	if _, ok := tr.spray.trust[sprayTrustKey{ip, box}]; ok {
 		t.Fatal("a file-line crack kept trust in the file reader's spray memory")
+	}
+}
+
+// A login after failures on its own mailbox, or ones naming none, in the
+// address's current episode may be a guessed password below the crack
+// threshold: it earns no standing unless the address already had it.
+func TestMailStandingGuessedLoginEarnsNothing(t *testing.T) {
+	for name, fail := range map[string]func(tr *mailAuthTracker, clock *staticClock){
+		"one failure on the mailbox": func(tr *mailAuthTracker, _ *staticClock) { tr.Record(standingIP, standingBox) },
+		"no mailbox":                 func(tr *mailAuthTracker, _ *staticClock) { tr.Record(standingIP, "") },
+		"same mailbox, earlier in the slow window": func(tr *mailAuthTracker, clock *staticClock) {
+			tr.Record(standingIP, standingBox)
+			clock.advance(time.Hour)
+		},
+		"same mailbox, other spelling": func(tr *mailAuthTracker, _ *staticClock) { tr.Record("::ffff:"+standingIP, standingBox) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr, s := newStandingMailTracker(t, clock)
+			fail(tr, clock)
+			clock.advance(time.Minute)
+			tr.recordSuccessAt(standingIP, standingBox, clock.Now(), knownCustomerIMAP, true)
+			if n := s.Len(); n != 0 {
+				t.Fatalf("rows = %d after a login that may be guessed, want 0", n)
+			}
+		})
+	}
+}
+
+// With slow tracking off, only the fast window remembers the failures.
+func TestMailStandingFastWindowBlocksFeedWithoutSlowTracking(t *testing.T) {
+	for name, failed := range map[string]string{"same mailbox": standingBox, "no mailbox": ""} {
+		t.Run(name, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 0, 0, 20000, clock.Now)
+			s := newLoginStanding(clock.Now)
+			tr.SetLoginStanding(s)
+			tr.Record(standingIP, failed)
+			clock.advance(time.Minute)
+			tr.recordSuccessAt(standingIP, standingBox, clock.Now(), knownCustomerIMAP, true)
+			if n := s.Len(); n != 0 {
+				t.Fatalf("rows = %d after a login following a failure, want 0", n)
+			}
+		})
+	}
+}
+
+// Failures on another mailbox leave a clean login's standing alone, and an
+// address that had standing before its failures keeps earning it.
+func TestMailStandingOwnerLoginStillEarns(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	tr.Record("198.51.100.1", otherBox)
+	tr.recordSuccessAt("198.51.100.1", standingBox, clock.Now(), knownCustomerIMAP, true)
+	if !hasRow(s, "198.51.100.1", standingBox) {
+		t.Fatal("failures on another mailbox stopped a clean login earning standing")
+	}
+
+	earnStanding(t, s, standingIP, standingBox)
+	tr.Record(standingIP, standingBox)
+	clock.advance(time.Minute)
+	tr.recordSuccessAt(standingIP, standingBox, clock.Now(), knownCustomerIMAP, true)
+	upserts, _, _ := s.Changes()
+	if row := upserts[standingIP+" "+standingBox]; !slices.Contains(row.Days, clock.Now().Unix()) {
+		t.Fatalf("the owner's login after a mistype was not recorded: %+v", row)
 	}
 }
