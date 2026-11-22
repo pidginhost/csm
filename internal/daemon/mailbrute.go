@@ -1037,11 +1037,19 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 
 // episodeFailedOn reports whether ip's current failures, under any spelling
 // of the address, include one on the normalised mailbox or one that named
-// none, and the earliest start of those episodes. Caller must hold t.mu.
+// none, and when the address's active episode began. Caller must hold t.mu.
 func (t *mailAuthTracker) episodeFailedOn(ip, mailbox string, now time.Time) (bool, time.Time) {
 	cutoff, slowCutoff := now.Add(-t.window), now.Add(-t.slowWindow)
 	failed, since := false, time.Time{}
 	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		if !hasTimeAtOrAfter(e.times, cutoff) && !hasTimeAtOrAfter(e.slowTimes, slowCutoff) {
+			continue
+		}
+		// The address's episode began at its earliest active failure under
+		// any spelling, whichever mailbox that failure named.
+		if since.IsZero() || e.episodeStart.Before(since) {
+			since = e.episodeStart
+		}
 		hit := !e.slowUnvouched.IsZero() && !e.slowUnvouched.Before(slowCutoff) ||
 			failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
 		named := 0
@@ -1051,13 +1059,7 @@ func (t *mailAuthTracker) episodeFailedOn(ip, mailbox string, now time.Time) (bo
 			hit = hit || n > 0 && normalizeSprayMailbox(account) == mailbox
 		}
 		// A failure in the window with no mailbox could have been on this one.
-		hit = hit || countTimesAtOrAfter(e.times, cutoff) > named
-		if hit {
-			failed = true
-			if since.IsZero() || e.episodeStart.Before(since) {
-				since = e.episodeStart
-			}
-		}
+		failed = failed || hit || countTimesAtOrAfter(e.times, cutoff) > named
 	}
 	return failed, since
 }

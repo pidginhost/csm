@@ -648,3 +648,23 @@ func TestMailStandingOwnerLoginStillEarns(t *testing.T) {
 		t.Fatalf("the owner's login after a mistype was not recorded: %+v", row)
 	}
 }
+
+// A later spelling must not move the address's active episode past the
+// point at which it gained standing.
+func TestMailStandingAddressSpellingsKeepEarliestEpisode(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	s.Note(standingIP, standingBox, standingD2)
+	tr.Record(standingIP, otherBox)
+	clock.advance(time.Minute)
+	earnedAt := clock.Now()
+	s.Note(standingIP, standingBox, earnedAt)
+	clock.advance(time.Minute)
+	tr.Record("::ffff:"+standingIP, standingBox)
+	clock.advance(time.Minute)
+	tr.recordSuccessAt("::ffff:"+standingIP, standingBox, clock.Now(), knownCustomerIMAP, true)
+	upserts, _, _ := s.Changes()
+	if row := upserts[standingIP+" "+standingBox]; !slices.Equal(row.Days, []int64{standingD2.Unix(), earnedAt.Unix()}) || len(row.Lasts) != 0 {
+		t.Fatalf("login after the earlier episode began changed standing: %+v", row)
+	}
+}
