@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"cmp"
+	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -449,4 +452,58 @@ func (s *loginStanding) requeue(upserts map[string]store.LoginStanding, deletes 
 	for _, raw := range deletes {
 		mark(raw)
 	}
+}
+
+// standingConfined reports whether every mailbox in accounts is one ip had
+// standing on as of asOf, the start of the failures, and no failure went
+// unvouched: one naming no mailbox or one the bounded map could not hold.
+func standingConfined(s *loginStanding, ip string, accounts map[string]time.Time, unvouched, asOf time.Time) bool {
+	if s == nil || len(accounts) == 0 || !unvouched.IsZero() {
+		return false
+	}
+	for account := range accounts {
+		if !s.Has(ip, account, asOf) {
+			return false
+		}
+	}
+	return true
+}
+
+// loginStandingAdvisory is the visible finding a brute-force block becomes
+// when every failing mailbox is one the address has login standing on.
+func loginStandingAdvisory(service, ip, burst, targets string, now time.Time) alert.Finding {
+	details := "Every failing mailbox is one this address has login standing on: trusted logins on more than one day before these failures began, so this is likely a device with an old saved password. Visibility only - no auto-block; spray and compromise detectors remain active."
+	if targets != "" {
+		details += " " + targets + "."
+	}
+	return alert.Finding{
+		Severity:  alert.High,
+		Check:     "mail_bruteforce_suspected",
+		Message:   fmt.Sprintf("Suspected stale %s password from %s: %s, only on mailboxes it has login standing on (not auto-blocked)", service, ip, burst),
+		Details:   details,
+		Timestamp: now,
+		SourceIP:  ip,
+	}
+}
+
+// formatStandingTargets names the mailboxes of a bounded failure map, at
+// most maxMailTargetsListed of them.
+func formatStandingTargets(accounts map[string]time.Time) string {
+	if len(accounts) == 0 {
+		return ""
+	}
+	names := slices.Sorted(maps.Keys(accounts))
+	listed := names[:min(len(names), maxMailTargetsListed)]
+	var b strings.Builder
+	b.WriteString("Targets: ")
+	for i, name := range listed {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(formatMailFailTargetAccount(name))
+	}
+	if extra := len(names) - len(listed); extra > 0 {
+		fmt.Fprintf(&b, " (+%d more)", extra)
+	}
+	return b.String()
 }
