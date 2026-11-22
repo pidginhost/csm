@@ -440,10 +440,10 @@ Incidents and central threat responses receive new findings, including suppresse
 | `http_claimed_bot_unverified` | High-volume claimed crawler traffic while reverse-DNS verification is pending (routed to the PoW challenge first when challenge is enabled) |
 | `http_ua_spoof` | IP exceeding the UA anomaly threshold, including confirmed search-engine bot UA spoofing (periodic; see configuration.md for opt-in flags) |
 | `ftp_bruteforce` | FTP authentication flood |
-| `smtp_bruteforce` | SMTP authentication flood |
+| `smtp_bruteforce` | SMTP authentication flood. An address that fails only on mailboxes it has login standing on gets an advisory instead |
 | `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
-| `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity |
-| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on two or more mailboxes including another one, or on a missing one. Only Critical findings block; High advisories are visibility only |
+| `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity. An address that fails only on mailboxes it has login standing on gets an advisory instead |
+| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on two or more mailboxes including another one, or on a missing one. Only Critical findings block; High advisories, including a login to a mailbox the address had login standing on before the failures, are visibility only |
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
@@ -697,6 +697,7 @@ blocked a known customer are listed in the
 - Never kills root processes, system daemons, or cPanel services
 - Infrastructure IPs (`infra_ips` and `firewall.infra_ips`) are never blocked or sent to the challenge page
 - A block of an address that recently logged in as a customer is alerted at once and never exempted
+- Failed mail logins confined to mailboxes an address regularly logs in to raise an advisory instead of a block (login standing in [real-time detection](detection-realtime.md#login-standing))
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
 - Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched

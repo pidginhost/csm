@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -567,4 +568,49 @@ func formatStandingTargets(accounts map[string]time.Time) string {
 		fmt.Fprintf(&b, " (+%d more)", extra)
 	}
 	return b.String()
+}
+
+// mailboxResponseStanding is the index mailbox response withdraws standing
+// from. New sets it.
+var mailboxResponseStanding atomic.Pointer[loginStanding]
+
+// loadLoginStanding restores the standing the last run saved. It runs before
+// log readers start: the index takes a snapshot only before its first use.
+func (d *Daemon) loadLoginStanding() {
+	if d.loginStanding == nil {
+		return
+	}
+	sdb := store.Global()
+	if sdb == nil {
+		return
+	}
+	saved, err := sdb.LoadLoginStanding()
+	if err != nil {
+		csmlog.Warn("login standing load failed", "err", err)
+	}
+	d.loginStanding.Load(saved)
+}
+
+// persistLoginStanding drops expired rows and saves what changed. The minute
+// saver and the shutdown flush can overlap, and a failed save must be
+// retried from current state, so one save runs at a time.
+func (d *Daemon) persistLoginStanding() {
+	if d.loginStanding == nil {
+		return
+	}
+	d.loginStandingSaveMu.Lock()
+	defer d.loginStandingSaveMu.Unlock()
+	d.loginStanding.Purge()
+	sdb := store.Global()
+	if sdb == nil {
+		return
+	}
+	upserts, deletes, replace := d.loginStanding.Changes()
+	if len(upserts)+len(deletes) == 0 && !replace {
+		return
+	}
+	if err := sdb.SaveLoginStanding(upserts, deletes, replace); err != nil {
+		d.loginStanding.requeue(upserts, deletes, replace)
+		csmlog.Warn("login standing save failed", "err", err)
+	}
 }

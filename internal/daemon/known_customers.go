@@ -676,8 +676,9 @@ func (d *Daemon) persistKnownCustomers() {
 	}
 }
 
-// runKnownCustomers saves the set every minute. The last save runs in the
-// shutdown flush, once log readers and dispatch have stopped noting logins.
+// runKnownCustomers saves the set, and login standing, every minute. The
+// last saves run in the shutdown flush, once log readers and dispatch have
+// stopped noting logins.
 func (d *Daemon) runKnownCustomers() {
 	defer d.wg.Done()
 	t := time.NewTicker(time.Minute)
@@ -688,6 +689,7 @@ func (d *Daemon) runKnownCustomers() {
 			return
 		case <-t.C:
 			d.persistKnownCustomers()
+			d.persistLoginStanding()
 		}
 	}
 }

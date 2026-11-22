@@ -1597,6 +1597,12 @@ The IMAP/POP/Sieve tracker classifies a login as a compromise before it updates
 login trust. A compromise softened by prior standing neither earns nor refreshes
 trust or standing, and revokes neither. Spray verdicts still apply.
 
+Both trackers withhold standing from a login that follows failures on its own
+mailbox, or failures naming none, in the address's active episode under any
+spelling, unless the address had standing when that episode began. The daemon
+loads the index before log readers start, saves it on the known-customer cycle,
+and mailbox response revokes the mailbox it acts on.
+
 Load the startup snapshot before recording or revoking logins. A later load
 cannot merge old history into live state; it schedules current rows or deletions
 for the supplied keys. The saver must serialize each `Changes`, store write,
