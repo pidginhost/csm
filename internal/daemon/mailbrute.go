@@ -1277,7 +1277,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		// Only a compromise softened by standing keeps the spray memory from
 		// learning; a crack learns as before and is revoked below, so the
 		// spray memory's own advisories still fire.
-		clean, v := t.spray.success(ip, sprayMailbox, !(compromise && standing))
+		clean, v := t.spray.success(ip, sprayMailbox, !compromise || !standing)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
 		}
