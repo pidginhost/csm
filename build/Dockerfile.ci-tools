@@ -13,7 +13,7 @@
 # tool needs to be added. The .gitlab-ci.yml CSM_CI_TOOLS_TAG variable
 # points at the tag that pipelines should pull.
 
-FROM golang:1.27.4-bookworm
+FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea
 
 # Versions kept in sync with the install commands that previously
 # lived inline in .gitlab-ci.yml. When bumping any of these, bump
@@ -59,4 +59,4 @@ RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI
 # node runs the Web UI JavaScript tests (scripts/uitest). Taken from the
 # official image rather than apt: bookworm's nodejs is past upstream end of
 # life. The binary needs only glibc and libstdc++, both in this base.
-COPY --from=node:24.22.2-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 /usr/local/bin/node /usr/local/bin/node
