@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	bolt "go.etcd.io/bbolt"
 	bolterrors "go.etcd.io/bbolt/errors"
@@ -58,11 +60,13 @@ func (db *DB) SaveLoginStanding(upserts map[string]LoginStanding, deletes []stri
 				return err
 			}
 		}
-		for key, row := range upserts {
+		// bbolt appends keys written in order; random order makes a rewrite
+		// of a large bucket split pages over and over.
+		for _, key := range slices.Sorted(maps.Keys(upserts)) {
 			if key == "" {
 				continue
 			}
-			val, err := json.Marshal(row)
+			val, err := json.Marshal(upserts[key])
 			if err != nil {
 				return err
 			}

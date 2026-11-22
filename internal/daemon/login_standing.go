@@ -345,8 +345,13 @@ func (s *loginStanding) removeLocked(k standingKey) {
 	s.queueDeleteLocked(k.String())
 }
 
-// queueDeleteLocked marks a store key for deletion. Pending keys share the
-// live row budget; overflow rewrites the bucket so no removal is lost.
+// maxStandingPendingDeletes bounds the store keys waiting for deletion
+// between saves. Steady churn at the row cap stays far below it, so saves
+// stay incremental; past it the next save rewrites the bucket, so no
+// removal is lost.
+const maxStandingPendingDeletes = 8192
+
+// queueDeleteLocked marks a store key for deletion.
 func (s *loginStanding) queueDeleteLocked(raw string) {
 	if s.replace {
 		return
@@ -356,7 +361,7 @@ func (s *loginStanding) queueDeleteLocked(raw string) {
 }
 
 func (s *loginStanding) boundDeletesLocked() {
-	if len(s.deleted) >= maxStandingRows || len(s.deleted)+len(s.rows) > maxStandingRows {
+	if len(s.deleted) > maxStandingPendingDeletes {
 		s.replace = true
 		clear(s.deleted)
 	}

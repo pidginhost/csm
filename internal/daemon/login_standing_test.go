@@ -596,7 +596,42 @@ func TestLoginStandingLoadCapsPreferLatestSuccess(t *testing.T) {
 	}
 }
 
-func TestLoginStandingDeleteBudgetIncludesLiveRows(t *testing.T) {
+// More pending deletions than the budget rewrite the bucket, and a failed
+// rewrite retries the index's current contents, including later
+// revocations, rather than replaying the captured replacement snapshot.
+func TestLoginStandingFailedRewriteRetriesCurrentRows(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	for i := range maxStandingRows {
+		s.Note("203.0.113.5", fmt.Sprintf("m%d@example.com", i), standingD1)
+	}
+	s.Changes()
+	for i := range maxStandingPendingDeletes + 1 {
+		s.Revoke(fmt.Sprintf("m%d@example.com", i))
+	}
+	left := maxStandingRows - maxStandingPendingDeletes - 1
+	upserts, deletes, replace := s.Changes()
+	if !replace || len(deletes) != 0 || len(upserts) != left {
+		t.Fatalf("Changes = %d upserts, %d deletes, replace %v; want a rewrite of %d rows", len(upserts), len(deletes), replace, left)
+	}
+	if _, exists := upserts["203.0.113.5 m0@example.com"]; exists {
+		t.Fatal("rewrite restored a revoked row")
+	}
+	last := fmt.Sprintf("m%d@example.com", maxStandingRows-1)
+	s.Revoke(last)
+	s.requeue(upserts, deletes, replace)
+	upserts, deletes, replace = s.Changes()
+	if !replace || len(deletes) != 0 || len(upserts) != left-1 {
+		t.Fatal("failed replacement did not schedule the current contents")
+	}
+	if _, exists := upserts["203.0.113.5 "+last]; exists {
+		t.Fatal("failed replacement resurrected a revoked row")
+	}
+}
+
+// Churn at the cap stays incremental: one revocation and one new row save
+// as one delete and one upsert, not a rewrite of the whole bucket.
+func TestLoginStandingChurnAtCapStaysIncremental(t *testing.T) {
 	clock := &staticClock{t: standingBase}
 	s := newLoginStanding(clock.Now)
 	for i := range maxStandingRows {
@@ -604,23 +639,9 @@ func TestLoginStandingDeleteBudgetIncludesLiveRows(t *testing.T) {
 	}
 	s.Changes()
 	s.Revoke("m0@example.com")
-	s.Note("203.0.113.5", "replacement@example.com", standingD2)
+	s.Note("198.51.100.9", "new@example.com", standingBase)
 	upserts, deletes, replace := s.Changes()
-	if !replace || len(deletes) != 0 || len(upserts) != maxStandingRows {
-		t.Fatalf("full live index plus pending deletes exceeded the shared row budget: %d rows, %d deletes, replace %v", len(upserts), len(deletes), replace)
-	}
-	if _, exists := upserts["203.0.113.5 m0@example.com"]; exists {
-		t.Fatal("rewrite restored a revoked row")
-	}
-	// A failed rewrite must retry the current contents, including later
-	// revocations, rather than replaying the captured replacement snapshot.
-	s.Revoke("replacement@example.com")
-	s.requeue(upserts, deletes, replace)
-	upserts, deletes, replace = s.Changes()
-	if !replace || len(deletes) != 0 || len(upserts) != maxStandingRows-1 {
-		t.Fatal("failed replacement did not schedule the current contents")
-	}
-	if _, exists := upserts["203.0.113.5 replacement@example.com"]; exists {
-		t.Fatal("failed replacement resurrected a revoked row")
+	if replace || len(upserts) != 1 || !slices.Equal(deletes, []string{"203.0.113.5 m0@example.com"}) {
+		t.Fatalf("Changes = %d upserts, %v, replace %v; want one upsert and one delete", len(upserts), deletes, replace)
 	}
 }
