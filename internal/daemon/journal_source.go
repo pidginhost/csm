@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -13,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 // journalSource is a service log the daemon reads from the journal when
@@ -63,15 +66,74 @@ var ftpJournal = journalSource{
 }
 
 // pureFTPDNumericPeers reports whether every known configuration source
-// disables DNS. A variable for tests.
+// disables DNS and the running server started after they last changed. A
+// variable for tests.
 var pureFTPDNumericPeers = newFTPNumericPeerProbe(platform.PureFTPDDontResolve)
 
 func newFTPNumericPeerProbe(probe func() ([]string, []string)) func() bool {
+	var stale atomic.Bool
 	return func() bool {
 		// A cached approval would survive an operator disabling DontResolve
 		// and restarting pure-ftpd, admitting attacker-chosen PTR names.
 		configs, missing := probe()
-		return len(configs) > 0 && len(missing) == 0
+		if len(configs) == 0 || len(missing) > 0 {
+			stale.Store(false)
+			return false
+		}
+		// pure-ftpd reads DontResolve only when it starts: a server older
+		// than its configuration may still log reverse DNS names.
+		if !pureFTPDServerFresh(configs) {
+			if !stale.Swap(true) {
+				csmlog.Warn("pure-ftpd started before its configuration last changed or is not running; FTP failures only alert until it restarts")
+			}
+			return false
+		}
+		stale.Store(false)
+		return true
+	}
+}
+
+// pureFTPDServerFresh reports whether a pure-ftpd server runs and started
+// after configs last changed. A variable for tests.
+var pureFTPDServerFresh = newPureFTPDFreshness(func() (int, time.Time, bool) {
+	return processctx.EarliestRootStart("/proc", platform.PureFTPDBinaries())
+}, processctx.NewProcReader("/proc", time.Second).ReadStartedAt, time.Now)
+
+// pureFTPDRescanEvery bounds process table scans while no remembered server
+// runs, as under inetd, where each connection is a new process.
+const pureFTPDRescanEvery = 10 * time.Second
+
+// newPureFTPDFreshness checks the configuration on every call but scans the
+// process table only once the server process it remembers is gone, and at
+// most once per pureFTPDRescanEvery: each FTP journal entry asks, and a flood
+// of entries must not rescan /proc. Until a scan finds a server, it answers
+// no.
+func newPureFTPDFreshness(scan func() (int, time.Time, bool), startedAt func(pid int) (time.Time, bool), now func() time.Time) func(configs []string) bool {
+	var (
+		mu       sync.Mutex
+		pid      int
+		started  time.Time
+		nextScan time.Time
+	)
+	return func(configs []string) bool {
+		changed, ok := platform.PureFTPDConfigChanged(configs)
+		if !ok {
+			return false
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		// A pid and its start time name one process; a reused pid has another.
+		if at, alive := startedAt(pid); pid != 0 && (!alive || !at.Equal(started)) {
+			pid = 0
+		}
+		if at := now(); pid == 0 && !at.Before(nextScan) {
+			nextScan = at.Add(pureFTPDRescanEvery)
+			var found bool
+			if pid, started, found = scan(); !found {
+				pid = 0
+			}
+		}
+		return pid != 0 && started.After(changed)
 	}
 }
 

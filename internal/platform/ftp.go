@@ -22,12 +22,16 @@ func FTPServerInstalled() bool {
 // PureFTPDInstalled reports whether a pure-ftpd server binary is installed,
 // including the variants Debian's authentication packages provide.
 func PureFTPDInstalled() bool {
-	return binaryInstalled([]string{
-		"pure-ftpd", "pure-ftpd-mysql", "pure-ftpd-postgresql", "pure-ftpd-ldap",
-	}, []string{
-		"/usr/sbin/pure-ftpd",
-		"/usr/sbin/pure-ftpd-mysql",
-		"/usr/sbin/pure-ftpd-postgresql",
-		"/usr/sbin/pure-ftpd-ldap",
-	})
+	names := PureFTPDBinaries()
+	paths := make([]string, len(names))
+	for i, name := range names {
+		paths[i] = "/usr/sbin/" + name
+	}
+	return binaryInstalled(names, paths)
+}
+
+// PureFTPDBinaries names the pure-ftpd server executables, including the
+// variants Debian's authentication packages provide.
+func PureFTPDBinaries() []string {
+	return []string{"pure-ftpd", "pure-ftpd-mysql", "pure-ftpd-postgresql", "pure-ftpd-ldap"}
 }

@@ -42,7 +42,7 @@ func TestLoginSourcesDoctorCheck(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{MailLogs: config.MailLogsConfig{Source: tc.source, File: tc.path, Units: tc.units}}
-			c := loginSourcesDoctorCheck(tc.syslogJournal, cfg, tc.mta, "", nil)
+			c := loginSourcesDoctorCheck(tc.syslogJournal, cfg, tc.mta, "", nil, false)
 			status := "ok"
 			if tc.warn || tc.mail == "journal" && !maillog.JournalSupported() {
 				status = "warn"
@@ -77,7 +77,7 @@ func TestLoginSourcesDoctorCheck(t *testing.T) {
 }
 
 func TestLoginSourcesDoesNotCallStalwartAJournal(t *testing.T) {
-	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", nil)
+	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", nil, false)
 	if !strings.Contains(c.Message, "mail: Stalwart service log") || c.Status != "ok" || c.Fix != "" {
 		t.Fatalf("Stalwart's own log is misreported: %+v", c)
 	}
@@ -89,7 +89,7 @@ func TestLoginSourcesUsesPlatformFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{MailLogs: config.MailLogsConfig{Source: "auto"}}
-	c := loginSourcesDoctorCheck(false, cfg, platform.MTAPostfix, file, nil)
+	c := loginSourcesDoctorCheck(false, cfg, platform.MTAPostfix, file, nil, false)
 	if c.Status != "warn" || !strings.Contains(c.Message, "mail: syslog file") || strings.Contains(c.Message, "unavailable") {
 		t.Fatalf("platform file ignored: %+v", c)
 	}
@@ -98,20 +98,30 @@ func TestLoginSourcesUsesPlatformFile(t *testing.T) {
 // Without DontResolve pure-ftpd logs client host names, so FTP failures only
 // alert; the check names each configuration source to fix.
 func TestLoginSourcesDoctorCheckFTPHostNames(t *testing.T) {
-	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", []string{"/etc/pure-ftpd.conf"})
+	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", []string{"/etc/pure-ftpd.conf"}, false)
 	if c.Status != "warn" || !strings.Contains(c.Message, "FTP failures only alert while pure-ftpd logs client host names") ||
 		!strings.Contains(c.Fix, "set DontResolve yes in /etc/pure-ftpd.conf and restart pure-ftpd") {
 		t.Fatalf("check = %+v", c)
 	}
-	c = loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", nil)
+	c = loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", nil, false)
 	if c.Status != "ok" || strings.Contains(c.Message, "pure-ftpd") {
 		t.Fatalf("check without the gap = %+v", c)
 	}
 }
 
 func TestLoginSourcesDoctorDebianDontResolve(t *testing.T) {
-	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", []string{"/etc/pure-ftpd/conf/DontResolve"})
+	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", []string{"/etc/pure-ftpd/conf/DontResolve"}, false)
 	if c.Status != "warn" || !strings.Contains(c.Fix, "write yes to /etc/pure-ftpd/conf/DontResolve") || strings.Contains(c.Fix, "set DontResolve yes in /etc/pure-ftpd/conf/DontResolve") {
 		t.Fatalf("doctor must give the wrapper's value-only syntax: %+v", c)
+	}
+}
+
+// pure-ftpd reads DontResolve only when it starts: a server started before
+// its configuration last changed needs a restart before FTP failures block.
+func TestLoginSourcesDoctorCheckFTPRestart(t *testing.T) {
+	c := loginSourcesDoctorCheck(true, &config.Config{}, platform.MTAStalwart, "", nil, true)
+	if c.Status != "warn" || !strings.Contains(c.Message, "FTP failures only alert until pure-ftpd restarts and reads its configuration") ||
+		c.Fix != "restart pure-ftpd" {
+		t.Fatalf("check = %+v", c)
 	}
 }

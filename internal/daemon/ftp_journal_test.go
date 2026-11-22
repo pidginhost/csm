@@ -286,6 +286,7 @@ func TestFTPJournalHostNamesOnlyAlert(t *testing.T) {
 // An operator can restart pure-ftpd with DNS enabled between consecutive
 // entries. A previous positive answer must not authorize the new entries.
 func TestFTPNumericPeerProbeDoesNotCacheApproval(t *testing.T) {
+	setFTPServerFresh(t, true)
 	numeric := true
 	probe := newFTPNumericPeerProbe(func() ([]string, []string) {
 		if numeric {
