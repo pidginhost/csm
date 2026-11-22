@@ -169,6 +169,10 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	if err = snap.Close(); err != nil {
 		return nil, fmt.Errorf("closing bbolt snapshot: %w", err)
 	}
+	// Before the session pass, whose compaction then drops the freed pages.
+	if err = DisarmLoginStandingSnapshot(snapPath); err != nil {
+		return nil, err
+	}
 	if err = DisarmBrowserSessionsSnapshot(snapPath); err != nil {
 		return nil, err
 	}
@@ -439,6 +443,9 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		}
 	}
 	if (only == "all" || only == "firewall") && stagedBbolt != "" {
+		if err := DisarmLoginStandingSnapshot(stagedBbolt); err != nil {
+			return nil, err
+		}
 		if err := DisarmBrowserSessionsSnapshot(stagedBbolt); err != nil {
 			return nil, err
 		}

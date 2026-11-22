@@ -1291,3 +1291,103 @@ func TestExportRefusesToArchiveItsOwnOutput(t *testing.T) {
 		t.Fatalf("partial archive remains: %v", err)
 	}
 }
+
+// Login standing is earned from live logins; an exported snapshot must not
+// carry it to another time or host.
+func TestArchiveExportStripsLoginStanding(t *testing.T) {
+	statePath := t.TempDir()
+	db, err := Open(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.SaveLoginStanding(map[string]LoginStanding{"203.0.113.5 a@example.com": {First: 1776160800, Days: []int64{1776160800}}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "snapshot.csmbak")
+	if _, err := db.Export(ExportOptions{StatePath: statePath, DstPath: archivePath, Manifest: defaultManifest()}); err != nil {
+		t.Fatal(err)
+	}
+	var man Manifest
+	if err := json.Unmarshal(archiveEntryBytes(t, archivePath, manifestEntry), &man); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(man.BboltBuckets, loginStandingBucket) {
+		t.Fatal("export manifest lists the stripped login standing bucket")
+	}
+	snapshotDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snapshotDir, "csm.db"), archiveEntryBytes(t, archivePath, bboltSnapshotEntry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, openErr := Open(snapshotDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	if got, loadErr := snapshot.LoadLoginStanding(); loadErr != nil || len(got) != 0 {
+		t.Fatalf("exported snapshot kept login standing: %v, %v", got, loadErr)
+	}
+}
+
+// An archive written before standing was stripped must not restore it.
+func TestArchiveImportStripsLoginStanding(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, _, _ := mustExportSetup(t)
+	if _, err := db.Export(ExportOptions{StatePath: statePath, RulesPath: rulesPath, DstPath: archivePath, Manifest: defaultManifest()}); err != nil {
+		t.Fatal(err)
+	}
+	olderDir := t.TempDir()
+	older, openErr := Open(olderDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if err := older.SaveLoginStanding(map[string]LoginStanding{"203.0.113.5 a@example.com": {First: 1776160800, Days: []int64{1776160800}}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := older.Close(); err != nil {
+		t.Fatal(err)
+	}
+	olderBytes, readErr := os.ReadFile(filepath.Join(olderDir, "csm.db"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	olderHash := sha256.Sum256(olderBytes)
+	withStanding := filepath.Join(t.TempDir(), "with-standing.csmbak")
+	rewriteArchive(t, archivePath, withStanding, func(name string, data []byte) ([]byte, bool) {
+		switch name {
+		case manifestEntry:
+			var man Manifest
+			if err := json.Unmarshal(data, &man); err != nil {
+				t.Fatal(err)
+			}
+			man.BboltSHA256 = hex.EncodeToString(olderHash[:])
+			man.BboltBuckets = append(man.BboltBuckets, loginStandingBucket)
+			encoded, marshalErr := json.Marshal(man)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			return encoded, true
+		case bboltSnapshotEntry:
+			return olderBytes, true
+		default:
+			return data, true
+		}
+	})
+	_ = db.Close()
+
+	restoredState := filepath.Join(t.TempDir(), "state")
+	result, err := Import(ImportOptions{SrcPath: withStanding, StatePath: restoredState, Only: "all", CurrentPlatform: defaultPlatform()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(result.BucketsRestored, loginStandingBucket) {
+		t.Error("import reported stripped login standing as restored")
+	}
+	restoredDB, openErr := Open(restoredState)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = restoredDB.Close() })
+	if got, loadErr := restoredDB.LoadLoginStanding(); loadErr != nil || len(got) != 0 {
+		t.Fatalf("import restored login standing: %v, %v", got, loadErr)
+	}
+}

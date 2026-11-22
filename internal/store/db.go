@@ -35,6 +35,7 @@ var bucketNames = []string{
 	spamSourceBucket,
 	mailSprayBucket,
 	knownCustomersBucket,
+	loginStandingBucket,
 	"plugins",
 	"plugins:sites",
 	"meta",

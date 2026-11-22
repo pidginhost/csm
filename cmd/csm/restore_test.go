@@ -710,3 +710,38 @@ func createRestoreTestDB(t *testing.T, stateDir string) []byte {
 	}
 	return data
 }
+
+func TestRestoreArchiveStripsLoginStanding(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "backup.tar.gz")
+	dbDir := filepath.Join(dir, "source-db")
+	db, openErr := csmstore.Open(dbDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if err := db.SaveLoginStanding(map[string]csmstore.LoginStanding{"203.0.113.5 a@example.com": {First: 1776160800, Days: []int64{1776160800}}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dbBytes, readErr := os.ReadFile(filepath.Join(dbDir, "csm.db"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err := writeArchiveEntries(archive, []archiveTestEntry{{name: "state/csm.db", size: int64(len(dbBytes)), body: dbBytes}}); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "restored-state")
+	if err := RestoreBackupArchive(archive, BackupSources{StateDir: dst}); err != nil {
+		t.Fatal(err)
+	}
+	restoredDB, openErr := csmstore.Open(dst)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = restoredDB.Close() })
+	if got, err := restoredDB.LoadLoginStanding(); err != nil || len(got) != 0 {
+		t.Fatalf("restore kept login standing: %v, %v", got, err)
+	}
+}

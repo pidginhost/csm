@@ -209,6 +209,9 @@ func disarmedStateDBSnapshot(srcPath, tempDir string, maxBytes int64) (_ string,
 	if err := csmstore.DisarmFirewallRollbackSnapshot(path); err != nil {
 		return "", err
 	}
+	if err := csmstore.DisarmLoginStandingSnapshot(path); err != nil {
+		return "", err
+	}
 	ok = true
 	return path, nil
 }

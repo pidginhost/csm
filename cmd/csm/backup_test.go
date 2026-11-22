@@ -346,3 +346,37 @@ func createBackupTestDB(t *testing.T, stateDir string) {
 		t.Fatal(err)
 	}
 }
+
+func TestBackupArchiveStripsLoginStanding(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	db, openErr := csmstore.Open(stateDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	if err := db.SaveLoginStanding(map[string]csmstore.LoginStanding{"203.0.113.5 a@example.com": {First: 1776160800, Days: []int64{1776160800}}}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "backup.tar.gz")
+	if err := WriteBackupArchive(out, BackupSources{StateDir: stateDir}); err != nil {
+		t.Fatal(err)
+	}
+	restoredDir := filepath.Join(dir, "snapshot")
+	if err := os.Mkdir(restoredDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(restoredDir, "csm.db"), tarEntryBytes(t, out, "state/csm.db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, openErr := csmstore.Open(restoredDir)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	if got, err := snapshot.LoadLoginStanding(); err != nil || len(got) != 0 {
+		t.Fatalf("backup kept login standing: %v, %v", got, err)
+	}
+}
