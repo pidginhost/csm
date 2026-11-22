@@ -376,16 +376,19 @@ the same findings out of order or far apart do not.
 ### Join findings on file identity
 
 **Problem:** realtime, YARA and the taint engines each flag the same file
-separately. Taint runs only in the scheduled deep scan and realtime findings
-never enter the stored findings list, so no existing join point holds both;
-the realtime PHP heuristics also carry no content hash. Decision needed:
-fold same-file rows in the Findings view, which covers the scheduled layers
-and leaves alerts, response and dismissals as they are, or keep a bounded,
-expiring file-evidence index that also covers realtime hits and needs
-retention and quarantine rules.
+separately, so one file can fill several rows on the Findings page. Taint runs
+only in the scheduled deep scan and realtime findings never enter the stored
+findings list, so no existing join point holds both.
 
-**Acceptance:** one file tripping three layers yields one finding with three
-pieces of evidence and the strongest severity.
+**Decision:** fold same-file rows in the Findings view. This covers the
+scheduled layers and leaves alerts, automatic response and dismissals working
+per layer. A persistent file-evidence index that also joins realtime hits waits
+until operators need realtime and scheduled evidence joined for a response
+decision.
+
+**Acceptance:** one file tripping three scheduled layers shows as one row with
+three pieces of evidence and the strongest severity, and Dismiss, Fix and
+Re-check still act on each layer's finding.
 
 **Size:** M.
 
