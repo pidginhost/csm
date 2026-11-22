@@ -417,32 +417,45 @@ func TestMailStandingCompromiseEarnsNoSprayTrust(t *testing.T) {
 	}
 }
 
+// A good source too fresh to vouch for the mailbox leaves the compromise to
+// standing: High, and the login earns and refreshes nothing.
 func TestMailStandingCompromiseWithGoodHistoryEarnsNothing(t *testing.T) {
-	for _, age := range []time.Duration{time.Minute, 20 * time.Minute} {
-		t.Run(age.String(), func(t *testing.T) {
-			clock := &staticClock{t: standingBase}
-			tr, s := newStandingMailTracker(t, clock)
-			earnStanding(t, s, standingIP, standingBox)
-			tr.RecordSuccess(standingIP, standingBox)
-			before := tr.ExportGoodSource()[standingIP][standingBox]
-			clock.advance(age)
-			recordMail(tr, standingIP, standingBox, standingBox)
-			s.Changes()
-			out := tr.RecordSuccess(standingIP, standingBox)
-			if f := findCheck(out, "mail_account_compromised"); f == nil || f.Severity != alert.High {
-				t.Errorf("compromise = %+v, want High", out)
-			}
-			if after := tr.ExportGoodSource()[standingIP][standingBox]; after != before {
-				t.Errorf("good-source history changed: before %v, after %v", before, after)
-			}
-			if upserts, deletes, replace := s.Changes(); len(upserts) != 0 || len(deletes) != 0 || replace {
-				t.Fatalf("standing changed: %v, %v, %v", upserts, deletes, replace)
-			}
-		})
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	tr.RecordSuccess(standingIP, standingBox)
+	before := tr.ExportGoodSource()[standingIP][standingBox]
+	clock.advance(time.Minute)
+	recordMail(tr, standingIP, standingBox, standingBox)
+	s.Changes()
+	out := tr.RecordSuccess(standingIP, standingBox)
+	if f := findCheck(out, "mail_account_compromised"); f == nil || f.Severity != alert.High {
+		t.Errorf("compromise = %+v, want High", out)
+	}
+	if after := tr.ExportGoodSource()[standingIP][standingBox]; after != before {
+		t.Errorf("good-source history changed: before %v, after %v", before, after)
+	}
+	if upserts, deletes, replace := s.Changes(); len(upserts) != 0 || len(deletes) != 0 || replace {
+		t.Fatalf("standing changed: %v, %v, %v", upserts, deletes, replace)
 	}
 }
 
-func TestMailStandingUntrustedCrackPreservesSprayTrust(t *testing.T) {
+// Today's rule stays: an address that logged in to the mailbox earlier in
+// the day, before the failures, mistyped. Standing adds no alert there.
+func TestMailStandingGoodSourceMistypeStaysSilent(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	tr.RecordSuccess(standingIP, standingBox)
+	clock.advance(20 * time.Minute)
+	recordMail(tr, standingIP, standingBox, standingBox)
+	if f := findCheck(tr.RecordSuccess(standingIP, standingBox), "mail_account_compromised"); f != nil {
+		t.Fatalf("a mistype from an established good source raised %+v", *f)
+	}
+}
+
+// A crack read from a log file revokes nothing another address earned.
+func TestMailStandingUntrustedCrackKeepsStanding(t *testing.T) {
 	clock := &staticClock{t: standingBase}
 	tr := newTestMailTrackerWithSpray(t, clock)
 	tr.SetFileLines()
@@ -450,15 +463,11 @@ func TestMailStandingUntrustedCrackPreservesSprayTrust(t *testing.T) {
 	tr.SetLoginStanding(s)
 	earnStanding(t, s, "198.51.100.1", standingBox)
 	tr.spray.Success(standingIP, standingBox)
-	before := maps.Clone(tr.spray.trust)
 	recordMail(tr, standingIP, standingBox, standingBox)
 	clock.advance(time.Minute)
 	out := tr.recordSuccessAt(standingIP, standingBox, clock.Now(), knownCustomerIMAP, false)
 	if f := findCheck(out, "mail_account_compromised"); f == nil || f.Severity != alert.Critical {
 		t.Fatalf("untrusted compromise = %+v, want Critical", out)
-	}
-	if !maps.Equal(before, tr.spray.trust) || len(tr.spray.ips[standingIP].revoked) != 0 {
-		t.Fatal("untrusted compromise changed spray trust")
 	}
 	if !s.Has("198.51.100.1", standingBox, standingBase) {
 		t.Fatal("untrusted compromise revoked another address's standing")
@@ -555,5 +564,22 @@ func TestMailStandingCompromiseQuietPeriodWithSpray(t *testing.T) {
 	clock.advance(time.Minute)
 	if out := tr.RecordSuccess(standingIP, standingBox); len(out) != 0 {
 		t.Fatalf("compromise quiet period emitted: %+v", out)
+	}
+}
+
+// A crack in log-file lines revokes trust in the file reader's own spray
+// memory, as before login standing: those lines never touch trusted state.
+func TestMailFileLineCrackRevokesFileSprayTrust(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTrackerWithSpray(t, clock)
+	tr.SetFileLines()
+	ip, box := "203.0.113.5", "box@example.com"
+	tr.spray.Success(ip, box)
+	tr.Record(ip, box)
+	tr.Record(ip, box)
+	clock.advance(time.Minute)
+	tr.recordSuccessAt(ip, box, clock.Now(), knownCustomerIMAP, false)
+	if _, ok := tr.spray.trust[sprayTrustKey{ip, box}]; ok {
+		t.Fatal("a file-line crack kept trust in the file reader's spray memory")
 	}
 }

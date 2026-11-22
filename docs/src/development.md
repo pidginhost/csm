@@ -1593,10 +1593,9 @@ it also precedes the decision. Later successes cannot excuse earlier failures.
 The stored `lasts` array preserves the latter timestamps; when absent, only the
 recorded first success of each date is known.
 
-The IMAP/POP/Sieve tracker classifies compromise before updating login trust.
-A compromise softened by prior standing stays High even with recent good-source
-history. It neither earns nor refreshes trust or standing, and revokes neither.
-Spray verdicts still apply. An untrusted compromise cannot revoke spray trust.
+The IMAP/POP/Sieve tracker classifies a login as a compromise before it updates
+login trust. A compromise softened by prior standing neither earns nor refreshes
+trust or standing, and revokes neither. Spray verdicts still apply.
 
 Load the startup snapshot before recording or revoking logins. A later load
 cannot merge old history into live state; it schedules current rows or deletions

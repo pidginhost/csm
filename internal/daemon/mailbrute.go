@@ -1222,8 +1222,10 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	standing := t.standing.Has(ip, sprayMailbox, e.episodeStart)
 	// Classify before the spray detector can learn from this login. Standing
 	// softens a compromise but must not turn it into a clean success.
-	compromise := len(e.failedAccounts[account]) >= 2 && (standing ||
-		(!e.accountSuccessDominant(account) && !e.establishedGood(account, now, t.window)))
+	// A mailbox that already succeeds from this IP, or that it held good
+	// source on before the failures, is a legit owner who mistyped.
+	compromise := len(e.failedAccounts[account]) >= 2 &&
+		!e.accountSuccessDominant(account) && !e.establishedGood(account, now, t.window)
 	// A guessed-password success should not train the long-lived good-source cache.
 	degraded := t.backendDegraded(now) || (t.backendDownFn != nil && t.backendDownFn())
 	recordGoodSource := !degraded && trusted && !compromise
@@ -1275,7 +1277,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	}
 	// Retain the crack in spray memory so later logins cannot restore trust
 	// after the shorter per-IP failure window empties.
-	if !standing && !degraded && trusted && t.spray != nil {
+	if !standing && !degraded && (trusted || t.fileLines) && t.spray != nil {
 		t.spray.RevokeTrust(ip, sprayMailbox)
 	}
 	a, ok := t.accounts[account]
