@@ -48,30 +48,48 @@ type standingKey struct {
 
 func (k standingKey) String() string { return k.addr.String() + " " + k.mailbox }
 
-// standingRow is one address's trusted logins to one mailbox, in Unix
-// seconds: the first, and the earliest of each of its latest dates,
-// ascending. first is never after days[0].
-type standingRow struct {
+// A date needs both ends: its first login proves it preceded asOf, while
+// its last login determines recency when the whole date precedes asOf.
+type standingDay struct {
 	first int64
-	days  []int64
+	last  int64
 }
 
-func (r *standingRow) latest() int64 { return r.days[len(r.days)-1] }
+// standingRow keeps the original first success and the endpoints of its
+// latest dates. mailbox owns its storage, independent of input log lines.
+type standingRow struct {
+	first   int64
+	days    []standingDay
+	mailbox string
+	dirty   bool
+}
 
-// add records a success; a date keeps its earliest.
+func (r *standingRow) latest() int64 { return r.days[len(r.days)-1].last }
+
 func (r *standingRow) add(sec int64) {
 	r.first = min(r.first, sec)
-	i, found := slices.BinarySearchFunc(r.days, sec/secondsPerDay, func(d, day int64) int {
-		return cmp.Compare(d/secondsPerDay, day)
+	i, found := slices.BinarySearchFunc(r.days, sec/secondsPerDay, func(d standingDay, day int64) int {
+		return cmp.Compare(d.first/secondsPerDay, day)
 	})
 	if found {
-		r.days[i] = min(r.days[i], sec)
+		r.days[i].first = min(r.days[i].first, sec)
+		r.days[i].last = max(r.days[i].last, sec)
 		return
 	}
-	r.days = slices.Insert(r.days, i, sec)
-	if extra := len(r.days) - standingDays; extra > 0 {
-		r.days = slices.Delete(r.days, 0, extra)
+	if len(r.days) == standingDays {
+		if i == 0 {
+			return
+		}
+		r.days = slices.Delete(r.days, 0, 1)
+		i--
 	}
+	// Never grow beyond the retained dates when inserting into a full row.
+	if len(r.days) == cap(r.days) {
+		days := make([]standingDay, len(r.days), min(standingDays, max(1, 2*cap(r.days))))
+		copy(days, r.days)
+		r.days = days
+	}
+	r.days = slices.Insert(r.days, i, standingDay{sec, sec})
 }
 
 // standingAt applies the rule as of asOf: successes at or after it never
@@ -82,20 +100,36 @@ func (r *standingRow) standingAt(asOf int64) bool {
 	}
 	dates, lastDay, latest := 1, r.first/secondsPerDay, r.first
 	for _, d := range r.days {
-		if d >= asOf {
+		if d.first >= asOf {
 			break
 		}
-		if day := d / secondsPerDay; day != lastDay {
+		if day := d.first / secondsPerDay; day != lastDay {
 			dates++
 			lastDay = day
 		}
-		latest = d
+		latest = d.first
+		if d.last < asOf {
+			latest = d.last
+		}
+		// If asOf splits this date, its first success already proves
+		// recency. No later success on the date needs to be counted.
 	}
 	return dates >= 2 && asOf-latest <= int64(standingRecent/time.Second)
 }
 
 func (r *standingRow) export() store.LoginStanding {
-	return store.LoginStanding{First: r.first, Days: slices.Clone(r.days)}
+	row := store.LoginStanding{First: r.first, Days: make([]int64, len(r.days))}
+	for i, d := range r.days {
+		row.Days[i] = d.first
+		if d.last != d.first && row.Lasts == nil {
+			row.Lasts = make([]int64, len(r.days))
+			copy(row.Lasts, row.Days)
+		}
+		if row.Lasts != nil {
+			row.Lasts[i] = d.last
+		}
+	}
+	return row
 }
 
 // loginStanding remembers trusted clean logins per address and mailbox, so
@@ -105,22 +139,21 @@ func (r *standingRow) export() store.LoginStanding {
 type loginStanding struct {
 	now func() time.Time
 
-	mu        sync.Mutex
-	rows      map[standingKey]*standingRow
-	byMailbox map[string]map[netip.Addr]struct{}
-	dirty     map[standingKey]struct{} // to write at the next save
-	deleted   map[string]struct{}      // store keys to remove at the next save
-	replace   bool                     // the next save rewrites the bucket
-	nextPrune time.Time                // a full index prunes at most once a minute
-	warnedAt  time.Time                // the full-index warning repeats at most hourly
+	mu          sync.Mutex
+	initialized bool // a snapshot may only initialize an unused index
+	rows        map[standingKey]*standingRow
+	byMailbox   map[string][]netip.Addr
+	deleted     map[string]struct{} // store keys to remove at the next save
+	replace     bool                // the next save rewrites the bucket
+	nextPrune   time.Time           // a full index prunes at most once a minute
+	warnedAt    time.Time           // the full-index warning repeats at most hourly
 }
 
 func newLoginStanding(now func() time.Time) *loginStanding {
 	return &loginStanding{
 		now:       now,
 		rows:      make(map[standingKey]*standingRow),
-		byMailbox: make(map[string]map[netip.Addr]struct{}),
-		dirty:     make(map[standingKey]struct{}),
+		byMailbox: make(map[string][]netip.Addr),
 		deleted:   make(map[string]struct{}),
 	}
 }
@@ -176,6 +209,7 @@ func (s *loginStanding) Note(ip, mailbox string, at time.Time) {
 func (s *loginStanding) note(k standingKey, sec int64, now time.Time) (warn bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.initialized = true
 	r := s.rows[k]
 	if r == nil {
 		if !s.roomLocked(k.mailbox, now) {
@@ -187,18 +221,14 @@ func (s *loginStanding) note(k standingKey, sec int64, now time.Time) (warn bool
 		}
 		// A mailbox name may be a slice of a long log line.
 		k.mailbox = strings.Clone(k.mailbox)
-		r = &standingRow{first: sec}
+		r = &standingRow{first: sec, mailbox: k.mailbox}
 		s.rows[k] = r
-		held := s.byMailbox[k.mailbox]
-		if held == nil {
-			held = make(map[netip.Addr]struct{})
-			s.byMailbox[k.mailbox] = held
-		}
-		held[k.addr] = struct{}{}
+		s.byMailbox[k.mailbox] = append(s.byMailbox[k.mailbox], k.addr)
 	}
 	r.add(sec)
-	s.dirty[k] = struct{}{}
+	r.dirty = true
 	delete(s.deleted, k.String())
+	s.boundDeletesLocked()
 	return false
 }
 
@@ -209,7 +239,7 @@ func (s *loginStanding) roomLocked(mailbox string, now time.Time) bool {
 	if held := s.byMailbox[mailbox]; len(held) >= maxStandingPerMailbox {
 		var victim netip.Addr
 		var oldest int64
-		for addr := range held {
+		for _, addr := range held {
 			latest := s.rows[standingKey{addr, mailbox}].latest()
 			if !victim.IsValid() || latest < oldest || latest == oldest && addr.Less(victim) {
 				victim, oldest = addr, latest
@@ -257,8 +287,10 @@ func (s *loginStanding) Revoke(mailbox string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for addr := range s.byMailbox[mailbox] {
-		s.removeLocked(standingKey{addr, mailbox})
+	s.initialized = true
+	// removeLocked compacts the address slice, so consume it from the end.
+	for held := s.byMailbox[mailbox]; len(held) > 0; held = s.byMailbox[mailbox] {
+		s.removeLocked(standingKey{held[len(held)-1], mailbox})
 	}
 }
 
@@ -270,6 +302,7 @@ func (s *loginStanding) Purge() {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.initialized = true
 	s.pruneLocked(now)
 }
 
@@ -298,31 +331,40 @@ func (s *loginStanding) removeLocked(k standingKey) {
 	}
 	delete(s.rows, k)
 	if held := s.byMailbox[k.mailbox]; held != nil {
-		delete(held, k.addr)
+		i := slices.Index(held, k.addr)
+		held = slices.Delete(held, i, i+1)
 		if len(held) == 0 {
 			delete(s.byMailbox, k.mailbox)
+		} else {
+			// Keep the owned mailbox spelling when the map replaces its key.
+			mailbox := s.rows[standingKey{held[0], k.mailbox}].mailbox
+			s.byMailbox[mailbox] = held
 		}
 	}
-	delete(s.dirty, k)
 	s.queueDeleteLocked(k.String())
 }
 
-// queueDeleteLocked marks a store key for deletion. Past the bound the next
-// save rewrites the bucket instead, so no removal is ever lost.
+// queueDeleteLocked marks a store key for deletion. Pending keys share the
+// live row budget; overflow rewrites the bucket so no removal is lost.
 func (s *loginStanding) queueDeleteLocked(raw string) {
 	if s.replace {
 		return
 	}
 	s.deleted[raw] = struct{}{}
-	if len(s.deleted) >= maxStandingRows {
+	s.boundDeletesLocked()
+}
+
+func (s *loginStanding) boundDeletesLocked() {
+	if len(s.deleted) >= maxStandingRows || len(s.deleted)+len(s.rows) > maxStandingRows {
 		s.replace = true
 		clear(s.deleted)
 	}
 }
 
-// Load merges saved rows. A key or row it cannot trust is dropped and
-// queued for deletion; valid rows are admitted newest first while both
-// caps allow.
+// Load initializes an unused index from a startup snapshot. Call it before
+// Note, Revoke, Purge or Changes; later loads only queue the current state
+// for saving, so stale snapshots cannot undo updates or revocations. Invalid
+// rows are queued for deletion; valid rows enter newest first within the caps.
 func (s *loginStanding) Load(saved map[string]store.LoginStanding) {
 	if s == nil {
 		return
@@ -344,50 +386,65 @@ func (s *loginStanding) Load(saved map[string]store.LoginStanding) {
 		valid = append(valid, entry{k, row})
 	}
 	slices.SortFunc(valid, func(a, b entry) int {
-		if c := cmp.Compare(b.row.Days[len(b.row.Days)-1], a.row.Days[len(a.row.Days)-1]); c != 0 {
+		if c := cmp.Compare(standingSavedLatest(b.row), standingSavedLatest(a.row)); c != 0 {
 			return c
 		}
 		return cmp.Compare(a.key.String(), b.key.String())
 	})
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.initialized {
+		for raw := range saved {
+			s.markCurrentLocked(raw)
+		}
+		return
+	}
+	s.initialized = true
 	for _, raw := range dropped {
 		s.queueDeleteLocked(raw)
 	}
 	for _, e := range valid {
-		if r := s.rows[e.key]; r != nil {
-			// Logins noted before the load keep their row; the saved
-			// history joins it.
-			for _, d := range e.row.Days {
-				r.add(d)
-			}
-			r.first = min(r.first, e.row.First)
-			s.dirty[e.key] = struct{}{}
-			continue
-		}
 		if len(s.rows) >= maxStandingRows || len(s.byMailbox[e.key.mailbox]) >= maxStandingPerMailbox {
 			s.queueDeleteLocked(e.key.String())
 			continue
 		}
-		s.rows[e.key] = &standingRow{first: e.row.First, days: slices.Clone(e.row.Days)}
-		held := s.byMailbox[e.key.mailbox]
-		if held == nil {
-			held = make(map[netip.Addr]struct{})
-			s.byMailbox[e.key.mailbox] = held
+		e.key.mailbox = strings.Clone(e.key.mailbox)
+		r := &standingRow{first: e.row.First, mailbox: e.key.mailbox, days: make([]standingDay, len(e.row.Days))}
+		for i, first := range e.row.Days {
+			last := first
+			if len(e.row.Lasts) != 0 {
+				last = e.row.Lasts[i]
+			}
+			r.days[i] = standingDay{first, last}
 		}
-		held[e.key.addr] = struct{}{}
+		s.rows[e.key] = r
+		s.byMailbox[e.key.mailbox] = append(s.byMailbox[e.key.mailbox], e.key.addr)
 	}
+	s.boundDeletesLocked()
+}
+
+func standingSavedLatest(row store.LoginStanding) int64 {
+	if len(row.Lasts) != 0 {
+		return row.Lasts[len(row.Lasts)-1]
+	}
+	return row.Days[len(row.Days)-1]
 }
 
 // validStandingRow reports whether a saved row is one Note could have
 // written and still within the row window.
 func validStandingRow(row store.LoginStanding, now, cutoff int64) bool {
 	if len(row.Days) == 0 || len(row.Days) > standingDays || row.First <= 0 ||
-		row.Days[0] < row.First || row.Days[len(row.Days)-1] > now || row.Days[len(row.Days)-1] < cutoff {
+		row.Days[0] < row.First || (len(row.Lasts) != 0 && len(row.Lasts) != len(row.Days)) {
 		return false
 	}
-	for i := 1; i < len(row.Days); i++ {
-		if row.Days[i]/secondsPerDay <= row.Days[i-1]/secondsPerDay {
+	if latest := standingSavedLatest(row); latest > now || latest < cutoff {
+		return false
+	}
+	for i, first := range row.Days {
+		if i > 0 && first/secondsPerDay <= row.Days[i-1]/secondsPerDay {
+			return false
+		}
+		if len(row.Lasts) != 0 && (row.Lasts[i] < first || row.Lasts[i]/secondsPerDay != first/secondsPerDay) {
 			return false
 		}
 	}
@@ -396,27 +453,29 @@ func validStandingRow(row store.LoginStanding, now, cutoff int64) bool {
 
 // Changes returns what changed since the last call: rows to write and store
 // keys to delete, or, with replace, every row to replace the bucket with.
+// The caller must serialize extraction, the store write, and requeue on failure.
 func (s *loginStanding) Changes() (upserts map[string]store.LoginStanding, deletes []string, replace bool) {
 	if s == nil {
 		return nil, nil, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.initialized = true
 	defer func() {
-		clear(s.dirty)
 		clear(s.deleted)
 		s.replace = false
 	}()
-	if s.replace {
-		upserts = make(map[string]store.LoginStanding, len(s.rows))
-		for k, r := range s.rows {
+	upserts = make(map[string]store.LoginStanding)
+	// Scanning the bounded rows avoids a second map of full address/mailbox
+	// keys, which is expensive when every row belongs to a different mailbox.
+	for k, r := range s.rows {
+		if s.replace || r.dirty {
 			upserts[k.String()] = r.export()
+			r.dirty = false
 		}
-		return upserts, nil, true
 	}
-	upserts = make(map[string]store.LoginStanding, len(s.dirty))
-	for k := range s.dirty {
-		upserts[k.String()] = s.rows[k].export()
+	if s.replace {
+		return upserts, nil, true
 	}
 	deletes = make([]string, 0, len(s.deleted))
 	for raw := range s.deleted {
@@ -434,24 +493,26 @@ func (s *loginStanding) requeue(upserts map[string]store.LoginStanding, deletes 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.initialized = true
 	if replace {
 		s.replace = true
 		return
 	}
-	mark := func(raw string) {
-		if k, ok := parseStandingKey(raw); ok && s.rows[k] != nil {
-			s.dirty[k] = struct{}{}
-			delete(s.deleted, raw)
-			return
-		}
-		s.queueDeleteLocked(raw)
-	}
 	for raw := range upserts {
-		mark(raw)
+		s.markCurrentLocked(raw)
 	}
 	for _, raw := range deletes {
-		mark(raw)
+		s.markCurrentLocked(raw)
 	}
+}
+
+func (s *loginStanding) markCurrentLocked(raw string) {
+	if k, ok := parseStandingKey(raw); ok && s.rows[k] != nil {
+		s.rows[k].dirty = true
+		delete(s.deleted, raw)
+		return
+	}
+	s.queueDeleteLocked(raw)
 }
 
 // standingConfined reports whether every mailbox in accounts is one ip had

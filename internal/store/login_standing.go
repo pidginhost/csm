@@ -26,10 +26,12 @@ const (
 )
 
 // LoginStanding is one address's trusted logins to one mailbox, in Unix
-// seconds: the first, and the earliest of each recent UTC date.
+// seconds: the first, and the earliest and latest of each recent UTC date.
+// When Lasts is absent, each date has only its recorded earliest success.
 type LoginStanding struct {
 	First int64   `json:"first"`
 	Days  []int64 `json:"days"`
+	Lasts []int64 `json:"lasts,omitempty"`
 }
 
 // SaveLoginStanding writes upserts and removes deletes in one transaction.

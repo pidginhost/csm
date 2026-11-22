@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -122,7 +123,7 @@ func TestLoginStandingTimestamps(t *testing.T) {
 	upserts, _, _ := s.Changes()
 	want := map[string]store.LoginStanding{
 		"203.0.113.5 future@example.com": {First: standingBase.Unix(), Days: []int64{standingBase.Unix()}},
-		"203.0.113.7 day@example.com":    {First: standingD1.Unix(), Days: []int64{standingD1.Unix()}},
+		"203.0.113.7 day@example.com":    {First: standingD1.Unix(), Days: []int64{standingD1.Unix()}, Lasts: []int64{standingD1.Add(5 * time.Hour).Unix()}},
 	}
 	if !reflect.DeepEqual(upserts, want) {
 		t.Fatalf("Changes upserts = %v, want %v", upserts, want)
@@ -179,6 +180,7 @@ func TestLoginStandingMailboxCap(t *testing.T) {
 // an hour, and takes new rows again once old ones expire.
 func TestLoginStandingGlobalCap(t *testing.T) {
 	logs := captureCSMLog(t)
+	t.Cleanup(func() { logs() })
 	clock := &staticClock{t: standingBase}
 	s := newLoginStanding(clock.Now)
 	for i := range maxStandingRows {
@@ -187,7 +189,13 @@ func TestLoginStandingGlobalCap(t *testing.T) {
 	s.Note("203.0.113.5", "m0@example.com", standingD2)
 
 	s.Note("198.51.100.9", "new1@example.com", standingBase)
-	clock.advance(30 * time.Minute)
+	pruneAt := s.nextPrune
+	clock.advance(30 * time.Second)
+	s.Note("198.51.100.9", "probe@example.com", standingBase)
+	if !s.nextPrune.Equal(pruneAt) {
+		t.Fatal("a full index pruned again within a minute")
+	}
+	clock.advance(30*time.Minute - 30*time.Second)
 	s.Note("198.51.100.9", "new2@example.com", standingBase)
 	if hasRow(s, "198.51.100.9", "new1@example.com") || hasRow(s, "198.51.100.9", "new2@example.com") {
 		t.Fatal("a full index took a new row")
@@ -199,13 +207,18 @@ func TestLoginStandingGlobalCap(t *testing.T) {
 		t.Fatalf("Len = %d, want %d", n, maxStandingRows)
 	}
 
+	if !s.warnedAt.Equal(standingBase) {
+		t.Fatal("full-index warning repeated before an hour")
+	}
+	clock.advance(30 * time.Minute)
+	s.Note("198.51.100.9", "hourly@example.com", clock.Now())
 	clock.advance(16 * 24 * time.Hour)
 	s.Note("198.51.100.9", "new3@example.com", clock.Now())
 	if !hasRow(s, "198.51.100.9", "new3@example.com") {
 		t.Fatal("expired rows did not make room")
 	}
-	if got := strings.Count(logs(), "login standing index full"); got != 1 {
-		t.Fatalf("full-index warnings = %d, want 1", got)
+	if got := strings.Count(logs(), "login standing index full"); got != 2 {
+		t.Fatalf("full-index warnings = %d, want 2", got)
 	}
 }
 
@@ -381,5 +394,233 @@ func TestLoginStandingNil(t *testing.T) {
 	}
 	if upserts, deletes, replace := s.Changes(); len(upserts) != 0 || len(deletes) != 0 || replace {
 		t.Fatal("a nil index reported changes")
+	}
+}
+
+func TestLoginStandingLatestSuccessWithinDate(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	first := standingBase.Add(-15 * 24 * time.Hour)
+	early := first.Add(24 * time.Hour).Add(-time.Hour)
+	late := early.Add(2 * time.Hour)
+	for _, at := range []time.Time{first, early, late} {
+		s.Note("203.0.113.5", "box@example.com", at)
+	}
+	if !s.Has("203.0.113.5", "box@example.com", standingBase) {
+		t.Fatal("a later success on the same date did not renew standing")
+	}
+	// Future dates must neither launder this decision nor erase the latest
+	// success on the older date that made it valid.
+	s.Note("203.0.113.5", "box@example.com", standingBase)
+	if !s.Has("203.0.113.5", "box@example.com", standingBase) {
+		t.Fatal("a success at asOf erased prior standing")
+	}
+}
+
+func TestLoginStandingPurgeUsesLatestSuccess(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	s.Note("203.0.113.5", "box@example.com", standingBase.Add(-time.Hour))
+	s.Note("203.0.113.5", "box@example.com", standingBase)
+	clock.advance(standingKeep)
+	s.Purge()
+	if !hasRow(s, "203.0.113.5", "box@example.com") {
+		t.Fatal("purge removed a row with an unexpired latest success")
+	}
+	clock.advance(time.Second)
+	s.Purge()
+	if s.Len() != 0 {
+		t.Fatal("purge kept an expired row")
+	}
+}
+
+func TestLoginStandingMailboxCapUsesLatestSuccess(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	for i := range maxStandingPerMailbox {
+		s.Note(fmt.Sprintf("203.0.113.%d", i), "box@example.com", standingD1.Add(time.Duration(i)*time.Minute))
+	}
+	s.Note("203.0.113.0", "box@example.com", standingD1.Add(5*time.Hour))
+	s.Note("198.51.100.1", "box@example.com", standingD2)
+	if !hasRow(s, "203.0.113.0", "box@example.com") || hasRow(s, "203.0.113.1", "box@example.com") {
+		t.Fatal("mailbox eviction ignored a later success on the same date")
+	}
+}
+
+func TestLoginStandingLoadCannotUndoLiveState(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	key := "203.0.113.5 box@example.com"
+	saved := map[string]store.LoginStanding{key: {First: standingD1.Unix(), Days: []int64{standingD1.Unix(), standingD2.Unix()}}}
+	for _, empty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("initially empty %v", empty), func(t *testing.T) {
+			s := newLoginStanding(clock.Now)
+			if !empty {
+				s.Load(saved)
+			}
+			s.Revoke("box@example.com")
+			s.Changes()
+			s.Load(saved)
+			if s.Has("203.0.113.5", "box@example.com", standingBase) {
+				t.Fatal("loading a stale snapshot resurrected revoked standing")
+			}
+			upserts, deletes, replace := s.Changes()
+			if len(upserts) != 0 || (!replace && !slices.Equal(deletes, []string{key})) {
+				t.Fatal("stale snapshot was not scheduled for deletion on disk")
+			}
+		})
+	}
+}
+
+func TestLoginStandingDoesNotRetainLogLines(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := range 64 {
+		mailbox := fmt.Sprintf("box%d@example.com", i)
+		s.Note("203.0.113.5", mailbox, standingD1)
+		line := mailbox + strings.Repeat(" ", 1<<20)
+		s.Note("203.0.113.5", line[:len(mailbox)], standingD2)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(s)
+	if after.HeapAlloc > before.HeapAlloc+(8<<20) {
+		t.Fatalf("short mailbox keys retained %d bytes of log lines", after.HeapAlloc-before.HeapAlloc)
+	}
+}
+
+func TestLoginStandingLatestSuccessSurvivesSave(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	first := standingBase.Add(-standingKeep)
+	for _, at := range []time.Time{first, first.Add(23 * time.Hour), first.Add(25 * time.Hour), standingBase} {
+		s.Note("203.0.113.5", "box@example.com", at)
+	}
+	if err = db.SaveLoginStanding(s.Changes()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := db.LoadLoginStanding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := newLoginStanding(clock.Now)
+	loaded.Load(saved)
+	if !loaded.Has("203.0.113.5", "box@example.com", standingBase) {
+		t.Fatal("save/load lost the last success before asOf")
+	}
+}
+
+func TestLoginStandingMemoryAtCaps(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := range maxStandingRows {
+		name := fmt.Sprintf("%0242d@example.com", i)
+		for day := standingDays - 1; day >= 0; day-- {
+			at := standingBase.Add(-time.Duration(day) * 24 * time.Hour)
+			s.Note("2001:db8::1", name, at.Add(-time.Minute))
+			s.Note("2001:db8::1", name, at)
+		}
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(s)
+	// Allow map allocator overhead around the 64 MiB target, with maximum
+	// length mailbox names and two endpoints on every retained date.
+	if after.HeapAlloc > before.HeapAlloc+(72<<20) {
+		t.Fatalf("full index retained %.1f MiB", float64(after.HeapAlloc-before.HeapAlloc)/(1<<20))
+	}
+}
+
+func TestLoginStandingDailyEndpoints(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	first := standingBase.Add(-standingKeep)
+	early, late := first.Add(23*time.Hour), first.Add(25*time.Hour)
+	for _, tc := range []struct {
+		name string
+		asOf time.Time
+		want bool
+	}{
+		{"before second date", early, false},
+		{"inside second date", first.Add(24*time.Hour + time.Second), true},
+		{"latest at cutoff", late.Add(standingRecent), true},
+		{"latest past cutoff", late.Add(standingRecent + time.Second), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newLoginStanding(clock.Now)
+			for _, at := range []time.Time{late, first, early} {
+				s.Note("203.0.113.5", "box@example.com", at)
+			}
+			if got := s.Has("203.0.113.5", "box@example.com", tc.asOf); got != tc.want {
+				t.Fatalf("Has = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoginStandingLoadValidatesEndpoints(t *testing.T) {
+	first := standingD1.Unix()
+	for _, lasts := range [][]int64{{first - 1}, {first + secondsPerDay}, {first, first}, {standingBase.Unix() + 1}} {
+		s := newLoginStanding(func() time.Time { return standingBase })
+		key := "203.0.113.5 box@example.com"
+		s.Load(map[string]store.LoginStanding{key: {First: first, Days: []int64{first}, Lasts: lasts}})
+		upserts, deletes, replace := s.Changes()
+		if s.Len() != 0 || len(upserts) != 0 || replace || !slices.Equal(deletes, []string{key}) {
+			t.Fatalf("invalid endpoints %v survived load", lasts)
+		}
+	}
+}
+
+func TestLoginStandingLoadCapsPreferLatestSuccess(t *testing.T) {
+	saved := make(map[string]store.LoginStanding)
+	for i := range maxStandingPerMailbox + 1 {
+		first := standingD1.Add(time.Duration(i) * time.Second).Unix()
+		last := standingD1.Add(time.Duration(maxStandingPerMailbox-i) * time.Minute).Unix()
+		// Keep every endpoint within its date and after its first.
+		last += 6 * 60 * 60
+		saved[fmt.Sprintf("2001:db8::%x box@example.com", i+1)] = store.LoginStanding{First: first, Days: []int64{first}, Lasts: []int64{last}}
+	}
+	s := newLoginStanding(func() time.Time { return standingBase })
+	s.Load(saved)
+	if s.Len() != maxStandingPerMailbox || hasRow(s, "2001:db8::101", "box@example.com") || !hasRow(s, "2001:db8::1", "box@example.com") {
+		t.Fatal("load did not retain the mailbox's most recently used addresses")
+	}
+}
+
+func TestLoginStandingDeleteBudgetIncludesLiveRows(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	for i := range maxStandingRows {
+		s.Note("203.0.113.5", fmt.Sprintf("m%d@example.com", i), standingD1)
+	}
+	s.Changes()
+	s.Revoke("m0@example.com")
+	s.Note("203.0.113.5", "replacement@example.com", standingD2)
+	upserts, deletes, replace := s.Changes()
+	if !replace || len(deletes) != 0 || len(upserts) != maxStandingRows {
+		t.Fatalf("full live index plus pending deletes exceeded the shared row budget: %d rows, %d deletes, replace %v", len(upserts), len(deletes), replace)
+	}
+	if _, exists := upserts["203.0.113.5 m0@example.com"]; exists {
+		t.Fatal("rewrite restored a revoked row")
+	}
+	// A failed rewrite must retry the current contents, including later
+	// revocations, rather than replaying the captured replacement snapshot.
+	s.Revoke("replacement@example.com")
+	s.requeue(upserts, deletes, replace)
+	upserts, deletes, replace = s.Changes()
+	if !replace || len(deletes) != 0 || len(upserts) != maxStandingRows-1 {
+		t.Fatal("failed replacement did not schedule the current contents")
+	}
+	if _, exists := upserts["203.0.113.5 replacement@example.com"]; exists {
+		t.Fatal("failed replacement resurrected a revoked row")
 	}
 }

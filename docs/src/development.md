@@ -1582,6 +1582,30 @@ evicted blocks. `UnresolvedIntents` gives the owner the same ordered intents
 as the handle-free startup reader. Callers must inspect each attempt's outcome:
 an executing intent is unresolved but cannot be retired as unknown.
 
+### Mail login standing index
+
+The daemon's standalone login standing index is not yet connected to mail
+trackers or block decisions. It keeps exact IPv6 addresses, folds mapped IPv4,
+and uses the normalized mailbox spelling, including names containing spaces.
+Each retained UTC date keeps its first and last trusted success. The first
+proves that the date precedes the decision; the last determines recency when
+it also precedes the decision. Later successes cannot excuse earlier failures.
+The stored `lasts` array preserves the latter timestamps; when absent, only the
+recorded first success of each date is known.
+
+Load the startup snapshot before recording or revoking logins. A later load
+cannot merge old history into live state; it schedules current rows or deletions
+for the supplied keys. The saver must serialize each `Changes`, store write,
+and `requeue` on failure. A retry uses current rows, never the failed snapshot.
+Pending deletions share the live row budget; overflow requests a full bucket
+replacement. Store I/O and logging remain outside the index mutex.
+
+The index owns mailbox strings so log-line slices cannot retain oversized
+buffers. Address lists per mailbox, per-row dirty flags, and bounded date-array
+growth keep retained memory near its budget at the row caps. Tests cover
+maximum-length mailbox names, same-day renewal, historical decisions, eviction,
+revocation, snapshot validation, and persistence round trips.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values
