@@ -1584,9 +1584,9 @@ an executing intent is unresolved but cannot be retired as unknown.
 
 ### Mail login standing index
 
-The daemon's standalone login standing index is not yet connected to mail
-trackers or block decisions. It keeps exact IPv6 addresses, folds mapped IPv4,
-and uses the normalized mailbox spelling, including names containing spaces.
+The login standing index holds trusted clean logins per address and mailbox.
+It keeps exact IPv6 addresses, folds mapped IPv4, and uses the normalized
+mailbox spelling, including names containing spaces.
 Each retained UTC date keeps its first and last trusted success. The first
 proves that the date precedes the decision; the last determines recency when
 it also precedes the decision. Later successes cannot excuse earlier failures.

@@ -11,7 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Mail login history preserves same-day activity and keeps revoked standing revoked.
 - FTP findings from log files, or while pure-ftpd logs client host names, no longer block or raise threat scores. Set pure-ftpd's `DontResolve yes` to keep FTP blocks.
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
 - Internal registry downloads between releases carry verified signatures even when only the AMD64 build is available.
