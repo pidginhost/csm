@@ -346,6 +346,12 @@ func (m *mailSpray) breadth(key, mailbox string, stored bool, untrusted []string
 // the login's own mailbox did not fail. A login never adds to the evidence
 // pool.
 func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
+	return m.success(ip, mailbox, true)
+}
+
+// success still evaluates spray verdicts when the caller's compromise
+// detector has refused trust. It must neither earn nor refresh trust then.
+func (m *mailSpray) success(ip, mailbox string, learn bool) (clean bool, v *sprayVerdict) {
 	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -357,10 +363,12 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 	key := sprayEvidenceKey(ip)
 	e := m.ips[key]
 	if m.agedTrust(ip, mailbox, now) || m.trustPredatesFailures(e, k, key, now) {
-		t := m.trust[k]
-		t.last = now
-		m.trust[k] = t
-		m.markTrust(ip)
+		if learn {
+			t := m.trust[k]
+			t.last = now
+			m.trust[k] = t
+			m.markTrust(ip)
+		}
 		return true, nil
 	}
 	// An IPv6 host rotates its address. A login to a mailbox another
@@ -372,7 +380,9 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 				return false, nil
 			}
 		}
-		m.recordTrust(k, now)
+		if learn {
+			m.recordTrust(k, now)
+		}
 		return true, nil
 	}
 	if e != nil {
@@ -394,6 +404,12 @@ func (m *mailSpray) Success(ip, mailbox string) (clean bool, v *sprayVerdict) {
 			if at, ok := e.revoked[mailbox]; ok && now.Sub(at) <= m.cfg.Window {
 				return false, nil
 			}
+		}
+		if !learn {
+			// The caller already reports this same-mailbox compromise and
+			// owns its quiet period. No trust relationship will silence a
+			// duplicate advisory.
+			return true, nil
 		}
 		hadTrust := m.recordTrust(k, now)
 		// 4d fires once per trust relationship; later logins while the new

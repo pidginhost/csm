@@ -1156,8 +1156,9 @@ func appendMailAccountTime(accounts map[string][]time.Time, account string, ts t
 // RecordSuccess processes a successful mail login. Emits mail_account_compromised
 // when the successful IP has repeated recent failed auths for the same account
 // and that mailbox is failure-dominant from this IP. Prior successful logins for
-// the same mailbox look like a legit client that merely mistyped, so they are
-// not flagged. A login the spray memory does not call clean, one that follows
+// the same mailbox look like a legit client that merely mistyped. With login
+// standing, repeated failures still produce a High advisory without earning
+// trust. A login the spray memory does not call clean, one that follows
 // failures on other mailboxes, earns no good standing and may be reported too;
 // one login raises at most one compromise finding, the stronger.
 //
@@ -1216,13 +1217,19 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	e.succ = pruneTimes(e.succ, cutoff)
 	pruneMailAccountTimes(e.successAccounts, cutoff)
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
+	e.times = pruneTimes(e.times, cutoff)
+	sprayMailbox := normalizeSprayMailbox(account)
+	standing := t.standing.Has(ip, sprayMailbox, e.episodeStart)
+	// Classify before the spray detector can learn from this login. Standing
+	// softens a compromise but must not turn it into a clean success.
+	compromise := len(e.failedAccounts[account]) >= 2 && (standing ||
+		(!e.accountSuccessDominant(account) && !e.establishedGood(account, now, t.window)))
 	// A guessed-password success should not train the long-lived good-source cache.
 	degraded := t.backendDegraded(now) || (t.backendDownFn != nil && t.backendDownFn())
-	recordGoodSource := !degraded && trusted
+	recordGoodSource := !degraded && trusted && !compromise
 	var sprayed *alert.Finding
-	sprayMailbox := normalizeSprayMailbox(account)
 	if !degraded && (trusted || t.fileLines) && t.spray != nil {
-		clean, v := t.spray.Success(ip, sprayMailbox)
+		clean, v := t.spray.success(ip, sprayMailbox, !compromise)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
 		}
@@ -1251,19 +1258,12 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		}
 	}()
 
-	// A mailbox that already succeeds from this IP is a legit owner who mistyped,
-	// not a takeover. Genuine password guessing is failure-dominant for the same
-	// mailbox. Use the per-IP evidence: account entries can be evicted before it.
-	e.times = pruneTimes(e.times, cutoff)
-	targetFailures := len(e.failedAccounts[account])
-	if targetFailures < 2 || e.accountSuccessDominant(account) || e.establishedGood(account, now, t.window) {
+	if !compromise {
 		return nil
 	}
-	recordGoodSource = false
 	// An address with login standing on the mailbox from before these
 	// failures is its owner correcting a saved password: it keeps its trust
 	// and the finding stays below the block.
-	standing := t.standing.Has(ip, sprayMailbox, e.episodeStart)
 	// A login read from a log any local user can write still alerts, but it
 	// must not remove standing or trust that real logins earned.
 	if trusted && !standing {
@@ -1273,9 +1273,9 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		// other addresses first; the owner earns it again.
 		t.standing.Revoke(sprayMailbox)
 	}
-	// The spray memory saw failures on this mailbox only and called the login
-	// clean; a cracked password earns no trust there either.
-	if !standing && !degraded && (trusted || t.fileLines) && t.spray != nil {
+	// Retain the crack in spray memory so later logins cannot restore trust
+	// after the shorter per-IP failure window empties.
+	if !standing && !degraded && trusted && t.spray != nil {
 		t.spray.RevokeTrust(ip, sprayMailbox)
 	}
 	a, ok := t.accounts[account]

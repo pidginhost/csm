@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -363,5 +365,195 @@ func TestMailStandingEpisodeStart(t *testing.T) {
 	tr.Record(standingIP, standingBox)
 	if got := episode(); !got.Equal(clock.Now()) {
 		t.Fatalf("episode after a release = %v, want %v", got, clock.Now())
+	}
+}
+
+// A softened compromise preserves existing trust without creating or refreshing it.
+func TestMailStandingCompromiseEarnsNoSprayTrust(t *testing.T) {
+	for _, history := range []string{"none", "fresh", "aged", "sibling"} {
+		t.Run(history, func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr := newTestMailTrackerWithSpray(t, clock)
+			tr.SetFileLines()
+			s := newLoginStanding(clock.Now)
+			tr.SetLoginStanding(s)
+			ip := "2001:db8::1"
+			earnStanding(t, s, ip, standingBox)
+			switch history {
+			case "fresh", "aged":
+				tr.spray.Success(ip, standingBox)
+			case "sibling":
+				tr.spray.Success("2001:db8::2", standingBox)
+			}
+			if history == "fresh" {
+				clock.advance(time.Minute)
+			} else {
+				clock.advance(20 * time.Minute)
+			}
+			before := maps.Clone(tr.spray.trust)
+			s.Changes()
+			recordMail(tr, ip, standingBox, standingBox)
+			for i := 0; i < 2; i++ {
+				out := tr.RecordSuccess(ip, standingBox)
+				if i == 0 {
+					if f := findCheck(out, "mail_account_compromised"); f == nil || f.Severity != alert.High {
+						t.Fatalf("compromise = %+v, want High", out)
+					}
+				}
+				if !maps.Equal(before, tr.spray.trust) {
+					t.Errorf("spray trust changed: before %v, after %v", before, tr.spray.trust)
+				}
+				if e := tr.spray.ips[sprayEvidenceKey(ip)]; e != nil && len(e.revoked) != 0 {
+					t.Error("softened compromise revoked spray trust")
+				}
+				if len(tr.ExportGoodSource()) != 0 {
+					t.Error("softened compromise earned good-source history")
+				}
+			}
+			if upserts, deletes, replace := s.Changes(); len(upserts) != 0 || len(deletes) != 0 || replace {
+				t.Fatalf("standing changed: %v, %v, %v", upserts, deletes, replace)
+			}
+		})
+	}
+}
+
+func TestMailStandingCompromiseWithGoodHistoryEarnsNothing(t *testing.T) {
+	for _, age := range []time.Duration{time.Minute, 20 * time.Minute} {
+		t.Run(age.String(), func(t *testing.T) {
+			clock := &staticClock{t: standingBase}
+			tr, s := newStandingMailTracker(t, clock)
+			earnStanding(t, s, standingIP, standingBox)
+			tr.RecordSuccess(standingIP, standingBox)
+			before := tr.ExportGoodSource()[standingIP][standingBox]
+			clock.advance(age)
+			recordMail(tr, standingIP, standingBox, standingBox)
+			s.Changes()
+			out := tr.RecordSuccess(standingIP, standingBox)
+			if f := findCheck(out, "mail_account_compromised"); f == nil || f.Severity != alert.High {
+				t.Errorf("compromise = %+v, want High", out)
+			}
+			if after := tr.ExportGoodSource()[standingIP][standingBox]; after != before {
+				t.Errorf("good-source history changed: before %v, after %v", before, after)
+			}
+			if upserts, deletes, replace := s.Changes(); len(upserts) != 0 || len(deletes) != 0 || replace {
+				t.Fatalf("standing changed: %v, %v, %v", upserts, deletes, replace)
+			}
+		})
+	}
+}
+
+func TestMailStandingUntrustedCrackPreservesSprayTrust(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr := newTestMailTrackerWithSpray(t, clock)
+	tr.SetFileLines()
+	s := newLoginStanding(clock.Now)
+	tr.SetLoginStanding(s)
+	earnStanding(t, s, "198.51.100.1", standingBox)
+	tr.spray.Success(standingIP, standingBox)
+	before := maps.Clone(tr.spray.trust)
+	recordMail(tr, standingIP, standingBox, standingBox)
+	clock.advance(time.Minute)
+	out := tr.recordSuccessAt(standingIP, standingBox, clock.Now(), knownCustomerIMAP, false)
+	if f := findCheck(out, "mail_account_compromised"); f == nil || f.Severity != alert.Critical {
+		t.Fatalf("untrusted compromise = %+v, want Critical", out)
+	}
+	if !maps.Equal(before, tr.spray.trust) || len(tr.spray.ips[standingIP].revoked) != 0 {
+		t.Fatal("untrusted compromise changed spray trust")
+	}
+	if !s.Has("198.51.100.1", standingBox, standingBase) {
+		t.Fatal("untrusted compromise revoked another address's standing")
+	}
+}
+
+func TestMailStandingDoesNotExcuseSpray(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	tr.SetFileLines()
+	tr.SetSpray(newMailSpray(sprayConfig{
+		Mode: sprayEnforce, Window: 7 * 24 * time.Hour, TrustAge: 10 * time.Minute,
+		Suppression: time.Hour, MaxIPs: 20000, BreadthMailboxes: 3,
+	}, clock.Now))
+	boxes := []string{standingBox, otherBox, "third@example.com"}
+	earnStanding(t, s, standingIP, boxes...)
+	out := recordMail(tr, standingIP, boxes...)
+	if f := findCheck(out, "mail_bruteforce"); f == nil || f.Severity != alert.Critical {
+		t.Fatalf("standing excused spray: %+v", out)
+	}
+}
+
+func TestMailStandingQuietPeriodAndSlowEpisode(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	out := recordMail(tr, standingIP, standingBox, standingBox, standingBox, standingBox, standingBox)
+	isStandingAdvisory(t, findCheck(out, "mail_bruteforce_suspected"), standingBox)
+	clock.advance(11 * time.Minute)
+	out = recordMail(tr, standingIP, standingBox, standingBox, standingBox, standingBox, standingBox)
+	if countChecks(out, "mail_bruteforce", "mail_bruteforce_suspected") != 0 {
+		t.Fatalf("advisory quiet period emitted: %+v", out)
+	}
+	if got := tr.ips[standingIP].episodeStart; !got.Equal(standingBase) {
+		t.Fatalf("slow window did not retain episode: %v", got)
+	}
+}
+
+func TestMailStandingCompromiseKeepsSprayVerdict(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	tr.SetFileLines()
+	tr.SetSpray(newMailSpray(sprayConfig{
+		Mode: sprayEnforce, Window: 7 * 24 * time.Hour, TrustAge: 10 * time.Minute,
+		Suppression: time.Hour, MaxIPs: 20000, MissingNetworks: 2, BlockTTL: time.Hour,
+	}, clock.Now))
+	tr.spray.Failure("192.0.2.1", otherBox, mailboxMissing)
+	tr.RecordResolvedObserved(standingIP, otherBox, sprayMailbox{name: otherBox, exist: mailboxMissing}, alert.Observation{})
+	recordMail(tr, standingIP, standingBox, standingBox)
+	out := tr.RecordSuccess(standingIP, standingBox)
+	f := findCheck(out, "mail_account_compromised")
+	if f == nil || f.Severity != alert.Critical || f.BlockTTL != time.Hour {
+		t.Fatalf("standing hid the spray compromise: %+v", out)
+	}
+	if tr.spray.TrustSize() != 0 || !s.Has(standingIP, standingBox, standingBase) {
+		t.Fatal("the compromise changed trust or standing")
+	}
+}
+
+func TestMailStandingDoesNotExcuseSubnetOrAccountSpray(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	var out []alert.Finding
+	for i := 1; i <= tr.accountSprayThreshold; i++ {
+		ip := fmt.Sprintf("203.0.113.%d", i)
+		earnStanding(t, s, ip, standingBox)
+		out = append(out, recordMail(tr, ip, standingBox, standingBox, standingBox, standingBox, standingBox)...)
+	}
+	if countChecks(out, "mail_subnet_spray") != 1 || countChecks(out, "mail_account_spray") != 1 {
+		t.Fatalf("standing excused distributed failures: %+v", out)
+	}
+	if countChecks(out, "mail_bruteforce_suspected") != tr.accountSprayThreshold || countChecks(out, "mail_bruteforce") != 0 {
+		t.Fatalf("unexpected per-address findings: %+v", out)
+	}
+}
+
+func TestMailStandingCompromiseQuietPeriodWithSpray(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	tr.SetFileLines()
+	tr.SetSpray(newMailSpray(sprayConfig{
+		Mode: sprayEnforce, Window: 7 * 24 * time.Hour, TrustAge: 10 * time.Minute,
+		Suppression: time.Hour, MaxIPs: 20000,
+	}, clock.Now))
+	tr.Record(standingIP, standingBox)
+	clock.advance(time.Hour)
+	recordMail(tr, standingIP, standingBox, standingBox)
+	out := tr.RecordSuccess(standingIP, standingBox)
+	if f := findCheck(out, "mail_account_compromised"); f == nil || f.Severity != alert.High || !strings.Contains(f.Message, "login standing") {
+		t.Fatalf("compromise = %+v, want standing advisory", out)
+	}
+	clock.advance(time.Minute)
+	if out := tr.RecordSuccess(standingIP, standingBox); len(out) != 0 {
+		t.Fatalf("compromise quiet period emitted: %+v", out)
 	}
 }
