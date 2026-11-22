@@ -27,6 +27,18 @@ type smtpIPEntry struct {
 	slowUnvouched time.Time
 	suppressed    time.Time
 	lastSeen      time.Time
+	// fastAccounts and fastUnvouched are slowAccounts and slowUnvouched for
+	// the fast window, so a burst confined to mailboxes the address has
+	// login standing on can be told from one that may target anything.
+	fastAccounts  map[string]time.Time
+	fastUnvouched time.Time
+	// suspectedSuppressed rate-limits the login standing advisory on its
+	// own clock, shared by the fast and slow paths, so a later burst on
+	// other mailboxes still reaches the block.
+	suspectedSuppressed time.Time
+	// episodeStart is the first failure since the fast and slow windows
+	// were last both empty; login standing is judged as of it.
+	episodeStart time.Time
 }
 
 // evictionRank keeps meaningful accumulated evidence behind disposable
@@ -164,6 +176,10 @@ type smtpAuthTracker struct {
 	// Set once at startup before log readers begin; read without mu.
 	knownCustomers *knownCustomers
 
+	// standing, when set, holds login standing shared with the IMAP/POP
+	// tracker. Set once at startup before log readers begin.
+	standing *loginStanding
+
 	// Postfix SMTP AUTH pairing state (see smtp_auth_pairing.go), bounded by
 	// maxTracked entries each and expired after smtpAuthPairWindow.
 	pendingVerdicts          map[string][]smtpPendingVerdict
@@ -202,6 +218,14 @@ func (t *smtpAuthTracker) SetSpray(m *mailSpray) {
 // before log readers begin.
 func (t *smtpAuthTracker) SetKnownCustomers(k *knownCustomers) {
 	t.knownCustomers = k
+}
+
+// SetLoginStanding installs the login standing index. Set once at startup
+// before log readers begin.
+func (t *smtpAuthTracker) SetLoginStanding(s *loginStanding) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.standing = s
 }
 
 // newSMTPAuthTracker constructs a tracker. `now` is injected so tests can
@@ -312,21 +336,44 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.times = pruneTimes(e.times, cutoff)
+	if len(e.times) == 0 && !hasTimeAtOrAfter(e.slowTimes, now.Add(-t.slowWindow)) {
+		e.episodeStart = now
+	}
 	e.times = append(e.times, now)
+	var trackedFast bool
+	e.fastAccounts, trackedFast = recordSlowAccount(e.fastAccounts, normalizeMailAuthAccount(account), now, cutoff)
+	if !trackedFast {
+		e.fastUnvouched = now
+	}
+	if e.fastUnvouched.Before(cutoff) {
+		e.fastUnvouched = time.Time{}
+	}
 	e.lastSeen = now
 
-	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) && !degraded {
-		e.suppressed = now.Add(t.suppression)
-		findings = append(findings, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "smtp_bruteforce",
-			Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths in %v",
-				ip, len(e.times), t.window),
-			Details:     "Real-time detection of dovecot_login auth failures",
-			Timestamp:   now,
-			SourceIP:    ip,
-			Attribution: admission.AttributionPeer,
-		})
+	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold && !degraded {
+		switch {
+		case standingConfined(t.standing, ip, e.fastAccounts, e.fastUnvouched, e.episodeStart):
+			// Every failure names a mailbox this address has login standing
+			// on: a device with an old saved password. It never falls
+			// through to the block.
+			if !now.Before(e.suspectedSuppressed) {
+				e.suspectedSuppressed = now.Add(t.suppression)
+				findings = append(findings, loginStandingAdvisory("SMTP", ip, fmt.Sprintf("%d failed auths in %v", len(e.times), t.window),
+					formatStandingTargets(e.fastAccounts), now))
+			}
+		case !now.Before(e.suppressed):
+			e.suppressed = now.Add(t.suppression)
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "smtp_bruteforce",
+				Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths in %v",
+					ip, len(e.times), t.window),
+				Details:     "Real-time detection of dovecot_login auth failures",
+				Timestamp:   now,
+				SourceIP:    ip,
+				Attribution: admission.AttributionPeer,
+			})
+		}
 	}
 
 	// --- Long-horizon slow-brute tracker ---
@@ -356,20 +403,30 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 				e.slowUnvouched = time.Time{}
 			}
 			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
-				len(e.slowAccounts) >= slowBruteMinAccounts &&
-				!now.Before(e.suppressed) &&
-				!slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched) {
-				e.suppressed = now.Add(t.suppression)
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "smtp_bruteforce",
-					Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
-						ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
-					Details:     "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
-					Timestamp:   now,
-					SourceIP:    ip,
-					Attribution: admission.AttributionPeer,
-				})
+				len(e.slowAccounts) >= slowBruteMinAccounts {
+				switch {
+				case slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched):
+					// Aged login trust on every mailbox: silent, as before.
+				case standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, e.episodeStart):
+					if !now.Before(e.suspectedSuppressed) {
+						e.suspectedSuppressed = now.Add(t.suppression)
+						findings = append(findings, loginStandingAdvisory("SMTP", ip,
+							fmt.Sprintf("%d paced auth failures across %d mailboxes in %v", len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+							formatStandingTargets(e.slowAccounts), now))
+					}
+				case !now.Before(e.suppressed):
+					e.suppressed = now.Add(t.suppression)
+					findings = append(findings, alert.Finding{
+						Severity: alert.Critical,
+						Check:    "smtp_bruteforce",
+						Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
+							ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+						Details:     "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
+						Timestamp:   now,
+						SourceIP:    ip,
+						Attribution: admission.AttributionPeer,
+					})
+				}
 			}
 		}
 	}
@@ -517,7 +574,11 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 	if t.spray == nil || (!trusted && !t.fileLines) || (t.backendDownFn != nil && t.backendDownFn()) {
 		return nil
 	}
-	_, v := t.spray.Success(ip, mailbox)
+	clean, v := t.spray.Success(ip, mailbox)
+	// Only a clean login from the service's own log earns login standing.
+	if clean && trusted {
+		t.standing.Note(ip, mailbox, at)
+	}
 	if v == nil {
 		return nil
 	}
@@ -620,6 +681,10 @@ func (t *smtpAuthTracker) Purge() {
 
 	for k, e := range t.ips {
 		e.times = pruneTimes(e.times, now.Add(-t.window))
+		pruneSlowAccounts(e.fastAccounts, now.Add(-t.window))
+		if e.fastUnvouched.Before(now.Add(-t.window)) {
+			e.fastUnvouched = time.Time{}
+		}
 		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 		pruneSlowAccounts(e.slowAccounts, slowCutoff)
 		if e.slowUnvouched.Before(slowCutoff) {
