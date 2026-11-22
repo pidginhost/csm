@@ -37,7 +37,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
-- Failed mail logins confined to familiar mailboxes now alert without blocking; prior familiarity can also keep a later suspected password crack advisory.
+- Failed mail logins from an address that regularly logs in to that mailbox now alert without blocking the address, and a successful login afterwards no longer suspends the mailbox.
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
 - Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
 - SSH, mail and FTP logins read from log files now alert without blocking.

@@ -699,16 +699,16 @@ mailbox before the failures: no block or mailbox suspension from that finding,
 and the address keeps its trust. The existing good-source and success-dominance
 exemptions still raise no compromise finding. Separate spray verdicts still
 apply. Standing never excuses failures on any other mailbox, failures that name
-no mailbox, spray, subnet or account-spray
-detection, or SSH, FTP and cPanel logins.
+no mailbox, spray, subnet or account-spray detection, or SSH, FTP and cPanel
+logins.
 
 Standing is earned only from trusted logins the trackers treat as clean: lines
 the mail service itself recorded, not a mail log file; not during an
 authentication backend outage; not a login the spray memory calls unclean or the
 tracker calls a cracked password; and not a login after failures on its own
 mailbox, or failures naming no mailbox, from the same address in its current
-failures, unless the address already had standing when they began. An IMAP/POP/
-ManageSieve password crack from an address without prior standing, and any
+failures, unless the address already had standing when they began. An
+IMAP/POP/ManageSieve password crack from an address without prior standing, and any
 mailbox response to a compromise, remove the mailbox's standing from every
 address; the owner earns it again from new logins. Mailbox response withdraws
 standing even in dry run or with auto-response disabled. SMTP has no separate
