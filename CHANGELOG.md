@@ -46,8 +46,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Cross-account alerts exclude unchanged dismissed findings and can return when a dismissed file changes.
-- Scan health counts findings with missing account attribution even after dismissal.
+- Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
 
 ## [4.15.0] - 2026-11-20
 
