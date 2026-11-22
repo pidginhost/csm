@@ -259,6 +259,13 @@ func TestSprayConfigFromThresholds(t *testing.T) {
 	if got := sprayConfigFromThresholds(cfg); got != want {
 		t.Fatalf("sprayConfigFromThresholds = %+v, want %+v", got, want)
 	}
+	// Either protocol's slow window can keep a failure episode active.
+	for _, windows := range [][2]int{{360, 120}, {120, 360}} {
+		th.SMTPBruteForceSlowWindowMin, th.MailBruteForceSlowWindowMin = windows[0], windows[1]
+		if got := sprayConfigFromThresholds(cfg).EpisodeWindow; got != 6*time.Hour {
+			t.Fatalf("EpisodeWindow for slow windows %v = %v, want 6h", windows, got)
+		}
+	}
 
 	// An unset or unparseable block length falls back to the default.
 	for _, expiry := range []string{"720h", "", "bad"} {

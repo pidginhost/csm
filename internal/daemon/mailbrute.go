@@ -960,7 +960,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	// The spray memory is shared with SMTP: a line any local user could
 	// write must not add evidence a real failure would complete.
 	if !degraded && t.spray != nil && (t.fileLines || trustedMailLogin(obs)) {
-		if v := t.spray.Failure(ip, mb.name, mb.exist); v != nil {
+		if v := t.spray.failureInEpisode(ip, mb.name, mb.exist, e.episodeStart, max(t.window, t.slowWindow)); v != nil {
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			// One block per suppression window: a Dovecot line can carry
 			// several attempts, so the spray block shares the per-IP clock
@@ -1262,11 +1262,14 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	e.times = pruneTimes(e.times, cutoff)
 	sprayMailbox := normalizeSprayMailbox(account)
 	failed, since := t.episodeFailedOn(ip, sprayMailbox, now)
+	// Spray evidence also includes other IPv6 addresses in the /64. It
+	// gates new standing, but cannot revoke this address's exemption from
+	// the IMAP compromise response for its own current failure episode.
+	standing := t.standing.Has(ip, sprayMailbox, since)
 	if t.spray != nil && (trusted || t.fileLines) {
 		// The SMTP tracker's failures reach only the shared spray memory.
 		failed, since = otherProtocolFailures(t.spray, ip, sprayMailbox, max(t.window, t.slowWindow), failed, since)
 	}
-	standing := t.standing.Has(ip, sprayMailbox, since)
 	// Classify before the spray detector can learn from this login. Standing
 	// softens a compromise but must not turn it into a clean success.
 	// A mailbox that already succeeds from this IP, or that it held good

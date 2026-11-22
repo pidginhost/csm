@@ -125,7 +125,9 @@ type sprayFailure struct {
 	first time.Time // first failure since the name was last idle for a whole window
 	last  time.Time
 	count int // failures since first
-	exist mailboxExistence
+	// The brute-force episode can restart while spray history remains.
+	episode time.Time
+	exist   mailboxExistence
 }
 
 type sprayTrust struct{ first, last time.Time }
@@ -283,6 +285,12 @@ func (m *mailSpray) Mode() sprayMode {
 // names none) and returns a block verdict for rule 2, rule 3 or, in enforce
 // mode, rule 5 (an address blocked for spraying is back).
 func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVerdict {
+	return m.failureInEpisode(ip, mailbox, exist, time.Time{}, 0)
+}
+
+// failureInEpisode carries the tracker's episode through the shared memory
+// without changing the longer history used by spray verdicts.
+func (m *mailSpray) failureInEpisode(ip, mailbox string, exist mailboxExistence, episode time.Time, within time.Duration) *sprayVerdict {
 	ip = sprayAddr(ip)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -298,7 +306,7 @@ func (m *mailSpray) Failure(ip, mailbox string, exist mailboxExistence) *sprayVe
 	// Rank the current IP after its verdict, including it as an eviction
 	// candidate so fresh noise cannot displace stronger evidence.
 	defer m.evictIPs(key, now)
-	stored := m.recordFailure(e, key, mailbox, exist, now)
+	stored := m.recordFailure(e, key, mailbox, exist, now, episode, within)
 	networks := 0
 	if exist == mailboxMissing {
 		networks = m.corroborate(mailbox, ip, now)
@@ -518,6 +526,7 @@ func (m *mailSpray) ForgetRecentFailures(ip string, since time.Time) {
 			continue
 		case f.first.Before(since):
 			f.last, f.count = f.first, 1
+			f.episode = f.first
 			e.failed[name] = f
 		default:
 			delete(e.failed, name)
@@ -604,7 +613,7 @@ func (m *mailSpray) TrustedAll(ip string, mailboxes []string) bool {
 // FailedOn reports whether the address's evidence key failed on the
 // normalised mailbox, with no mailbox named, or past the name cap, within
 // the longer of within and the trackers' episode window, and the earliest
-// start of those failures. Both trackers record failures here, so either
+// start of the active episodes. Both trackers record failures here, so either
 // can see a failure the other protocol logged.
 func (m *mailSpray) FailedOn(ip, mailbox string, within time.Duration) (bool, time.Time) {
 	m.mu.Lock()
@@ -620,17 +629,20 @@ func (m *mailSpray) FailedOn(ip, mailbox string, within time.Duration) (bool, ti
 	window := max(within, m.cfg.EpisodeWindow)
 	since := now.Add(-window)
 	failed, first := false, time.Time{}
-	for _, name := range []string{mailbox, ""} {
-		if f, ok := e.failed[name]; ok && !f.last.Before(since) {
-			failed = true
-			if first.IsZero() || f.first.Before(first) {
-				first = f.first
+	for name, f := range e.failed {
+		if !f.last.Before(since) {
+			failed = failed || name == mailbox || name == ""
+			if first.IsZero() || f.episode.Before(first) {
+				first = f.episode
 			}
 		}
 	}
 	// A failure refused at the name cap has no start: take the window's.
 	if e.hasUntracked(now, window) {
-		failed, first = true, since
+		failed = true
+		if first.IsZero() || since.Before(first) {
+			first = since
+		}
 	}
 	return failed, first
 }
@@ -644,8 +656,8 @@ func (m *mailSpray) FirstUntrustedFailure(ip string) time.Time {
 	return m.firstUntrustedFailure(sprayEvidenceKey(sprayAddr(ip)), m.now())
 }
 
-// Purge drops failures, trust and corroboration older than the window, and
-// block markers a window past their end.
+// Purge drops expired evidence and trust, retaining failures through the
+// tracker window too so a shorter spray window cannot bypass standing's gate.
 func (m *mailSpray) Purge() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -654,12 +666,13 @@ func (m *mailSpray) Purge() {
 	}
 	m.ipFloor, m.nameFloor = 0, 0
 	cutoff := m.now().Add(-m.cfg.Window)
+	failureCutoff := m.now().Add(-max(m.cfg.Window, m.cfg.EpisodeWindow))
 	for ip, e := range m.ips {
 		records := len(e.failed) + len(e.weakAlerted) + len(e.revoked)
-		e.pruneFailed(cutoff)
+		e.pruneFailed(failureCutoff)
 		maps.DeleteFunc(e.weakAlerted, func(_ string, at time.Time) bool { return at.Before(cutoff) })
 		maps.DeleteFunc(e.revoked, func(_ string, at time.Time) bool { return at.Before(cutoff) })
-		if !e.untracked.IsZero() && e.untracked.Before(cutoff) {
+		if !e.untracked.IsZero() && e.untracked.Before(failureCutoff) {
 			e.untracked = time.Time{}
 			records++
 		}
@@ -914,7 +927,13 @@ func exportSprayIP(e *sprayIP) store.MailSprayIP {
 	if len(e.failed) > 0 {
 		s.Failed = make(map[string]store.MailSprayFailure, len(e.failed))
 		for name, f := range e.failed {
-			s.Failed[name] = store.MailSprayFailure{First: f.first, Last: f.last, Count: f.count, Exist: uint8(f.exist)}
+			row := store.MailSprayFailure{First: f.first, Last: f.last, Count: f.count, Exist: uint8(f.exist)}
+			// An absent episode starts at First; only a distinct cutoff
+			// needs another timestamp in each persisted failure.
+			if !f.episode.Equal(f.first) {
+				row.EpisodeStart = f.episode
+			}
+			s.Failed[name] = row
 		}
 	}
 	if len(e.weakAlerted) > 0 {
@@ -1062,7 +1081,8 @@ func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, 
 	}
 	e.verdictAt = sprayLatest(e.verdictAt, sprayNotAfter(s.VerdictAt, now))
 	e.lastSeen = sprayLatest(e.lastSeen, sprayNotAfter(s.LastSeen, now))
-	if u := sprayNotAfter(s.Untracked, now); !u.Before(cutoff) {
+	failureCutoff := now.Add(-max(m.cfg.Window, m.cfg.EpisodeWindow))
+	if u := sprayNotAfter(s.Untracked, now); !u.Before(failureCutoff) {
 		e.untracked = sprayLatest(e.untracked, u)
 	}
 	if r := sprayNotAfter(s.RevokedOverflow, now); !r.Before(cutoff) {
@@ -1099,12 +1119,16 @@ func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, 
 	}
 	for name, f := range s.Failed {
 		last := sprayNotAfter(f.Last, now)
-		if last.Before(cutoff) {
+		if last.Before(failureCutoff) {
 			continue
 		}
 		first := sprayNotAfter(f.First, now)
 		if first.IsZero() || first.After(last) {
 			first = last
+		}
+		episode := f.EpisodeStart
+		if episode.IsZero() || episode.After(last) {
+			episode = first
 		}
 		exist := mailboxExistence(f.Exist)
 		if exist > mailboxMissing {
@@ -1113,6 +1137,13 @@ func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, 
 		count := max(f.Count, 1)
 		name = strings.Clone(normalizeSprayMailbox(name))
 		if cur, ok := e.failed[name]; ok {
+			switch {
+			case episode.Sub(cur.last) > m.episodeWindow(0):
+			case cur.episode.Sub(last) > m.episodeWindow(0):
+				episode = cur.episode
+			default:
+				episode = sprayNotAfter(episode, cur.episode)
+			}
 			first = sprayNotAfter(first, cur.first)
 			if cur.last.After(last) {
 				last = cur.last
@@ -1126,7 +1157,7 @@ func (m *mailSpray) loadIP(e *sprayIP, key string, s store.MailSprayIP, cutoff, 
 		if e.failed == nil {
 			e.failed = make(map[string]sprayFailure)
 		}
-		e.failed[name] = sprayFailure{first: first, last: last, count: count, exist: exist}
+		e.failed[name] = sprayFailure{first: first, last: last, count: count, exist: exist, episode: episode}
 	}
 	for mb, at := range s.WeakAlerted {
 		mb = strings.Clone(normalizeSprayMailbox(mb))
@@ -1363,10 +1394,16 @@ func (m *mailSpray) touch(ip string, now time.Time) *sprayIP {
 
 // recordFailure keeps untrusted names ahead of stale-password noise. When
 // no name fits, retain its time so losing the name cannot earn new trust.
-func (m *mailSpray) recordFailure(e *sprayIP, key, name string, exist mailboxExistence, now time.Time) bool {
+func (m *mailSpray) recordFailure(e *sprayIP, key, name string, exist mailboxExistence, now, episode time.Time, within time.Duration) bool {
 	f, ok := e.failed[name]
 	if !ok && !m.roomForName(e, key, name, now, now) {
 		return false
+	}
+	if episode.IsZero() {
+		episode = now
+	}
+	if ok && episode.Sub(f.last) <= m.episodeWindow(within) && f.episode.Before(episode) {
+		episode = f.episode
 	}
 	if !ok || now.Sub(f.last) > m.cfg.Window {
 		f = sprayFailure{first: now, exist: exist}
@@ -1377,11 +1414,19 @@ func (m *mailSpray) recordFailure(e *sprayIP, key, name string, exist mailboxExi
 		f.count++
 	}
 	f.last = now
+	f.episode = episode
 	if e.failed == nil {
 		e.failed = make(map[string]sprayFailure)
 	}
 	e.failed[name] = f
 	return true
+}
+
+func (m *mailSpray) episodeWindow(within time.Duration) time.Duration {
+	if window := max(within, m.cfg.EpisodeWindow); window > 0 {
+		return window
+	}
+	return m.cfg.Window
 }
 
 // roomForName makes room in e.failed for a new name that failed at "at",
@@ -1391,7 +1436,7 @@ func (m *mailSpray) roomForName(e *sprayIP, key, name string, at, now time.Time)
 	if len(e.failed) < maxSprayNamesPerIP {
 		return true
 	}
-	e.pruneFailed(now.Add(-m.cfg.Window))
+	e.pruneFailed(now.Add(-max(m.cfg.Window, m.cfg.EpisodeWindow)))
 	if len(e.failed) >= maxSprayNamesPerIP {
 		oldest := ""
 		for mb, failure := range e.failed {

@@ -458,7 +458,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		var v *sprayVerdict
 		for _, name := range names {
 			// Every name is evidence; one failure still raises one verdict.
-			if nv := t.spray.Failure(ip, name, exist); v == nil {
+			if nv := t.spray.failureInEpisode(ip, name, exist, e.episodeStart, max(t.window, t.slowWindow)); v == nil {
 				v = nv
 			}
 		}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // newStandingSMTPTracker is the test SMTP tracker with a login standing
@@ -492,6 +493,47 @@ func TestStandingGateSeesOtherProtocolFailures(t *testing.T) {
 			upserts, _, _ := s.Changes()
 			if _, recorded := upserts[standingIP+" "+standingBox]; recorded != tc.want {
 				t.Fatalf("login recorded = %v, want %v", recorded, tc.want)
+			}
+		})
+	}
+}
+
+// A spray window can span several separate brute-force episodes. A failure
+// before the owner earned standing must not taint a later, fresh episode.
+func TestStandingGateUsesCurrentOtherProtocolEpisode(t *testing.T) {
+	for _, smtpLogin := range []bool{false, true} {
+		t.Run(fmt.Sprintf("smtp_login=%v", smtpLogin), func(t *testing.T) {
+			clock := &staticClock{t: standingBase.Add(-72 * time.Hour)}
+			s := newLoginStanding(clock.Now)
+			spray := standingSpray(clock)
+			mail := newTestMailTracker(t, clock)
+			mail.SetSpray(spray)
+			mail.SetLoginStanding(s)
+			smtp := newTestTracker(t, clock)
+			smtp.SetSpray(spray)
+			smtp.SetLoginStanding(s)
+			fail := func() { smtp.Record(standingIP, standingBox) }
+			login := func() { mail.RecordSuccess(standingIP, standingBox) }
+			if smtpLogin {
+				fail = func() { mail.Record(standingIP, standingBox) }
+				login = func() { smtp.RecordSuccess(standingIP, standingBox) }
+			}
+			fail()
+			clock.t = standingBase
+			earnStanding(t, s, standingIP, standingBox)
+			s.Changes()
+			fail()
+			clock.advance(time.Minute)
+			// The current episode survives a restart independently of the
+			// older first failure retained for spray detection.
+			saved := spray.Export()
+			if err := spray.Load(func(consume func(store.MailSprayState)) error { consume(saved); return nil }); err != nil {
+				t.Fatal(err)
+			}
+			login()
+			upserts, _, _ := s.Changes()
+			if _, ok := upserts[standingIP+" "+standingBox]; !ok {
+				t.Fatal("an expired episode prevented the owner's clean login from refreshing standing")
 			}
 		})
 	}

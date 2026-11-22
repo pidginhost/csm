@@ -23,10 +23,11 @@ const (
 
 // MailSprayFailure is one failed mailbox name of one IP.
 type MailSprayFailure struct {
-	First time.Time `json:"first"`
-	Last  time.Time `json:"last"`
-	Count int       `json:"count"`
-	Exist uint8     `json:"exist,omitzero"`
+	First        time.Time `json:"first"`
+	Last         time.Time `json:"last"`
+	Count        int       `json:"count"`
+	Exist        uint8     `json:"exist,omitzero"`
+	EpisodeStart time.Time `json:"episode_start,omitzero"`
 }
 
 // MailSpraySource is the verdict cadence of one address.

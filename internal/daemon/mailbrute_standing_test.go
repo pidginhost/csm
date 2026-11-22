@@ -745,3 +745,29 @@ func TestMailCompromiseKeepsSpraySingleMailboxAdvisory(t *testing.T) {
 		t.Fatalf("the advisory for the second address was lost: %+v", f)
 	}
 }
+
+// Spray evidence is shared by an IPv6 /64, but the compromise exemption
+// belongs to the exact address and its own failure episode.
+func TestMailStandingCompromiseIgnoresNeighborEpisode(t *testing.T) {
+	clock := &staticClock{t: standingBase.Add(-72 * time.Hour)}
+	tr, s := newStandingMailTracker(t, clock)
+	spray := standingSpray(clock)
+	tr.SetSpray(spray)
+	const owner, neighbor = "2001:db8::1", "2001:db8::2"
+	for clock.Now().Before(standingBase) {
+		spray.Failure(neighbor, standingBox, mailboxExists)
+		clock.advance(3 * time.Hour)
+	}
+	earnStanding(t, s, owner, standingBox)
+	recordMail(tr, owner, standingBox, standingBox)
+	f := findCheck(tr.RecordSuccess(owner, standingBox), "mail_account_compromised")
+	if f == nil || f.Severity != alert.High || !strings.Contains(f.Message, "login standing") {
+		t.Fatalf("compromise = %+v, want the standing advisory", f)
+	}
+	if checks.AddressEvidence(f.Check, f.Severity) {
+		t.Fatal("the standing advisory can drive a block")
+	}
+	if !s.Has(owner, standingBox, clock.Now()) {
+		t.Fatal("a neighboring address's spray episode revoked the owner's standing")
+	}
+}

@@ -1600,9 +1600,13 @@ trust or standing, and revokes neither. Spray verdicts still apply.
 Both trackers withhold standing from a login that follows failures on its own
 mailbox, or failures naming none, in the address's active episode under any
 spelling, unless the address had standing when that episode began. Each
-tracker sees the other protocol's failures through the shared spray memory. Fast and
-slow block decisions and IMAP compromise severity use that same earliest
-active episode, so a later address spelling cannot move the cutoff. The daemon
+tracker sees the other protocol's failures through the shared spray memory.
+That memory keeps the current tracker episode separately from the first spray
+failure, preserves it across saves, and retains failures for the longer of the
+spray and tracker windows. Overflow cannot move a known episode's start forward.
+Shared IPv6 /64 evidence gates earning standing only. Fast and slow block
+decisions and IMAP compromise severity use the tracker's earliest active
+exact-address episode, so a later address spelling cannot move the cutoff. The daemon
 loads the index before log readers start, saves it on the known-customer cycle,
 and mailbox response revokes the mailbox it acts on.
 
@@ -1610,7 +1614,7 @@ Load the startup snapshot before recording or revoking logins. A later load
 cannot merge old history into live state; it schedules current rows or deletions
 for the supplied keys. The saver must serialize each `Changes`, store write,
 and `requeue` on failure. A retry uses current rows, never the failed snapshot.
-Pending deletions share the live row budget; overflow requests a full bucket
+Pending deletions have their own budget; overflow requests a full bucket
 replacement. Store I/O and logging remain outside the index mutex.
 
 The index owns mailbox strings so log-line slices cannot retain oversized
