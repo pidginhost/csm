@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -74,6 +77,7 @@ func testStartupRollbackWritesActionBeforeRestart(t *testing.T, phase string) {
 		t.Fatal(err)
 	}
 	previous := []byte("hostname: previous.example\n")
+	previous = append(previous, []byte("integrity:\n  config_hash: "+integrity.HashConfigStableBytes(previous)+"\n")...)
 	if err := db.SaveFirewallRollback(store.FirewallRollback{PrevYAML: previous, ExpiresAt: time.Now().Add(-time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +96,28 @@ func testStartupRollbackWritesActionBeforeRestart(t *testing.T, phase string) {
 	t.Setenv("CSM_TEST_ACTION_LOG", actionLogPath(cfg))
 	restarted := filepath.Join(root, "restarted")
 	t.Setenv("CSM_TEST_RESTARTED", restarted)
+	// The test executable has no config-write command. Exercise the same
+	// decode/write boundary in process instead of recursively running tests.
+	oldLook, oldRun := configWriterLookPath, configWriterRun
+	configWriterLookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+	helperCalls := 0
+	configWriterRun = func(_ context.Context, input []byte, _ string, args ...string) ([]byte, error) {
+		helperCalls++
+		if len(args) != 1 || args[0] != integrity.ConfigWriteCommand {
+			t.Fatalf("unexpected helper args: %q", args)
+		}
+		c, err := integrity.ReadSignedConfig(bytes.NewReader(input))
+		if err != nil {
+			return nil, err
+		}
+		return nil, integrity.WriteSignedConfig(c)
+	}
+	t.Cleanup(func() { configWriterLookPath, configWriterRun = oldLook, oldRun })
 	d := New(cfg, nil, nil, "")
 	err := d.Run()
+	if helperCalls != 1 {
+		t.Fatalf("config helper calls = %d, want one", helperCalls)
+	}
 	close(d.stopCh)
 	d.wg.Wait()
 	if (err != nil) != (phase == "restore-failure") {

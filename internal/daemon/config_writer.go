@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,13 +40,15 @@ func routeConfigWrites() {
 // the directory the save changes. Without systemd-run there is no sandbox
 // to leave, and the helper runs directly.
 func runConfigWriter(ctx context.Context, binary string, lookPath systemdrun.LookPathFunc, run systemdrun.InputRunnerFunc, c integrity.SignedConfig) error {
-	dir, err := integrity.ConfigWriteDir(c.Path)
+	target, err := integrity.ResolveConfigWritePath(c.Path)
 	if err != nil {
 		return err
 	}
+	c.Path = target
+	dir := filepath.Dir(target)
 	// A unit property splits on whitespace and expands specifiers; refuse
 	// rather than grant a different path.
-	if strings.ContainsAny(dir, " \t\n\"'\\%;") {
+	if strings.ContainsAny(dir, " \t\r\n\v\f\"'\\%;") {
 		return fmt.Errorf("config directory %q cannot be named in a unit property", dir)
 	}
 	body, err := json.Marshal(c)
@@ -56,7 +59,9 @@ func runConfigWriter(ctx context.Context, binary string, lookPath systemdrun.Loo
 	defer cancel()
 	_, err = systemdrun.RunInput(ctx, lookPath, run, systemdrun.Options{
 		RuntimeMax: configWriteTimeout,
-		Properties: []string{"ProtectSystem=strict", "ReadWritePaths=" + dir, "NoNewPrivileges=yes", "PrivateNetwork=yes", "PrivateTmp=yes"},
+		// PrivateTmp would hide configurations under /tmp or /var/tmp. The
+		// read-only filesystem still limits writes to the resolved directory.
+		Properties: []string{"ProtectSystem=strict", "ReadWritePaths=" + dir, "NoNewPrivileges=yes", "PrivateNetwork=yes", "PrivateTmp=no"},
 	}, body, binary, integrity.ConfigWriteCommand)
 	if err != nil {
 		return fmt.Errorf("config writer: %w", err)

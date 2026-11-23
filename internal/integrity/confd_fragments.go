@@ -127,6 +127,9 @@ func (rec fragmentRecord) validate() error {
 // still hash to the signed digest. A config that was never signed has
 // nothing verified to record.
 func RecordVerifiedConfD(cfg *config.Config) error {
+	// Startup may already have armed a pending firewall rollback timer.
+	configWriteMu.Lock()
+	defer configWriteMu.Unlock()
 	if cfg.Integrity.BinaryHash == "" || cfg.Integrity.ConfigHash == "" {
 		return nil
 	}
@@ -141,7 +144,20 @@ func RecordVerifiedConfD(cfg *config.Config) error {
 	if rec, readErr := readFragmentRecord(cfg.ConfigFile); readErr == nil && rec.ConfdHash == digest {
 		return nil
 	}
-	return writeFragmentRecord(cfg.ConfigFile, digest, contents)
+	// Read the signed main file again rather than reconstructing it from the
+	// merged runtime config, which would absorb drop-ins and lose comments.
+	data, err := os.ReadFile(cfg.ConfigFile) // #nosec G304 -- operator-configured config path.
+	if err != nil {
+		return err
+	}
+	disk, err := decodeForSigning(data)
+	if err != nil {
+		return err
+	}
+	if disk.Integrity != cfg.Integrity || HashConfigStableBytes(data) != cfg.Integrity.ConfigHash {
+		return fmt.Errorf("%w: main config changed after verification", ErrConfigHashMismatch)
+	}
+	return writeConfig(SignedConfig{Path: cfg.ConfigFile, Bytes: data, ConfdHash: digest, Fragments: contents})
 }
 
 // RehashFragments re-signs conf.d after an integration rewrote the named

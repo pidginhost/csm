@@ -3,8 +3,10 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -50,7 +52,9 @@ func TestConfigWriterRunsHelperInNarrowUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls []helperCall
-	c := integrity.SignedConfig{Path: path, Bytes: []byte("hostname: b\n"), Fragments: map[string][]byte{}}
+	data := []byte("hostname: b\n")
+	data = append(data, []byte("integrity:\n  config_hash: "+integrity.HashConfigStableBytes(data)+"\n")...)
+	c := integrity.SignedConfig{Path: path, Bytes: data, Fragments: map[string][]byte{}}
 	if err := runConfigWriter(context.Background(), "/opt/csm/csm", systemdRunFound, fakeHelper(&calls, nil), c); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +63,7 @@ func TestConfigWriterRunsHelperInNarrowUnit(t *testing.T) {
 		t.Fatalf("helper runs = %+v, want one through systemd-run", calls)
 	}
 	args := calls[0].args
-	for _, want := range []string{"--property=ProtectSystem=strict", "--property=ReadWritePaths=" + dir, "--property=NoNewPrivileges=yes", "--property=PrivateNetwork=yes"} {
+	for _, want := range []string{"--property=ProtectSystem=strict", "--property=ReadWritePaths=" + dir, "--property=NoNewPrivileges=yes", "--property=PrivateNetwork=yes", "--property=PrivateTmp=no"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("args %q lack %s", args, want)
 		}
@@ -68,7 +72,7 @@ func TestConfigWriterRunsHelperInNarrowUnit(t *testing.T) {
 		t.Fatalf("args %q do not end with the helper command", args)
 	}
 	got, err := integrity.ReadSignedConfig(bytes.NewReader(calls[0].input))
-	if err != nil || got.Path != path || string(got.Bytes) != "hostname: b\n" {
+	if err != nil || got.Path != path || !bytes.Equal(got.Bytes, data) {
 		t.Fatalf("helper input = %+v, %v", got, err)
 	}
 	if b, _ := os.ReadFile(path); string(b) != "hostname: a\n" {
@@ -128,5 +132,53 @@ func TestRouteConfigWritesSendsSavesToTheHelper(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); !bytes.Equal(b, data) {
 		t.Fatal("the daemon wrote the config itself")
+	}
+}
+
+// A relative legacy path must be resolved before PID 1 starts the helper
+// with a different working directory.
+func TestConfigWriterResolvesRelativeAndSymlinkedPaths(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(realDir, "actual.yaml")
+	if err := os.WriteFile(path, []byte("hostname: before\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(root, "parent")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("parent/actual.yaml", filepath.Join(root, "legacy.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	for _, inputPath := range []string{"legacy.yaml", "parent/actual.yaml"} {
+		var calls []helperCall
+		c := integrity.SignedConfig{Path: inputPath, Bytes: []byte("hostname: after\n")}
+		if err := runConfigWriter(context.Background(), "/opt/csm/csm", systemdRunFound, fakeHelper(&calls, nil), c); err != nil {
+			t.Fatal(err)
+		}
+		runs := helperRuns(calls)
+		if len(runs) != 1 {
+			t.Fatalf("helper runs = %d", len(runs))
+		}
+		var got integrity.SignedConfig
+		if err := json.Unmarshal(runs[0].input, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Path != path || !slices.Contains(runs[0].args, "--property=ReadWritePaths="+realDir) {
+			t.Fatal("helper did not receive the resolved path and directory")
+		}
+	}
+}
+
+func TestConfigWriterWithoutSystemdRun(t *testing.T) {
+	var calls []helperCall
+	wantErr := errors.New("direct helper failed")
+	err := runConfigWriter(context.Background(), "/opt/csm/csm", func(string) (string, error) { return "", exec.ErrNotFound }, fakeHelper(&calls, wantErr), integrity.SignedConfig{Path: filepath.Join(t.TempDir(), "csm.yaml")})
+	if !errors.Is(err, wantErr) || len(calls) != 1 || calls[0].name != "/opt/csm/csm" || !slices.Equal(calls[0].args, []string{integrity.ConfigWriteCommand}) {
+		t.Fatalf("direct helper: error = %v, calls = %d", err, len(calls))
 	}
 }
