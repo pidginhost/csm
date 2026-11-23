@@ -265,3 +265,30 @@ func TestPHPProcessUserCopiedRootSupervisor(t *testing.T) {
 		t.Fatalf("users = %v, error = %v; copied executable and title hid root", got, err)
 	}
 }
+
+// Root processes are the operator's, not a tenant's. One that runs an
+// executable a package upgrade has since replaced is routine and must not
+// stop the inspection; it locates no configuration either.
+func TestPHPProcessUserIgnoresUpgradedRootDaemon(t *testing.T) {
+	root := t.TempDir()
+	writeRootFile(t, root, "etc/passwd", testPasswd)
+	fakeProc(t, root, 300, "/usr/sbin/sshd (deleted)", 0)
+	writeRootFile(t, root, "proc/300/stat", "300 (sshd) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1\n")
+	got, err := phpRuntimeUsers(root)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("users = %v, error = %v; an upgraded root daemon stopped the inspection", got, err)
+	}
+}
+
+// A LiteSpeed server's executable names the configuration CSM reads, so a
+// root one whose executable cannot be verified still stops the inspection.
+func TestPHPProcessUserUnverifiedRootLiteSpeedServer(t *testing.T) {
+	root := t.TempDir()
+	writeRootFile(t, root, "etc/passwd", testPasswd)
+	fakeProc(t, root, 300, "/opt/webserver/bin/lshttpd (deleted)", 0)
+	writeRootFile(t, root, "proc/300/stat", "300 (lshttpd) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1\n")
+	writeRootFile(t, root, "opt/webserver/conf/httpd_config.xml", "<httpServerConfig><user>www-data</user><phpSuExec>1</phpSuExec></httpServerConfig>")
+	if got, err := phpRuntimeUsers(root); err == nil {
+		t.Fatalf("users = %v; an unverified root LiteSpeed server located a configuration", got)
+	}
+}

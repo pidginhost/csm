@@ -175,6 +175,13 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 	identified := exeErr == nil && trusted(root, proc, exe)
 	if !identified {
 		if uid == 0 && !worker {
+			// Root processes are the operator's, and package upgrades leave
+			// them running replaced executables. Only an unreadable one, or
+			// a LiteSpeed server whose configuration would come from it,
+			// stops the inspection.
+			if exeErr == nil && !liteSpeedServerName.MatchString(base) {
+				return nil
+			}
 			return errors.New("cannot establish trusted process executable provenance")
 		}
 		source := "a running process whose executable cannot be verified"
