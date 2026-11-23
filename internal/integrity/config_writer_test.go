@@ -95,12 +95,13 @@ func TestReadSignedConfigValidates(t *testing.T) {
 		t.Fatalf("ReadSignedConfig = %+v, %v", c, err)
 	}
 	for name, in := range map[string]string{
-		"relative path":  `{"path":"csm.yaml","bytes":""}`,
-		"unclean path":   `{"path":"/etc/csm/../shadow.yaml","bytes":""}`,
-		"not yaml":       `{"path":"/etc/passwd","bytes":""}`,
-		"unknown member": `{"path":"/etc/csm/csm.yaml","bytes":"","mode":"0777"}`,
-		"not json":       `path=/etc/csm/csm.yaml`,
-		"too large":      `{"path":"/etc/csm/csm.yaml","bytes":"` + strings.Repeat("A", maxSignedConfigBytes) + `"}`,
+		"relative path":         `{"path":"csm.yaml","bytes":""}`,
+		"unclean path":          `{"path":"/etc/csm/../shadow.yaml","bytes":""}`,
+		"not yaml":              `{"path":"/etc/passwd","bytes":""}`,
+		"unknown member":        `{"path":"/etc/csm/csm.yaml","bytes":"","mode":"0777"}`,
+		"not json":              `path=/etc/csm/csm.yaml`,
+		"too large":             `{"path":"/etc/csm/csm.yaml","bytes":"` + strings.Repeat("A", maxSignedConfigBytes) + `"}`,
+		"padded past the limit": `{"path":"/etc/csm/csm.yaml","bytes":""}` + strings.Repeat(" ", maxSignedConfigBytes),
 	} {
 		if _, err := ReadSignedConfig(strings.NewReader(in)); err == nil {
 			t.Errorf("%s: accepted", name)
