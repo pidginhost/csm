@@ -720,10 +720,19 @@ starting over a day after the first. A device retrying an old saved password
 stays far below both; a guessing tool does not. Past either the
 mailbox has no standing for that address: the failures block as they would
 without standing, and a login after them is reported as a password crack.
-Alternate spellings of the same address share this count, and each protocol is
-counted on its own. An earlier standing advisory never silences the
+Alternate spellings of the same address share these counts. SMTP has a separate
+per-window cap from IMAP/POP/Sieve; the daily cap is shared. Delayed
+events from another protocol and backward clock changes do not reset the daily
+count. An earlier standing advisory never silences the
 password-crack alert that follows once the cap is passed. The existing
 good-source exemptions are unchanged.
+
+The daily count is held in memory on the standing row and starts with its first
+counted failure. Clean logins and saves do not reset it. Removing the row also
+removes the count and its standing; a new row must earn standing again. A daemon
+restart restores saved standing but starts a new daily count. Failures without
+a standing row, during a backend outage, or answered with an SMTP temporary
+failure do not count toward this daily cap.
 
 Standing is earned only from trusted logins the trackers treat as clean: lines
 the mail service itself recorded, not a mail log file; not during an

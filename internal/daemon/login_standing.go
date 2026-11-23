@@ -286,7 +286,9 @@ func (s *loginStanding) NoteFailure(ip, mailbox string, at time.Time) {
 	if r == nil {
 		return
 	}
-	if sec < r.failSince || sec-r.failSince >= secondsPerDay {
+	// Trackers capture time under separate locks, so an earlier failure can
+	// arrive after this window began. It must not erase the shared count.
+	if r.fails == 0 || sec-r.failSince >= secondsPerDay {
 		r.failSince, r.fails = sec, 0
 	}
 	if r.fails <= standingDailyFailureCap {
@@ -309,7 +311,9 @@ func (s *loginStanding) OverDailyCap(ip, mailbox string, at time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r := s.rows[standingKey{addr, mailbox}]
-	return r != nil && r.fails > standingDailyFailureCap && sec >= r.failSince && sec-r.failSince < secondsPerDay
+	// A decision captured before another tracker's first failure still uses
+	// the current count. A clock rollback must not restore standing either.
+	return r != nil && r.fails > standingDailyFailureCap && sec-r.failSince < secondsPerDay
 }
 
 // Has reports whether ip had standing on mailbox as of asOf, the start of
