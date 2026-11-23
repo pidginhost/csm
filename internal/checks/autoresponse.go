@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -60,12 +61,19 @@ var errProcessNotEligible = errors.New("process is no longer eligible for termin
 // detached web shells and the processes that wrote back a file CSM removed.
 // Never kills root system services or cPanel processes.
 // Marks evaluated input findings so alert delivery cannot repeat a response.
+// A detached web shell that keeps coming back also yields one respawn
+// finding per owner per day.
 func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.KillProcesses {
 		return nil
 	}
 
 	var actions []alert.Finding
+	type stoppedShell struct {
+		finding alert.Finding
+		uid     string
+	}
+	var stoppedShells []stoppedShell
 	// Sibling chains and independent checks can name the same process.
 	killed := make(map[int]bool)
 
@@ -87,6 +95,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 			// The parents go first so a loop cannot start another writer.
 			// Recheck origin and terminal inside the process handle too:
 			// a captured process can exec or acquire a terminal before this.
+			stoppedUID := ""
 			for j := len(f.WriterChain) - 1; j >= 0; j-- {
 				pid := f.WriterChain[j]
 				if killed[pid] {
@@ -102,10 +111,14 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 					// Read again after the ancestry walk, which can span an exec.
 					return !detached || isShellProcess(strconv.Itoa(pid), exe)
 				}
-				if action, ok := killFindingProcess(ctx, f, pid, allow); ok {
+				if action, uid, ok := killFindingProcess(ctx, f, pid, allow); ok {
 					killed[pid] = true
 					actions = append(actions, action)
+					stoppedUID = cmp.Or(stoppedUID, uid)
 				}
+			}
+			if f.Check == DetachedWebProcessCheck && stoppedUID != "" {
+				stoppedShells = append(stoppedShells, stoppedShell{f, stoppedUID})
 			}
 			continue
 		}
@@ -123,19 +136,27 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		if !validPID || killed[pidInt] {
 			continue
 		}
-		if action, ok := killFindingProcess(ctx, f, pidInt, func(exe string) bool { return !isSafeProcess(exe) }); ok {
+		if action, _, ok := killFindingProcess(ctx, f, pidInt, func(exe string) bool { return !isSafeProcess(exe) }); ok {
 			killed[pidInt] = true
 			actions = append(actions, action)
 		}
 	}
 
+	// Finish every eligible kill before touching escalation state or the scan
+	// queue, whose database admission can wait on disk I/O.
+	for _, stopped := range stoppedShells {
+		if respawn, ok := detachedRespawns.noteStop(stopped.finding, stopped.uid); ok {
+			actions = append(actions, respawn)
+		}
+	}
 	return actions
 }
 
 // killFindingProcess signals one process for f after verifying, through the
 // captured handle, that it is still a non-root process with an executable
-// allowExe accepts that started before the finding.
-func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowExe func(string) bool) (alert.Finding, bool) {
+// allowExe accepts that started before the finding. It returns the action
+// and the uid it verified.
+func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowExe func(string) bool) (alert.Finding, string, bool) {
 	pid := strconv.Itoa(pidInt)
 	var uid, exe string
 	err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
@@ -150,7 +171,7 @@ func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowE
 		if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
 			csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
 		}
-		return alert.Finding{}, false
+		return alert.Finding{}, "", false
 	}
 	return alert.Finding{
 		Severity:  alert.Critical,
@@ -158,7 +179,7 @@ func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowE
 		Message:   fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
 		Timestamp: time.Now(),
 		Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
-	}, true
+	}, uid, true
 }
 
 // recordKillAction writes the unified action record for one termination
@@ -262,7 +283,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 				if restored && filepath.Base(path) == ".htaccess" {
 					result := cleanHtaccessFileIdentified(path, info)
 					if result.Success {
-						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path), Details: result.Description, Timestamp: time.Now()})
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", RemediationStatus: "cleaned", Message: fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path), Details: result.Description, Timestamp: time.Now()})
 					}
 					if result.Error != "" && !result.Refused {
 						return errors.New(result.Error)
@@ -278,7 +299,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 						if result.Refused {
 							outcome = "refused"
 						}
-						actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
+						actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", RemediationStatus: outcome, Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
 						// Safety refusals consume capacity without charging a failure.
 						if result.Refused {
 							return nil
@@ -286,7 +307,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 						return errors.New(result.Error)
 					}
 					if result.Cleaned {
-						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", RemediationStatus: "cleaned", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
 					}
 					return nil
 				}
@@ -316,7 +337,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			if warning != "" {
 				details += "\nWarning: " + warning
 			}
-			actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path), Timestamp: time.Now(), Details: details})
+			actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", RemediationStatus: "quarantined", Message: fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path), Timestamp: time.Now(), Details: details})
 			return nil
 		})
 		if paused != nil {

@@ -727,6 +727,7 @@ Attribution gaps:
 | `db_unexpected_procedure` | ignored | informational |  |
 | `db_unexpected_trigger` | ignored | informational |  |
 | `detached_web_process` | security event |  |  |
+| `detached_web_process_respawn` | security event |  |  |
 | `direct_smtp_egress` | security event |  |  |
 | `dns_connection` | ignored | host-scope |  |
 | `dns_zone_change` | ignored | informational |  |

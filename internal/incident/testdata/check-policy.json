@@ -239,6 +239,7 @@
       "self_deleting_dropper_overflow",
       "removed_file_restored_realtime",
       "detached_web_process",
+      "detached_web_process_respawn",
       "self_deleting_dropper_realtime",
       "signature_match_realtime",
       "signature_update_rescan_queued",

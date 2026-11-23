@@ -230,6 +230,20 @@ ancestry CSM cannot read. The processes are named when the write is seen, and
 each is checked again through a kernel process handle just before the signal,
 as described above.
 
+A shell a web request left running (`detached_web_process`) is stopped under
+the same rules every time it is seen. When CSM stops one for the same account,
+or the same user outside an account, a second time within 24 hours, it raises
+`detached_web_process_respawn` once a day: something, most likely a PHP file
+that requests still run, keeps starting it. For a hosting account CSM also
+queues a malware scan of the account. It quarantines and cleans only as
+automatic quarantine would at that moment, within the same safety limits, and
+its report shows what it quarantined, cleaned or refused. Stopping never backs
+off, so a shell that keeps coming back is stopped every time.
+
+CSM tracks up to 4096 owners and forgets them when it restarts. Past that, a new
+owner's shells are still stopped every time but not escalated until a tracked
+owner has gone a day without a stop.
+
 ### Restoring quarantined files
 
 Regular-file quarantine and pre-clean backups write and sync the private content
