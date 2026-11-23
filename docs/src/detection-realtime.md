@@ -708,11 +708,10 @@ failures on one mailbox within the brute-force window. A device retrying an old
 saved password stays far below that; a guessing tool does not. Past it the
 mailbox has no standing for that address: the failures block as they would
 without standing, and a login after them is reported as a password crack.
-Alternate spellings of the same address share this count. SMTP retains enough
-recent failures to apply a raised threshold on reload. Earlier standing
-advisories do not silence a later password-crack alert after the cap is exceeded.
-Each tracker counts only its own protocol's failures; the existing good-source
-exemptions remain unchanged.
+Alternate spellings of the same address share this count, and each protocol is
+counted on its own. An earlier standing advisory never silences the
+password-crack alert that follows once the cap is passed. The existing
+good-source exemptions are unchanged.
 
 Standing is earned only from trusted logins the trackers treat as clean: lines
 the mail service itself recorded, not a mail log file; not during an
