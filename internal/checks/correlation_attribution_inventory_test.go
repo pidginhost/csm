@@ -139,6 +139,7 @@ var attributionEvidence = map[string]string{
 	// Process and login producers.
 	"exfiltration_paste_site":      "TestExfiltrationFindingStampsOwner",
 	"detached_web_process":         "TestDetachedWebProcessFindingStampsOwner",
+	"detached_web_process_respawn": "TestDetachedShellRespawnStampsOwner",
 	"af_alg_socket_use":            "TestAFALGFindingStampsOwner",
 	"cpanel_file_upload":           "TestCPanelLoginFindingsStampOwner",
 	"cpanel_multi_ip_login":        "TestCPanelLoginFindingsStampOwner",

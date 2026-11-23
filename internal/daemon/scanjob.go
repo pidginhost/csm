@@ -744,3 +744,12 @@ func (d *Daemon) startScanJobManager() (*ScanJobManager, error) {
 
 	return m, nil
 }
+
+// requestAccountScan queues a malware scan of account for a shell a web
+// request left running that keeps coming back. It quarantines exactly when
+// automatic quarantine would.
+func (d *Daemon) requestAccountScan(account string) (string, error) {
+	cfg := d.currentCfg()
+	quarantine := cfg.AutoResponse.Enabled && cfg.AutoResponse.QuarantineFiles && !cfg.ObserveMode()
+	return d.scanJobs.Enqueue("account", account, checks.DefaultAccountScanOptions(cfg), quarantine)
+}

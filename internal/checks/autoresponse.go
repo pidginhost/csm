@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -60,6 +61,8 @@ var errProcessNotEligible = errors.New("process is no longer eligible for termin
 // detached web shells and the processes that wrote back a file CSM removed.
 // Never kills root system services or cPanel processes.
 // Marks evaluated input findings so alert delivery cannot repeat a response.
+// A detached web shell that keeps coming back also yields one respawn
+// finding per owner per day.
 func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.KillProcesses {
 		return nil
@@ -87,6 +90,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 			// The parents go first so a loop cannot start another writer.
 			// Recheck origin and terminal inside the process handle too:
 			// a captured process can exec or acquire a terminal before this.
+			stoppedUID := ""
 			for j := len(f.WriterChain) - 1; j >= 0; j-- {
 				pid := f.WriterChain[j]
 				if killed[pid] {
@@ -102,9 +106,15 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 					// Read again after the ancestry walk, which can span an exec.
 					return !detached || isShellProcess(strconv.Itoa(pid), exe)
 				}
-				if action, ok := killFindingProcess(ctx, f, pid, allow); ok {
+				if action, uid, ok := killFindingProcess(ctx, f, pid, allow); ok {
 					killed[pid] = true
 					actions = append(actions, action)
+					stoppedUID = cmp.Or(stoppedUID, uid)
+				}
+			}
+			if f.Check == DetachedWebProcessCheck && stoppedUID != "" {
+				if respawn, ok := detachedRespawns.noteStop(f, stoppedUID); ok {
+					actions = append(actions, respawn)
 				}
 			}
 			continue
@@ -123,7 +133,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		if !validPID || killed[pidInt] {
 			continue
 		}
-		if action, ok := killFindingProcess(ctx, f, pidInt, func(exe string) bool { return !isSafeProcess(exe) }); ok {
+		if action, _, ok := killFindingProcess(ctx, f, pidInt, func(exe string) bool { return !isSafeProcess(exe) }); ok {
 			killed[pidInt] = true
 			actions = append(actions, action)
 		}
@@ -134,8 +144,9 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 
 // killFindingProcess signals one process for f after verifying, through the
 // captured handle, that it is still a non-root process with an executable
-// allowExe accepts that started before the finding.
-func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowExe func(string) bool) (alert.Finding, bool) {
+// allowExe accepts that started before the finding. It returns the action
+// and the uid it verified.
+func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowExe func(string) bool) (alert.Finding, string, bool) {
 	pid := strconv.Itoa(pidInt)
 	var uid, exe string
 	err := signalProcess(ctx, pidInt, syscall.SIGKILL, func() error {
@@ -150,7 +161,7 @@ func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowE
 		if !errors.Is(err, errProcessNotEligible) && !errors.Is(err, os.ErrProcessDone) && ctx.Err() == nil {
 			csmlog.Warn("auto-kill: safe process signaling failed", "pid", pidInt, "err", err)
 		}
-		return alert.Finding{}, false
+		return alert.Finding{}, "", false
 	}
 	return alert.Finding{
 		Severity:  alert.Critical,
@@ -158,7 +169,7 @@ func killFindingProcess(ctx context.Context, f alert.Finding, pidInt int, allowE
 		Message:   fmt.Sprintf("AUTO-KILL: Process %s killed (was: %s)", pid, f.Check),
 		Timestamp: time.Now(),
 		Details:   fmt.Sprintf("Original finding: %s\nProcess: %s (UID: %s)", f.Message, exe, uid),
-	}, true
+	}, uid, true
 }
 
 // recordKillAction writes the unified action record for one termination

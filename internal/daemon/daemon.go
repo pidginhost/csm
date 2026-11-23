@@ -1039,6 +1039,7 @@ func (d *Daemon) Run() error {
 			csmlog.Warn("scan job manager unavailable", "err", err)
 		} else {
 			d.scanJobs = sjm
+			checks.SetAccountScanRequester(d.requestAccountScan)
 		}
 	}
 
@@ -1450,6 +1451,7 @@ func (d *Daemon) Run() error {
 		d.controlListener.Stop()
 	}
 	if d.scanJobs != nil {
+		checks.SetAccountScanRequester(nil)
 		d.scanJobs.Stop()
 	}
 	// The web server and control socket have stopped taking releases.
