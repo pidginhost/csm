@@ -1813,9 +1813,10 @@ found now, and PHP drop-ins this apply did not write keep their earlier
 entries. If that record cannot be read, the fix still applies, the record is
 removed, and the result says undo is unavailable. Permissions, owner and
 group are compared independently, so editing one does not lose the original
-state of the others. For an unchanged SSH block value, disabled global lines
-are merged in their current file order; removed or edited comments are not
-carried forward, and uncommenting a line does not record it twice.
+state of the others. Global SSH lines that CSM still holds disabled stay in
+the record in their current file order, also when the block value was
+edited or removed by hand; removed or edited comments are not carried
+forward, and uncommenting a line does not record it twice.
 
 Store operations validate fix names before constructing record paths. They
 use directory-relative, no-follow opens and check ownership and permissions

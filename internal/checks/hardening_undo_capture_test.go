@@ -662,9 +662,38 @@ func TestHardeningUndoNewestApplyWins(t *testing.T) {
 		if res := applySSHFixes(r); res[0].Status != "applied" {
 			t.Fatalf("result = %+v", res)
 		}
-		// The global line was disabled by the first apply, not this one.
+		// The block value set by hand is the state to restore. The global
+		// line the first apply disabled is still disabled, so it stays in the
+		// record.
 		wantUndoRecord(t, since, HardeningUndoRecord{Name: "ssh_max_auth_tries", Category: "ssh", Kind: "ssh", SSH: &sshUndoState{
-			Keyword: "MaxAuthTries", PrevValue: "5", HadValue: true, AppliedValue: "4",
+			Keyword: "MaxAuthTries", PrevValue: "5", HadValue: true, AppliedValue: "4", DisabledLines: []string{"MaxAuthTries 6"},
+		}})
+	})
+	t.Run("ssh block line removed", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		path := withTempSSHDConfig(t, "MaxAuthTries 6\n")
+		withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) { return nil, nil }})
+		r := []store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}}
+		if res := applySSHFixes(r); res[0].Status != "applied" {
+			t.Fatalf("result = %+v", res)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited := strings.Replace(string(data), "\nMaxAuthTries 4\n", "\n", 1)
+		if edited == string(data) {
+			t.Fatalf("no CSM block value to remove in %q", data)
+		}
+		if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		since := time.Now()
+		if res := applySSHFixes(r); res[0].Status != "applied" {
+			t.Fatalf("result = %+v", res)
+		}
+		wantUndoRecord(t, since, HardeningUndoRecord{Name: "ssh_max_auth_tries", Category: "ssh", Kind: "ssh", SSH: &sshUndoState{
+			Keyword: "MaxAuthTries", AppliedValue: "4", DisabledLines: []string{"MaxAuthTries 6"},
 		}})
 	})
 }

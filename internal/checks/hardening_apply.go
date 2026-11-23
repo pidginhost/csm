@@ -1026,8 +1026,10 @@ func rewriteSSHDConfig(content string, directives []keyValue, priors []undoPrior
 		byKeyword[kw] = i
 		block[kw] = d
 		if len(priors) > 0 && priors[i].ok && priors[i].rec.Kind == "ssh" {
+			// Lines CSM still holds disabled stay in the record even when the
+			// block value was edited or removed by hand.
 			older := priors[i].rec.SSH
-			if older != nil && strings.EqualFold(older.Keyword, d.key) && had && prev == older.AppliedValue {
+			if older != nil && strings.EqualFold(older.Keyword, d.key) {
 				for _, line := range older.DisabledLines {
 					disabled[line]++
 				}
