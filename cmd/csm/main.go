@@ -103,6 +103,8 @@ func main() {
 		runForwardGuardWorker()
 	case checks.HardeningApplyWorkerCommand:
 		runHardeningApplyWorker()
+	case checks.HardeningUndoWorkerCommand:
+		runHardeningUndoWorker()
 	case "antispam-worker":
 		runAntispamWorker()
 	case "yara-worker":

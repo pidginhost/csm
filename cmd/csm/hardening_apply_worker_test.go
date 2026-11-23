@@ -16,6 +16,7 @@ func TestHardeningApplyWorkerRefusesBeforeReading(t *testing.T) {
 	}{
 		"not root":       {1000, []string{"hardening-apply-worker"}},
 		"no command":     {0, nil},
+		"undo command":   {0, []string{"hardening-undo-worker"}},
 		"extra argument": {0, []string{"hardening-apply-worker", "--force"}},
 		"empty config":   {0, []string{"hardening-apply-worker", "--config", ""}},
 		"wrong flag":     {0, []string{"hardening-apply-worker", "--conf", "/etc/csm/csm.yaml"}},

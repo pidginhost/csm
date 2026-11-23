@@ -61,11 +61,17 @@ const (
 	sshdDisabledBy = "# Disabled by CSM hardening: "
 )
 
-// HardeningFixResult is the outcome of applying one check.
+// The first line of each drop-in CSM creates.
+const (
+	sysctlDropInHeader = "# Managed by CSM: sysctl values applied from the hardening page."
+	phpDropInHeader    = "; Managed by CSM: PHP settings applied from the hardening page."
+)
+
+// HardeningFixResult is the outcome of applying one check, or of undoing it.
 type HardeningFixResult struct {
 	Name    string `json:"name"`
 	Title   string `json:"title"`
-	Status  string `json:"status"` // applied, failed, skipped
+	Status  string `json:"status"` // applied, failed or skipped; undone, refused or failed for an undo
 	Message string `json:"message"`
 }
 
@@ -875,7 +881,7 @@ func persistSysctl(kvs []keyValue) ([][]string, error) {
 	if data, err := os.ReadFile(hardeningSysctlConfPath); err == nil {
 		lines = strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	} else if errors.Is(err, os.ErrNotExist) {
-		lines = []string{"# Managed by CSM: sysctl values applied from the hardening page."}
+		lines = []string{sysctlDropInHeader}
 	} else {
 		return nil, err
 	}
@@ -883,8 +889,7 @@ func persistSysctl(kvs []keyValue) ([][]string, error) {
 	for n, kv := range kvs {
 		entry := kv.key + " = " + kv.value
 		for i, line := range lines {
-			k, _, ok := strings.Cut(strings.TrimSpace(line), "=")
-			if ok && !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.TrimSpace(k) == kv.key {
+			if _, ok := sysctlLineValue(line, kv.key); ok {
 				prev[n] = append(prev[n], line)
 				lines[i] = entry
 			}
@@ -897,6 +902,16 @@ func persistSysctl(kvs []keyValue) ([][]string, error) {
 		return nil, err
 	}
 	return prev, nil
+}
+
+// sysctlLineValue returns the value an active drop-in line sets for key.
+func sysctlLineValue(line, key string) (string, bool) {
+	t := strings.TrimSpace(line)
+	k, v, ok := strings.Cut(t, "=")
+	if !ok || strings.HasPrefix(t, "#") || strings.TrimSpace(k) != key {
+		return "", false
+	}
+	return strings.TrimSpace(v), true
 }
 
 // --- SSH ---
@@ -933,18 +948,8 @@ func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 		return fail(err)
 	}
 	updated, undo := rewriteSSHDConfig(string(orig), directives, priors)
-	backup := sshdConfigPath + ".csm-bak"
-	if err := atomicio.AtomicWrite(backup, info.Mode().Perm(), orig); err != nil {
-		return fail(fmt.Errorf("backup: %w", err))
-	}
-	if err := atomicio.AtomicWrite(sshdConfigPath, info.Mode().Perm(), []byte(updated)); err != nil {
+	if err := replaceSSHDConfig(info.Mode().Perm(), orig, []byte(updated)); err != nil {
 		return fail(err)
-	}
-	if _, err := hardeningRun(sshdBinary(), "-t", "-f", sshdConfigPath); err != nil {
-		if rerr := atomicio.AtomicWrite(sshdConfigPath, info.Mode().Perm(), orig); rerr != nil {
-			return fail(fmt.Errorf("sshd -t rejected the change (%v) and restoring %s failed: %v; the original is in %s", err, sshdConfigPath, rerr, backup))
-		}
-		return fail(fmt.Errorf("sshd -t rejected the change, original restored: %w", err))
 	}
 
 	notes := make([]string, len(items))
@@ -960,6 +965,25 @@ func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 		out = append(out, applied(r, msg+notes[i]))
 	}
 	return out
+}
+
+// replaceSSHDConfig writes updated over orig, keeping orig in .csm-bak, and
+// puts orig back when sshd -t rejects the new file.
+func replaceSSHDConfig(perm os.FileMode, orig, updated []byte) error {
+	backup := sshdConfigPath + ".csm-bak"
+	if err := atomicio.AtomicWrite(backup, perm, orig); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	if err := atomicio.AtomicWrite(sshdConfigPath, perm, updated); err != nil {
+		return err
+	}
+	if _, err := hardeningRun(sshdBinary(), "-t", "-f", sshdConfigPath); err != nil {
+		if rerr := atomicio.AtomicWrite(sshdConfigPath, perm, orig); rerr != nil {
+			return fmt.Errorf("sshd -t rejected the change (%v) and restoring %s failed: %v; the original is in %s", err, sshdConfigPath, rerr, backup)
+		}
+		return fmt.Errorf("sshd -t rejected the change, original restored: %w", err)
+	}
+	return nil
 }
 
 func sshdBinary() string {
@@ -1187,19 +1211,14 @@ func writePHPDropIn(path string, keys []string) ([]phpUndoState, error) {
 			return nil, readErr
 		}
 		for _, line := range strings.Split(string(data), "\n") {
-			t := strings.TrimSpace(line)
-			if t == "" || strings.HasPrefix(t, ";") {
-				continue
-			}
-			k, v, ok := strings.Cut(t, "=")
+			k, v, ok := phpIniSetting(line)
 			if !ok {
 				continue
 			}
-			k = strings.TrimSpace(k)
 			if _, dup := values[k]; !dup {
 				order = append(order, k)
 			}
-			values[k] = strings.TrimSpace(v)
+			values[k] = v
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -1218,7 +1237,7 @@ func writePHPDropIn(path string, keys []string) ([]phpUndoState, error) {
 		values[k] = "Off"
 	}
 	var b strings.Builder
-	b.WriteString("; Managed by CSM: PHP settings applied from the hardening page.\n")
+	b.WriteString(phpDropInHeader + "\n")
 	for _, k := range order {
 		b.WriteString(k + " = " + values[k] + "\n")
 	}
@@ -1226,6 +1245,16 @@ func writePHPDropIn(path string, keys []string) ([]phpUndoState, error) {
 		return nil, err
 	}
 	return undo, nil
+}
+
+// phpIniSetting returns the key and value an active ini line sets.
+func phpIniSetting(line string) (string, string, bool) {
+	t := strings.TrimSpace(line)
+	if t == "" || strings.HasPrefix(t, ";") {
+		return "", "", false
+	}
+	k, v, ok := strings.Cut(t, "=")
+	return strings.TrimSpace(k), strings.TrimSpace(v), ok
 }
 
 func restartPHPFPM() (string, error) {

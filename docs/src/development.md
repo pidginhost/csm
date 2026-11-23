@@ -1796,7 +1796,10 @@ The root hardening worker owns `/var/lib/csm-hardening-undo` with mode
 `0700`. Each `<name>.json` record is a root-owned regular file with mode
 `0600`. Requests carry fix names only; saved values come from the worker.
 The daemon may list record names read-only, without opening their contents.
-Applying a fix writes its record; no undo action reads the records yet.
+Applying a fix writes its record. The undo worker reads one fix's record,
+restores what it lists while the host still holds the applied state, and
+removes the record once the fix is undone; nothing calls it yet. It runs
+under the apply worker's unit name, so systemd never runs the two at once.
 
 Each successful sysctl runtime change is recorded before the next command,
 then its record is updated after the drop-in is saved. PHP records grow after
