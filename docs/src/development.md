@@ -1805,6 +1805,14 @@ lose recovery information for completed changes. SSH capture accepts both
 whitespace and equals separators and keeps the first value for each keyword
 in the managed block, matching sshd's interpretation of edited settings.
 
+Applying a fix again, as a retry after a partial apply or over a setting
+that still holds what CSM set, reads the fix's record before changing
+anything. Each setting that still holds the earlier apply's value keeps the
+state from before that apply; a setting changed by hand since keeps the state
+found now, and PHP drop-ins this apply did not write keep their earlier
+entries. If that record cannot be read, the fix still applies, the record is
+removed, and the result says undo is unavailable.
+
 Store operations validate fix names before constructing record paths. They
 use directory-relative, no-follow opens and check ownership and permissions
 on opened inodes. Each write uses a private temporary file, syncs its data,

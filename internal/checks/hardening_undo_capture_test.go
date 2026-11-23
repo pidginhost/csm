@@ -669,6 +669,304 @@ func TestHardeningUndoNewestApplyWins(t *testing.T) {
 	})
 }
 
+// Applying a fix again, as a retry after a partial apply or over a setting
+// that still holds what CSM set, must not record CSM's own earlier change as
+// the state to restore. Settings changed by hand since take the state found
+// now.
+func TestHardeningUndoReapplyKeepsOriginalState(t *testing.T) {
+	ok := func(string, ...string) ([]byte, error) { return nil, nil }
+	t.Run("php retry after a partial apply", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		withPHPReloadStubbed(t)
+		ver, _ := debianPHPTree(t, "cli", "fpm", "apache2")
+		ini := func(sapi string) string { return filepath.Join(ver, sapi, "conf.d", hardeningPHPIniName) }
+		r := []store.AuditResult{{Name: "php_expose_82", Category: "php"}}
+		installs := []phpInstall{{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")}}
+		if err := os.Mkdir(ini("fpm"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if out := applyPHPFixes(r, installs); out[0].Status != "failed" {
+			t.Fatalf("first apply = %+v", out)
+		}
+		// The operator clears the obstacle and applies the same fix again.
+		if err := os.Remove(ini("fpm")); err != nil {
+			t.Fatal(err)
+		}
+		since := time.Now()
+		if out := applyPHPFixes(r, installs); out[0].Status != "applied" || strings.Contains(out[0].Message, "Undo is unavailable") {
+			t.Fatalf("retry = %+v", out)
+		}
+		// apache2 already held the first attempt's Off.
+		wantUndoRecord(t, since, HardeningUndoRecord{Name: "php_expose_82", Category: "php", Kind: "php", PHP: []phpUndoState{
+			{Path: ini("apache2"), Key: "expose_php", Applied: "Off"},
+			{Path: ini("fpm"), Key: "expose_php", Applied: "Off"},
+			{Path: ini("cli"), Key: "expose_php", Applied: "Off"},
+		}})
+	})
+	t.Run("php retry that stops sooner", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		withPHPReloadStubbed(t)
+		ver, _ := debianPHPTree(t, "cli", "fpm", "apache2")
+		ini := func(sapi string) string { return filepath.Join(ver, sapi, "conf.d", hardeningPHPIniName) }
+		r := []store.AuditResult{{Name: "php_expose_82", Category: "php"}}
+		installs := []phpInstall{{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")}}
+		if err := os.Mkdir(ini("cli"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if out := applyPHPFixes(r, installs); out[0].Status != "failed" {
+			t.Fatalf("first apply = %+v", out)
+		}
+		// Now fpm is in the way instead, so the retry writes only apache2.
+		for _, path := range []string{ini("cli"), ini("fpm")} {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Mkdir(ini("fpm"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		since := time.Now()
+		if out := applyPHPFixes(r, installs); out[0].Status != "failed" {
+			t.Fatalf("retry = %+v", out)
+		}
+		// The first attempt's fpm change stays undoable.
+		wantUndoRecord(t, since, HardeningUndoRecord{Name: "php_expose_82", Category: "php", Kind: "php", PHP: []phpUndoState{
+			{Path: ini("apache2"), Key: "expose_php", Applied: "Off"},
+			{Path: ini("fpm"), Key: "expose_php", Applied: "Off"},
+		}})
+	})
+	t.Run("sysctl runtime changed by hand", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		withTempSysctl(t, "", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
+		withMockCmd(t, &mockCmd{run: kernelSysctl})
+		r := []store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}
+		if out := applySysctlFixes(r); out[0].Status != "applied" {
+			t.Fatalf("first apply = %+v", out)
+		}
+		if _, err := kernelSysctl("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"); err != nil {
+			t.Fatal(err)
+		}
+		since := time.Now()
+		if out := applySysctlFixes(r); out[0].Status != "applied" {
+			t.Fatalf("re-apply = %+v", out)
+		}
+		// The runtime value set by hand is restored; the drop-in line is still
+		// CSM's own, so undo removes it as before.
+		wantUndoRecord(t, since, HardeningUndoRecord{Name: "os_sysctl_rp_filter", Category: "os", Kind: "sysctl", Sysctl: &sysctlUndoState{
+			Key: "net.ipv4.conf.all.rp_filter", PrevRuntime: "0", AppliedValue: "1",
+		}})
+	})
+	t.Run("sysctl record before the drop-in is saved", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		withTempSysctl(t, "net.ipv4.conf.all.rp_filter = 2\n", map[string]string{"net.ipv4.conf.all.rp_filter": "2", "kernel.randomize_va_space": "1"})
+		withMockCmd(t, &mockCmd{run: kernelSysctl})
+		if out := applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}); out[0].Status != "applied" {
+			t.Fatalf("first apply = %+v", out)
+		}
+		if _, err := kernelSysctl("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"); err != nil {
+			t.Fatal(err)
+		}
+		// The drop-in still holds the first apply's line; this apply has only
+		// changed the runtime value when the next command runs.
+		want := HardeningUndoRecord{Name: "os_sysctl_rp_filter", Category: "os", Kind: "sysctl", Sysctl: &sysctlUndoState{
+			Key: "net.ipv4.conf.all.rp_filter", PrevRuntime: "0", PrevLines: []string{"net.ipv4.conf.all.rp_filter = 2"}, AppliedValue: "1",
+		}}
+		since := time.Now()
+		checked := false
+		withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+			if strings.Contains(strings.Join(args, " "), "randomize_va_space") {
+				wantUndoRecord(t, since, want)
+				checked = true
+			}
+			return kernelSysctl(name, args...)
+		}})
+		out := applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}, {Name: "os_sysctl_aslr", Category: "os"}})
+		if !checked || out[0].Status != "applied" || out[1].Status != "applied" {
+			t.Fatalf("checked = %v, results = %+v", checked, out)
+		}
+		wantUndoRecord(t, since, want)
+	})
+	t.Run("sysctl drop-in changed by hand", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		conf := withTempSysctl(t, "net.ipv4.conf.all.rp_filter = 2\n", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
+		withMockCmd(t, &mockCmd{run: kernelSysctl})
+		r := []store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}
+		if out := applySysctlFixes(r); out[0].Status != "applied" {
+			t.Fatalf("first apply = %+v", out)
+		}
+		if err := os.WriteFile(conf, []byte("net.ipv4.conf.all.rp_filter = 0\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		since := time.Now()
+		if out := applySysctlFixes(r); out[0].Status != "applied" {
+			t.Fatalf("re-apply = %+v", out)
+		}
+		wantUndoRecord(t, since, HardeningUndoRecord{Name: "os_sysctl_rp_filter", Category: "os", Kind: "sysctl", Sysctl: &sysctlUndoState{
+			Key: "net.ipv4.conf.all.rp_filter", PrevRuntime: "2", PrevLines: []string{"net.ipv4.conf.all.rp_filter = 0"}, AppliedValue: "1",
+		}})
+	})
+	t.Run("ssh block still holds the applied value", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		path := withTempSSHDConfig(t, "MaxAuthTries 6\n")
+		withMockCmd(t, &mockCmd{run: ok})
+		r := []store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}}
+		if out := applySSHFixes(r); out[0].Status != "applied" {
+			t.Fatalf("first apply = %+v", out)
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString("MaxAuthTries 8\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		since := time.Now()
+		if out := applySSHFixes(r); out[0].Status != "applied" {
+			t.Fatalf("re-apply = %+v", out)
+		}
+		wantUndoRecord(t, since, HardeningUndoRecord{Name: "ssh_max_auth_tries", Category: "ssh", Kind: "ssh", SSH: &sshUndoState{
+			Keyword: "MaxAuthTries", AppliedValue: "4", DisabledLines: []string{"MaxAuthTries 6", "MaxAuthTries 8"},
+		}})
+	})
+	t.Run("tweak unchanged", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		var value *string // the tweak starts unset
+		withMockCmd(t, &mockCmd{run: func(_ string, args ...string) ([]byte, error) {
+			if slices.Contains(args, "get_tweaksetting") {
+				if value == nil {
+					return []byte(`{"data":{"tweaksetting":{"key":"maxemailsperhour"}},"metadata":{"result":1}}`), nil
+				}
+				return []byte(`{"data":{"tweaksetting":{"key":"maxemailsperhour","value":"` + *value + `"}},"metadata":{"result":1}}`), nil
+			}
+			set := strings.TrimPrefix(args[len(args)-1], "value=")
+			value = &set
+			return []byte(`{"metadata":{"result":1}}`), nil
+		}})
+		r := store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"}
+		for range 2 {
+			since := time.Now()
+			if res := applyHardeningSingle(r); res.Status != "applied" {
+				t.Fatalf("result = %+v", res)
+			}
+			wantUndoRecord(t, since, HardeningUndoRecord{Name: r.Name, Category: r.Category, Kind: "tweak", Tweak: &tweakUndoState{
+				Key: "maxemailsperhour", Applied: cpTweakFixes[r.Name].value,
+			}})
+		}
+	})
+	t.Run("mode", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		path := filepath.Join(t.TempDir(), "shadow")
+		if err := os.WriteFile(path, []byte("root:*:1::::::\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old := hardeningShadowPath
+		hardeningShadowPath = path
+		t.Cleanup(func() { hardeningShadowPath = old })
+		uid, gid := fileOwner(t, path)
+		applied, err := shadowFixMode(gid, user.LookupGroup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := store.AuditResult{Name: "os_shadow_permissions", Category: "os"}
+		// Unchanged since the first apply, then changed by hand.
+		for _, step := range []struct {
+			chmod os.FileMode
+			want  uint32
+		}{{0, 0o644}, {0, 0o644}, {0o604, 0o604}} {
+			if step.chmod != 0 {
+				if err := os.Chmod(path, step.chmod); err != nil {
+					t.Fatal(err)
+				}
+			}
+			since := time.Now()
+			if res := applyHardeningSingle(r); res.Status != "applied" {
+				t.Fatalf("result = %+v", res)
+			}
+			wantUndoRecord(t, since, HardeningUndoRecord{Name: r.Name, Category: r.Category, Kind: "mode", Mode: &modeUndoState{
+				Path: path, Mode: step.want, UID: uid, GID: gid, AppliedMode: uint32(applied), AppliedUID: uid, AppliedGID: gid,
+			}})
+		}
+	})
+	t.Run("compilers", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		dir := t.TempDir()
+		gcc := filepath.Join(dir, "gcc")
+		if err := os.WriteFile(gcc, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(gcc, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		withCompilerPaths(t, gcc, filepath.Join(dir, "missing-compilers-script"))
+		target, err := filepath.EvalSymlinks(gcc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		uid, gid := fileOwner(t, target)
+		r := store.AuditResult{Name: "cp_compilers", Category: "cpanel"}
+		for range 2 {
+			since := time.Now()
+			if res := applyHardeningSingle(r); res.Status != "applied" {
+				t.Fatalf("result = %+v", res)
+			}
+			wantUndoRecord(t, since, HardeningUndoRecord{Name: r.Name, Category: r.Category, Kind: "compilers", Compilers: &compilersUndoState{
+				Method: "chmod", Path: target, Mode: 0o755, UID: uid, GID: gid, AppliedMode: 0o750, AppliedUID: uid, AppliedGID: gid,
+			}})
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		withHardeningUndoDir(t)
+		path := withTempCPUpdateConf(t)
+		if err := os.WriteFile(path, []byte("UPDATES=manual\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		r := store.AuditResult{Name: "cp_updates", Category: "cpanel"}
+		for range 2 {
+			since := time.Now()
+			if res := applyHardeningSingle(r); res.Status != "applied" {
+				t.Fatalf("result = %+v", res)
+			}
+			wantUndoRecord(t, since, HardeningUndoRecord{Name: r.Name, Category: r.Category, Kind: "file", File: &fileUndoState{
+				Path: path, Previous: "UPDATES=manual\n", Applied: "UPDATES=daily\n",
+			}})
+		}
+	})
+}
+
+// An earlier record that cannot be read could hold the only way back to the
+// original state, so the fix applies without undo rather than recording
+// CSM's own earlier change in its place.
+func TestHardeningUndoUnreadableOlderRecord(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	path := withTempCPUpdateConf(t)
+	if err := os.WriteFile(path, []byte("UPDATES=manual\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeHardeningUndo(HardeningUndoRecord{Name: "cp_updates", Kind: "file", File: &fileUndoState{Path: path}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cp_updates.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := applyHardeningSingle(store.AuditResult{Name: "cp_updates", Category: "cpanel"})
+	if res.Status != "applied" || !strings.Contains(res.Message, "Undo is unavailable") {
+		t.Fatalf("result = %+v", res)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "UPDATES=daily\n" {
+		t.Fatalf("file = %q, %v", data, err)
+	}
+	// No new record, and the unreadable one is removed.
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("records left: %v, %v", entries, err)
+	}
+}
+
 func TestHardeningUndoNoRecordOnFailedApply(t *testing.T) {
 	cases := []struct {
 		name  string

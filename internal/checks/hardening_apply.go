@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -345,22 +346,122 @@ func skipped(r store.AuditResult, msg string) HardeningFixResult {
 	return HardeningFixResult{Name: r.Name, Title: r.Title, Status: "skipped", Message: msg}
 }
 
-// recordHardeningUndo stores what fix r just changed. When it cannot,
-// because of captureErr (reading the previous state failed) or the write,
+// undoPrior is the record an earlier apply of a fix left. It is read before
+// this apply changes anything, so every record the apply writes for the fix
+// builds on the same one.
+type undoPrior struct {
+	rec HardeningUndoRecord
+	ok  bool
+	err error
+}
+
+func readUndoPrior(name string) undoPrior {
+	rec, ok, err := readHardeningUndo(name)
+	return undoPrior{rec, ok, err}
+}
+
+// recordHardeningUndo stores what fix r just changed, on top of the record
+// an earlier apply left. When it cannot, because reading the previous state
+// failed (captureErr), the earlier record is unreadable, or the write fails,
 // it returns a note for the result instead: the change stands either way.
-func recordHardeningUndo(r store.AuditResult, rec HardeningUndoRecord, captureErr error) string {
-	err := captureErr
+func recordHardeningUndo(r store.AuditResult, rec HardeningUndoRecord, prior undoPrior, captureErr error) string {
+	err := cmp.Or(captureErr, prior.err)
 	if err == nil {
+		if prior.ok {
+			rec = keepOriginalState(rec, prior.rec)
+		}
 		rec.Name, rec.Category, rec.AppliedAt = r.Name, r.Category, time.Now().UTC()
 		if err = writeHardeningUndo(rec); err == nil {
 			return ""
 		}
 	}
-	// An older record would undo to the state before an earlier apply.
+	// Left in place, an older record could undo a setting changed since to
+	// its state before an earlier apply.
 	if derr := deleteHardeningUndo(r.Name); derr != nil {
 		err = fmt.Errorf("%w; removing the older record failed: %v", err, derr)
 	}
 	return " Undo is unavailable (" + err.Error() + ")."
+}
+
+// keepOriginalState folds older, the record of an earlier apply, into rec.
+// A setting that still holds what the earlier apply set keeps the state from
+// before that apply, so a retry or a second apply never records CSM's own
+// change as the state to restore. A setting changed by hand since keeps the
+// state found now.
+func keepOriginalState(rec, older HardeningUndoRecord) HardeningUndoRecord {
+	if older.Kind != rec.Kind {
+		return rec
+	}
+	switch {
+	case rec.SSH != nil && older.SSH != nil && strings.EqualFold(rec.SSH.Keyword, older.SSH.Keyword):
+		n, o := *rec.SSH, older.SSH
+		if n.HadValue && n.PrevValue == o.AppliedValue {
+			n.PrevValue, n.HadValue = o.PrevValue, o.HadValue
+			n.DisabledLines = append(slices.Clone(o.DisabledLines), n.DisabledLines...)
+		}
+		rec.SSH = &n
+	case rec.Sysctl != nil && older.Sysctl != nil && rec.Sysctl.Key == older.Sysctl.Key:
+		n, o := *rec.Sysctl, older.Sysctl
+		if n.PrevRuntime == o.AppliedValue {
+			n.PrevRuntime = o.PrevRuntime
+		}
+		stillApplied := !o.RuntimeOnly && len(n.PrevLines) > 0
+		for _, line := range n.PrevLines {
+			stillApplied = stillApplied && line == o.Key+" = "+o.AppliedValue
+		}
+		switch {
+		case n.RuntimeOnly:
+			// This apply did not write the drop-in, so the record keeps the
+			// earlier apply's change to it.
+			n.PrevLines, n.RuntimeOnly = o.PrevLines, o.RuntimeOnly
+		case stillApplied:
+			n.PrevLines = o.PrevLines
+		}
+		rec.Sysctl = &n
+	case rec.Tweak != nil && older.Tweak != nil && rec.Tweak.Key == older.Tweak.Key:
+		n, o := *rec.Tweak, older.Tweak
+		if n.HadValue && n.Previous == o.Applied {
+			n.Previous, n.HadValue = o.Previous, o.HadValue
+		}
+		rec.Tweak = &n
+	case rec.PHP != nil:
+		same := func(a, b phpUndoState) bool { return a.Path == b.Path && a.Key == b.Key }
+		php := make([]phpUndoState, 0, len(rec.PHP)+len(older.PHP))
+		for _, n := range rec.PHP {
+			i := slices.IndexFunc(older.PHP, func(o phpUndoState) bool { return same(o, n) })
+			if i >= 0 && n.HadKey && n.PrevLine == n.Key+" = "+older.PHP[i].Applied {
+				n.PrevLine, n.HadKey = older.PHP[i].PrevLine, older.PHP[i].HadKey
+			}
+			php = append(php, n)
+		}
+		// Drop-ins this apply did not write keep the earlier change.
+		for _, o := range older.PHP {
+			if !slices.ContainsFunc(rec.PHP, func(n phpUndoState) bool { return same(o, n) }) {
+				php = append(php, o)
+			}
+		}
+		rec.PHP = php
+	case rec.Mode != nil && older.Mode != nil:
+		n, o := *rec.Mode, older.Mode
+		if n.Path == o.Path && n.Mode == o.AppliedMode && n.UID == o.AppliedUID && n.GID == o.AppliedGID {
+			n.Mode, n.UID, n.GID = o.Mode, o.UID, o.GID
+		}
+		rec.Mode = &n
+	case rec.Compilers != nil && older.Compilers != nil:
+		n, o := *rec.Compilers, older.Compilers
+		if n.Method == "chmod" && o.Method == "chmod" && n.Path == o.Path &&
+			n.Mode == o.AppliedMode && n.UID == o.AppliedUID && n.GID == o.AppliedGID {
+			n.Mode, n.UID, n.GID = o.Mode, o.UID, o.GID
+		}
+		rec.Compilers = &n
+	case rec.File != nil && older.File != nil:
+		n, o := *rec.File, older.File
+		if n.Path == o.Path && n.Previous == o.Applied {
+			n.Previous = o.Previous
+		}
+		rec.File = &n
+	}
+	return rec
 }
 
 func hardeningRun(name string, args ...string) ([]byte, error) {
@@ -397,6 +498,7 @@ func firstLines(s string, n int) string {
 }
 
 func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
+	prior := readUndoPrior(r.Name)
 	if kv, ok := cpTweakFixes[r.Name]; ok {
 		prev, had, readErr := getWHMTweak(kv.key)
 		if err := setWHMTweak(kv.key, kv.value); err != nil {
@@ -404,14 +506,14 @@ func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 		}
 		undo := tweakUndoState{Key: kv.key, Previous: prev, HadValue: had, Applied: kv.value}
 		return applied(r, fmt.Sprintf("Tweak setting %s set to %s.", kv.key, kv.value)+
-			recordHardeningUndo(r, HardeningUndoRecord{Kind: "tweak", Tweak: &undo}, readErr))
+			recordHardeningUndo(r, HardeningUndoRecord{Kind: "tweak", Tweak: &undo}, prior, readErr))
 	}
 	if dir, ok := hardeningTmpDirs[r.Name]; ok {
 		undo, err := fixTmpDir(dir)
 		if err != nil {
 			return failed(r, err)
 		}
-		return applied(r, dir+" is now 1777 root:root."+recordHardeningUndo(r, HardeningUndoRecord{Kind: "mode", Mode: &undo}, nil))
+		return applied(r, dir+" is now 1777 root:root."+recordHardeningUndo(r, HardeningUndoRecord{Kind: "mode", Mode: &undo}, prior, nil))
 	}
 	switch r.Name {
 	case "os_shadow_permissions":
@@ -420,20 +522,20 @@ func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 			return failed(r, err)
 		}
 		return applied(r, fmt.Sprintf("%s is now %04o.", hardeningShadowPath, undo.AppliedMode)+
-			recordHardeningUndo(r, HardeningUndoRecord{Kind: "mode", Mode: &undo}, nil))
+			recordHardeningUndo(r, HardeningUndoRecord{Kind: "mode", Mode: &undo}, prior, nil))
 	case "cp_compilers":
 		msg, undo, err := restrictCompilers()
 		if err != nil {
 			return failed(r, err)
 		}
-		return applied(r, msg+recordHardeningUndo(r, HardeningUndoRecord{Kind: "compilers", Compilers: &undo}, nil))
+		return applied(r, msg+recordHardeningUndo(r, HardeningUndoRecord{Kind: "compilers", Compilers: &undo}, prior, nil))
 	case "cp_updates":
 		undo, err := setKeyValueFile(hardeningCPUpdateConf, "UPDATES", "daily")
 		if err != nil {
 			return failed(r, err)
 		}
 		return applied(r, "UPDATES=daily written to "+hardeningCPUpdateConf+"."+
-			recordHardeningUndo(r, HardeningUndoRecord{Kind: "file", File: &undo}, nil))
+			recordHardeningUndo(r, HardeningUndoRecord{Kind: "file", File: &undo}, prior, nil))
 	}
 	return skipped(r, "No automatic fix; apply it manually.")
 }
@@ -700,6 +802,7 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 	type change struct {
 		r       store.AuditResult
 		undo    sysctlUndoState
+		prior   undoPrior
 		readErr error
 		note    string
 	}
@@ -707,6 +810,7 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 	var accepted []keyValue
 	for _, r := range items {
 		kv := sysctlFixes[r.Name]
+		prior := readUndoPrior(r.Name)
 		prev, readErr := sysctlRuntime(kv.key)
 		if _, err := hardeningRun("sysctl", "-w", kv.key+"="+kv.value); err != nil {
 			out = append(out, failed(r, err))
@@ -715,8 +819,8 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 		undo := sysctlUndoState{Key: kv.key, PrevRuntime: prev, AppliedValue: kv.value, RuntimeOnly: true}
 		// A later command can outlive the worker. Keep the completed runtime
 		// change undoable even before the batch reaches persistence.
-		note := recordHardeningUndo(r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &undo}, readErr)
-		changes = append(changes, change{r, undo, readErr, note})
+		note := recordHardeningUndo(r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &undo}, prior, readErr)
+		changes = append(changes, change{r, undo, prior, readErr, note})
 		accepted = append(accepted, kv)
 	}
 	if len(accepted) == 0 {
@@ -730,7 +834,7 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 		} else {
 			c.undo.RuntimeOnly = false
 			c.undo.PrevLines = prevLines[i]
-			c.note = recordHardeningUndo(c.r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &c.undo}, c.readErr)
+			c.note = recordHardeningUndo(c.r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &c.undo}, c.prior, c.readErr)
 			res = applied(c.r, fmt.Sprintf("%s = %s set and saved to %s.", accepted[i].key, accepted[i].value, hardeningSysctlConfPath))
 		}
 		res.Message += c.note
@@ -789,8 +893,10 @@ func persistSysctl(kvs []keyValue) ([][]string, error) {
 // the new file, so a bad edit never reaches the running daemon.
 func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 	var directives []keyValue
+	var priors []undoPrior
 	for _, r := range items {
 		directives = append(directives, sshFixDirectives[r.Name])
+		priors = append(priors, readUndoPrior(r.Name))
 	}
 	fail := func(err error) []HardeningFixResult {
 		out := make([]HardeningFixResult, 0, len(items))
@@ -829,7 +935,7 @@ func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 
 	notes := make([]string, len(items))
 	for i, r := range items {
-		notes[i] = recordHardeningUndo(r, HardeningUndoRecord{Kind: "ssh", SSH: &undo[i]}, nil)
+		notes[i] = recordHardeningUndo(r, HardeningUndoRecord{Kind: "ssh", SSH: &undo[i]}, priors[i], nil)
 	}
 	msg := "Written to " + sshdConfigPath + " and sshd reloaded."
 	if err := reloadSSHD(); err != nil {
@@ -959,9 +1065,10 @@ func splitSSHDKeyword(line string) (string, string, bool) {
 // the drop-in.
 func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []HardeningFixResult {
 	type plan struct {
-		dirs  []string
-		keys  []string
-		items []store.AuditResult
+		dirs   []string
+		keys   []string
+		items  []store.AuditResult
+		priors []undoPrior
 	}
 	byScanDir := map[string]*plan{}
 	var plans []*plan
@@ -990,6 +1097,7 @@ func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []Hardening
 		}
 		p.keys = append(p.keys, key)
 		p.items = append(p.items, r)
+		p.priors = append(p.priors, readUndoPrior(r.Name))
 	}
 
 	var written []string
@@ -1010,7 +1118,7 @@ func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []Hardening
 				undo[i] = append(undo[i], prev[i])
 				// The next directory can fail or stall. Save the completed
 				// subset now, extending it after each successful write.
-				notes[i] = recordHardeningUndo(p.items[i], HardeningUndoRecord{Kind: "php", PHP: undo[i]}, nil)
+				notes[i] = recordHardeningUndo(p.items[i], HardeningUndoRecord{Kind: "php", PHP: undo[i]}, p.priors[i], nil)
 			}
 		}
 		for i, r := range p.items {
