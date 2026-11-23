@@ -170,9 +170,9 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 			if exeErr == nil || os.IsNotExist(exeErr) {
 				return nil
 			}
-			ids, err := procWorkerUIDs(string(data))
-			if err != nil {
-				return err
+			ids, idsErr := procWorkerUIDs(string(data))
+			if idsErr != nil {
+				return idsErr
 			}
 			for _, id := range ids {
 				add(id, "a running process whose executable cannot be inspected")
