@@ -52,6 +52,9 @@ func phpRuntimeUsers(root string) (map[uint32]string, error) {
 	if err := apacheRuntimeUsers(root, add); err != nil {
 		return out, err
 	}
+	if err := litespeedRuntimeUsers(root, add); err != nil {
+		return out, err
+	}
 	return out, nil
 }
 

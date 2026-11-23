@@ -220,3 +220,76 @@ func TestPHPRuntimeUsersDistributionAndPanelPaths(t *testing.T) {
 		})
 	}
 }
+
+// Site code can run as Apache's user through more than PHP and CGI: FastCGI,
+// WSGI, Perl, Python, Lua and LSAPI modules do it too unless something else
+// isolates them, which setup cannot see. Each one counts.
+func TestPHPRuntimeUsersApacheScriptModules(t *testing.T) {
+	for module, want := range map[string]string{
+		"fcgid_module":  "Apache's FastCGI module",
+		"wsgi_module":   "Apache's WSGI module",
+		"perl_module":   "Apache's Perl module",
+		"python_module": "Apache's Python module",
+		"lua_module":    "Apache's Lua module",
+		"lsapi_module":  "Apache's LSAPI module",
+	} {
+		t.Run(module, func(t *testing.T) {
+			root := t.TempDir()
+			writeRootFile(t, root, "etc/passwd", testPasswd)
+			if err := os.MkdirAll(filepath.Join(root, "proc"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeRootFile(t, root, "etc/apache2/mods-enabled/x.load", "LoadModule "+module+" /usr/lib/apache2/modules/x.so\n")
+			got, err := phpRuntimeUsers(root)
+			if err != nil || got[33] != want {
+				t.Fatalf("users = %v, %v; want Apache's user with %q", got, err, want)
+			}
+		})
+	}
+}
+
+// LiteSpeed runs PHP as its own user unless PHP suEXEC is on. Only an
+// explicit suEXEC setting proves isolation; an unreadable configuration
+// cannot prove anything.
+func TestPHPRuntimeUsersLiteSpeed(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  map[uint32]string
+	}{
+		{"enterprise suexec off", map[string]string{"usr/local/lsws/conf/httpd_config.xml": "<httpServerConfig>\n  <user>nobody</user>\n  <phpSuExec>0</phpSuExec>\n</httpServerConfig>\n"}, map[uint32]string{65534: "LiteSpeed's PHP handler"}},
+		{"enterprise suexec unset", map[string]string{"usr/local/lsws/conf/httpd_config.xml": "<httpServerConfig>\n  <user>nobody</user>\n</httpServerConfig>\n"}, map[uint32]string{65534: "LiteSpeed's PHP handler"}},
+		{"enterprise suexec on", map[string]string{"usr/local/lsws/conf/httpd_config.xml": "<httpServerConfig>\n  <user>nobody</user>\n  <phpSuExec>1</phpSuExec>\n</httpServerConfig>\n"}, map[uint32]string{}},
+		{"enterprise suexec in home only", map[string]string{"usr/local/lsws/conf/httpd_config.xml": "<httpServerConfig>\n  <phpSuExec>2</phpSuExec>\n</httpServerConfig>\n"}, map[uint32]string{}},
+		{"openlitespeed", map[string]string{"usr/local/lsws/conf/httpd_config.conf": "serverName x\nuser                     nobody\ngroup nogroup\n"}, map[uint32]string{65534: "LiteSpeed's PHP handler"}},
+		{"openlitespeed own user", map[string]string{"usr/local/lsws/conf/httpd_config.conf": "user www-data\n"}, map[uint32]string{33: "LiteSpeed's PHP handler"}},
+		{"enterprise own user", map[string]string{"usr/local/lsws/conf/httpd_config.xml": "<httpServerConfig>\n  <user>apache</user>\n</httpServerConfig>\n"}, map[uint32]string{48: "LiteSpeed's PHP handler"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeRootFile(t, root, "etc/passwd", testPasswd+"nobody:x:65534:65534::/:/sbin/nologin\n")
+			if err := os.MkdirAll(filepath.Join(root, "proc"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for rel, body := range tc.files {
+				writeRootFile(t, root, rel, body)
+			}
+			if got, err := phpRuntimeUsers(root); err != nil || !maps.Equal(got, tc.want) {
+				t.Fatalf("users = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+	t.Run("unreadable configuration", func(t *testing.T) {
+		root := t.TempDir()
+		writeRootFile(t, root, "etc/passwd", testPasswd)
+		if err := os.MkdirAll(filepath.Join(root, "proc"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, "usr/local/lsws/conf/httpd_config.xml"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := phpRuntimeUsers(root); err == nil {
+			t.Fatal("an unreadable LiteSpeed configuration was taken as isolation")
+		}
+	})
+}
