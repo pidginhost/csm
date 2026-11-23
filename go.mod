@@ -15,13 +15,13 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.20.3
 	github.com/mdlayher/netlink v1.11.2
-	github.com/oschwald/maxminddb-golang/v2 v2.9.0
+	github.com/oschwald/maxminddb-golang/v2 v2.9.1
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/tdewolff/parse/v2 v2.8.20
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.24.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.47.0
 	golang.org/x/text v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
