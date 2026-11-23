@@ -17,7 +17,10 @@ import (
 func mailFilterEvidence(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	var out []alert.Finding
 	for _, f := range findings {
-		if f.Check != "email_filter_exfil" || f.Mailbox == "" {
+		// The audit reports a forward that keeps a copy, with nothing else
+		// corroborating it, as a Warning for review: alone it is what owners
+		// set up themselves, so it is not evidence against the mailbox.
+		if f.Check != "email_filter_exfil" || f.Mailbox == "" || f.Severity < alert.Critical {
 			continue
 		}
 		dest := checks.MailFilterDestination(f)
