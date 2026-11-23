@@ -642,7 +642,9 @@ Source addresses are never blocked for this finding: they rotate per message and
 
 A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, each of which an honest owner also produces now and then. CSM keeps a ledger of these signs per mailbox. Each sign is reported once in the audit log, history and the daily summary, and is not mailed on its own.
 
-The signs cover logins from new countries, forged sender domains, bulk recipients, external redirects, and outbound reputation deferrals. Two new countries seen close together carry more weight. A redirect created soon after a foreign login also carries more weight.
+The signs cover logins from new countries, logins after failed logins, forged sender domains, bulk recipients, external redirects, and outbound reputation deferrals. Two new countries seen close together carry more weight. A redirect created soon after a foreign login also carries more weight.
+
+A mail login after failed logins on the same mailbox keeps its Critical `mail_account_compromised` finding and is also a sign. An owner who mistypes a password produces the same pattern, so it weighs like a new country and never suspends a mailbox alone. A login to a mailbox the address has login standing on is a High finding and adds no sign.
 
 A login from a new country is an `email_suspicious_geo` finding, at most one per mailbox a day. A mailbox needs a few logins of history first, and a country in `suppressions.trusted_countries` is never new. Webmail, IMAP and POP3 logins share the same history and use the login time in the log. A login read from a mail log file is checked against that history but never added to it or counted as evidence, and its alerts keep a separate daily limit. Sessions opened by the panel or a reseller do not locate the mailbox owner. An authenticated send from a country the mailbox never logged in from is the same sign, as is a webmail send after a webmail login from a new country. A send reports `email_suspicious_geo` the first time the ledger records its country.
 

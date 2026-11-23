@@ -39,6 +39,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- A login after failed mail logins no longer suspends a mailbox or holds an account's mail by itself; a mailbox also needs another sign, such as a new country.
 - Slow failed mail logins from an address that regularly logs in to that mailbox now alert without blocking it, and a later login no longer suspends the mailbox.
 - Findings for a removed file written back now say how it came back and that restoring it from the Quarantine page stops CSM removing it again.
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.

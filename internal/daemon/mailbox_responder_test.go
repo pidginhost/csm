@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -55,9 +56,8 @@ func TestRespondToCompromise_RecordsMailboxSuspension(t *testing.T) {
 	stubAccountHold(t, true)
 	captureActionRecords(t)
 
-	stopped, findings := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
-	if !stopped || len(findings) != 0 {
-		t.Fatalf("stopped = %v, findings = %+v; want stopped and no findings for sending evidence", stopped, findings)
+	if stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now())); !stopped {
+		t.Fatal("sending evidence did not stop the mailbox")
 	}
 	if len(*calls) != 2 {
 		t.Fatalf("uapi calls = %v, want login and outgoing", *calls)
@@ -89,11 +89,11 @@ func TestRespondToCompromise_SkipsActiveRecord(t *testing.T) {
 	captureActionRecords(t)
 
 	respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
-	stopped, findings := respondToCompromise(eximAutoHoldConfig(), mailboxCompromise{
+	stopped := respondToCompromise(eximAutoHoldConfig(), mailboxCompromise{
 		Subject: "Real@Victim.example", Check: "mail_account_compromised", Reason: "again", Evidence: evidenceLogin, At: time.Now(),
 	})
-	if !stopped || len(findings) != 0 {
-		t.Fatalf("stopped = %v, findings = %+v; an already suspended mailbox is stopped without a new finding", stopped, findings)
+	if !stopped {
+		t.Fatal("an already suspended mailbox was not reported stopped")
 	}
 	if got := uapiFns(*calls); !reflect.DeepEqual(got, []string{"list_pops_with_disk", "suspend_login", "suspend_outgoing", "list_pops_with_disk"}) {
 		t.Fatalf("uapi calls = %v; a mailbox cPanel still reports suspended must not be suspended again", got)
@@ -131,7 +131,7 @@ func TestRespondToCompromise_StaleActiveRecordResuspends(t *testing.T) {
 			captureActionRecords(t)
 
 			respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now().Add(-time.Hour)))
-			stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
+			stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
 			if !stopped {
 				t.Fatal("the mailbox must be suspended again")
 			}
@@ -160,13 +160,13 @@ func TestRespondToCompromise_ReleasedNeedsNewerEvidence(t *testing.T) {
 	}
 	*calls = nil
 
-	if stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", releasedAt.Add(-time.Minute))); stopped {
+	if stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", releasedAt.Add(-time.Minute))); stopped {
 		t.Fatal("evidence older than the release must not suspend again")
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("old evidence called uapi: %v", *calls)
 	}
-	if stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", releasedAt.Add(time.Minute))); !stopped {
+	if stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", releasedAt.Add(time.Minute))); !stopped {
 		t.Fatal("evidence after the release must suspend again")
 	}
 	if len(*calls) != 2 {
@@ -189,8 +189,8 @@ func TestRespondToCompromise_DryRunStoresNothing(t *testing.T) {
 	cfg.AutoResponse.DryRun = &dryRun
 
 	for _, subject := range []string{"real@victim.example", "victim.example"} {
-		if stopped, findings := respondToCompromise(cfg, sendingCompromise(subject, time.Now())); stopped || len(findings) != 0 {
-			t.Fatalf("%s: dry-run stopped = %v, findings = %+v", subject, stopped, findings)
+		if stopped := respondToCompromise(cfg, sendingCompromise(subject, time.Now())); stopped {
+			t.Fatalf("%s: dry-run stopped the subject", subject)
 		}
 	}
 	if len(*calls) != 0 || len(*holds) != 0 {
@@ -217,7 +217,7 @@ func TestRespondToCompromise_SendingFallsBackToAccountHold(t *testing.T) {
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 
-	if stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now())); !stopped {
+	if stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now())); !stopped {
 		t.Fatal("the account hold fallback stopped sending")
 	}
 	if !reflect.DeepEqual(*holds, []string{"real@victim.example"}) {
@@ -236,7 +236,7 @@ func TestRespondToCompromise_DomainSubjectHoldsOwner(t *testing.T) {
 	holds := stubAccountHold(t, true)
 	captureActionRecords(t)
 
-	if stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("victim.example", time.Now())); !stopped {
+	if stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("victim.example", time.Now())); !stopped {
 		t.Fatal("domain subject must hold the owning account")
 	}
 	if len(*calls) != 0 || !reflect.DeepEqual(*holds, []string{"victim.example"}) {
@@ -335,40 +335,31 @@ func stolenLogin(subject string, severity alert.Severity) alert.Finding {
 	}
 }
 
-func onlyResponseFinding(t *testing.T, findings []alert.Finding) alert.Finding {
-	t.Helper()
-	if len(findings) != 1 {
-		t.Fatalf("findings = %+v, want exactly one", findings)
-	}
-	f := findings[0]
-	if f.Check != "email_mailbox_response" || f.Severity != alert.Critical {
-		t.Fatalf("finding = %+v, want Critical email_mailbox_response", f)
-	}
-	return f
-}
-
-func TestStolenLoginResponses_SuspendsCriticalMailbox(t *testing.T) {
-	withMailboxStore(t)
-	withMailBackendHost(t, true)
-	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
+func TestStolenLoginResponses_CrackNeedsAnotherSign(t *testing.T) {
+	db, calls := evidenceCase(t)
 	holds := stubAccountHold(t, true)
-	captureActionRecords(t)
+	cfg := eximAutoHoldConfig()
 
-	f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
+	if got := stolenLoginResponses(cfg, []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}); len(got) != 0 || len(*calls) != 0 {
+		t.Fatalf("a crack alone acted: findings %+v, uapi %v", got, *calls)
+	}
+	if e, err := db.GetMailboxEvidence("real@victim.example"); err != nil || len(e.Signals) != 1 || e.Signals[0].Kind != signalCrack || mailboxEvidenceScore(e) != 2 {
+		t.Fatalf("evidence = %+v (err %v), want one crack sign worth 2", e, err)
+	}
+	f := onlyIncident(t, observeMailboxSignal(cfg, "real@victim.example", newCountry("RU", time.Now())))
 	if !reflect.DeepEqual(*calls, [][]string{uapiArgs("suspend_login"), uapiArgs("suspend_outgoing")}) {
 		t.Fatalf("uapi calls = %v", *calls)
 	}
 	if len(*holds) != 0 {
 		t.Fatalf("holds = %v, want none", *holds)
 	}
-	if f.Message != "Mailbox real@victim.example suspended after its password was cracked" || f.Mailbox != "real@victim.example" || f.Domain != "victim.example" {
+	if f.Message != "Suspended mailbox real@victim.example: compromise evidence scored 4" || f.TenantID != "cpuser" {
 		t.Fatalf("finding = %+v", f)
 	}
 }
 
 func TestStolenLoginResponses_IgnoresHighAndOtherChecks(t *testing.T) {
-	withMailboxStore(t)
+	db := withMailboxStore(t)
 	withMailBackendHost(t, true)
 	withUserdomains(t, "victim.example: cpuser\n")
 	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
@@ -381,9 +372,14 @@ func TestStolenLoginResponses_IgnoresHighAndOtherChecks(t *testing.T) {
 	if len(got) != 0 || len(*calls) != 0 || len(*holds) != 0 || len(*users) != 0 {
 		t.Fatalf("findings %+v, uapi %v, holds %v %v; want nothing", got, *calls, *holds, *users)
 	}
+	if e, err := db.GetMailboxEvidence("real@victim.example"); err != nil || len(e.Signals) != 0 {
+		t.Fatalf("evidence = %+v (err %v); a High login or another check is no crack", e, err)
+	}
 }
 
-func TestStolenLoginResponses_BareCPanelUserHoldsAccount(t *testing.T) {
+// The ledger holds mailbox addresses. A crack of the cPanel account's own
+// login alerts and holds nothing.
+func TestStolenLoginResponses_BareCPanelUserOnlyAlerts(t *testing.T) {
 	db := withMailboxStore(t)
 	withMailBackendHost(t, true)
 	withCPanelUsers(t, "cpuser")
@@ -391,33 +387,30 @@ func TestStolenLoginResponses_BareCPanelUserHoldsAccount(t *testing.T) {
 	users := stubCPanelHold(t, true)
 	captureActionRecords(t)
 
-	f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("cpuser", alert.Critical)}))
-	if !reflect.DeepEqual(*users, []string{"cpuser"}) || len(*calls) != 0 {
-		t.Fatalf("holds %v, uapi %v; want the account hold only", *users, *calls)
+	if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("cpuser", alert.Critical)}); len(got) != 0 {
+		t.Fatalf("findings = %+v, want none", got)
 	}
-	if f.Message != "Outgoing mail held for cPanel account cpuser after its own password was cracked" ||
-		!strings.Contains(f.Details, "Change the cPanel password") || f.TenantID != "cpuser" {
-		t.Fatalf("finding = %+v", f)
+	if len(*users) != 0 || len(*calls) != 0 {
+		t.Fatalf("holds %v, uapi %v; a bare login restricts nothing", *users, *calls)
 	}
-	if row := onlySuspension(t, db); row.Kind != store.SuspensionKindAccount || row.Account != "cpuser" || row.Check != "mail_account_compromised" {
-		t.Fatalf("row = %+v", row)
+	if rows, err := db.ListMailboxSuspensions(); err != nil || len(rows) != 0 {
+		t.Fatalf("rows = %+v (err %v), want none", rows, err)
 	}
 }
 
 func TestStolenLoginResponses_NoAccountFallbackOnLogin(t *testing.T) {
-	db := withMailboxStore(t)
-	withMailBackendHost(t, true)
-	withUserdomains(t, "victim.example: cpuser\n")
+	db, _ := evidenceCase(t)
 	stubMailboxActions(t, func([]string) ([]byte, error) { return uapiFailure("denied") })
 	holds := stubAccountHold(t, true)
 	users := stubCPanelHold(t, true)
-	captureActionRecords(t)
+	cfg := eximAutoHoldConfig()
 
-	f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
+	observeMailboxSignal(cfg, "real@victim.example", newCountry("RU", time.Now()))
+	f := onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
 	if len(*holds) != 0 || len(*users) != 0 {
 		t.Fatalf("login evidence fell back to an account hold: %v %v", *holds, *users)
 	}
-	if !strings.HasPrefix(f.Message, "Could not suspend real@victim.example after its password was cracked: ") || !strings.Contains(f.Message, "denied") {
+	if !strings.HasPrefix(f.Message, "Could not suspend mailbox real@victim.example") || !strings.Contains(f.Details, "denied") {
 		t.Fatalf("finding = %+v", f)
 	}
 	if rows, err := db.ListMailboxSuspensions(); err != nil || len(rows) != 0 {
@@ -432,9 +425,8 @@ func TestStolenLoginResponses_UnknownBareUser(t *testing.T) {
 	users := stubCPanelHold(t, true)
 
 	for _, subject := range []string{"cpuser", "../../etc/passwd"} {
-		f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin(subject, alert.Critical)}))
-		if !strings.HasPrefix(f.Message, "Could not suspend ") {
-			t.Fatalf("%s: finding = %+v", subject, f)
+		if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin(subject, alert.Critical)}); len(got) != 0 {
+			t.Fatalf("%s: findings = %+v, want none", subject, got)
 		}
 	}
 	if len(*users) != 0 {
@@ -442,35 +434,35 @@ func TestStolenLoginResponses_UnknownBareUser(t *testing.T) {
 	}
 }
 
-func TestStolenLoginResponses_DisabledOrDryRunReturnsNothing(t *testing.T) {
-	withMailboxStore(t)
-	withMailBackendHost(t, true)
-	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
-	captureActionRecords(t)
+func TestStolenLoginResponses_DisabledOrDryRunSuspendsNothing(t *testing.T) {
 	dryRun := true
 	dry := &config.Config{}
 	dry.AutoResponse.Enabled = true
 	dry.AutoResponse.DryRun = &dryRun
-
-	for _, cfg := range []*config.Config{nil, {}, dry} {
-		if got := stolenLoginResponses(cfg, []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}); len(got) != 0 {
-			t.Fatalf("gated-off response returned %+v", got)
-		}
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("gated-off response ran uapi %v", *calls)
+	for i, cfg := range []*config.Config{nil, {}, dry} {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			_, calls := evidenceCase(t)
+			observeMailboxSignal(cfg, "real@victim.example", newCountry("RU", time.Now()))
+			f := onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
+			if !strings.HasPrefix(f.Message, "Would suspend mailbox real@victim.example") {
+				t.Fatalf("gated-off incident = %+v", f)
+			}
+			if len(*calls) != 0 {
+				t.Fatalf("gated-off response ran uapi %v", *calls)
+			}
+		})
 	}
 }
 
 func TestStolenLoginResponses_NoMailBackendOnHost(t *testing.T) {
-	withMailboxStore(t)
+	_, calls := evidenceCase(t)
 	withMailBackendHost(t, false)
-	withUserdomains(t, "victim.example: cpuser\n")
-	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
+	cfg := eximAutoHoldConfig()
 
-	if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}); len(got) != 0 || len(*calls) != 0 {
-		t.Fatalf("host without a mail backend acted: findings %+v, uapi %v", got, *calls)
+	observeMailboxSignal(cfg, "real@victim.example", newCountry("RU", time.Now()))
+	f := onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
+	if !strings.HasPrefix(f.Message, "Would suspend mailbox real@victim.example") || len(*calls) != 0 {
+		t.Fatalf("host without a mail backend acted: finding %+v, uapi %v", f, *calls)
 	}
 }
 
@@ -720,36 +712,32 @@ func TestListMailboxSuspensions_StatusErrorKeepsRows(t *testing.T) {
 // Login evidence never reaches the domain-wide hold: cPanel's alternative
 // login separators name a mailbox, and any other dotted name is refused.
 func TestStolenLoginResponses_LoginNamesNeverHoldADomain(t *testing.T) {
-	db := withMailboxStore(t)
-	withMailBackendHost(t, true)
-	withUserdomains(t, "victim.example: cpuser\n")
-	withCPanelUsers(t, "cpuser")
-	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
-	holds := stubAccountHold(t, true)
-	users := stubCPanelHold(t, true)
-	captureActionRecords(t)
-
 	for _, name := range []string{"real+victim.example", "real%victim.example"} {
-		*calls = nil
-		f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin(name, alert.Critical)}))
-		if !reflect.DeepEqual(*calls, [][]string{uapiArgs("suspend_login"), uapiArgs("suspend_outgoing")}) {
-			t.Fatalf("%s: uapi calls = %v, want the mailbox real@victim.example suspended", name, *calls)
-		}
-		if f.Message != "Mailbox real@victim.example suspended after its password was cracked" {
-			t.Fatalf("%s: finding = %+v", name, f)
-		}
-		if err := db.MarkMailboxSuspensionReleased(store.MailboxSuspensionID("cpanel", "real@victim.example"), time.Now(), "admin"); err != nil {
-			t.Fatal(err)
-		}
+		t.Run(name, func(t *testing.T) {
+			_, calls := evidenceCase(t)
+			cfg := eximAutoHoldConfig()
+			observeMailboxSignal(cfg, "real@victim.example", newCountry("RU", time.Now()))
+			f := onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin(name, alert.Critical)}))
+			if !reflect.DeepEqual(*calls, [][]string{uapiArgs("suspend_login"), uapiArgs("suspend_outgoing")}) {
+				t.Fatalf("uapi calls = %v, want the mailbox real@victim.example suspended", *calls)
+			}
+			if !strings.HasPrefix(f.Message, "Suspended mailbox real@victim.example") {
+				t.Fatalf("finding = %+v", f)
+			}
+		})
 	}
-	*calls = nil
-	f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("victim.example", alert.Critical)}))
-	if !strings.HasPrefix(f.Message, "Could not suspend victim.example") {
-		t.Fatalf("dotted login name: finding = %+v", f)
-	}
-	if len(*holds) != 0 || len(*users) != 0 || len(*calls) != 0 {
-		t.Fatalf("dotted login name reached a hold: holds %v %v, uapi %v", *holds, *users, *calls)
-	}
+	t.Run("dotted login name", func(t *testing.T) {
+		_, calls := evidenceCase(t)
+		withCPanelUsers(t, "cpuser")
+		holds := stubAccountHold(t, true)
+		users := stubCPanelHold(t, true)
+		if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("victim.example", alert.Critical)}); len(got) != 0 {
+			t.Fatalf("dotted login name: findings = %+v", got)
+		}
+		if len(*holds) != 0 || len(*users) != 0 || len(*calls) != 0 {
+			t.Fatalf("dotted login name reached a hold: holds %v %v, uapi %v", *holds, *users, *calls)
+		}
+	})
 }
 
 // The startup scan replays a day of exim_mainlog. A send logged before a
@@ -826,23 +814,22 @@ func TestListMailboxSuspensions_MissingHoldFileMeansReleased(t *testing.T) {
 // Protection comes first: when cPanel cannot report a mailbox's state, a
 // cracked login still suspends it, and CSM records what it applied.
 func TestStolenLoginResponses_UnreadableStatusStillSuspends(t *testing.T) {
-	db := withMailboxStore(t)
-	withMailBackendHost(t, true)
-	withUserdomains(t, "victim.example: cpuser\n")
+	db, _ := evidenceCase(t)
 	calls := stubUAPI(t, func(args []string) ([]byte, error) {
 		if uapiFn(args) == "list_pops_with_disk" {
 			return uapiFailure("timeout")
 		}
 		return uapiOK()
 	})
-	captureActionRecords(t)
+	cfg := eximAutoHoldConfig()
 
-	f := onlyResponseFinding(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
+	observeMailboxSignal(cfg, "real@victim.example", newCountry("RU", time.Now()))
+	f := onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
 	got := uapiFns(*calls)
 	if !slices.Contains(got, "suspend_login") || !slices.Contains(got, "suspend_outgoing") {
 		t.Fatalf("uapi calls = %v; an unreadable status left a cracked mailbox open", got)
 	}
-	if f.Message != "Mailbox real@victim.example suspended after its password was cracked" {
+	if !strings.HasPrefix(f.Message, "Suspended mailbox real@victim.example") {
 		t.Fatalf("finding = %+v", f)
 	}
 	if row := onlySuspension(t, db); !reflect.DeepEqual(row.Applied, []string{store.AppliedSuspendLogin, store.AppliedSuspendOutgoing}) {

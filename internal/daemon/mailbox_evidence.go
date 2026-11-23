@@ -29,6 +29,9 @@ const (
 	signalBulkRecipients = "bulk_recipients"
 	signalRedirect       = "redirect"
 	signalReputation     = "reputation"
+	// A login after failed logins: an owner mistyping a password twice
+	// looks the same, so it needs another sign to suspend.
+	signalCrack = "crack"
 )
 
 const (
@@ -80,7 +83,7 @@ func mailboxEvidenceScore(e store.MailboxEvidence) int {
 		}
 		seen[s.Kind] = true
 		switch s.Kind {
-		case signalNewCountry, signalRedirect, signalBulkRecipients:
+		case signalNewCountry, signalRedirect, signalBulkRecipients, signalCrack:
 			score += 2
 		case signalForgedSender:
 			score += 3
@@ -155,7 +158,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (
 		if cfg != nil && isHighVolumeSender(mailbox, cfg.EmailProtection.HighVolumeSenders) {
 			return nil
 		}
-	case signalNewCountry, signalRedirect, signalReputation:
+	case signalNewCountry, signalRedirect, signalReputation, signalCrack:
 	default:
 		return nil
 	}
@@ -413,6 +416,7 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 	if sending {
 		evidence = evidenceSending
 	}
+	var applied store.MailboxSuspension
 	c := mailboxCompromise{Subject: mailbox, Ref: r.ref, Check: "email_mailbox_compromise", Reason: reason, Evidence: evidence, At: latest}
 	var verb, todo string
 	switch {
@@ -428,6 +432,7 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		if r.err == nil {
 			result = applyMailResponse(db, r.id, c)
 		}
+		applied = result.record
 		switch {
 		case result.changed:
 			verb = "Suspended"
@@ -462,7 +467,12 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		details.WriteString(" The redirect above is left in place as evidence; remove it after review.")
 	}
 
-	_, domain, _ := splitMailAccount(mailbox)
+	_, domain, tenant := splitMailAccount(mailbox)
+	if applied.Account != "" {
+		tenant = applied.Account
+	} else if tenant == "" && domain != "" && activeMailBackend.name() != "stalwart" {
+		tenant = lookupCPanelUser(domain)
+	}
 	f := []alert.Finding{{
 		Severity:  alert.Critical,
 		Check:     "email_mailbox_compromise",
@@ -470,6 +480,7 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		Details:   details.String(),
 		Mailbox:   mailbox,
 		Domain:    domain,
+		TenantID:  tenant,
 		Timestamp: time.Now(),
 	}}
 	stampMailAccountOwner(f, mailbox)

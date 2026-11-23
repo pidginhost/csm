@@ -98,7 +98,7 @@ func uapiResultError(out []byte) error {
 // outgoing mail. at is when the abuse was logged. It returns true when
 // sending from the mailbox was stopped.
 func maybeSuspendMailbox(cfg *config.Config, mailbox, check, reason string, at time.Time) bool {
-	stopped, _ := respondToCompromise(cfg, mailboxCompromise{
+	stopped := respondToCompromise(cfg, mailboxCompromise{
 		Subject: mailbox, Check: check, Reason: reason, Evidence: evidenceSending, At: at,
 	})
 	return stopped

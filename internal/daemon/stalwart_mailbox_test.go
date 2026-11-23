@@ -382,9 +382,8 @@ func TestStalwartSuspendDisablesSignIn(t *testing.T) {
 	f := &fakeStalwart{accounts: []stalwartapi.Account{{ID: "c", Name: "user", Email: "user@example.com"}}}
 	stalwartHost(t, func() *config.Config { return cfg }, f)
 
-	stopped, findings := respondToCompromise(cfg, sendingCompromise("user@example.com", time.Now()))
-	if !stopped || len(findings) != 0 {
-		t.Fatalf("stopped=%v findings=%+v, want stopped and no finding for sending evidence", stopped, findings)
+	if stopped := respondToCompromise(cfg, sendingCompromise("user@example.com", time.Now())); !stopped {
+		t.Fatal("sending evidence did not stop the account")
 	}
 	row := onlySuspension(t, db)
 	if row.Backend != "stalwart" || row.Ref != "c" || row.Kind != store.SuspensionKindMailbox ||
@@ -414,9 +413,10 @@ func TestStalwartSuspendThroughAlias(t *testing.T) {
 	}
 	stalwartHost(t, func() *config.Config { return cfg }, f)
 
-	r := onlyResponseFinding(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin("robert@example.net", alert.Critical)}))
-	if !strings.Contains(r.Message, "suspended") {
-		t.Fatalf("finding = %+v, want a suspension", r)
+	observeMailboxSignal(cfg, "robert@example.net", newCountry("RU", time.Now()))
+	got := stolenLoginResponses(cfg, []alert.Finding{stolenLogin("robert@example.net", alert.Critical)})
+	if len(got) != 1 || got[0].Check != "email_mailbox_compromise" || !strings.HasPrefix(got[0].Message, "Suspended mailbox robert@example.net") {
+		t.Fatalf("findings = %+v, want one suspension incident", got)
 	}
 	row := onlySuspension(t, db)
 	if row.Ref != "c" || row.Subject != "robert@example.net" {
@@ -434,9 +434,8 @@ func TestStalwartSuspendAlreadyDisabledRecordsNothing(t *testing.T) {
 	f := &fakeStalwart{accounts: []stalwartapi.Account{{ID: "c", Email: "user@example.com", SignInDisabled: true}}}
 	stalwartHost(t, func() *config.Config { return cfg }, f)
 
-	stopped, findings := respondToCompromise(cfg, sendingCompromise("user@example.com", time.Now()))
-	if !stopped || len(findings) != 0 {
-		t.Fatalf("stopped=%v findings=%+v, want stopped with nothing to report", stopped, findings)
+	if stopped := respondToCompromise(cfg, sendingCompromise("user@example.com", time.Now())); !stopped {
+		t.Fatal("an account with sign-ins already disabled was not reported stopped")
 	}
 	if rows, err := db.ListMailboxSuspensions(); err != nil || len(rows) != 0 {
 		t.Fatalf("rows=%+v err=%v, want no record", rows, err)
@@ -472,15 +471,27 @@ func TestStalwartSuspendRefusesAdminAndBareNames(t *testing.T) {
 			}
 			stalwartHost(t, func() *config.Config { return cfg }, f)
 
-			r := onlyResponseFinding(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin(tc.subject, alert.Critical)}))
-			if !strings.Contains(r.Message, tc.cause) || !strings.Contains(r.Message, "change") || !strings.Contains(r.Message, "in Stalwart") {
-				t.Fatalf("message = %q, want the cause %q and a password change in Stalwart", r.Message, tc.cause)
-			}
-			if !strings.Contains(r.Details, "Change its password") {
-				t.Fatalf("details = %q, want a password change", r.Details)
-			}
-			if r.TenantID == "cpuser" {
-				t.Fatal("a Stalwart mailbox was attributed to a cPanel account")
+			if !strings.Contains(tc.subject, "@") {
+				// The ledger holds addresses: a bare name only alerts.
+				if got := stolenLoginResponses(cfg, []alert.Finding{stolenLogin(tc.subject, alert.Critical)}); len(got) != 0 {
+					t.Fatalf("findings = %+v, want none for a bare name", got)
+				}
+			} else {
+				observeMailboxSignal(cfg, tc.subject, newCountry("RU", time.Now()))
+				got := stolenLoginResponses(cfg, []alert.Finding{stolenLogin(tc.subject, alert.Critical)})
+				if len(got) != 1 || got[0].Check != "email_mailbox_compromise" {
+					t.Fatalf("findings = %+v, want one incident", got)
+				}
+				r := got[0]
+				if !strings.HasPrefix(r.Message, "Could not suspend mailbox "+tc.subject) {
+					t.Fatalf("message = %q, want a failed suspension", r.Message)
+				}
+				if !strings.Contains(r.Details, tc.cause) || !strings.Contains(r.Details, "in Stalwart") || !strings.Contains(r.Details, "Change the mailbox password") {
+					t.Fatalf("details = %q, want the cause %q and a password change in Stalwart", r.Details, tc.cause)
+				}
+				if r.TenantID == "cpuser" {
+					t.Fatal("a Stalwart mailbox was attributed to a cPanel account")
+				}
 			}
 			if rows, err := db.ListMailboxSuspensions(); err != nil || len(rows) != 0 {
 				t.Fatalf("rows=%+v err=%v, want no record", rows, err)
@@ -727,7 +738,7 @@ func TestStalwartReassignedAddressDoesNotHideCompromise(t *testing.T) {
 	}}
 	stalwartHost(t, func() *config.Config { return cfg }, f)
 	putRows(t, db, stalwartRow("user@example.org", "old"))
-	stopped, _ := respondToCompromise(cfg, sendingCompromise("user@example.org", time.Now()))
+	stopped := respondToCompromise(cfg, sendingCompromise("user@example.org", time.Now()))
 	if !stopped || !reflect.DeepEqual(f.disabled, []string{"new"}) {
 		t.Fatal("old account suspension hid the new compromise")
 	}
@@ -750,7 +761,7 @@ func TestStalwartAliasesShareReleaseAndSuspension(t *testing.T) {
 				row.ReleasedAt = &at
 			}
 			putRows(t, db, row)
-			stopped, _ := respondToCompromise(cfg, sendingCompromise("alias@example.org", at.Add(-time.Second)))
+			stopped := respondToCompromise(cfg, sendingCompromise("alias@example.org", at.Add(-time.Second)))
 			if stopped == released || len(f.disabled) != 0 {
 				t.Fatal("alias did not share the recorded account state")
 			}
