@@ -40,8 +40,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
-- Automatic mailbox suspensions pause in a hosting account after several in one hour, with one Critical alert listing the mailboxes left open.
-- A login after failed mail logins no longer suspends a mailbox or holds an account's mail by itself; a mailbox also needs another sign, such as a new country.
+- Automatic mailbox suspensions on login evidence pause in a hosting account after several in one hour, with one Critical alert; sending abuse always suspends.
+- A mail login after a few failed logins no longer suspends the mailbox or holds the account by itself; one after a brute-force run of failures still does.
 - Slow failed mail logins from an address that regularly logs in to that mailbox now alert without blocking it, and a later login no longer suspends the mailbox.
 - Findings for a removed file written back now say how it came back and that restoring it from the Quarantine page stops CSM removing it again.
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.

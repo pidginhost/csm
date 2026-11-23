@@ -160,6 +160,9 @@ type Finding struct {
 	// Internal-only: customer history reads it, the public Finding JSON
 	// does not carry it.
 	LoginAccount string `json:"-"`
+	// BruteForced marks a mail login that followed at least the brute-force
+	// threshold of failures on its mailbox: guessed, not mistyped.
+	BruteForced bool `json:"-"`
 	// SprayTargets carries the per-account targets for aggregate auth
 	// findings. It is internal-only so API payloads keep the public Finding
 	// contract while the incident correlator can count distinct targets.

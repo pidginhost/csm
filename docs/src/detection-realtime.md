@@ -644,7 +644,7 @@ A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, ea
 
 The signs cover logins from new countries, logins after failed logins, forged sender domains, bulk recipients, external redirects, and outbound reputation deferrals. Two new countries seen close together carry more weight. A redirect created soon after a foreign login also carries more weight.
 
-A mail login after failed logins on the same mailbox keeps its Critical `mail_account_compromised` finding and is also a sign. An owner who mistypes a password produces the same pattern, so it weighs like a new country and never suspends a mailbox alone. A login to a mailbox the address has login standing on is a High finding and adds no sign.
+A mail login after failed logins on the same mailbox keeps its Critical `mail_account_compromised` finding and is also a sign. An owner who mistypes a password produces the same pattern, so after a few failures it weighs like a new country and never suspends a mailbox alone. After at least `mail_bruteforce_threshold` failures on the mailbox, counted over every spelling of the address, the login was guessed: that sign suspends the mailbox on its own. A login to a mailbox the address has login standing on is a High finding and adds no sign.
 
 This sign uses the logged login time, including when a backlog is read. Expired logins and logins from before a mailbox's release do not become new evidence. The resulting incident keeps the owning account resolved for the response, even if the general account lookup is unavailable or stale.
 

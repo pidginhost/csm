@@ -836,3 +836,71 @@ func TestStolenLoginResponses_UnreadableStatusStillSuspends(t *testing.T) {
 		t.Fatalf("row = %+v", row)
 	}
 }
+
+// A cPanel account login guessed after a brute-force run unlocks cPanel and
+// every mailbox: CSM holds the account's outgoing mail and says what it did.
+func TestStolenLoginResponses_BruteForcedCPanelUserHoldsAccount(t *testing.T) {
+	db := withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withCPanelUsers(t, "cpuser")
+	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
+	users := stubCPanelHold(t, true)
+	captureActionRecords(t)
+
+	f := stolenLogin("cpuser", alert.Critical)
+	f.BruteForced = true
+	got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{f})
+	if len(got) != 1 || got[0].Check != "email_mailbox_response" || got[0].Severity != alert.Critical ||
+		got[0].Message != "Outgoing mail held for cPanel account cpuser after its own password was guessed" ||
+		!strings.Contains(got[0].Details, "Change the cPanel password") || got[0].TenantID != "cpuser" {
+		t.Fatalf("findings = %+v", got)
+	}
+	if !reflect.DeepEqual(*users, []string{"cpuser"}) || len(*calls) != 0 {
+		t.Fatalf("holds %v, uapi %v; want the account hold only", *users, *calls)
+	}
+	if row := onlySuspension(t, db); row.Kind != store.SuspensionKindAccount || row.Account != "cpuser" || row.Check != "mail_account_compromised" {
+		t.Fatalf("row = %+v", row)
+	}
+}
+
+func TestStolenLoginResponses_BruteForcedBareLoginNeverHoldsUnknown(t *testing.T) {
+	withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withUserdomains(t, "victim.example: cpuser\n")
+	withCPanelUsers(t, "someone")
+	holds := stubAccountHold(t, true)
+	users := stubCPanelHold(t, true)
+	captureActionRecords(t)
+	for _, name := range []string{"cpuser", "victim.example", "../../etc/passwd"} {
+		f := stolenLogin(name, alert.Critical)
+		f.BruteForced = true
+		got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{f})
+		if len(got) != 1 || !strings.HasPrefix(got[0].Message, "Could not hold outgoing mail for cPanel account "+name) {
+			t.Fatalf("%s: findings = %+v", name, got)
+		}
+	}
+	if len(*holds) != 0 || len(*users) != 0 {
+		t.Fatalf("an unknown login reached a hold: %v %v", *holds, *users)
+	}
+}
+
+func TestStolenLoginResponses_BruteForcedBareLoginGated(t *testing.T) {
+	withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withCPanelUsers(t, "cpuser")
+	users := stubCPanelHold(t, true)
+	dryRun := true
+	dry := &config.Config{}
+	dry.AutoResponse.Enabled = true
+	dry.AutoResponse.DryRun = &dryRun
+	for _, cfg := range []*config.Config{nil, {}, dry} {
+		f := stolenLogin("cpuser", alert.Critical)
+		f.BruteForced = true
+		if got := stolenLoginResponses(cfg, []alert.Finding{f}); len(got) != 0 {
+			t.Fatalf("gated-off response returned %+v", got)
+		}
+	}
+	if len(*users) != 0 {
+		t.Fatalf("gated-off response held %v", *users)
+	}
+}

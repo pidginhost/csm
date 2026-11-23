@@ -201,3 +201,21 @@ func TestCrackIncidentPreservesResponseOwner(t *testing.T) {
 		}
 	}
 }
+
+// A crack that followed at least the brute-force threshold of failures is
+// guessing, not a typo: it suspends the mailbox on its own.
+func TestBruteForceCrackSuspendsAlone(t *testing.T) {
+	db, calls := evidenceCase(t)
+	f := stolenLogin("real@victim.example", alert.Critical)
+	f.BruteForced = true
+	inc := onlyIncident(t, stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{f}))
+	if !strings.HasPrefix(inc.Message, "Suspended mailbox real@victim.example") || !strings.Contains(inc.Details, "brute-force") {
+		t.Fatalf("incident = %+v", inc)
+	}
+	if !reflect.DeepEqual(*calls, [][]string{uapiArgs("suspend_login"), uapiArgs("suspend_outgoing")}) {
+		t.Fatalf("uapi calls = %v", *calls)
+	}
+	if row := onlySuspension(t, db); row.Check != "email_mailbox_compromise" {
+		t.Fatalf("row = %+v", row)
+	}
+}

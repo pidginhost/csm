@@ -1061,15 +1061,20 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 // standingFailureOverCap counts one mailbox across spellings of the same
 // address. Alias entries may not have been pruned yet. Caller holds t.mu.
 func (t *mailAuthTracker) standingFailureOverCap(ip, account string, now time.Time) bool {
-	limit, cutoff := standingFailureCap*t.perIPThreshold, now.Add(-t.window)
+	if t.accountFailures(ip, account, now.Add(-t.window)) > standingFailureCap*t.perIPThreshold {
+		return true
+	}
+	return t.standing.OverDailyCap(ip, account, now)
+}
+
+// accountFailures counts failed logins on account from every spelling of ip
+// at or after cutoff.
+func (t *mailAuthTracker) accountFailures(ip, account string, cutoff time.Time) int {
 	n := 0
 	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
 		n += countTimesAtOrAfter(e.failedAccounts[account], cutoff)
-		if n > limit {
-			return true
-		}
 	}
-	return t.standing.OverDailyCap(ip, account, now)
+	return n
 }
 
 // episodeFailedOn reports whether ip's current failures, under any spelling
@@ -1419,6 +1424,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		Attribution: admission.AttributionPeer,
 		Domain:      compDomain,
 		Mailbox:     loginAccount,
+		BruteForced: t.accountFailures(ip, account, now.Add(-t.window)) >= t.perIPThreshold,
 	}}
 }
 

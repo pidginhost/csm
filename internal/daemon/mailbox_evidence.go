@@ -32,6 +32,9 @@ const (
 	// A login after failed logins: an owner mistyping a password twice
 	// looks the same, so it needs another sign to suspend.
 	signalCrack = "crack"
+	// A login after at least the brute-force threshold of failures is
+	// guessing, not a typo: it suspends on its own.
+	signalBruteCrack = "brute_crack"
 )
 
 const (
@@ -85,6 +88,8 @@ func mailboxEvidenceScore(e store.MailboxEvidence) int {
 		switch s.Kind {
 		case signalNewCountry, signalRedirect, signalBulkRecipients, signalCrack:
 			score += 2
+		case signalBruteCrack:
+			score += mailboxCompromiseScore
 		case signalForgedSender:
 			score += 3
 		case signalReputation:
@@ -158,7 +163,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (
 		if cfg != nil && isHighVolumeSender(mailbox, cfg.EmailProtection.HighVolumeSenders) {
 			return nil
 		}
-	case signalNewCountry, signalRedirect, signalReputation, signalCrack:
+	case signalNewCountry, signalRedirect, signalReputation, signalCrack, signalBruteCrack:
 	default:
 		return nil
 	}

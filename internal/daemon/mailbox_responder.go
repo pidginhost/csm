@@ -89,6 +89,12 @@ func lockMailResponse(key string) func() {
 // an active suspension, and after a release acts again only on evidence
 // dated after it. It reports whether sending from the subject is stopped.
 func respondToCompromise(cfg *config.Config, c mailboxCompromise) bool {
+	return compromiseResponse(cfg, c).stopped
+}
+
+// compromiseResponse is respondToCompromise with the mail server's answer. A
+// zero result means auto-response, dry-run or the setting kept it from acting.
+func compromiseResponse(cfg *config.Config, c mailboxCompromise) mailResponseResult {
 	// The detection withdraws the mailbox's login standing whatever the
 	// response mode does on the mail server: whoever cracked it may have
 	// earned standing on it.
@@ -97,17 +103,17 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) bool {
 	stamp := now.Format("2006-01-02 15:04:05")
 	if cfg == nil || !cfg.AutoResponse.Enabled {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend %s (auto_response disabled)\n", stamp, c.Subject)
-		return false
+		return mailResponseResult{}
 	}
 	if cfg.AutoResponseDryRunEnabled() {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend %s (dry-run)\n", stamp, c.Subject)
 		recordMailDryRun(c)
-		return false
+		return mailResponseResult{}
 	}
 	// An account's outgoing hold for a domain is not a mailbox suspension.
 	if strings.Contains(c.Subject, "@") && !cfg.SuspendMailboxesEnabled() {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend %s (auto_response.suspend_mailboxes off)\n", stamp, c.Subject)
-		return false
+		return mailResponseResult{}
 	}
 
 	id, ref, err := mailResponseTarget(c.Subject)
@@ -122,7 +128,7 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) bool {
 		defer unlock()
 		result = applyMailResponse(store.Global(), id, c)
 	}
-	return result.stopped
+	return result
 }
 
 func recordMailDryRun(c mailboxCompromise) {
@@ -186,7 +192,9 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		}
 	}
 
-	if db != nil && strings.Contains(c.Subject, "@") {
+	// Sending abuse is active harm and is never held back; the cap bounds
+	// suspensions on login evidence, where false alarms come from.
+	if db != nil && strings.Contains(c.Subject, "@") && c.Evidence == evidenceLogin {
 		mailboxCapMu.Lock()
 		defer mailboxCapMu.Unlock()
 		// Count at lock acquisition: status reads and other suspensions
@@ -284,12 +292,44 @@ func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.
 		}
 		// Whoever cracked the mailbox may have earned standing on it.
 		mailboxResponseStanding.Load().Revoke(subject)
-		out = append(out, observeMailboxSignal(cfg, subject, mailboxSignal{
-			kind: signalCrack, key: f.SourceIP, at: f.Timestamp,
-			detail: "login from " + f.SourceIP + " after failed logins",
-		})...)
+		if !strings.Contains(subject, "@") {
+			// The cPanel account's own login opens cPanel and every mailbox.
+			// Guessed after a brute-force run, its outgoing mail is held; a
+			// few failures may be the owner mistyping, so those only alert.
+			if f.BruteForced && activeMailBackend.name() == "cpanel" && hostHasMailBackend() {
+				out = append(out, holdCrackedAccount(cfg, subject, f)...)
+			}
+			continue
+		}
+		s := mailboxSignal{kind: signalCrack, key: f.SourceIP, at: f.Timestamp,
+			detail: "login from " + f.SourceIP + " after failed logins"}
+		if f.BruteForced {
+			s.kind, s.detail = signalBruteCrack, "login from "+f.SourceIP+" after brute-force failures"
+		}
+		out = append(out, observeMailboxSignal(cfg, subject, s)...)
 	}
 	return out
+}
+
+// holdCrackedAccount holds the outgoing mail of a cPanel account whose own
+// login was guessed, and tells staff what was done and what is left to them.
+func holdCrackedAccount(cfg *config.Config, subject string, f alert.Finding) []alert.Finding {
+	res := compromiseResponse(cfg, mailboxCompromise{Subject: subject, Check: f.Check, Reason: f.Message, Evidence: evidenceLogin, At: f.Timestamp})
+	if !res.changed && res.err == nil {
+		return nil
+	}
+	out := alert.Finding{Severity: alert.Critical, Check: "email_mailbox_response", TenantID: subject, Timestamp: time.Now()}
+	if res.record.Account != "" {
+		out.TenantID = res.record.Account
+	}
+	if res.err != nil {
+		out.Message = fmt.Sprintf("Could not hold outgoing mail for cPanel account %s after its own password was guessed: %v", subject, res.err)
+		out.Details = "Protection could not be confirmed. Change the cPanel password now."
+	} else {
+		out.Message = fmt.Sprintf("Outgoing mail held for cPanel account %s after its own password was guessed", out.TenantID)
+		out.Details = "That password unlocks every mailbox and the cPanel login. Change the cPanel password, then release the hold on the Email page, Suspended tab."
+	}
+	return []alert.Finding{out}
 }
 
 // dryRunMailOp names the operation a dry run would have performed.

@@ -22,6 +22,10 @@ func cappedRow(subject string, ago time.Duration) store.MailboxSuspension {
 	return r
 }
 
+func loginCompromise(subject string, at time.Time) mailboxCompromise {
+	return mailboxCompromise{Subject: subject, Check: "email_mailbox_compromise", Reason: "test", Evidence: evidenceLogin, At: at}
+}
+
 func withCleanCapNotices(t *testing.T) {
 	t.Helper()
 	resetMailboxCapNotices()
@@ -37,7 +41,7 @@ func TestMailboxSuspensionCapPerAccount(t *testing.T) {
 	putRows(t, db, cappedRow("a@victim.example", 10*time.Minute), cappedRow("b@victim.example", 20*time.Minute), cappedRow("c@victim.example", 59*time.Minute))
 	cfg := eximAutoHoldConfig()
 
-	if respondToCompromise(cfg, sendingCompromise("d@victim.example", time.Now())) {
+	if respondToCompromise(cfg, loginCompromise("d@victim.example", time.Now())) {
 		t.Fatal("a fourth suspension in an hour went through")
 	}
 	if len(*calls) != 0 {
@@ -49,7 +53,7 @@ func TestMailboxSuspensionCapPerAccount(t *testing.T) {
 		!strings.Contains(notices[0].Details, "a@victim.example") {
 		t.Fatalf("notices = %+v, want one Critical naming the account and its mailboxes", notices)
 	}
-	respondToCompromise(cfg, sendingCompromise("e@victim.example", time.Now()))
+	respondToCompromise(cfg, loginCompromise("e@victim.example", time.Now()))
 	if again := drainMailboxCapNotices(); len(again) != 0 {
 		t.Fatalf("a second notice in the hour: %+v", again)
 	}
@@ -62,7 +66,7 @@ func TestMailboxSuspensionCapWindow(t *testing.T) {
 	db, calls := evidenceCase(t)
 	withCleanCapNotices(t)
 	putRows(t, db, cappedRow("a@victim.example", 61*time.Minute), cappedRow("b@victim.example", 62*time.Minute), cappedRow("c@victim.example", 63*time.Minute))
-	if !respondToCompromise(eximAutoHoldConfig(), sendingCompromise("d@victim.example", time.Now())) || len(*calls) == 0 {
+	if !respondToCompromise(eximAutoHoldConfig(), loginCompromise("d@victim.example", time.Now())) || len(*calls) == 0 {
 		t.Fatalf("suspensions older than an hour held back a new one: uapi %v", *calls)
 	}
 }
@@ -72,7 +76,7 @@ func TestMailboxSuspensionCapOtherAccount(t *testing.T) {
 	withCleanCapNotices(t)
 	withUserdomains(t, "victim.example: cpuser\nother.example: otheruser\n")
 	putRows(t, db, cappedRow("a@victim.example", time.Minute), cappedRow("b@victim.example", time.Minute), cappedRow("c@victim.example", time.Minute))
-	if !respondToCompromise(eximAutoHoldConfig(), sendingCompromise("x@other.example", time.Now())) || len(*calls) == 0 {
+	if !respondToCompromise(eximAutoHoldConfig(), loginCompromise("x@other.example", time.Now())) || len(*calls) == 0 {
 		t.Fatalf("another account's allowance was used up: uapi %v", *calls)
 	}
 	if n := drainMailboxCapNotices(); len(n) != 0 {
@@ -126,7 +130,7 @@ func TestMailboxSuspensionCapConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if respondToCompromise(eximAutoHoldConfig(), sendingCompromise(mb, time.Now())) {
+			if respondToCompromise(eximAutoHoldConfig(), loginCompromise(mb, time.Now())) {
 				stopped.Add(1)
 			}
 		}()
@@ -146,7 +150,7 @@ func TestMailboxSuspensionCapResuspendsSameMailbox(t *testing.T) {
 	at := time.Now().Add(-20 * time.Minute)
 	released.ReleasedAt = &at
 	putRows(t, db, released, cappedRow("b@victim.example", time.Minute), cappedRow("c@victim.example", time.Minute))
-	if !respondToCompromise(eximAutoHoldConfig(), sendingCompromise("a@victim.example", time.Now())) || len(*calls) == 0 {
+	if !respondToCompromise(eximAutoHoldConfig(), loginCompromise("a@victim.example", time.Now())) || len(*calls) == 0 {
 		t.Fatalf("re-suspending a counted mailbox was refused: uapi %v", *calls)
 	}
 }
@@ -161,7 +165,7 @@ func TestMailboxSuspensionCapIgnoresAccountHolds(t *testing.T) {
 		hold.SuspendedAt = time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
 		putRows(t, db, hold)
 	}
-	if !respondToCompromise(eximAutoHoldConfig(), sendingCompromise("d@victim.example", time.Now())) || len(*calls) == 0 {
+	if !respondToCompromise(eximAutoHoldConfig(), loginCompromise("d@victim.example", time.Now())) || len(*calls) == 0 {
 		t.Fatalf("account holds used up the mailbox allowance: uapi %v", *calls)
 	}
 }
@@ -192,7 +196,7 @@ func TestMailboxSuspensionCapCountsRowsDuringStatusRead(t *testing.T) {
 		}
 	}}
 	t.Cleanup(func() { activeMailBackend = previous })
-	if respondToCompromise(eximAutoHoldConfig(), sendingCompromise(old.Subject, time.Now())) {
+	if respondToCompromise(eximAutoHoldConfig(), loginCompromise(old.Subject, time.Now())) {
 		t.Fatal("suspensions recorded during the status read did not consume the allowance")
 	}
 	if len(*calls) != 0 {
@@ -212,7 +216,7 @@ func TestMailboxSuspensionCapResuspendsAboveAllowance(t *testing.T) {
 	at := time.Now().Add(-20 * time.Minute)
 	released.ReleasedAt = &at
 	putRows(t, db, released, cappedRow("b@victim.example", time.Minute), cappedRow("c@victim.example", time.Minute), cappedRow("d@victim.example", time.Minute))
-	if !respondToCompromise(eximAutoHoldConfig(), sendingCompromise(released.Subject, time.Now())) || len(*calls) != 2 {
+	if !respondToCompromise(eximAutoHoldConfig(), loginCompromise(released.Subject, time.Now())) || len(*calls) != 2 {
 		t.Fatalf("re-suspending a counted mailbox was refused: uapi %v", *calls)
 	}
 }
@@ -237,7 +241,7 @@ func TestMailboxSuspensionCapStalwartIdentity(t *testing.T) {
 				row.ReleasedAt = &released
 				putRows(t, db, row)
 			}
-			stopped := respondToCompromise(cfg, sendingCompromise(subject, time.Now()))
+			stopped := respondToCompromise(cfg, loginCompromise(subject, time.Now()))
 			if stopped == reassigned {
 				t.Fatalf("stopped = %v: an alias must reuse its slot, a reassigned address must not", stopped)
 			}
@@ -284,7 +288,7 @@ func TestMailboxSuspensionCapReleasedRowsStillCount(t *testing.T) {
 		row.ReleasedAt = &released
 		putRows(t, db, row)
 	}
-	if respondToCompromise(eximAutoHoldConfig(), sendingCompromise("d@victim.example", time.Now())) || len(*calls) != 0 {
+	if respondToCompromise(eximAutoHoldConfig(), loginCompromise("d@victim.example", time.Now())) || len(*calls) != 0 {
 		t.Fatalf("released suspensions lost their hourly slots: calls=%v", *calls)
 	}
 	// Even with the mailbox allowance exhausted, a domain hold must apply.
@@ -301,7 +305,7 @@ func TestMailboxSuspensionCapUnreadableStore(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !respondToCompromise(eximAutoHoldConfig(), sendingCompromise("d@victim.example", time.Now())) || len(*calls) != 2 {
+	if !respondToCompromise(eximAutoHoldConfig(), loginCompromise("d@victim.example", time.Now())) || len(*calls) != 2 {
 		t.Fatalf("an unreadable store imposed a cap: calls=%v", *calls)
 	}
 	if notices := drainMailboxCapNotices(); len(notices) != 0 {
@@ -314,7 +318,7 @@ func TestMailboxSuspensionCapNoticeAggregation(t *testing.T) {
 	withCleanCapNotices(t)
 	putRows(t, db, cappedRow("a@victim.example", time.Minute), cappedRow("b@victim.example", time.Minute), cappedRow("c@victim.example", time.Minute))
 	for _, mailbox := range []string{"d@victim.example", "e@victim.example"} {
-		if respondToCompromise(eximAutoHoldConfig(), sendingCompromise(mailbox, time.Now())) {
+		if respondToCompromise(eximAutoHoldConfig(), loginCompromise(mailbox, time.Now())) {
 			t.Fatalf("%s was suspended past the cap", mailbox)
 		}
 	}
@@ -356,12 +360,12 @@ func TestMailboxSuspensionCapKeepsHistoryAcrossAccountHold(t *testing.T) {
 	store.SetGlobal(reopened)
 	t.Cleanup(func() { _ = reopened.Close() })
 	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
-	if respondToCompromise(cfg, sendingCompromise("d@victim.example", time.Now())) || len(*calls) != 0 {
+	if respondToCompromise(cfg, loginCompromise("d@victim.example", time.Now())) || len(*calls) != 0 {
 		t.Fatalf("account hold erased a recent mailbox suspension: calls=%v", *calls)
 	}
 	// The hold must not extend the earlier mailbox suspension's hour.
 	mailboxCapMu.Lock()
-	_, capped := capMailboxSuspension(reopened, store.MailboxSuspensionID("cpanel", "d@victim.example"), sendingCompromise("d@victim.example", time.Now()), time.Now().Add(31*time.Minute))
+	_, capped := capMailboxSuspension(reopened, store.MailboxSuspensionID("cpanel", "d@victim.example"), loginCompromise("d@victim.example", time.Now()), time.Now().Add(31*time.Minute))
 	mailboxCapMu.Unlock()
 	if capped {
 		t.Fatal("account hold renewed the expired mailbox suspension's slot")
@@ -375,7 +379,7 @@ func TestMailboxSuspensionCapCountsMixedRestrictions(t *testing.T) {
 	row.Kind = store.SuspensionKindAccount
 	row.Applied = []string{store.AppliedSuspendLogin, store.AppliedHoldOutgoing}
 	putRows(t, db, row, cappedRow("b@victim.example", time.Minute), cappedRow("c@victim.example", time.Minute))
-	if respondToCompromise(eximAutoHoldConfig(), sendingCompromise("d@victim.example", time.Now())) || len(*calls) != 0 {
+	if respondToCompromise(eximAutoHoldConfig(), loginCompromise("d@victim.example", time.Now())) || len(*calls) != 0 {
 		t.Fatalf("a mailbox with an account hold did not consume its slot: calls=%v", *calls)
 	}
 }
@@ -395,7 +399,7 @@ func TestMailboxSuspensionCapDoesNotRenewUncertainRestrictions(t *testing.T) {
 		t.Fatal("account hold did not apply")
 	}
 	calls := stubMailboxActions(t, func([]string) ([]byte, error) { return uapiOK() })
-	if !respondToCompromise(cfg, sendingCompromise("d@victim.example", time.Now())) || len(*calls) != 2 {
+	if !respondToCompromise(cfg, loginCompromise("d@victim.example", time.Now())) || len(*calls) != 2 {
 		t.Fatalf("old uncertain mailbox restrictions renewed the allowance usage: calls=%v", *calls)
 	}
 }
@@ -415,10 +419,24 @@ func TestMailboxSuspensionCapKeepsAliasDomainHistory(t *testing.T) {
 		row.ReleasedAt = &released
 		putRows(t, db, row)
 	}
-	if !respondToCompromise(cfg, sendingCompromise("alias@other.example", time.Now())) {
+	if !respondToCompromise(cfg, loginCompromise("alias@other.example", time.Now())) {
 		t.Fatal("another domain's unused allowance refused the alias")
 	}
-	if respondToCompromise(cfg, sendingCompromise("d@victim.example", time.Now())) || len(backend.disabled) != 1 {
+	if respondToCompromise(cfg, loginCompromise("d@victim.example", time.Now())) || len(backend.disabled) != 1 {
 		t.Fatalf("alias erased the old domain's allowance: disabled=%v", backend.disabled)
+	}
+}
+
+// Sending abuse is active harm: the hourly cap holds back only suspensions
+// on login evidence, so a mailbox caught sending is always suspended.
+func TestMailboxSuspensionCapSparesSendingAbuse(t *testing.T) {
+	db, calls := evidenceCase(t)
+	withCleanCapNotices(t)
+	putRows(t, db, cappedRow("a@victim.example", time.Minute), cappedRow("b@victim.example", time.Minute), cappedRow("c@victim.example", time.Minute))
+	if !respondToCompromise(eximAutoHoldConfig(), sendingCompromise("d@victim.example", time.Now())) || len(*calls) == 0 {
+		t.Fatalf("sending abuse past the cap was not suspended: uapi %v", *calls)
+	}
+	if n := drainMailboxCapNotices(); len(n) != 0 {
+		t.Fatalf("notices = %+v, want none for sending abuse", n)
 	}
 }
