@@ -61,6 +61,7 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			FirewallStateSetAside:         "/var/lib/csm/firewall/state.json.unreadable-20260512T100000Z",
 			FirewallLedgerError:           "fixture ledger damage",
 			FirewallLocalPortLocks:        []int{8080},
+			FirewallLocalPortLockUIDs:     map[int][]uint32{8080: {0, 33}},
 			FirewallRollbackPending:       true,
 			FirewallRollbackSecondsRemain: 120,
 			FirewallConfirmation:          &health.FirewallConfirmation{Deadline: now.Add(time.Minute), Error: "fixture confirmation"},
