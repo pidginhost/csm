@@ -1,8 +1,8 @@
 package checks
 
 import (
+	"container/list"
 	"fmt"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +19,10 @@ const DetachedWebProcessRespawnCheck = "detached_web_process_respawn"
 // stopped for one owner, and how often it escalates the same owner.
 const detachedRespawnWindow = 24 * time.Hour
 
+// Limit tracking, never termination. Live owners are not evicted: churn must
+// not reset their daily escalation suppression.
+const maxDetachedRespawnOwners = 4096
+
 // detachedRespawnMemory counts detached shells CSM stopped, per owner. It
 // only adds findings: the kill never reads it, so a respawner cannot use it
 // to switch the kill off.
@@ -26,11 +30,13 @@ type detachedRespawnMemory struct {
 	mu     sync.Mutex
 	now    func() time.Time
 	owners map[string]*detachedRespawnOwner
+	order  list.List
 }
 
 type detachedRespawnOwner struct {
-	stops     []time.Time
+	lastStop  time.Time
 	escalated time.Time
+	position  *list.Element
 }
 
 func newDetachedRespawnMemory(now func() time.Time) *detachedRespawnMemory {
@@ -64,20 +70,28 @@ func (m *detachedRespawnMemory) noteStop(f alert.Finding, uid string) (alert.Fin
 	m.mu.Lock()
 	now := m.now()
 	cutoff := now.Add(-detachedRespawnWindow)
-	for key, o := range m.owners {
-		o.stops = slices.DeleteFunc(o.stops, func(at time.Time) bool { return !at.After(cutoff) })
-		if len(o.stops) == 0 && o.escalated.Before(cutoff) {
-			delete(m.owners, key)
+	// Last-stop order lets expiry visit each retired owner only once.
+	for front := m.order.Front(); front != nil; front = m.order.Front() {
+		key := front.Value.(string)
+		if m.owners[key].lastStop.After(cutoff) {
+			break
 		}
+		delete(m.owners, key)
+		m.order.Remove(front)
 	}
 	o := m.owners[owner]
 	if o == nil {
-		o = &detachedRespawnOwner{}
+		if len(m.owners) == maxDetachedRespawnOwners {
+			m.mu.Unlock()
+			return alert.Finding{}, false
+		}
+		o = &detachedRespawnOwner{position: m.order.PushBack(owner)}
 		m.owners[owner] = o
 	}
-	o.stops = append(o.stops, now)
-	stops := len(o.stops)
-	if stops < 2 || o.escalated.After(cutoff) {
+	repeat := !o.lastStop.IsZero() && o.lastStop.After(cutoff)
+	o.lastStop = now
+	m.order.MoveToBack(o.position)
+	if !repeat || o.escalated.After(cutoff) {
 		m.mu.Unlock()
 		return alert.Finding{}, false
 	}
@@ -87,7 +101,7 @@ func (m *detachedRespawnMemory) noteStop(f alert.Finding, uid string) (alert.Fin
 	return alert.Finding{
 		Severity: alert.Critical,
 		Check:    DetachedWebProcessRespawnCheck,
-		Message:  fmt.Sprintf("Shell left running by web requests keeps coming back for %s: stopped %d times in 24 hours", owner, stops),
+		Message:  fmt.Sprintf("Shell left running by web requests keeps coming back for %s: stopped at least 2 times in 24 hours", owner),
 		Details: "CSM stopped a shell a web request left running, and another one appeared. Something keeps starting it, most likely a PHP file that requests still run; the PHP handler socket below names the site.\n" +
 			respawnScan(f.TenantID) + "\nLatest occurrence:\n" + f.Details,
 		TenantID:  f.TenantID,

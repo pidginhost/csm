@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,6 +70,7 @@ type scanJobRequest struct {
 	work       *scanJobWork
 	id         string
 	opts       checks.AccountScanOptions
+	automatic  bool               // use automatic file-response authority instead of manual remediation
 	quarantine bool               // when true, annotateQuarantine runs on each finding
 	cancelCtx  context.Context    // per-job cancellable context
 	cancelFn   context.CancelFunc // allows Cancel() to stop the runner
@@ -195,9 +197,13 @@ func (m *ScanJobManager) reconcileInterruptedJobs() error {
 
 // Enqueue creates a new queued job record and pushes it into the work channel.
 // Returns the job ID. Returns an error when the queue is full.
-// A quarantine flag is recorded on the job record for use by a later phase;
-// no live auto-response is wired in Phase 1.
+// Manual callers grant remediation with quarantine; automatic submissions
+// use enqueue so their authority can be checked against live policy.
 func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOptions, quarantine bool) (string, error) {
+	return m.enqueue(scope, target, opts, quarantine, false)
+}
+
+func (m *ScanJobManager) enqueue(scope, target string, opts checks.AccountScanOptions, quarantine, automatic bool) (string, error) {
 	admission := m.health.admission.Begin(time.Now())
 	completed := false
 	defer func() {
@@ -225,6 +231,7 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 		"respect_ignores":  opts.RespectIgnores,
 		"max_file_bytes":   opts.MaxFileBytes,
 		"quarantine":       quarantine,
+		"automatic":        automatic,
 	}
 
 	rec := store.ScanJobRecord{
@@ -251,6 +258,7 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 		id:         id,
 		opts:       opts,
 		quarantine: quarantine,
+		automatic:  automatic,
 		remediated: make(map[string]scanJobRemediation),
 		cancelCtx:  jobCtx,
 		cancelFn:   jobCancel,
@@ -668,10 +676,9 @@ func (m *ScanJobManager) setTerminal(req scanJobRequest, jobState, errMsg string
 	_ = db.PutScanJob(rec)
 }
 
-// annotateQuarantine runs the full-scan file remediation on f when the job's
-// quarantine flag is set, and stamps the finding's RemediationStatus /
-// RemediationDetail fields with the outcome. When the flag is false
-// (report-only) f is returned unchanged so existing consumers see no JSON diff.
+// annotateQuarantine stamps the finding with the file-response outcome.
+// Manual report-only jobs leave f unchanged. Automatic jobs use live policy
+// instead of the quarantine setting captured when they entered the queue.
 //
 // Eligible standalone malware files are quarantined, while eligible WordPress
 // core, plugin and theme files are cleaned in place. Ineligible findings such
@@ -679,7 +686,7 @@ func (m *ScanJobManager) setTerminal(req scanJobRequest, jobState, errMsg string
 // This method never calls alert.Dispatch, state.AppendHistory, or
 // StoreLatestScanFindings; remediation is not an alert.
 func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding) alert.Finding {
-	if !req.quarantine {
+	if !req.quarantine && !req.automatic {
 		return f
 	}
 	// A cancelled job keeps its partial findings but stops acting on them:
@@ -692,6 +699,9 @@ func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding)
 		f.RemediationStatus = prior.status
 		f.RemediationDetail = prior.detail
 		return f
+	}
+	if req.automatic {
+		return m.annotateAutomaticQuarantine(req, f)
 	}
 	result, eligible := m.quarantineFile(f)
 	if !eligible {
@@ -714,6 +724,35 @@ func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding)
 		req.work.fail()
 		f.RemediationStatus = "failed"
 		f.RemediationDetail = result.Error
+	}
+	return f
+}
+
+// A respawn scan has no operator grant for manual remediation. Use the same
+// responder as scheduled detection, including live policy and safety state.
+func (m *ScanJobManager) annotateAutomaticQuarantine(req scanJobRequest, f alert.Finding) alert.Finding {
+	cfg := config.Active()
+	if cfg == nil {
+		cfg = m.cfg
+	}
+	findings := []alert.Finding{f}
+	actions := checks.AutoQuarantineFiles(cfg, findings)
+	f = findings[0]
+	f.RemediationStatus = "left_for_review"
+	var details []string
+	for _, action := range actions {
+		details = append(details, action.Message+"\n"+action.Details)
+		switch action.RemediationStatus {
+		case "quarantined", "cleaned", "failed":
+			f.RemediationStatus = action.RemediationStatus
+		}
+	}
+	f.RemediationDetail = strings.Join(details, "\n")
+	switch f.RemediationStatus {
+	case "quarantined", "cleaned":
+		req.remediated[f.FilePath] = scanJobRemediation{status: f.RemediationStatus, detail: f.RemediationDetail}
+	case "failed":
+		req.work.fail()
 	}
 	return f
 }
@@ -751,5 +790,5 @@ func (d *Daemon) startScanJobManager() (*ScanJobManager, error) {
 func (d *Daemon) requestAccountScan(account string) (string, error) {
 	cfg := d.currentCfg()
 	quarantine := cfg.AutoResponse.Enabled && cfg.AutoResponse.QuarantineFiles && !cfg.ObserveMode()
-	return d.scanJobs.Enqueue("account", account, checks.DefaultAccountScanOptions(cfg), quarantine)
+	return d.scanJobs.enqueue("account", account, checks.DefaultAccountScanOptions(cfg), quarantine, true)
 }

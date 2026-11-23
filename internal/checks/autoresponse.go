@@ -69,6 +69,11 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 	}
 
 	var actions []alert.Finding
+	type stoppedShell struct {
+		finding alert.Finding
+		uid     string
+	}
+	var stoppedShells []stoppedShell
 	// Sibling chains and independent checks can name the same process.
 	killed := make(map[int]bool)
 
@@ -113,9 +118,7 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 				}
 			}
 			if f.Check == DetachedWebProcessCheck && stoppedUID != "" {
-				if respawn, ok := detachedRespawns.noteStop(f, stoppedUID); ok {
-					actions = append(actions, respawn)
-				}
+				stoppedShells = append(stoppedShells, stoppedShell{f, stoppedUID})
 			}
 			continue
 		}
@@ -139,6 +142,13 @@ func AutoKillProcesses(ctx context.Context, cfg *config.Config, findings []alert
 		}
 	}
 
+	// Finish every eligible kill before touching escalation state or the scan
+	// queue, whose database admission can wait on disk I/O.
+	for _, stopped := range stoppedShells {
+		if respawn, ok := detachedRespawns.noteStop(stopped.finding, stopped.uid); ok {
+			actions = append(actions, respawn)
+		}
+	}
 	return actions
 }
 
@@ -273,7 +283,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 				if restored && filepath.Base(path) == ".htaccess" {
 					result := cleanHtaccessFileIdentified(path, info)
 					if result.Success {
-						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path), Details: result.Description, Timestamp: time.Now()})
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", RemediationStatus: "cleaned", Message: fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path), Details: result.Description, Timestamp: time.Now()})
 					}
 					if result.Error != "" && !result.Refused {
 						return errors.New(result.Error)
@@ -289,7 +299,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 						if result.Refused {
 							outcome = "refused"
 						}
-						actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
+						actions = append(actions, alert.Finding{Severity: alert.Warning, Check: "auto_response", RemediationStatus: outcome, Message: fmt.Sprintf("AUTO-CLEAN %s for %s; manual review required", outcome, path), Details: result.Error, Timestamp: time.Now()})
 						// Safety refusals consume capacity without charging a failure.
 						if result.Refused {
 							return nil
@@ -297,7 +307,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 						return errors.New(result.Error)
 					}
 					if result.Cleaned {
-						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
+						actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", RemediationStatus: "cleaned", Message: fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path), Details: fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")), Timestamp: time.Now()})
 					}
 					return nil
 				}
@@ -327,7 +337,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			if warning != "" {
 				details += "\nWarning: " + warning
 			}
-			actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", Message: fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path), Timestamp: time.Now(), Details: details})
+			actions = append(actions, alert.Finding{Severity: alert.Critical, Check: "auto_response", RemediationStatus: "quarantined", Message: fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path), Timestamp: time.Now(), Details: details})
 			return nil
 		})
 		if paused != nil {
