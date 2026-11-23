@@ -29,6 +29,9 @@ const (
 	signalBulkRecipients = "bulk_recipients"
 	signalRedirect       = "redirect"
 	signalReputation     = "reputation"
+	// A login after failed logins: an owner mistyping a password twice
+	// looks the same, so it needs another sign to suspend.
+	signalCrack = "crack"
 )
 
 const (
@@ -80,7 +83,7 @@ func mailboxEvidenceScore(e store.MailboxEvidence) int {
 		}
 		seen[s.Kind] = true
 		switch s.Kind {
-		case signalNewCountry, signalRedirect, signalBulkRecipients:
+		case signalNewCountry, signalRedirect, signalBulkRecipients, signalCrack:
 			score += 2
 		case signalForgedSender:
 			score += 3
@@ -155,7 +158,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (
 		if cfg != nil && isHighVolumeSender(mailbox, cfg.EmailProtection.HighVolumeSenders) {
 			return nil
 		}
-	case signalNewCountry, signalRedirect, signalReputation:
+	case signalNewCountry, signalRedirect, signalReputation, signalCrack:
 	default:
 		return nil
 	}
@@ -195,7 +198,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (
 	}
 
 	response := evidenceResponse{hasBackend: hostHasMailBackend(), id: addressID}
-	if response.hasBackend && cfg != nil && cfg.AutoResponse.Enabled && !cfg.AutoResponseDryRunEnabled() {
+	if response.hasBackend && cfg != nil && cfg.AutoResponse.Enabled && !cfg.AutoResponseDryRunEnabled() && cfg.SuspendMailboxesEnabled() {
 		response.id, response.ref, response.err = mailResponseTarget(mailbox)
 		if response.err != nil {
 			response.id = addressID
@@ -413,6 +416,7 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 	if sending {
 		evidence = evidenceSending
 	}
+	var applied store.MailboxSuspension
 	c := mailboxCompromise{Subject: mailbox, Ref: r.ref, Check: "email_mailbox_compromise", Reason: reason, Evidence: evidence, At: latest}
 	var verb, todo string
 	switch {
@@ -423,12 +427,18 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 	case cfg.AutoResponseDryRunEnabled():
 		recordMailDryRun(c)
 		verb, todo = "Would suspend", "Automatic response is in dry-run. Change the mailbox password now."
+	case !cfg.SuspendMailboxesEnabled():
+		verb, todo = "Would suspend", "Mailbox suspension is off (auto_response.suspend_mailboxes). Change the mailbox password now."
 	default:
 		result := mailResponseResult{err: r.err}
 		if r.err == nil {
 			result = applyMailResponse(db, r.id, c)
 		}
+		applied = result.record
 		switch {
+		case result.withheld != "":
+			verb = "Would suspend"
+			todo = fmt.Sprintf("Mailbox suspension is paused for %s after %d suspensions in the last hour. Change the mailbox password now.", result.withheld, mailboxSuspensionsPerHour)
 		case result.changed:
 			verb = "Suspended"
 			todo = mailRestrictionDetails(result.record) + " Have the customer change the mailbox password."
@@ -462,7 +472,12 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		details.WriteString(" The redirect above is left in place as evidence; remove it after review.")
 	}
 
-	_, domain, _ := splitMailAccount(mailbox)
+	_, domain, tenant := splitMailAccount(mailbox)
+	if applied.Account != "" {
+		tenant = applied.Account
+	} else if tenant == "" && domain != "" && activeMailBackend.name() != "stalwart" {
+		tenant = lookupCPanelUser(domain)
+	}
 	f := []alert.Finding{{
 		Severity:  alert.Critical,
 		Check:     "email_mailbox_compromise",
@@ -473,5 +488,10 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		Timestamp: time.Now(),
 	}}
 	stampMailAccountOwner(f, mailbox)
+	// The response resolved its own owner; a separate cache must not
+	// replace that account or erase it while retaining the mailbox claim.
+	if tenant != "" {
+		f[0].TenantID = tenant
+	}
 	return f[0]
 }

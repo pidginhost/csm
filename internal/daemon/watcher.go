@@ -1092,7 +1092,7 @@ func maybeHoldOutgoingMail(cfg *config.Config, domainOrEmail string) bool {
 	if at := strings.LastIndexByte(subject, '@'); at >= 0 {
 		subject = subject[at+1:]
 	}
-	stopped, _ := respondToCompromise(cfg, mailboxCompromise{
+	stopped := respondToCompromise(cfg, mailboxCompromise{
 		Subject:  subject,
 		Check:    "email_spam_outbreak",
 		Reason:   "outbound spam blast with deferred and failed deliveries",

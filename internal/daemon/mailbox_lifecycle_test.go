@@ -72,7 +72,7 @@ func TestMailboxLifecycle_StaleListCannotReleaseNewSuspension(t *testing.T) {
 		done <- rows
 	}()
 	<-entered
-	stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now()))
+	stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now()))
 	close(finish)
 	rows := <-done
 	if !stopped || len(rows) != 1 || rows[0].ReleasedAt != nil || storedRow(t, db, row.ID).ReleasedAt != nil {
@@ -106,7 +106,7 @@ func TestMailboxLifecycle_ReleaseSerializesNewEvidence(t *testing.T) {
 	responded := make(chan bool, 1)
 	var completed atomic.Bool
 	go func() {
-		stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now().Add(time.Hour)))
+		stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now().Add(time.Hour)))
 		responded <- stopped
 		completed.Store(true)
 	}()
@@ -137,7 +137,7 @@ func TestMailboxLifecycle_ConcurrentTriggersSuspendOnce(t *testing.T) {
 	})
 	done := make(chan bool, 2)
 	respond := func(subject string) {
-		stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(subject, time.Now()))
+		stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(subject, time.Now()))
 		done <- stopped
 	}
 	go respond(row.Subject)
@@ -213,7 +213,7 @@ func TestMailboxLifecycle_ListReleaseDatesClearedEvidence(t *testing.T) {
 	if released.ReleasedAt == nil || !released.ReleasedAt.After(evidenceAt) {
 		t.Errorf("release predates the evidence it cleared: row=%+v evidence=%s", released, evidenceAt)
 	}
-	stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, evidenceAt))
+	stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, evidenceAt))
 	if stopped || suspends.Load() != 0 {
 		t.Errorf("cleared evidence suspended again: stopped=%v calls=%d", stopped, suspends.Load())
 	}
@@ -233,22 +233,19 @@ func TestStolenLoginResponses_TenantIsNotLoginEvidence(t *testing.T) {
 	}
 }
 
-func TestLoginResponseFinding_PartialSuspensionAndOwner(t *testing.T) {
+func TestMailRestrictionDetails_PartialSuspension(t *testing.T) {
 	for _, part := range []string{store.AppliedSuspendLogin, store.AppliedSuspendOutgoing} {
 		t.Run(part, func(t *testing.T) {
-			f := loginResponseFinding(mailboxCompromise{Subject: "real@victim.example"}, cpanelRow("real@victim.example", part), nil)
-			if f.TenantID != "cpuser" {
-				t.Errorf("TenantID=%q, want cpuser", f.TenantID)
-			}
-			if strings.Contains(f.Details, "Logins and outgoing mail are stopped") {
-				t.Errorf("partial suspension claims full protection: %s", f.Details)
+			details := mailRestrictionDetails(cpanelRow("real@victim.example", part))
+			if strings.Contains(details, "Logins and outgoing mail are stopped") {
+				t.Errorf("partial suspension claims full protection: %s", details)
 			}
 			want := "Only logins are stopped"
 			if part == store.AppliedSuspendOutgoing {
 				want = "Only outgoing mail is stopped"
 			}
-			if !strings.Contains(f.Details, want) {
-				t.Errorf("partial suspension must name the applied restriction: %s", f.Details)
+			if !strings.Contains(details, want) {
+				t.Errorf("partial suspension must name the applied restriction: %s", details)
 			}
 		})
 	}
@@ -264,7 +261,7 @@ func TestRespondToCompromise_UnknownStatusPreservesAppliedParts(t *testing.T) {
 			return cpanelRow(row.Subject, store.AppliedSuspendOutgoing), nil
 		},
 	})
-	stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now()))
+	stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now()))
 	got := storedRow(t, db, row.ID)
 	if !stopped || !reflect.DeepEqual(got.Applied, row.Applied) {
 		t.Fatalf("lost owned restriction: stopped=%v row=%+v", stopped, got)
@@ -279,7 +276,7 @@ func TestRespondToCompromise_PreexistingAccountHoldIsNotOwned(t *testing.T) {
 			withCPanelUsers(t, "cpuser")
 			withHoldUsers(t, "cpuser")
 			captureActionRecords(t)
-			stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(subject, time.Now()))
+			stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(subject, time.Now()))
 			rows, err := db.ListMailboxSuspensions()
 			if !stopped || err != nil || len(rows) != 0 {
 				t.Fatalf("claimed somebody else's hold: stopped=%v rows=%+v err=%v", stopped, rows, err)
@@ -428,7 +425,7 @@ func TestRespondToCompromise_UnknownMailboxStatusKeepsPartsOnHoldFallback(t *tes
 			return cpanelRow(row.Subject, store.AppliedHoldOutgoing), nil
 		},
 	})
-	stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now()))
+	stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise(row.Subject, time.Now()))
 	got := storedRow(t, db, row.ID)
 	if !stopped || !reflect.DeepEqual(got.Applied, []string{store.AppliedSuspendLogin, store.AppliedSuspendOutgoing, store.AppliedHoldOutgoing}) || got.Kind != store.SuspensionKindAccount {
 		t.Fatalf("fallback lost mailbox restrictions: stopped=%v row=%+v", stopped, got)
@@ -474,7 +471,7 @@ func TestRespondToCompromise_OnlyOwnsNewMailboxRestrictions(t *testing.T) {
 				return uapiOK()
 			})
 			captureActionRecords(t)
-			stopped, _ := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
+			stopped := respondToCompromise(eximAutoHoldConfig(), sendingCompromise("real@victim.example", time.Now()))
 			if !stopped {
 				t.Fatal("already restricted mailbox was not stopped")
 			}
@@ -551,14 +548,17 @@ func TestWHMCommandsIgnoreSuccessDiagnostics(t *testing.T) {
 	}
 }
 
-func TestLoginResponseFinding_FailureKeepsOwner(t *testing.T) {
-	withUserdomains(t, "victim.example: cpuser\n")
-	f := loginResponseFinding(mailboxCompromise{Subject: "real@victim.example"}, store.MailboxSuspension{}, errors.New("status unavailable"))
-	if f.TenantID != "cpuser" || f.Mailbox != "real@victim.example" {
+func TestCrackIncidentFailureKeepsOwner(t *testing.T) {
+	evidenceCase(t)
+	stubMailboxActions(t, func([]string) ([]byte, error) { return uapiFailure("status unavailable") })
+	cfg := eximAutoHoldConfig()
+	observeMailboxSignal(cfg, "real@victim.example", newCountry("RU", time.Now()))
+	f := onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{stolenLogin("real@victim.example", alert.Critical)}))
+	if !strings.HasPrefix(f.Message, "Could not suspend mailbox real@victim.example") || f.TenantID != "cpuser" {
 		t.Fatalf("failed response lost correlation: %+v", f)
 	}
 	if strings.Contains(f.Details, "can still log in and send") {
-		t.Fatalf("unreadable status claimed unrestricted access: %s", f.Details)
+		t.Fatalf("a failed suspension claimed unrestricted access: %s", f.Details)
 	}
 }
 

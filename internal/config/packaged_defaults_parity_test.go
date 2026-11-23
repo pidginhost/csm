@@ -50,6 +50,7 @@ var packagedDefaultDifferences = map[string]packagedDifference{
 	// The packaged key spells out the default the code applies.
 	"auto_response.dry_run":                                     {"null", "true", "", func(_ *testing.T, c *Config) any { return c.AutoResponseDryRunEnabled() }},
 	"auto_response.virtual_patch_exposed_files":                 {`""`, `"off"`, "", func(_ *testing.T, c *Config) any { return c.VirtualPatchMode() }},
+	"auto_response.suspend_mailboxes":                           {"null", "true", "", func(_ *testing.T, c *Config) any { return c.SuspendMailboxesEnabled() }},
 	"bpf_enforcement.dry_run":                                   {"null", "true", "", bpfDryRunEffect},
 	"detection.direct_smtp_egress.dry_run":                      {"null", "true", "", func(_ *testing.T, c *Config) any { return c.DirectSMTPEgressDryRunEnabled() }},
 	"detection.vulnerable_plugin_scanning":                      {"null", "true", "", func(_ *testing.T, c *Config) any { return c.VulnerablePluginScanningEnabled() }},

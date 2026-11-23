@@ -260,6 +260,7 @@ auto_response:
   max_file_actions_per_hour: 50         # shared quarantine and file-cleaning attempt budget
   max_file_actions_per_account_per_hour: 10  # per-account share of the same rolling hour
   max_file_action_failures_per_hour: 3   # pause automatic file response after repeated failures
+  suspend_mailboxes: true     # suspend a mailbox when its compromise evidence adds up
   block_ips: true
   block_expiry: "24h"
   # max_blocks_per_hour omitted: scan-driven blocks 50 an hour, admission ceiling 1000.

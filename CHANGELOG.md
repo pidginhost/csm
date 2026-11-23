@@ -32,6 +32,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
+- A new `auto_response.suspend_mailboxes` setting, on by default, stops automatic mailbox suspensions while keeping every finding and incident.
 - A shell left by a web request that keeps returning after CSM stops it now raises a Critical finding and queues a malware scan of the account.
 - `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
 - A new `backup` setting has the daemon export its state on a schedule, delete archives past retention, and warn when an export fails.
@@ -39,6 +40,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Changed
 
+- Automatic mailbox suspensions pause in a hosting account after several in one hour, with one Critical alert listing the mailboxes left open.
+- A login after failed mail logins no longer suspends a mailbox or holds an account's mail by itself; a mailbox also needs another sign, such as a new country.
 - Slow failed mail logins from an address that regularly logs in to that mailbox now alert without blocking it, and a later login no longer suspends the mailbox.
 - Findings for a removed file written back now say how it came back and that restoring it from the Quarantine page stops CSM removing it again.
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.

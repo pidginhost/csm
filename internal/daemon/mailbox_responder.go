@@ -87,8 +87,8 @@ func lockMailResponse(key string) func() {
 // respondToCompromise is the one entry point for stopping an abused mail
 // credential. It honours the auto-response switch and dry-run, never repeats
 // an active suspension, and after a release acts again only on evidence
-// dated after it.
-func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool, findings []alert.Finding) {
+// dated after it. It reports whether sending from the subject is stopped.
+func respondToCompromise(cfg *config.Config, c mailboxCompromise) bool {
 	// The detection withdraws the mailbox's login standing whatever the
 	// response mode does on the mail server: whoever cracked it may have
 	// earned standing on it.
@@ -97,12 +97,17 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 	stamp := now.Format("2006-01-02 15:04:05")
 	if cfg == nil || !cfg.AutoResponse.Enabled {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend %s (auto_response disabled)\n", stamp, c.Subject)
-		return false, nil
+		return false
 	}
 	if cfg.AutoResponseDryRunEnabled() {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend %s (dry-run)\n", stamp, c.Subject)
 		recordMailDryRun(c)
-		return false, nil
+		return false
+	}
+	// An account's outgoing hold for a domain is not a mailbox suspension.
+	if strings.Contains(c.Subject, "@") && !cfg.SuspendMailboxesEnabled() {
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend %s (auto_response.suspend_mailboxes off)\n", stamp, c.Subject)
+		return false
 	}
 
 	id, ref, err := mailResponseTarget(c.Subject)
@@ -117,10 +122,7 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool,
 		defer unlock()
 		result = applyMailResponse(store.Global(), id, c)
 	}
-	if c.Evidence == evidenceLogin && (result.changed || result.err != nil) {
-		return result.stopped, []alert.Finding{loginResponseFinding(c, result.record, result.err)}
-	}
-	return result.stopped, nil
+	return result.stopped
 }
 
 func recordMailDryRun(c mailboxCompromise) {
@@ -144,16 +146,21 @@ type mailResponseResult struct {
 	changed  bool
 	recorded bool
 	err      error
+	// withheld names the allowance that kept the mailbox open.
+	withheld string
 }
 
 // The caller holds the target's lifecycle lock through the server and store updates.
 func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailResponseResult {
-	now := time.Now()
-	stamp := now.Format("2006-01-02 15:04:05")
+	stamp := time.Now().Format("2006-01-02 15:04:05")
 	backend := activeMailBackend
 	var uncertain store.MailboxSuspension
+	var previous store.MailboxSuspension
 	if db != nil {
 		prev, ok, err := db.GetMailboxSuspension(id)
+		if err == nil && ok {
+			previous = prev
+		}
 		switch {
 		case err != nil:
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: reading suspension record for %s: %v\n", stamp, c.Subject, err)
@@ -179,6 +186,16 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		}
 	}
 
+	if db != nil && strings.Contains(c.Subject, "@") {
+		mailboxCapMu.Lock()
+		defer mailboxCapMu.Unlock()
+		// Count at lock acquisition: status reads and other suspensions
+		// may have completed while this caller waited.
+		if label, capped := capMailboxSuspension(db, id, c, time.Now()); capped {
+			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s not suspended: %s reached its hourly limit\n", stamp, c.Subject, label)
+			return mailResponseResult{withheld: label}
+		}
+	}
 	c.Previous = uncertain
 	applied, err := backend.suspend(c)
 	if errors.Is(err, errMailAlreadyRestricted) {
@@ -188,6 +205,7 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not stop %s: %v\n", stamp, c.Subject, err)
 		return mailResponseResult{record: store.MailboxSuspension{Backend: backend.name()}, err: err}
 	}
+	mailboxApplied := applied.Kind == store.SuspensionKindMailbox
 	if uncertain.Account == applied.Account {
 		parts := slices.Clone(uncertain.Applied)
 		for _, part := range applied.Applied {
@@ -210,8 +228,9 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		Applied:     applied.Applied,
 		Check:       c.Check,
 		Reason:      c.Reason,
-		SuspendedAt: now,
+		SuspendedAt: time.Now(),
 	}
+	rec.RecentMailboxSuspensions = updatedMailboxSuspensionHistory(previous, rec, mailboxApplied)
 	result := mailResponseResult{stopped: true, changed: true, record: rec}
 	if db != nil {
 		if err := db.PutMailboxSuspension(rec); err != nil {
@@ -221,39 +240,6 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		}
 	}
 	return result
-}
-
-// loginResponseFinding tells staff what CSM did about a cracked password and
-// what they still have to do. Sending triggers need none: their own finding
-// already says the mailbox is suspended.
-func loginResponseFinding(c mailboxCompromise, rec store.MailboxSuspension, err error) alert.Finding {
-	mailbox, domain, tenant := splitMailAccount(c.Subject)
-	if rec.Account != "" {
-		tenant = rec.Account
-	} else if tenant == "" && domain != "" && rec.Backend != "stalwart" {
-		tenant = lookupCPanelUser(domain)
-	}
-	f := alert.Finding{
-		Severity:  alert.Critical,
-		Check:     "email_mailbox_response",
-		Mailbox:   mailbox,
-		Domain:    domain,
-		TenantID:  tenant,
-		Timestamp: time.Now(),
-	}
-	switch {
-	case err != nil:
-		f.Message = fmt.Sprintf("Could not suspend %s after its password was cracked: %v", c.Subject, err)
-		f.Details = "Protection could not be confirmed. Change its password now."
-	case rec.Kind == store.SuspensionKindAccount && mailbox == "":
-		f.Message = fmt.Sprintf("Outgoing mail held for cPanel account %s after its own password was cracked", rec.Account)
-		f.Details = "That password unlocks every mailbox and the cPanel login. Change the cPanel password, then release the hold on the Email page, Suspended tab."
-	default:
-		f.Message = fmt.Sprintf("Mailbox %s suspended after its password was cracked", c.Subject)
-		f.Details = mailRestrictionDetails(rec)
-		f.Details += " Have the customer change the mailbox password, then release it on the Email page, Suspended tab."
-	}
-	return f
 }
 
 func mailRestrictionDetails(rec store.MailboxSuspension) string {
@@ -276,9 +262,11 @@ func mailRestrictionDetails(rec store.MailboxSuspension) string {
 // so tests can stand in for a cPanel host.
 var hostHasMailBackend = func() bool { return platform.Detect().IsCPanel() }
 
-// stolenLoginResponses suspends the mailbox behind each Critical login after
-// brute force. High findings (an established multi-mailbox source, spray
-// advisories) stay alert-only.
+// stolenLoginResponses records each Critical login after brute force as
+// crack evidence in its mailbox's ledger; with another sign the evidence
+// incident suspends the mailbox. High findings (login standing, an
+// established multi-mailbox source, spray advisories) add nothing. A bare
+// login names no mailbox the ledger can hold, so it only alerts.
 func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	var out []alert.Finding
 	for _, f := range findings {
@@ -291,13 +279,15 @@ func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.
 		if activeMailBackend.name() == "cpanel" {
 			subject = loginMailbox(subject)
 		}
-		if subject == "" || !hostHasMailBackend() {
+		if subject == "" {
 			continue
 		}
-		_, response := respondToCompromise(cfg, mailboxCompromise{
-			Subject: subject, Check: f.Check, Reason: f.Message, Evidence: evidenceLogin, At: f.Timestamp,
-		})
-		out = append(out, response...)
+		// Whoever cracked the mailbox may have earned standing on it.
+		mailboxResponseStanding.Load().Revoke(subject)
+		out = append(out, observeMailboxSignal(cfg, subject, mailboxSignal{
+			kind: signalCrack, key: f.SourceIP, at: f.Timestamp,
+			detail: "login from " + f.SourceIP + " after failed logins",
+		})...)
 	}
 	return out
 }

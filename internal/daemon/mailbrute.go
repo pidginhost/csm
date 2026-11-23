@@ -1239,6 +1239,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) (findings []alert.Fi
 // is imap or pop; Dovecot logs both through syslog. A login that is not
 // trusted, read from a log any local user can write, still counts toward a
 // compromise but earns no customer standing, good source or spray trust.
+// Compromise findings retain the login time for evidence expiry and release.
 func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind string, trusted bool) (findings []alert.Finding) {
 	// Before t.mu: the customer set takes its own lock.
 	if trusted {
@@ -1315,7 +1316,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		}
 		if v != nil {
 			v.Mailbox = loginAccount
-			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
+			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), at)
 			sprayed = &f
 		}
 	}
@@ -1413,7 +1414,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		Check:       "mail_account_compromised",
 		Message:     message,
 		Details:     details,
-		Timestamp:   now,
+		Timestamp:   at,
 		SourceIP:    ip,
 		Attribution: admission.AttributionPeer,
 		Domain:      compDomain,

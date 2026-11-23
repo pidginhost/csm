@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,8 @@ func TestMailAccountFoldPreservesAuthenticatedIdentity(t *testing.T) {
 		{"hosting account", "CPUser", "CPUser", "", "CPUser", admission.ClaimAccount},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			clock := &staticClock{t: time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)}
+			// The evidence ledger keeps a week of real time.
+			clock := &staticClock{t: time.Now().UTC().Truncate(time.Second)}
 			tr := newTestMailTracker(t, clock)
 			t.Cleanup(checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) {
 				if domain == tt.domain {
@@ -125,9 +127,16 @@ func TestMailAccountFoldPreservesAuthenticatedIdentity(t *testing.T) {
 					return store.MailboxSuspension{Account: tt.owner, Kind: store.SuspensionKindMailbox}, nil
 				},
 			})
+			// A crack is one sign; a second one makes the incident act on
+			// the authenticated mailbox. A hosting account login only alerts.
+			var want []string
+			if strings.Contains(tt.mailbox, "@") {
+				observeMailboxSignal(eximAutoHoldConfig(), tt.mailbox, newCountry("RU", clock.Now()))
+				want = []string{store.MailboxEvidenceKey(tt.mailbox)}
+			}
 			stolenLoginResponses(eximAutoHoldConfig(), findings)
-			if len(subjects) != 1 || subjects[0] != tt.mailbox {
-				t.Errorf("response subjects = %q, want %q", subjects, tt.mailbox)
+			if !slices.Equal(subjects, want) {
+				t.Errorf("response subjects = %q, want %q", subjects, want)
 			}
 		})
 	}

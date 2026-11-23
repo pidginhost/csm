@@ -277,6 +277,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "enforce_permissions", Type: "bool", Label: "Auto-chmod 644 world/group-writable PHP", Feature: "php"},
 			{YAMLPath: "fix_wp_cron", Type: "bool", Label: "Auto-disable WP-Cron + install system cron", Help: "On perf_wp_cron findings, edit wp-config.php and add a per-user cron. Tune interval/php under Performance.", Feature: "php"},
 			{YAMLPath: "block_cpanel_logins", Type: "bool", Label: "Block on cPanel/webmail login alerts", Feature: "cpanel"},
+			{YAMLPath: "suspend_mailboxes", Type: "bool", Label: "Suspend compromised mailboxes", Nullable: true, Help: "Suspend a mailbox when its compromise evidence adds up or it is caught sending abuse. Default on. Off keeps every finding and incident."},
 			{YAMLPath: "http_scanner_action", Type: "enum", Label: "URL scanner response", Options: []string{"challenge", "block"}, Help: "Response to http_scanner_profile findings. challenge routes the IP to the PoW challenge when the challenge subsystem is enabled, falling back to a block when it is not; block always hard-blocks."},
 			{YAMLPath: "netblock", Type: "bool", Label: "Auto-block /24 on threshold"},
 			{YAMLPath: "netblock_threshold", Type: "int", Label: "Netblock threshold", Min: int64p(config.MinBlockEscalationCount), Help: "Blocked addresses in one IPv4 /24 or IPv6 /64 before the subnet itself is blocked. Default 3."},
