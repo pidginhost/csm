@@ -17,6 +17,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/stalwartapi"
@@ -974,5 +975,26 @@ func TestStalwartSetupMissingUserRoleFails(t *testing.T) {
 				t.Fatal("dry run wrote settings")
 			}
 		})
+	}
+}
+
+// Setup learns who each configured port lock admits and who PHP runs as, so
+// the planner can refuse forwarded addresses a site's code could forge.
+func TestStalwartSetupInputsCarryLockAndPHPUsers(t *testing.T) {
+	h := newSetupHarness(t)
+	cfg, _ := h.deps.loadConfig()
+	cfg.Firewall = &firewall.FirewallConfig{LocalPortLocks: []string{"8080:www-data,stalwart"}}
+	h.deps.phpUsers = func() map[string]string { return map[string]string{"www-data": "PHP-FPM pool www"} }
+	in := stalwartSetupInputs(cfg, h.deps)
+	if !reflect.DeepEqual(in.LockUsers, map[int][]string{8080: {"www-data", "stalwart"}}) {
+		t.Fatalf("LockUsers = %v", in.LockUsers)
+	}
+	if !reflect.DeepEqual(in.PHPUsers, map[string]string{"www-data": "PHP-FPM pool www"}) {
+		t.Fatalf("PHPUsers = %v", in.PHPUsers)
+	}
+	_, out := h.run()
+	if !strings.Contains(out, "webmail client addresses: skipped: PHP or CGI runs as a user the webmail port lock admits: www-data (PHP-FPM pool www)") ||
+		h.api.http.ClientIPSource != "peer" {
+		t.Fatalf("source %q, output %q: want forwarding refused for the shared PHP user", h.api.http.ClientIPSource, out)
 	}
 }

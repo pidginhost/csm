@@ -1406,3 +1406,47 @@ func TestResponsePermissionsIncludeAddressList(t *testing.T) {
 		}
 	}
 }
+
+// Tenant code that runs as a user the webmail port lock admits can connect
+// and forge X-Forwarded-For, so setup must not take addresses from it.
+func TestPlanRefusesForwardedWhenPHPSharesLockUser(t *testing.T) {
+	for name, tc := range map[string]struct {
+		current stalwartapi.HTTPSettings
+		php     map[string]string
+		want    State
+		names   string
+	}{
+		"not yet forwarded": {stalwartapi.HTTPSettings{}, map[string]string{"www-data": "PHP-FPM pool www", "site1": "PHP-FPM pool site1"}, Skipped, "www-data (PHP-FPM pool www)"},
+		"already forwarded": {safeForwarded, map[string]string{"www-data": "Apache's CGI module"}, Unsafe, "www-data (Apache's CGI module)"},
+		"php as root":       {stalwartapi.HTTPSettings{}, map[string]string{"root": "a running php-cgi process"}, Skipped, "root (a running php-cgi process)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := freshAPI()
+			api.http = tc.current
+			in := fieldInputs()
+			in.LockUsers = map[int][]string{8080: {"www-data", "stalwart"}}
+			in.PHPUsers = tc.php
+			p := inspect(t, api, in)
+			s := p.Steps[1]
+			if s.State != tc.want || !strings.Contains(s.Detail, tc.names) || strings.Contains(s.Detail, "site1") {
+				t.Fatalf("step 2 = %+v, want %v naming %s", s, tc.want, tc.names)
+			}
+			for _, c := range applyCalls(t, api, p) {
+				if strings.HasPrefix(c, "SetHTTPSettings") {
+					t.Fatalf("Apply changed the client address source: %q", c)
+				}
+			}
+		})
+	}
+}
+
+// PHP that runs as its own users leaves the lock's web server user alone, so
+// the forwarded address stays safe.
+func TestPlanForwardsWhenPHPRunsAsOwnUsers(t *testing.T) {
+	in := fieldInputs()
+	in.LockUsers = map[int][]string{8080: {"nginx", "stalwart"}}
+	in.PHPUsers = map[string]string{"site1": "PHP-FPM pool site1"}
+	if s := inspect(t, freshAPI(), in).Steps[1]; s.State != Change {
+		t.Fatalf("step 2 = %+v, want Change", s)
+	}
+}

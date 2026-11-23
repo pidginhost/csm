@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/stalwartapi"
@@ -29,8 +30,10 @@ type stalwartSetupDeps struct {
 	readStatus func() ([]byte, error)
 	detectMTA  func() platform.MTAKind
 	webUsers   func() []string
-	getenv     func(string) string
-	readFile   func(string) ([]byte, error)
+	// phpUsers maps each user PHP or CGI runs as to what runs as it.
+	phpUsers func() map[string]string
+	getenv   func(string) string
+	readFile func(string) ([]byte, error)
 	// stdin gives the password with --password-stdin. On a terminal, setup
 	// asks on prompt for what the environment and flags left out, and reads
 	// both lines without echo when the password is missing.
@@ -52,6 +55,7 @@ func defaultStalwartSetupDeps() stalwartSetupDeps {
 		readStatus:    func() ([]byte, error) { return sendControl(control.CmdStatus, nil) },
 		detectMTA:     platform.DetectMTA,
 		webUsers:      func() []string { return platform.Detect().WebServerUsers() },
+		phpUsers:      platform.PHPRuntimeUsers,
 		getenv:        os.Getenv,
 		readFile:      os.ReadFile,
 		stdin:         os.Stdin,
@@ -340,7 +344,11 @@ func stalwartSetupInputs(cfg *config.Config, deps stalwartSetupDeps) stalwartset
 			automation = &sr.Snapshot.Automation
 		}
 	}
-	return stalwartInputs(cfg, deps.webUsers(), automation)
+	in := stalwartInputs(cfg, deps.webUsers(), automation)
+	if deps.phpUsers != nil {
+		in.PHPUsers = deps.phpUsers()
+	}
+	return in
 }
 
 // stalwartInputs gathers what the planner needs from CSM. The lock counts
@@ -353,6 +361,15 @@ func stalwartInputs(cfg *config.Config, webUsers []string, automation *health.Au
 		expiry, _ = time.ParseDuration(config.DefaultBlockExpiry)
 	}
 	in.BlockExpiry = expiry
+	// Config load validated the locks.
+	if cfg.Firewall != nil {
+		if locks, err := firewall.ParseLocalPortLocks(cfg.Firewall.LocalPortLocks); err == nil && len(locks) > 0 {
+			in.LockUsers = make(map[int][]string, len(locks))
+			for _, l := range locks {
+				in.LockUsers[l.Port] = l.Users
+			}
+		}
+	}
 	if automation != nil {
 		in.LockManaged = automation.FirewallManaged
 		in.LockedPorts = automation.FirewallLocalPortLocks

@@ -52,6 +52,7 @@ func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus
 		}
 	}
 	in := stalwartInputs(cfg, platform.Detect().WebServerUsers(), &automation)
+	in.PHPUsers = platform.PHPRuntimeUsers()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	newAPI := func(url, user, password string) stalwartDoctorAPI {
