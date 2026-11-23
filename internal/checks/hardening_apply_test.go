@@ -24,7 +24,7 @@ func TestRewriteSSHDConfigPrependsBlockAndDisablesGlobals(t *testing.T) {
 		"Match User backup",
 		"    X11Forwarding yes",
 	}, "\n")
-	got, _ := rewriteSSHDConfig(in, []keyValue{{"UseDNS", "no"}, {"MaxAuthTries", "4"}})
+	got, _ := rewriteSSHDConfig(in, []keyValue{{"UseDNS", "no"}, {"MaxAuthTries", "4"}}, nil)
 	lines := strings.Split(got, "\n")
 	want := []string{sshdBlockBegin, "MaxAuthTries 4", "UseDNS no", sshdBlockEnd, "Include /etc/ssh/sshd_config.d/*.conf"}
 	for i, w := range want {
@@ -40,8 +40,8 @@ func TestRewriteSSHDConfigPrependsBlockAndDisablesGlobals(t *testing.T) {
 }
 
 func TestRewriteSSHDConfigMergesExistingBlock(t *testing.T) {
-	first, _ := rewriteSSHDConfig("Port 2222\n", []keyValue{{"UseDNS", "no"}})
-	second, _ := rewriteSSHDConfig(first, []keyValue{{"X11Forwarding", "no"}})
+	first, _ := rewriteSSHDConfig("Port 2222\n", []keyValue{{"UseDNS", "no"}}, nil)
+	second, _ := rewriteSSHDConfig(first, []keyValue{{"X11Forwarding", "no"}}, nil)
 	if strings.Count(second, sshdBlockBegin) != 1 {
 		t.Fatalf("block duplicated:\n%s", second)
 	}
@@ -50,7 +50,7 @@ func TestRewriteSSHDConfigMergesExistingBlock(t *testing.T) {
 			t.Errorf("missing %q in\n%s", w, second)
 		}
 	}
-	if third, _ := rewriteSSHDConfig(second, []keyValue{{"X11Forwarding", "no"}}); third != second {
+	if third, _ := rewriteSSHDConfig(second, []keyValue{{"X11Forwarding", "no"}}, nil); third != second {
 		t.Errorf("rewrite not idempotent:\n%s\n---\n%s", second, third)
 	}
 }

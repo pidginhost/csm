@@ -397,7 +397,6 @@ func keepOriginalState(rec, older HardeningUndoRecord) HardeningUndoRecord {
 		n, o := *rec.SSH, older.SSH
 		if n.HadValue && n.PrevValue == o.AppliedValue {
 			n.PrevValue, n.HadValue = o.PrevValue, o.HadValue
-			n.DisabledLines = append(slices.Clone(o.DisabledLines), n.DisabledLines...)
 		}
 		rec.SSH = &n
 	case rec.Sysctl != nil && older.Sysctl != nil && rec.Sysctl.Key == older.Sysctl.Key:
@@ -443,15 +442,30 @@ func keepOriginalState(rec, older HardeningUndoRecord) HardeningUndoRecord {
 		rec.PHP = php
 	case rec.Mode != nil && older.Mode != nil:
 		n, o := *rec.Mode, older.Mode
-		if n.Path == o.Path && n.Mode == o.AppliedMode && n.UID == o.AppliedUID && n.GID == o.AppliedGID {
-			n.Mode, n.UID, n.GID = o.Mode, o.UID, o.GID
+		if n.Path == o.Path {
+			if n.Mode == o.AppliedMode {
+				n.Mode = o.Mode
+			}
+			if n.UID == o.AppliedUID {
+				n.UID = o.UID
+			}
+			if n.GID == o.AppliedGID {
+				n.GID = o.GID
+			}
 		}
 		rec.Mode = &n
 	case rec.Compilers != nil && older.Compilers != nil:
 		n, o := *rec.Compilers, older.Compilers
-		if n.Method == "chmod" && o.Method == "chmod" && n.Path == o.Path &&
-			n.Mode == o.AppliedMode && n.UID == o.AppliedUID && n.GID == o.AppliedGID {
-			n.Mode, n.UID, n.GID = o.Mode, o.UID, o.GID
+		if n.Method == "chmod" && o.Method == "chmod" && n.Path == o.Path {
+			if n.Mode == o.AppliedMode {
+				n.Mode = o.Mode
+			}
+			if n.UID == o.AppliedUID {
+				n.UID = o.UID
+			}
+			if n.GID == o.AppliedGID {
+				n.GID = o.GID
+			}
 		}
 		rec.Compilers = &n
 	case rec.File != nil && older.File != nil:
@@ -918,7 +932,7 @@ func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 	if err != nil {
 		return fail(err)
 	}
-	updated, undo := rewriteSSHDConfig(string(orig), directives)
+	updated, undo := rewriteSSHDConfig(string(orig), directives, priors)
 	backup := sshdConfigPath + ".csm-bak"
 	if err := atomicio.AtomicWrite(backup, info.Mode().Perm(), orig); err != nil {
 		return fail(fmt.Errorf("backup: %w", err))
@@ -973,7 +987,7 @@ func reloadSSHD() error {
 // at the top of the file, and what it changed for each directive. Directives
 // already in the block are kept, and active global lines for the same
 // keywords are commented out so the file reads the way sshd applies it.
-func rewriteSSHDConfig(content string, directives []keyValue) (string, []sshUndoState) {
+func rewriteSSHDConfig(content string, directives []keyValue, priors []undoPrior) (string, []sshUndoState) {
 	block := map[string]keyValue{}
 	previous := map[string]string{}
 	var body []string
@@ -1004,17 +1018,33 @@ func rewriteSSHDConfig(content string, directives []keyValue) (string, []sshUndo
 	}
 	undo := make([]sshUndoState, len(directives))
 	byKeyword := map[string]int{}
+	disabled := map[string]int{}
 	for i, d := range directives {
 		kw := strings.ToLower(d.key)
 		prev, had := previous[kw]
 		undo[i] = sshUndoState{Keyword: d.key, PrevValue: prev, HadValue: had, AppliedValue: d.value}
 		byKeyword[kw] = i
 		block[kw] = d
+		if len(priors) > 0 && priors[i].ok && priors[i].rec.Kind == "ssh" {
+			older := priors[i].rec.SSH
+			if older != nil && strings.EqualFold(older.Keyword, d.key) && had && prev == older.AppliedValue {
+				for _, line := range older.DisabledLines {
+					disabled[line]++
+				}
+			}
+		}
 	}
 
 	inMatch := false
 	for i, line := range body {
 		t := strings.TrimSpace(line)
+		// Merge in file order and count only comments still present. An
+		// uncommented line belongs to this apply, not to both applies.
+		if original, ok := strings.CutPrefix(line, sshdDisabledBy); ok && !inMatch && disabled[original] > 0 {
+			kw, _, _ := splitSSHDKeyword(strings.TrimSpace(original))
+			undo[byKeyword[kw]].DisabledLines = append(undo[byKeyword[kw]].DisabledLines, original)
+			disabled[original]--
+		}
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}

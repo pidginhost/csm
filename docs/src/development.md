@@ -1811,7 +1811,11 @@ anything. Each setting that still holds the earlier apply's value keeps the
 state from before that apply; a setting changed by hand since keeps the state
 found now, and PHP drop-ins this apply did not write keep their earlier
 entries. If that record cannot be read, the fix still applies, the record is
-removed, and the result says undo is unavailable.
+removed, and the result says undo is unavailable. Permissions, owner and
+group are compared independently, so editing one does not lose the original
+state of the others. For an unchanged SSH block value, disabled global lines
+are merged in their current file order; removed or edited comments are not
+carried forward, and uncommenting a line does not record it twice.
 
 Store operations validate fix names before constructing record paths. They
 use directory-relative, no-follow opens and check ownership and permissions

@@ -55,6 +55,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Reapplying Server Hardening fixes keeps the original permissions and SSH settings available for recovery after partial manual edits.
 - A forward that keeps a copy of the mail no longer counts toward suspending the mailbox unless something else corroborates it.
 - Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
 
