@@ -575,3 +575,44 @@ func TestSMTPStandingSlowPathRespectsFailureCap(t *testing.T) {
 		t.Fatalf("a flood past the cap was advised as a stale password: %+v", out[first+i])
 	}
 }
+
+// The daily cap counts a mailbox's failures from the address over every mail
+// protocol: 600 over IMAP and 401 over SMTP pass it.
+func TestSMTPStandingDailyFailureCapAcrossProtocols(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	mail := newTestMailTracker(t, clock)
+	mail.SetLoginStanding(s)
+	smtp := newTestTracker(t, clock)
+	smtp.SetLoginStanding(s)
+	earnStanding(t, s, standingIP, standingBox)
+	for range 600 {
+		mail.Record(standingIP, standingBox)
+		clock.advance(30 * time.Second)
+	}
+	blockedAt := 0
+	for i := 1; i <= 401; i++ {
+		if findCheck(smtp.Record(standingIP, standingBox), "smtp_bruteforce") != nil && blockedAt == 0 {
+			blockedAt = i
+		}
+		clock.advance(30 * time.Second)
+	}
+	if blockedAt != 401 {
+		t.Fatalf("first SMTP block at failure %d, want 401", blockedAt)
+	}
+}
+
+// A temporary failure is not a wrong password and does not count toward the
+// daily cap.
+func TestSMTPStandingDailyCapIgnoresTemporaryFailures(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingSMTPTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	for range 1001 {
+		tr.RecordTemporaryFailure(standingIP, standingBox, alert.Observation{})
+		clock.advance(30 * time.Second)
+	}
+	if s.OverDailyCap(standingIP, standingBox, clock.Now()) {
+		t.Fatal("temporary failures counted toward the daily cap")
+	}
+}

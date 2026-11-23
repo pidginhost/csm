@@ -63,6 +63,10 @@ type standingRow struct {
 	days    []standingDay
 	mailbox string
 	dirty   bool
+	// failSince starts the day failures are counted in and fails counts
+	// them, for standingDailyFailureCap. Memory only.
+	failSince int64
+	fails     int32
 }
 
 func (r *standingRow) latest() int64 { return r.days[len(r.days)-1].last }
@@ -256,6 +260,60 @@ func (s *loginStanding) roomLocked(mailbox string, now time.Time) bool {
 		s.pruneLocked(now)
 	}
 	return len(s.rows) < maxStandingRows
+}
+
+// standingDailyFailureCap bounds the failures standing excuses on one
+// mailbox from one address in a day, across every mail protocol. It sits
+// several times above the busiest stale saved password seen in the field,
+// so a guesser pacing under the per-window cap still runs out within a day.
+const standingDailyFailureCap = 1000
+
+// NoteFailure counts a failed login on mailbox from ip toward the daily cap.
+// An address with no standing on the mailbox has nothing to count.
+func (s *loginStanding) NoteFailure(ip, mailbox string, at time.Time) {
+	if s == nil {
+		return
+	}
+	addr, ok := standingAddr(ip)
+	mailbox = normalizeSprayMailbox(mailbox)
+	if !ok || mailbox == "" {
+		return
+	}
+	sec := at.Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.rows[standingKey{addr, mailbox}]
+	if r == nil {
+		return
+	}
+	// Trackers capture time under separate locks, so an earlier failure can
+	// arrive after this window began. It must not erase the shared count.
+	if r.fails == 0 || sec-r.failSince >= secondsPerDay {
+		r.failSince, r.fails = sec, 0
+	}
+	if r.fails <= standingDailyFailureCap {
+		r.fails++
+	}
+}
+
+// OverDailyCap reports whether ip's failures on mailbox passed the daily cap
+// in the day that is still running at at.
+func (s *loginStanding) OverDailyCap(ip, mailbox string, at time.Time) bool {
+	if s == nil {
+		return false
+	}
+	addr, ok := standingAddr(ip)
+	mailbox = normalizeSprayMailbox(mailbox)
+	if !ok || mailbox == "" {
+		return false
+	}
+	sec := at.Unix()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.rows[standingKey{addr, mailbox}]
+	// A decision captured before another tracker's first failure still uses
+	// the current count. A clock rollback must not restore standing either.
+	return r != nil && r.fails > standingDailyFailureCap && sec-r.failSince < secondsPerDay
 }
 
 // Has reports whether ip had standing on mailbox as of asOf, the start of

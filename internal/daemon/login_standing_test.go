@@ -645,3 +645,42 @@ func TestLoginStandingChurnAtCapStaysIncremental(t *testing.T) {
 		t.Fatalf("Changes = %d upserts, %v, replace %v; want one upsert and one delete", len(upserts), deletes, replace)
 	}
 }
+
+// Standing stops excusing a mailbox once its failures from one address pass
+// 1000 in a day, whatever their pace; the count starts over a day later.
+// Alternate spellings of the address share the count, and an address with
+// no standing on the mailbox has nothing to count.
+func TestLoginStandingDailyFailureCap(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	s := newLoginStanding(clock.Now)
+	earnStanding(t, s, standingIP, standingBox)
+	for range 1000 {
+		s.NoteFailure(standingIP, standingBox, clock.Now())
+		clock.advance(time.Minute)
+	}
+	if s.OverDailyCap(standingIP, standingBox, clock.Now()) {
+		t.Fatal("1000 failures in a day passed the cap")
+	}
+	s.NoteFailure("::ffff:"+standingIP, standingBox, clock.Now())
+	if !s.OverDailyCap(standingIP, standingBox, clock.Now()) {
+		t.Fatal("the 1001st failure, under another spelling, did not pass the cap")
+	}
+	if s.OverDailyCap(standingIP, otherBox, clock.Now()) {
+		t.Fatal("another mailbox shared the cap")
+	}
+	clock.advance(24 * time.Hour)
+	if s.OverDailyCap(standingIP, standingBox, clock.Now()) {
+		t.Fatal("the cap outlived its day")
+	}
+	// A new day counts from zero, and passes the cap again at 1001.
+	for range 1001 {
+		s.NoteFailure(standingIP, standingBox, clock.Now())
+	}
+	if !s.OverDailyCap(standingIP, standingBox, clock.Now()) {
+		t.Fatal("the next day's failures never passed the cap")
+	}
+	s.NoteFailure("198.51.100.9", standingBox, clock.Now())
+	if s.OverDailyCap("198.51.100.9", standingBox, clock.Now()) {
+		t.Fatal("an address without standing was tracked")
+	}
+}

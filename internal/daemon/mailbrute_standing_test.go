@@ -845,3 +845,48 @@ func TestMailStandingCrackPastFailureCap(t *testing.T) {
 		})
 	}
 }
+
+// A guesser pacing under the per-window cap from an address with standing
+// still runs out within a day: past 1000 failures on the mailbox the address
+// blocks as it would without standing, and a login after that is a crack.
+func TestMailStandingDailyFailureCap(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	blockedAt := 0
+	for i := 1; i <= 1001; i++ {
+		if findCheck(tr.Record(standingIP, standingBox), "mail_bruteforce") != nil && blockedAt == 0 {
+			blockedAt = i
+		}
+		clock.advance(30 * time.Second) // 20 per 10 minutes: under the per-window cap
+	}
+	if blockedAt != 1001 {
+		t.Fatalf("first block at failure %d, want 1001", blockedAt)
+	}
+	f := findCheck(tr.recordSuccessAt(standingIP, standingBox, clock.Now(), knownCustomerIMAP, true), "mail_account_compromised")
+	if f == nil || f.Severity != alert.Critical {
+		t.Fatalf("compromise after the daily cap = %+v, want Critical", f)
+	}
+}
+
+// Failures during an authentication backend outage say nothing about the
+// password and do not count toward the daily cap.
+func TestMailStandingDailyCapIgnoresBackendOutage(t *testing.T) {
+	clock := &staticClock{t: standingBase}
+	tr, s := newStandingMailTracker(t, clock)
+	earnStanding(t, s, standingIP, standingBox)
+	tr.backendDownFn = func() bool { return true }
+	for range 1001 {
+		tr.Record(standingIP, standingBox)
+		clock.advance(30 * time.Second)
+	}
+	tr.backendDownFn = nil
+	clock.advance(time.Hour)
+	var out []alert.Finding
+	for range 5 {
+		out = append(out, tr.Record(standingIP, standingBox)...)
+	}
+	if findCheck(out, "mail_bruteforce") != nil {
+		t.Fatal("outage failures counted toward the daily cap")
+	}
+}

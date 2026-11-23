@@ -811,6 +811,10 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
 	e.times = append(e.times, now)
 	e.failedAccounts = appendMailAccountTime(e.failedAccounts, account, now)
+	// An outage fails every login whatever the password: no count.
+	if !degraded && account != "" {
+		t.standing.NoteFailure(ip, account, now)
+	}
 	e.lastSeen = now
 	// Standing is judged as of the address's earliest active episode under
 	// any spelling. Finding it scans the aliases, so only a standing
@@ -825,7 +829,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 		}
 		return standingStart
 	}
-	overCap := func(account string) bool { return t.standingFailureOverCap(ip, account, cutoff) }
+	overCap := func(account string) bool { return t.standingFailureOverCap(ip, account, now) }
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold {
 		e.succ = pruneTimes(e.succ, cutoff)
@@ -1056,8 +1060,8 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 
 // standingFailureOverCap counts one mailbox across spellings of the same
 // address. Alias entries may not have been pruned yet. Caller holds t.mu.
-func (t *mailAuthTracker) standingFailureOverCap(ip, account string, cutoff time.Time) bool {
-	limit := standingFailureCap * t.perIPThreshold
+func (t *mailAuthTracker) standingFailureOverCap(ip, account string, now time.Time) bool {
+	limit, cutoff := standingFailureCap*t.perIPThreshold, now.Add(-t.window)
 	n := 0
 	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
 		n += countTimesAtOrAfter(e.failedAccounts[account], cutoff)
@@ -1065,7 +1069,7 @@ func (t *mailAuthTracker) standingFailureOverCap(ip, account string, cutoff time
 			return true
 		}
 	}
-	return false
+	return t.standing.OverDailyCap(ip, account, now)
 }
 
 // episodeFailedOn reports whether ip's current failures, under any spelling
@@ -1286,7 +1290,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	// gates new standing, but cannot revoke this address's exemption from
 	// the IMAP compromise response for its own current failure episode.
 	// Failures past the cap are a guessing tool, not a stale saved password.
-	standing := !t.standingFailureOverCap(ip, account, cutoff) && t.standing.Has(ip, sprayMailbox, since)
+	standing := !t.standingFailureOverCap(ip, account, now) && t.standing.Has(ip, sprayMailbox, since)
 	if t.spray != nil && (trusted || t.fileLines) {
 		// The SMTP tracker's failures reach only the shared spray memory.
 		failed, since = otherProtocolFailures(t.spray, ip, sprayMailbox, max(t.window, t.slowWindow), failed, since)
