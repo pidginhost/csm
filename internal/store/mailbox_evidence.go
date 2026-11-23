@@ -52,6 +52,10 @@ type MailboxEvidence struct {
 	LastNewCountry time.Time       `json:"last_new_country,omitzero"`
 	ClearedAt      time.Time       `json:"cleared_at,omitzero"`
 	ReportedAt     *time.Time      `json:"reported_at,omitempty"`
+	// Sending is handled once a restriction stops the mailbox or sending
+	// evidence has had its own response. A withheld login response is not
+	// enough, including after a restart.
+	SendingHandled bool `json:"sending_handled,omitempty"`
 }
 
 func (e MailboxEvidence) empty() bool {

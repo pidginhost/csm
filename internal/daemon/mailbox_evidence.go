@@ -38,7 +38,7 @@ const (
 )
 
 const (
-	// Two independent signs. No single sign reaches it.
+	// Two weak signs, or one login after a brute-force run.
 	mailboxCompromiseScore = 4
 	// Evidence older than a week no longer describes the current session.
 	mailboxEvidenceTTL = 7 * 24 * time.Hour
@@ -198,7 +198,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (
 	if fresh && s.summary.Check != "" {
 		out = append(out, s.summary)
 	}
-	if e.ReportedAt != nil || mailboxEvidenceScore(e) < mailboxCompromiseScore {
+	if mailboxResponseReported(e) || mailboxEvidenceScore(e) < mailboxCompromiseScore {
 		return out
 	}
 
@@ -224,16 +224,22 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (
 	}
 	expireMailboxEvidence(&e, time.Now())
 	score := mailboxEvidenceScore(e)
-	if e.ReportedAt != nil || !s.at.After(e.ClearedAt) || score < mailboxCompromiseScore {
+	if mailboxResponseReported(e) || !s.at.After(e.ClearedAt) || score < mailboxCompromiseScore {
 		return out
 	}
-	f := response.finding(cfg, db, mailbox, e, score)
+	f, sendingHandled := response.finding(cfg, db, mailbox, e, score)
 	// A daemon restart between recording evidence and attempting the response
 	// must leave the next observation able to finish the incident.
-	if _, err := db.UpdateMailboxEvidence(mailbox, func(e *store.MailboxEvidence) { e.ReportedAt = &now }); err != nil {
+	if _, err := db.UpdateMailboxEvidence(mailbox, func(current *store.MailboxEvidence) {
+		current.ReportedAt = &now
+		current.SendingHandled = sendingHandled
+	}); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Warning: marking mailbox incident for %s: %v\n", ts(), mailbox, err)
 	}
-	return append(out, f)
+	if f.Check != "" {
+		out = append(out, f)
+	}
+	return out
 }
 
 // cPanel releases by address. Stalwart's account IDs have a separate
@@ -393,10 +399,22 @@ func (r evidenceResponse) currentEvidence(db *store.DB, mailbox string) (store.M
 	})
 }
 
-// finding suspends a mailbox whose evidence adds up and
-// returns the incident finding: what was done, on what evidence, and how to
-// undo it.
-func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox string, e store.MailboxEvidence, score int) alert.Finding {
+func mailboxSendingSignal(kind string) bool {
+	return kind == signalForgedSender || kind == signalBulkRecipients || kind == signalReputation
+}
+
+func mailboxHasSendingEvidence(e store.MailboxEvidence) bool {
+	return slices.ContainsFunc(e.Signals, func(s store.MailboxSignal) bool { return mailboxSendingSignal(s.Kind) })
+}
+
+func mailboxResponseReported(e store.MailboxEvidence) bool {
+	return e.ReportedAt != nil && (e.SendingHandled || !mailboxHasSendingEvidence(e))
+}
+
+// finding responds to evidence and describes the incident. An already
+// reported incident whose restrictions remain active needs no new finding.
+// The boolean says sending is handled, so later sends need no new response.
+func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox string, e store.MailboxEvidence, score int) (alert.Finding, bool) {
 	// Declaring the mailbox compromised withdraws its login standing in
 	// every response mode, as respondToCompromise does.
 	mailboxResponseStanding.Load().Revoke(mailbox)
@@ -410,10 +428,7 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		if !slices.Contains(kinds, s.Kind) {
 			kinds = append(kinds, s.Kind)
 		}
-		switch s.Kind {
-		case signalForgedSender, signalBulkRecipients, signalReputation:
-			sending = true
-		}
+		sending = sending || mailboxSendingSignal(s.Kind)
 	}
 	reason := fmt.Sprintf("compromise evidence scored %d: %s", score, strings.Join(kinds, ", "))
 
@@ -421,6 +436,7 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 	if sending {
 		evidence = evidenceSending
 	}
+	sendingHandled := sending
 	var applied store.MailboxSuspension
 	c := mailboxCompromise{Subject: mailbox, Ref: r.ref, Check: "email_mailbox_compromise", Reason: reason, Evidence: evidence, At: latest}
 	var verb, todo string
@@ -440,6 +456,7 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 			result = applyMailResponse(db, r.id, c)
 		}
 		applied = result.record
+		sendingHandled = sending || result.stopped
 		switch {
 		case result.withheld != "":
 			verb = "Would suspend"
@@ -453,6 +470,9 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 				todo += " CSM could not save the suspension. Check the action log and release the restrictions on the mail server."
 			}
 		case result.stopped:
+			if e.ReportedAt != nil {
+				return alert.Finding{}, true
+			}
 			verb, todo = "Already restricted", "The mailbox or its account is already restricted. Review the existing restrictions and change the mailbox password."
 		default:
 			verb, todo = "Could not suspend", "Protection could not be confirmed. Change the mailbox password now."
@@ -498,5 +518,5 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 	if tenant != "" {
 		f[0].TenantID = tenant
 	}
-	return f[0]
+	return f[0], sendingHandled
 }

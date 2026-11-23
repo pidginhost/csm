@@ -440,3 +440,48 @@ func TestMailboxSuspensionCapSparesSendingAbuse(t *testing.T) {
 		t.Fatalf("notices = %+v, want none for sending abuse", n)
 	}
 }
+
+// A sending suspension must finish and consume its slot before a concurrent
+// login response can decide whether the hosting account has room left.
+func TestMailboxSuspensionCapWaitsForSending(t *testing.T) {
+	db, _ := evidenceCase(t)
+	withCleanCapNotices(t)
+	putRows(t, db, cappedRow("a@victim.example", time.Minute), cappedRow("b@victim.example", time.Minute))
+	entered, finish := make(chan struct{}), make(chan struct{})
+	var loginCalls atomic.Int32
+	withLifecycleBackend(t, lifecycleBackend{
+		suspendFn: func(c mailboxCompromise) (store.MailboxSuspension, error) {
+			if c.Evidence == evidenceSending {
+				close(entered)
+				<-finish
+			} else {
+				loginCalls.Add(1)
+			}
+			return cpanelRow(c.Subject, store.AppliedSuspendLogin), nil
+		},
+	})
+	sent, logged := make(chan bool, 1), make(chan bool, 1)
+	go func() {
+		sent <- respondToCompromise(eximAutoHoldConfig(), sendingCompromise("c@victim.example", time.Now()))
+	}()
+	<-entered
+	go func() {
+		logged <- respondToCompromise(eximAutoHoldConfig(), loginCompromise("d@victim.example", time.Now()))
+	}()
+	var early bool
+	select {
+	case <-logged:
+		early = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(finish)
+	if !<-sent {
+		t.Fatal("sending response did not suspend")
+	}
+	if early {
+		t.Fatal("login response overtook the sending suspension")
+	}
+	if <-logged || loginCalls.Load() != 0 {
+		t.Fatal("sending suspension did not consume the last slot")
+	}
+}

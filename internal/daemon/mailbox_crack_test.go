@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -217,5 +218,91 @@ func TestBruteForceCrackSuspendsAlone(t *testing.T) {
 	}
 	if row := onlySuspension(t, db); row.Check != "email_mailbox_compromise" {
 		t.Fatalf("row = %+v", row)
+	}
+}
+
+// A login withheld by the hourly cap must not silence later sending abuse.
+func TestBruteForceCrackWithheldThenSendingSuspends(t *testing.T) {
+	for _, kind := range []string{signalForgedSender, signalBulkRecipients, signalReputation} {
+		t.Run(kind, func(t *testing.T) {
+			db, calls := evidenceCase(t)
+			withCleanCapNotices(t)
+			putRows(t, db, cappedRow("a@victim.example", time.Minute), cappedRow("b@victim.example", time.Minute), cappedRow("c@victim.example", time.Minute))
+			cfg := eximAutoHoldConfig()
+			f := stolenLogin("real@victim.example", alert.Critical)
+			f.BruteForced = true
+			inc := onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{f}))
+			if !strings.HasPrefix(inc.Message, "Would suspend") || len(*calls) != 0 {
+				t.Fatalf("login escaped cap: %+v, calls %v", inc, *calls)
+			}
+			// A buffered sending event can predate the incident's report time.
+			s := mailboxSignal{kind: kind, key: "example.net", at: f.Timestamp, detail: "sending abuse"}
+			inc = onlyIncident(t, observeMailboxSignal(cfg, f.Mailbox, s))
+			if !strings.HasPrefix(inc.Message, "Suspended mailbox") || len(*calls) != 2 {
+				t.Fatalf("sending was silenced: %+v, calls %v", inc, *calls)
+			}
+			if got := observeMailboxSignal(cfg, f.Mailbox, s); len(got) != 0 || len(*calls) != 2 {
+				t.Fatalf("sending repeated response: %+v, calls %v", got, *calls)
+			}
+		})
+	}
+}
+
+func TestBruteForceCrackReplayedFindingStaysWeak(t *testing.T) {
+	db, calls := evidenceCase(t)
+	f := stolenLogin("real@victim.example", alert.Critical)
+	f.BruteForced = true
+	data, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay alert.Finding
+	if err = json.Unmarshal(data, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if replay.BruteForced {
+		t.Fatal("replayed finding retained process-only evidence")
+	}
+	if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{replay}); len(got) != 0 || len(*calls) != 0 {
+		t.Fatalf("replayed finding suspended alone: %+v, %v", got, *calls)
+	}
+	e, err := db.GetMailboxEvidence(f.Mailbox)
+	if err != nil || mailboxEvidenceScore(e) != 2 {
+		t.Fatalf("replayed evidence = %+v, %v", e, err)
+	}
+}
+
+func TestBruteForceCrackHighAddsNoEvidence(t *testing.T) {
+	db, calls := evidenceCase(t)
+	f := stolenLogin("real@victim.example", alert.High)
+	f.BruteForced = true
+	if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{f}); len(got) != 0 || len(*calls) != 0 {
+		t.Fatalf("High finding acted: %+v, %v", got, *calls)
+	}
+	e, err := db.GetMailboxEvidence(f.Mailbox)
+	if err != nil || len(e.Signals) != 0 {
+		t.Fatalf("High finding added evidence: %+v, %v", e, err)
+	}
+}
+
+func TestBruteForceCrackSendingKeepsActiveIncident(t *testing.T) {
+	db, calls := evidenceCase(t)
+	cfg := eximAutoHoldConfig()
+	f := stolenLogin("real@victim.example", alert.Critical)
+	f.BruteForced = true
+	onlyIncident(t, stolenLoginResponses(cfg, []alert.Finding{f}))
+	row := onlySuspension(t, db)
+	withLifecycleBackend(t, lifecycleBackend{
+		activeFn: func([]store.MailboxSuspension) (map[string]bool, error) {
+			return map[string]bool{row.ID: true}, nil
+		},
+		suspendFn: func(mailboxCompromise) (store.MailboxSuspension, error) {
+			t.Error("active suspension repeated")
+			return row, nil
+		},
+	})
+	s := mailboxSignal{kind: signalForgedSender, at: f.Timestamp, detail: "sending abuse"}
+	if got := observeMailboxSignal(cfg, f.Mailbox, s); len(got) != 0 || len(*calls) != 2 {
+		t.Fatalf("active incident reported twice: %+v, calls %v", got, *calls)
 	}
 }

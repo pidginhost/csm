@@ -571,6 +571,10 @@ type mailAccountEntry struct {
 	// untrustedCompromiseSuppressed is the quiet period of alerts from
 	// logins read from a log any local user can write.
 	untrustedCompromiseSuppressed time.Time
+	// A weak crack must not silence a later guessed login that can suspend
+	// on its own. Both classes use the configured alert quiet period.
+	bruteCompromiseSuppressed          time.Time
+	untrustedBruteCompromiseSuppressed time.Time
 	// Standing advisories cannot silence a later crack after the cap is
 	// exceeded. Keep trusted and untrusted logins independent here too.
 	standingCompromiseSuppressed          time.Time
@@ -1305,8 +1309,14 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	// softens a compromise but must not turn it into a clean success.
 	// A mailbox that already succeeds from this IP, or that it held good
 	// source on before the failures, is a legit owner who mistyped.
-	compromise := len(e.failedAccounts[account]) >= 2 &&
-		!e.accountSuccessDominant(account) && !e.establishedGood(account, now, t.window)
+	failures := t.accountFailures(ip, account, cutoff)
+	successes, established := 0, false
+	for _, alias := range aliasEntries(t.ips, ip, t.aliased) {
+		successes += countTimesAtOrAfter(alias.successAccounts[account], cutoff)
+		established = established || alias.establishedGood(account, now, t.window)
+	}
+	compromise := failures >= 2 && successes < failures && !established
+	bruteForced := failures >= t.perIPThreshold
 	// A guessed-password success should not train the long-lived good-source cache.
 	degraded := t.backendDegraded(now) || (t.backendDownFn != nil && t.backendDownFn())
 	recordGoodSource := !degraded && trusted && !compromise
@@ -1345,6 +1355,9 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 			findings = []alert.Finding{*sprayed}
 		// At equal severity a spray block keeps its own block length.
 		case sprayed.Severity > findings[0].Severity || (sprayed.Severity == findings[0].Severity && sprayed.BlockTTL > 0):
+			// The spray verdict chooses the block duration, not the weight
+			// of the same login's independently observed crack evidence.
+			sprayed.BruteForced = findings[0].Severity == alert.Critical && findings[0].BruteForced
 			findings[0] = *sprayed
 		}
 	}()
@@ -1358,8 +1371,10 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	// A login read from a log any local user can write still alerts, but it
 	// must not remove standing or trust that real logins earned.
 	if trusted && !standing {
-		delete(e.goodFirst, account)
-		delete(e.goodLast, account)
+		for _, alias := range aliasEntries(t.ips, ip, t.aliased) {
+			delete(alias.goodFirst, account)
+			delete(alias.goodLast, account)
+		}
 		// Whoever cracked the mailbox may have earned standing on it from
 		// other addresses first; the owner earns it again.
 		t.standing.Revoke(sprayMailbox)
@@ -1380,6 +1395,12 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	if !trusted {
 		suppressed = &a.untrustedCompromiseSuppressed
 	}
+	if bruteForced {
+		suppressed = &a.bruteCompromiseSuppressed
+		if !trusted {
+			suppressed = &a.untrustedBruteCompromiseSuppressed
+		}
+	}
 	if standing {
 		suppressed = &a.standingCompromiseSuppressed
 		if !trusted {
@@ -1390,6 +1411,14 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		return nil
 	}
 	*suppressed = now.Add(t.suppression)
+	if bruteForced && !standing {
+		// A stronger alert also quiets weaker repeats for this mailbox.
+		if trusted {
+			a.compromiseSuppressed = *suppressed
+		} else {
+			a.untrustedCompromiseSuppressed = *suppressed
+		}
+	}
 	_, compDomain := alert.SplitEmail(loginAccount)
 	t.findingsEmitted++
 	severity := alert.Critical
@@ -1424,7 +1453,7 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		Attribution: admission.AttributionPeer,
 		Domain:      compDomain,
 		Mailbox:     loginAccount,
-		BruteForced: t.accountFailures(ip, account, now.Add(-t.window)) >= t.perIPThreshold,
+		BruteForced: bruteForced,
 	}}
 }
 

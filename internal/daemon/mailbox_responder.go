@@ -192,16 +192,18 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		}
 	}
 
-	// Sending abuse is active harm and is never held back; the cap bounds
-	// suspensions on login evidence, where false alarms come from.
-	if db != nil && strings.Contains(c.Subject, "@") && c.Evidence == evidenceLogin {
+	// Sending abuse bypasses the cap but still consumes a slot. Serialize
+	// its record with login decisions so they see every completed response.
+	if db != nil && strings.Contains(c.Subject, "@") {
 		mailboxCapMu.Lock()
 		defer mailboxCapMu.Unlock()
 		// Count at lock acquisition: status reads and other suspensions
 		// may have completed while this caller waited.
-		if label, capped := capMailboxSuspension(db, id, c, time.Now()); capped {
-			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s not suspended: %s reached its hourly limit\n", stamp, c.Subject, label)
-			return mailResponseResult{withheld: label}
+		if c.Evidence == evidenceLogin {
+			if label, capped := capMailboxSuspension(db, id, c, time.Now()); capped {
+				fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s not suspended: %s reached its hourly limit\n", stamp, c.Subject, label)
+				return mailResponseResult{withheld: label}
+			}
 		}
 	}
 	c.Previous = uncertain
@@ -271,10 +273,10 @@ func mailRestrictionDetails(rec store.MailboxSuspension) string {
 var hostHasMailBackend = func() bool { return platform.Detect().IsCPanel() }
 
 // stolenLoginResponses records each Critical login after brute force as
-// crack evidence in its mailbox's ledger; with another sign the evidence
-// incident suspends the mailbox. High findings (login standing, an
-// established multi-mailbox source, spray advisories) add nothing. A bare
-// login names no mailbox the ledger can hold, so it only alerts.
+// crack evidence in its mailbox's ledger. A guessed login needs no other
+// sign to suspend; a weaker crack does. High findings (login standing, an
+// established multi-mailbox source, spray advisories) add nothing. A guessed
+// bare cPanel account login holds its outgoing mail.
 func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	var out []alert.Finding
 	for _, f := range findings {
@@ -314,6 +316,10 @@ func stolenLoginResponses(cfg *config.Config, findings []alert.Finding) []alert.
 // holdCrackedAccount holds the outgoing mail of a cPanel account whose own
 // login was guessed, and tells staff what was done and what is left to them.
 func holdCrackedAccount(cfg *config.Config, subject string, f alert.Finding) []alert.Finding {
+	// A buffered account login must expire just like mailbox evidence.
+	if f.Timestamp.Before(time.Now().Add(-mailboxEvidenceTTL)) {
+		return nil
+	}
 	res := compromiseResponse(cfg, mailboxCompromise{Subject: subject, Check: f.Check, Reason: f.Message, Evidence: evidenceLogin, At: f.Timestamp})
 	if !res.changed && res.err == nil {
 		return nil
@@ -327,7 +333,12 @@ func holdCrackedAccount(cfg *config.Config, subject string, f alert.Finding) []a
 		out.Details = "Protection could not be confirmed. Change the cPanel password now."
 	} else {
 		out.Message = fmt.Sprintf("Outgoing mail held for cPanel account %s after its own password was guessed", out.TenantID)
-		out.Details = "That password unlocks every mailbox and the cPanel login. Change the cPanel password, then release the hold on the Email page, Suspended tab."
+		out.Details = "That password unlocks every mailbox and the cPanel login. Change the cPanel password."
+		if res.recorded {
+			out.Details += " Then release the hold on the Email page, Suspended tab."
+		} else {
+			out.Details += " CSM could not save the suspension. Check the action log and release the hold on the mail server."
+		}
 	}
 	return []alert.Finding{out}
 }

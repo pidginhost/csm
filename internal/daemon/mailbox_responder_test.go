@@ -904,3 +904,55 @@ func TestStolenLoginResponses_BruteForcedBareLoginGated(t *testing.T) {
 		t.Fatalf("gated-off response held %v", *users)
 	}
 }
+
+func TestBruteForcedAccountIgnoresExpiredLogin(t *testing.T) {
+	db := withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withCPanelUsers(t, "cpuser")
+	users := stubCPanelHold(t, true)
+	captureActionRecords(t)
+	f := stolenLogin("cpuser", alert.Critical)
+	f.BruteForced = true
+	f.Timestamp = time.Now().Add(-mailboxEvidenceTTL - time.Hour)
+	if got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{f}); len(got) != 0 || len(*users) != 0 {
+		t.Fatalf("expired login held account: findings=%+v holds=%v", got, *users)
+	}
+	if rows, err := db.ListMailboxSuspensions(); err != nil || len(rows) != 0 {
+		t.Fatalf("expired login recorded: %+v, %v", rows, err)
+	}
+}
+
+func TestBruteForcedAccountReportsUnrecordedHold(t *testing.T) {
+	db := withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withCPanelUsers(t, "cpuser")
+	users := stubCPanelHold(t, true)
+	captureActionRecords(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f := stolenLogin("cpuser", alert.Critical)
+	f.BruteForced = true
+	got := stolenLoginResponses(eximAutoHoldConfig(), []alert.Finding{f})
+	if len(*users) != 1 || len(got) != 1 || !strings.Contains(got[0].Details, "could not save") ||
+		strings.Contains(got[0].Details, "Suspended tab") {
+		t.Fatalf("unrecorded hold offered UI release: findings=%+v holds=%v", got, *users)
+	}
+}
+
+func TestBruteForcedAccountIgnoresMailboxSwitch(t *testing.T) {
+	withMailboxStore(t)
+	withMailBackendHost(t, true)
+	withCPanelUsers(t, "cpuser")
+	users := stubCPanelHold(t, true)
+	captureActionRecords(t)
+	cfg := eximAutoHoldConfig()
+	disabled := false
+	cfg.AutoResponse.SuspendMailboxes = &disabled
+	f := stolenLogin("cpuser", alert.Critical)
+	f.BruteForced = true
+	got := stolenLoginResponses(cfg, []alert.Finding{f})
+	if len(*users) != 1 || len(got) != 1 || !strings.HasPrefix(got[0].Message, "Outgoing mail held") {
+		t.Fatalf("mailbox switch gated account hold: %+v, %v", got, *users)
+	}
+}
