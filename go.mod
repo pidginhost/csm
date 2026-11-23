@@ -13,7 +13,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.4
 	github.com/mdlayher/netlink v1.11.2
 	github.com/oschwald/maxminddb-golang/v2 v2.9.0
 	github.com/redis/go-redis/v9 v9.23.0
