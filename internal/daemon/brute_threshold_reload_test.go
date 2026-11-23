@@ -239,6 +239,8 @@ func TestSprayConfigFromThresholds(t *testing.T) {
 	th.MailSprayBlockExpiry = "48h"
 	th.SMTPBruteForceWindowMin = 10
 	th.MailBruteForceWindowMin = 15
+	th.SMTPBruteForceSlowWindowMin = 360
+	th.MailBruteForceSlowWindowMin = 240
 	th.SMTPBruteForceSuppressMin = 90
 	th.MailBruteForceSuppressMin = 60
 	th.SMTPBruteForceMaxTracked = 3000
@@ -252,9 +254,17 @@ func TestSprayConfigFromThresholds(t *testing.T) {
 		Suppression:      90 * time.Minute, // the longer suppression
 		MaxIPs:           5000,             // both trackers' caps
 		BlockTTL:         48 * time.Hour,
+		EpisodeWindow:    360 * time.Minute, // the longest failure window
 	}
 	if got := sprayConfigFromThresholds(cfg); got != want {
 		t.Fatalf("sprayConfigFromThresholds = %+v, want %+v", got, want)
+	}
+	// Either protocol's slow window can keep a failure episode active.
+	for _, windows := range [][2]int{{360, 120}, {120, 360}} {
+		th.SMTPBruteForceSlowWindowMin, th.MailBruteForceSlowWindowMin = windows[0], windows[1]
+		if got := sprayConfigFromThresholds(cfg).EpisodeWindow; got != 6*time.Hour {
+			t.Fatalf("EpisodeWindow for slow windows %v = %v, want 6h", windows, got)
+		}
 	}
 
 	// An unset or unparseable block length falls back to the default.

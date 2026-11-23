@@ -602,7 +602,7 @@ Signals:
 | `smtp_probe_abuse` | A single attacker IP exceeds the raw SMTP connect-rate threshold before AUTH | IP blocked via nftables |
 | `smtp_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `smtp_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
-| `mail_bruteforce_suspected` | Spray detection in observe mode: the spray rules matched an SMTP source. The message names SMTP and the rule | Visibility finding only |
+| `mail_bruteforce_suspected` | Spray detection in observe mode: the spray rules matched an SMTP source, or an address failed only on mailboxes it has [login standing](#login-standing) on. The message names SMTP | Visibility finding only |
 | `mail_account_compromised` | A successful SMTP login after failures on two or more mailboxes including another one, or on a missing one, or after repeated failures on the same mailbox, the first at least an hour before the login | Critical only in enforce mode when a failed name was a missing mailbox many networks tried, and the IP is then blocked and the mailbox suspended under auto-response. A source trusted on two or more other mailboxes is downgraded. Every other case is a High advisory, visibility only |
 
 Tunable via the `thresholds.smtp_bruteforce_*`, `thresholds.smtp_probe_*` and `thresholds.mail_spray_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
@@ -665,10 +665,10 @@ Signals:
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
 | `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window without matching successful mailbox activity, or, with spray detection in enforce mode, fails on several mailboxes it holds no trust for or, on cPanel hosts, on a missing mailbox many networks tried | IP blocked via nftables |
-| `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern, or spray detection in observe mode matched an IMAP/POP source. The spray message names IMAP/POP and the rule | Visibility finding only. No auto-block |
+| `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern, an address fails only on mailboxes it has [login standing](#login-standing) on, or spray detection in observe mode matched an IMAP/POP source. The spray message names IMAP/POP and the rule | Visibility finding only. No auto-block |
 | `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
-| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on two or more mailboxes including another one, or on a missing one, or repeated failures on the same mailbox, the first at least an hour before the login | Critical findings block immediately and, under auto-response on cPanel or on Stalwart with its API key, suspend the mailbox (a cPanel account's own login holds the account's outgoing mail instead). A source with established history on at least two other mailboxes from before its current untrusted failures emits a High advisory and is not auto-blocked. A login after failures on other mailboxes is Critical only in enforce mode when one of them was a missing mailbox many networks tried; every other spray case is a High advisory |
+| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on two or more mailboxes including another one, or on a missing one, or repeated failures on the same mailbox, the first at least an hour before the login | Critical findings block immediately and, under auto-response on cPanel or on Stalwart with its API key, suspend the mailbox (a cPanel account's own login holds the account's outgoing mail instead). A source with established history on at least two other mailboxes from before its current untrusted failures, or with [login standing](#login-standing) on the mailbox from before the failures, emits a High advisory and is not auto-blocked; the mailbox is not suspended. A login after failures on other mailboxes is Critical only in enforce mode when one of them was a missing mailbox many networks tried; every other spray case is a High advisory |
 
 Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Established good sources with a confined stale-password pattern emit `mail_bruteforce_suspected` instead of an IP block, while wider spraying and compromise from a source without established multi-mailbox history still block. A compromise from an IP with established history on at least two other mailboxes from before its current untrusted failures remains visible as a High advisory but does not feed direct, incident, or spray auto-blocking. The `mail_bruteforce` and `mail_bruteforce_suspected` alerts name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so a real attack on a live mailbox is easy to tell apart from dictionary noise.
 
@@ -687,6 +687,62 @@ mail log file, which any local user can write, never qualifies. The last trusted
 mail login is saved independently of FTP and cPanel activity, which cannot erase
 or renew the exemption. Older saved customer summaries without verified mail
 history do not qualify; a new trusted mail login is required.
+
+### Login standing
+
+An address has login standing on a mailbox when trusted logins from that exact
+address to that mailbox began at least a day before its current failures, fall
+on at least two different days (UTC), and the latest of them was within two
+weeks of the failures starting. The earliest active failure episode across all
+spellings of that address sets this cutoff for both earning standing and
+softening findings. Logins after the failures began never count, so a login
+cannot excuse the attack it follows. IMAP, POP, ManageSieve and SMTP
+share one standing per mailbox, since they use one password. An IPv6 address is
+judged on its own, not by its /64.
+
+A burst of failed logins, fast or paced, from an address that only fails on
+mailboxes it has standing on raises `mail_bruteforce_suspected` instead of a
+block: the usual cause is a device still trying an old saved password. A login
+that the IMAP/POP/ManageSieve tracker would otherwise report as a password crack
+raises `mail_account_compromised` at High when the address had standing on that
+mailbox before the failures: no block or mailbox suspension from that finding,
+and the address keeps its trust. The existing good-source and success-dominance
+exemptions still raise no compromise finding. Separate spray verdicts still
+apply. Standing never excuses failures on any other mailbox, failures that name
+no mailbox, spray, subnet or account-spray detection, or SSH, FTP and cPanel
+logins.
+
+Standing excuses at most ten times the brute-force threshold
+(`mail_bruteforce_threshold`, or `smtp_bruteforce_threshold` for SMTP) of
+failures on one mailbox within the brute-force window. A device retrying an old
+saved password stays far below that; a guessing tool does not. Past it the
+mailbox has no standing for that address: the failures block as they would
+without standing, and a login after them is reported as a password crack.
+Alternate spellings of the same address share this count, and each protocol is
+counted on its own. An earlier standing advisory never silences the
+password-crack alert that follows once the cap is passed. The existing
+good-source exemptions are unchanged.
+
+Standing is earned only from trusted logins the trackers treat as clean: lines
+the mail service itself recorded, not a mail log file; not during an
+authentication backend outage; not a login the spray memory calls unclean or the
+tracker calls a cracked password; and not a login after failures on its own
+mailbox, or failures naming no mailbox, from the same address in its current
+failures over any of these protocols, unless the address already had standing
+when they began. This earning check uses shared spray evidence, including IPv6
+/64 evidence; it does not change the exact-address cutoff for softening a
+compromise finding. An idle gap longer than the trackers' failure windows starts
+a new episode even while older spray evidence remains. An
+IMAP/POP/ManageSieve password crack from an address without prior standing, and any
+mailbox response to a compromise, remove the mailbox's standing from every
+address; the owner earns it again from new logins. Mailbox response withdraws
+standing even in dry run or with auto-response disabled. SMTP has no separate
+password-crack detector that revokes standing.
+
+Standing is saved every minute and at shutdown, and is never written to backups
+or exports. The index is bounded: a mailbox drops its least recently used
+address when full, and a full index refuses new addresses rather than removing
+any, so a flood of logins can never stop a block. There is no setting.
 
 ## Stalwart Mail Server
 

@@ -668,3 +668,18 @@ func FuzzDecodePlacementEvent(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseStandingKey(f *testing.F) {
+	for _, raw := range []string{"", "203.0.113.5 a b@example.com", "2001:db8::1 box@example.com", "::ffff:203.0.113.5 box@example.com", "203.0.113.5 \xff@example.com"} {
+		f.Add(raw)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		key, ok := parseStandingKey(raw)
+		if !ok {
+			return
+		}
+		if key.String() != raw || key.mailbox == "" || key.mailbox != normalizeSprayMailbox(key.mailbox) || key.addr.Is4In6() || key.addr.Zone() != "" {
+			t.Fatal("accepted a noncanonical standing key")
+		}
+	})
+}

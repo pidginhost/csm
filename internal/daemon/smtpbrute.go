@@ -27,6 +27,20 @@ type smtpIPEntry struct {
 	slowUnvouched time.Time
 	suppressed    time.Time
 	lastSeen      time.Time
+	// fastAccounts and fastUnvouched are slowAccounts and slowUnvouched for
+	// the fast window, so a burst confined to mailboxes the address has
+	// login standing on can be told from one that may target anything.
+	// fastAccounts keeps each mailbox's newest failure times, enough to tell
+	// whether standing still excuses it.
+	fastAccounts  map[string][]time.Time
+	fastUnvouched time.Time
+	// suspectedSuppressed rate-limits the login standing advisory on its
+	// own clock, shared by the fast and slow paths, so a later burst on
+	// other mailboxes still reaches the block.
+	suspectedSuppressed time.Time
+	// episodeStart is the first failure since the fast and slow windows
+	// were last both empty; login standing is judged as of it.
+	episodeStart time.Time
 }
 
 // evictionRank keeps meaningful accumulated evidence behind disposable
@@ -98,6 +112,23 @@ func appendSlowFailure(times []time.Time, ts time.Time) []time.Time {
 	return times
 }
 
+// recordFastAccount is recordSlowAccount keeping each mailbox's newest
+// failure times in the window, at most keep of them.
+func recordFastAccount(accounts map[string][]time.Time, account string, now, cutoff time.Time, keep int) (map[string][]time.Time, bool) {
+	pruneMailAccountTimes(accounts, cutoff)
+	if account == "" {
+		return accounts, false
+	}
+	if _, exists := accounts[account]; !exists && len(accounts) >= slowBruteMaxAccountsPerIP {
+		return accounts, false
+	}
+	accounts = appendMailAccountTime(accounts, account, now)
+	if times := accounts[account]; len(times) > keep {
+		accounts[account] = times[len(times)-keep:]
+	}
+	return accounts, true
+}
+
 // recordSlowAccount prunes before insertion and refuses new keys after the
 // per-IP cap. Three distinct live keys are sufficient for detection, so a
 // capped map preserves the signal while preventing unique-name memory growth.
@@ -164,6 +195,10 @@ type smtpAuthTracker struct {
 	// Set once at startup before log readers begin; read without mu.
 	knownCustomers *knownCustomers
 
+	// standing, when set, holds login standing shared with the IMAP/POP
+	// tracker. Set once at startup before log readers begin.
+	standing *loginStanding
+
 	// Postfix SMTP AUTH pairing state (see smtp_auth_pairing.go), bounded by
 	// maxTracked entries each and expired after smtpAuthPairWindow.
 	pendingVerdicts          map[string][]smtpPendingVerdict
@@ -202,6 +237,14 @@ func (t *smtpAuthTracker) SetSpray(m *mailSpray) {
 // before log readers begin.
 func (t *smtpAuthTracker) SetKnownCustomers(k *knownCustomers) {
 	t.knownCustomers = k
+}
+
+// SetLoginStanding installs the login standing index. Set once at startup
+// before log readers begin.
+func (t *smtpAuthTracker) SetLoginStanding(s *loginStanding) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.standing = s
 }
 
 // newSMTPAuthTracker constructs a tracker. `now` is injected so tests can
@@ -312,21 +355,62 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.times = pruneTimes(e.times, cutoff)
+	if len(e.times) == 0 && !hasTimeAtOrAfter(e.slowTimes, now.Add(-t.slowWindow)) {
+		e.episodeStart = now
+	}
 	e.times = append(e.times, now)
+	limit := standingFailureCap * t.perIPThreshold
+	overCap := func(account string) bool { return t.standingFailureOverCap(ip, account, cutoff) }
+	var trackedFast bool
+	// Retain enough history for any validated threshold reload, not just
+	// today's limit. The existing slow-history bound exceeds the largest
+	// accepted fast threshold's standing cap.
+	e.fastAccounts, trackedFast = recordFastAccount(e.fastAccounts, normalizeMailAuthAccount(account), now, cutoff, max(slowBruteMaxTimesPerIP, limit+1))
+	if !trackedFast {
+		e.fastUnvouched = now
+	}
+	if e.fastUnvouched.Before(cutoff) {
+		e.fastUnvouched = time.Time{}
+	}
 	e.lastSeen = now
+	// Standing is judged as of the address's earliest active episode under
+	// any spelling. Finding it scans the aliases, so only a standing
+	// decision asks for it, not every failure of a flood.
+	var standingStart time.Time
+	standingAsOf := func() time.Time {
+		if standingStart.IsZero() {
+			standingStart = e.episodeStart
+			if t.standing != nil && t.aliased {
+				_, standingStart = t.episodeFailedOn(ip, "")
+			}
+		}
+		return standingStart
+	}
 
-	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) && !degraded {
-		e.suppressed = now.Add(t.suppression)
-		findings = append(findings, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "smtp_bruteforce",
-			Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths in %v",
-				ip, len(e.times), t.window),
-			Details:     "Real-time detection of dovecot_login auth failures",
-			Timestamp:   now,
-			SourceIP:    ip,
-			Attribution: admission.AttributionPeer,
-		})
+	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold && !degraded {
+		switch {
+		case standingConfined(t.standing, ip, e.fastAccounts, e.fastUnvouched, standingAsOf(), overCap):
+			// Every failure names a mailbox this address has login standing
+			// on: a device with an old saved password. It never falls
+			// through to the block.
+			if !now.Before(e.suspectedSuppressed) {
+				e.suspectedSuppressed = now.Add(t.suppression)
+				findings = append(findings, loginStandingAdvisory("SMTP", ip, fmt.Sprintf("%d failed auths in %v", len(e.times), t.window),
+					formatStandingTargets(e.fastAccounts), now))
+			}
+		case !now.Before(e.suppressed):
+			e.suppressed = now.Add(t.suppression)
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "smtp_bruteforce",
+				Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths in %v",
+					ip, len(e.times), t.window),
+				Details:     "Real-time detection of dovecot_login auth failures",
+				Timestamp:   now,
+				SourceIP:    ip,
+				Attribution: admission.AttributionPeer,
+			})
+		}
 	}
 
 	// --- Long-horizon slow-brute tracker ---
@@ -356,20 +440,30 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 				e.slowUnvouched = time.Time{}
 			}
 			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
-				len(e.slowAccounts) >= slowBruteMinAccounts &&
-				!now.Before(e.suppressed) &&
-				!slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched) {
-				e.suppressed = now.Add(t.suppression)
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "smtp_bruteforce",
-					Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
-						ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
-					Details:     "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
-					Timestamp:   now,
-					SourceIP:    ip,
-					Attribution: admission.AttributionPeer,
-				})
+				len(e.slowAccounts) >= slowBruteMinAccounts {
+				switch {
+				case slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched):
+					// Aged login trust on every mailbox: silent, as before.
+				case standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingAsOf(), overCap):
+					if !now.Before(e.suspectedSuppressed) {
+						e.suspectedSuppressed = now.Add(t.suppression)
+						findings = append(findings, loginStandingAdvisory("SMTP", ip,
+							fmt.Sprintf("%d paced auth failures across %d mailboxes in %v", len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+							formatStandingTargets(e.slowAccounts), now))
+					}
+				case !now.Before(e.suppressed):
+					e.suppressed = now.Add(t.suppression)
+					findings = append(findings, alert.Finding{
+						Severity: alert.Critical,
+						Check:    "smtp_bruteforce",
+						Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
+							ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+						Details:     "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
+						Timestamp:   now,
+						SourceIP:    ip,
+						Attribution: admission.AttributionPeer,
+					})
+				}
 			}
 		}
 	}
@@ -388,7 +482,7 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		var v *sprayVerdict
 		for _, name := range names {
 			// Every name is evidence; one failure still raises one verdict.
-			if nv := t.spray.Failure(ip, name, exist); v == nil {
+			if nv := t.spray.failureInEpisode(ip, name, exist, e.episodeStart, max(t.window, t.slowWindow)); v == nil {
 				v = nv
 			}
 		}
@@ -517,12 +611,119 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 	if t.spray == nil || (!trusted && !t.fileLines) || (t.backendDownFn != nil && t.backendDownFn()) {
 		return nil
 	}
-	_, v := t.spray.Success(ip, mailbox)
+	clean, v := t.spray.Success(ip, mailbox)
+	// Only a clean login from the service's own log earns login standing,
+	// and not one after failures on its own mailbox, or ones naming none, in
+	// the address's current episode: that may be a guessed password the
+	// spray memory still calls clean. An address that had standing when the
+	// failures began is the owner.
+	if clean && trusted {
+		failed, since := t.episodeFailedOn(ip, mailbox)
+		// The IMAP tracker's failures reach only the shared spray memory.
+		failed, since = otherProtocolFailures(t.spray, ip, mailbox, max(t.window, t.slowWindow), failed, since)
+		if !failed || t.standing.Has(ip, mailbox, since) {
+			t.standing.Note(ip, mailbox, at)
+		}
+	}
 	if v == nil {
 		return nil
 	}
 	t.findingsEmitted++
 	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
+}
+
+// aliasEntries returns the entries ips holds for ip's address under every
+// spelling: only the canonical key until the map holds an alias, then every
+// key with the same canonical address. Logs can spell one address two ways.
+func aliasEntries[E any](ips map[string]E, ip string, aliased bool) []E {
+	canon := sprayAddr(ip)
+	if !aliased {
+		if e, ok := ips[canon]; ok {
+			return []E{e}
+		}
+		return nil
+	}
+	var out []E
+	for addr, e := range ips {
+		if sprayAddr(addr) == canon {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// standingFailureOverCap counts one mailbox across spellings of the same
+// address. Alias entries may not have been pruned yet. Caller holds t.mu.
+func (t *smtpAuthTracker) standingFailureOverCap(ip, account string, cutoff time.Time) bool {
+	limit := standingFailureCap * t.perIPThreshold
+	n := 0
+	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		n += countTimesAtOrAfter(e.fastAccounts[account], cutoff)
+		if n > limit {
+			return true
+		}
+	}
+	return false
+}
+
+// episodeFailedOn reports whether ip's current failures, under any spelling
+// of the address, include one on the normalised mailbox or one that named
+// none, and when the address's active episode began. Caller must hold t.mu.
+func (t *smtpAuthTracker) episodeFailedOn(ip, mailbox string) (bool, time.Time) {
+	now := t.now()
+	cutoff, slowCutoff := now.Add(-t.window), now.Add(-t.slowWindow)
+	failed, since := false, time.Time{}
+	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		if !hasTimeAtOrAfter(e.times, cutoff) && !hasTimeAtOrAfter(e.slowTimes, slowCutoff) {
+			continue
+		}
+		// The address's episode began at its earliest active failure under
+		// any spelling, whichever mailbox that failure named.
+		if since.IsZero() || e.episodeStart.Before(since) {
+			since = e.episodeStart
+		}
+		failed = failed ||
+			!e.fastUnvouched.IsZero() && !e.fastUnvouched.Before(cutoff) ||
+			!e.slowUnvouched.IsZero() && !e.slowUnvouched.Before(slowCutoff) ||
+			failedOnMailboxSince(e.fastAccounts, mailbox, cutoff) || failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
+	}
+	return failed, since
+}
+
+// otherProtocolFailures folds the shared spray memory's failures on mailbox
+// into a tracker's own episode answer: standing is shared by both protocols,
+// so a guess over one must keep the other's login from earning it. The
+// episode start becomes the earlier of the two.
+func otherProtocolFailures(spray *mailSpray, ip, mailbox string, within time.Duration, failed bool, since time.Time) (bool, time.Time) {
+	sprayFailed, first := spray.FailedOn(ip, mailbox, within)
+	if !sprayFailed {
+		return failed, since
+	}
+	if since.IsZero() || first.Before(since) {
+		since = first
+	}
+	return true, since
+}
+
+// failedOnMailbox reports whether accounts holds a failure at or after
+// cutoff on the normalised mailbox.
+func failedOnMailbox(accounts map[string]time.Time, mailbox string, cutoff time.Time) bool {
+	for account, at := range accounts {
+		if !at.Before(cutoff) && normalizeSprayMailbox(account) == mailbox {
+			return true
+		}
+	}
+	return false
+}
+
+// failedOnMailboxSince is failedOnMailbox for per-mailbox failure times.
+func failedOnMailboxSince(accounts map[string][]time.Time, mailbox string, cutoff time.Time) bool {
+	for account, times := range accounts {
+		if hasTimeAtOrAfter(times, cutoff) && normalizeSprayMailbox(account) == mailbox {
+			return true
+		}
+	}
+	return false
 }
 
 // Forget drops ip's failure counts and pending rejections after an operator
@@ -620,6 +821,10 @@ func (t *smtpAuthTracker) Purge() {
 
 	for k, e := range t.ips {
 		e.times = pruneTimes(e.times, now.Add(-t.window))
+		pruneMailAccountTimes(e.fastAccounts, now.Add(-t.window))
+		if e.fastUnvouched.Before(now.Add(-t.window)) {
+			e.fastUnvouched = time.Time{}
+		}
 		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 		pruneSlowAccounts(e.slowAccounts, slowCutoff)
 		if e.slowUnvouched.Before(slowCutoff) {

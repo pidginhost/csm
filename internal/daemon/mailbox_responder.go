@@ -89,6 +89,10 @@ func lockMailResponse(key string) func() {
 // an active suspension, and after a release acts again only on evidence
 // dated after it.
 func respondToCompromise(cfg *config.Config, c mailboxCompromise) (stopped bool, findings []alert.Finding) {
+	// The detection withdraws the mailbox's login standing whatever the
+	// response mode does on the mail server: whoever cracked it may have
+	// earned standing on it.
+	mailboxResponseStanding.Load().Revoke(c.Subject)
 	now := time.Now()
 	stamp := now.Format("2006-01-02 15:04:05")
 	if cfg == nil || !cfg.AutoResponse.Enabled {

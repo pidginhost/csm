@@ -389,6 +389,9 @@ func (r evidenceResponse) currentEvidence(db *store.DB, mailbox string) (store.M
 // returns the incident finding: what was done, on what evidence, and how to
 // undo it.
 func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox string, e store.MailboxEvidence, score int) alert.Finding {
+	// Declaring the mailbox compromised withdraws its login standing in
+	// every response mode, as respondToCompromise does.
+	mailboxResponseStanding.Load().Revoke(mailbox)
 	signals := slices.Clone(e.Signals)
 	slices.SortFunc(signals, func(a, b store.MailboxSignal) int { return a.First.Compare(b.First) })
 	var latest time.Time

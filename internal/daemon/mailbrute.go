@@ -47,6 +47,10 @@ type mailIPEntry struct {
 	// escalation to a real spray can still reach the auto-block path.
 	suspectedSuppressed time.Time
 	lastSeen            time.Time
+	// episodeStart is the first failure since the fast and slow failure
+	// windows were last both empty. Login standing is judged as of it, so
+	// a login after an attack began cannot excuse that attack.
+	episodeStart time.Time
 }
 
 // recordGoodAuth notes a successful auth for account at now, maintaining the
@@ -156,6 +160,24 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 	}
 	// Accountless failures (no user= in the log line) could target anything; a
 	// good source's standing must not hide them.
+	return named == len(e.times)
+}
+
+// confinedToStanding is establishedGoodConfined where a failing mailbox may
+// also be one the address has login standing on (has). The caller applies
+// the failure cap across address aliases in has, holds t.mu and prunes the
+// window state.
+func (e *mailIPEntry) confinedToStanding(now time.Time, window time.Duration, has func(account string) bool) bool {
+	if len(e.failedAccounts) == 0 {
+		return false
+	}
+	named := 0
+	for account, times := range e.failedAccounts {
+		named += len(times)
+		if !e.establishedGood(account, now, window) && !has(account) {
+			return false
+		}
+	}
 	return named == len(e.times)
 }
 
@@ -549,7 +571,11 @@ type mailAccountEntry struct {
 	// untrustedCompromiseSuppressed is the quiet period of alerts from
 	// logins read from a log any local user can write.
 	untrustedCompromiseSuppressed time.Time
-	lastSeen                      time.Time
+	// Standing advisories cannot silence a later crack after the cap is
+	// exceeded. Keep trusted and untrusted logins independent here too.
+	standingCompromiseSuppressed          time.Time
+	untrustedStandingCompromiseSuppressed time.Time
+	lastSeen                              time.Time
 }
 
 // mailBackendDegradedThreshold is how many auth-backend failure observations
@@ -644,10 +670,23 @@ type mailAuthTracker struct {
 	// Set once at startup before log readers begin; read without mu.
 	knownCustomers *knownCustomers
 
+	// standing, when set, holds login standing shared with the SMTP
+	// tracker: trusted logins it earns, and failures confined to mailboxes
+	// with standing get an advisory instead of a block. Set once at startup.
+	standing *loginStanding
+
 	// aliased is set once ips holds a key that is not its address's
 	// canonical spelling. Until then a release looks up the canonical key
 	// instead of scanning every entry.
 	aliased bool
+}
+
+// SetLoginStanding installs the login standing index. Set once at startup
+// before log readers begin.
+func (t *mailAuthTracker) SetLoginStanding(s *loginStanding) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.standing = s
 }
 
 // SetBackendDownCheck installs the active-probe callback the tracker consults to
@@ -766,10 +805,27 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 		t.aliased = t.aliased || sprayAddr(ip) != ip
 	}
 	e.times = pruneTimes(e.times, cutoff)
+	if len(e.times) == 0 && !hasTimeAtOrAfter(e.slowTimes, now.Add(-t.slowWindow)) {
+		e.episodeStart = now
+	}
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
 	e.times = append(e.times, now)
 	e.failedAccounts = appendMailAccountTime(e.failedAccounts, account, now)
 	e.lastSeen = now
+	// Standing is judged as of the address's earliest active episode under
+	// any spelling. Finding it scans the aliases, so only a standing
+	// decision asks for it, not every failure of a flood.
+	var standingStart time.Time
+	standingAsOf := func() time.Time {
+		if standingStart.IsZero() {
+			standingStart = e.episodeStart
+			if t.standing != nil && t.aliased {
+				_, standingStart = t.episodeFailedOn(ip, "", now)
+			}
+		}
+		return standingStart
+	}
+	overCap := func(account string) bool { return t.standingFailureOverCap(ip, account, cutoff) }
 
 	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold {
 		e.succ = pruneTimes(e.succ, cutoff)
@@ -801,6 +857,18 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 					Timestamp: now,
 					SourceIP:  ip,
 				})
+			case e.confinedToStanding(now, t.window, func(account string) bool {
+				return !overCap(account) && t.standing.Has(ip, account, standingAsOf())
+			}):
+				// The same shape from a source whose standing on a mailbox rests on
+				// earlier days of trusted logins. It never falls through to the block.
+				if now.Before(e.suspectedSuppressed) {
+					break
+				}
+				e.suspectedSuppressed = now.Add(t.suppression)
+				targets, accountless := e.failTargets()
+				findings = append(findings, loginStandingAdvisory("mail", ip, fmt.Sprintf("%d failed auths in %v", len(e.times), t.window),
+					formatMailFailTargets(targets, accountless, maxMailTargetsListed), now))
 			case !now.Before(e.suppressed):
 				e.suppressed = now.Add(t.suppression)
 				details := "Real-time detection of dovecot imap/pop3/managesieve auth failures."
@@ -855,6 +923,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 				len(e.slowAccounts) >= slowBruteMinAccounts {
 				safeSource := e.slowConfinedToEstablishedGood(now, t.window) ||
 					slowTrusted(t.spray, ip, e.slowAccounts, e.slowUnvouched)
+				standing := !safeSource && standingConfined(t.standing, ip, e.slowAccounts, e.slowUnvouched, standingAsOf(), overCap)
 				switch {
 				case safeSource && !now.Before(e.suspectedSuppressed):
 					e.suspectedSuppressed = now.Add(t.suppression)
@@ -867,7 +936,12 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 						Timestamp: now,
 						SourceIP:  ip,
 					})
-				case !safeSource && !now.Before(e.suppressed):
+				case standing && !now.Before(e.suspectedSuppressed):
+					e.suspectedSuppressed = now.Add(t.suppression)
+					findings = append(findings, loginStandingAdvisory("mail", ip,
+						fmt.Sprintf("%d paced auth failures across %d mailboxes in %v", len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+						formatStandingTargets(e.slowAccounts), now))
+				case !safeSource && !standing && !now.Before(e.suppressed):
 					e.suppressed = now.Add(t.suppression)
 					findings = append(findings, alert.Finding{
 						Severity: alert.Critical,
@@ -892,7 +966,7 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	// The spray memory is shared with SMTP: a line any local user could
 	// write must not add evidence a real failure would complete.
 	if !degraded && t.spray != nil && (t.fileLines || trustedMailLogin(obs)) {
-		if v := t.spray.Failure(ip, mb.name, mb.exist); v != nil {
+		if v := t.spray.failureInEpisode(ip, mb.name, mb.exist, e.episodeStart, max(t.window, t.slowWindow)); v != nil {
 			f := sprayFinding(protoMail, ip, v, t.spray.Mode(), now)
 			// One block per suppression window: a Dovecot line can carry
 			// several attempts, so the spray block shares the per-IP clock
@@ -978,6 +1052,49 @@ func (t *mailAuthTracker) RecordResolvedObserved(ip, account string, mb sprayMai
 	t.enforceMaxTracked(ip)
 	t.findingsEmitted += int64(len(findings))
 	return findings
+}
+
+// standingFailureOverCap counts one mailbox across spellings of the same
+// address. Alias entries may not have been pruned yet. Caller holds t.mu.
+func (t *mailAuthTracker) standingFailureOverCap(ip, account string, cutoff time.Time) bool {
+	limit := standingFailureCap * t.perIPThreshold
+	n := 0
+	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		n += countTimesAtOrAfter(e.failedAccounts[account], cutoff)
+		if n > limit {
+			return true
+		}
+	}
+	return false
+}
+
+// episodeFailedOn reports whether ip's current failures, under any spelling
+// of the address, include one on the normalised mailbox or one that named
+// none, and when the address's active episode began. Caller must hold t.mu.
+func (t *mailAuthTracker) episodeFailedOn(ip, mailbox string, now time.Time) (bool, time.Time) {
+	cutoff, slowCutoff := now.Add(-t.window), now.Add(-t.slowWindow)
+	failed, since := false, time.Time{}
+	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
+		if !hasTimeAtOrAfter(e.times, cutoff) && !hasTimeAtOrAfter(e.slowTimes, slowCutoff) {
+			continue
+		}
+		// The address's episode began at its earliest active failure under
+		// any spelling, whichever mailbox that failure named.
+		if since.IsZero() || e.episodeStart.Before(since) {
+			since = e.episodeStart
+		}
+		hit := !e.slowUnvouched.IsZero() && !e.slowUnvouched.Before(slowCutoff) ||
+			failedOnMailbox(e.slowAccounts, mailbox, slowCutoff)
+		named := 0
+		for account, times := range e.failedAccounts {
+			n := countTimesAtOrAfter(times, cutoff)
+			named += n
+			hit = hit || n > 0 && normalizeSprayMailbox(account) == mailbox
+		}
+		// A failure in the window with no mailbox could have been on this one.
+		failed = failed || hit || countTimesAtOrAfter(e.times, cutoff) > named
+	}
+	return failed, since
 }
 
 // Forget drops ip's failure history after an operator release, or every
@@ -1101,8 +1218,9 @@ func appendMailAccountTime(accounts map[string][]time.Time, account string, ts t
 // RecordSuccess processes a successful mail login. Emits mail_account_compromised
 // when the successful IP has repeated recent failed auths for the same account
 // and that mailbox is failure-dominant from this IP. Prior successful logins for
-// the same mailbox look like a legit client that merely mistyped, so they are
-// not flagged. A login the spray memory does not call clean, one that follows
+// the same mailbox look like a legit client that merely mistyped. With login
+// standing, repeated failures still produce a High advisory without earning
+// trust. A login the spray memory does not call clean, one that follows
 // failures on other mailboxes, earns no good standing and may be reported too;
 // one login raises at most one compromise finding, the stronger.
 //
@@ -1161,13 +1279,33 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	e.succ = pruneTimes(e.succ, cutoff)
 	pruneMailAccountTimes(e.successAccounts, cutoff)
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
+	e.times = pruneTimes(e.times, cutoff)
+	sprayMailbox := normalizeSprayMailbox(account)
+	failed, since := t.episodeFailedOn(ip, sprayMailbox, now)
+	// Spray evidence also includes other IPv6 addresses in the /64. It
+	// gates new standing, but cannot revoke this address's exemption from
+	// the IMAP compromise response for its own current failure episode.
+	// Failures past the cap are a guessing tool, not a stale saved password.
+	standing := !t.standingFailureOverCap(ip, account, cutoff) && t.standing.Has(ip, sprayMailbox, since)
+	if t.spray != nil && (trusted || t.fileLines) {
+		// The SMTP tracker's failures reach only the shared spray memory.
+		failed, since = otherProtocolFailures(t.spray, ip, sprayMailbox, max(t.window, t.slowWindow), failed, since)
+	}
+	// Classify before the spray detector can learn from this login. Standing
+	// softens a compromise but must not turn it into a clean success.
+	// A mailbox that already succeeds from this IP, or that it held good
+	// source on before the failures, is a legit owner who mistyped.
+	compromise := len(e.failedAccounts[account]) >= 2 &&
+		!e.accountSuccessDominant(account) && !e.establishedGood(account, now, t.window)
 	// A guessed-password success should not train the long-lived good-source cache.
 	degraded := t.backendDegraded(now) || (t.backendDownFn != nil && t.backendDownFn())
-	recordGoodSource := !degraded && trusted
+	recordGoodSource := !degraded && trusted && !compromise
 	var sprayed *alert.Finding
-	sprayMailbox := normalizeSprayMailbox(account)
 	if !degraded && (trusted || t.fileLines) && t.spray != nil {
-		clean, v := t.spray.Success(ip, sprayMailbox)
+		// Only a compromise softened by standing keeps the spray memory from
+		// learning; a crack learns as before and is revoked below, so the
+		// spray memory's own advisories still fire.
+		clean, v := t.spray.success(ip, sprayMailbox, !compromise || !standing)
 		if !clean && t.spray.Enabled() {
 			recordGoodSource = false
 		}
@@ -1182,6 +1320,12 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 			e.succ = append(e.succ, now)
 			e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
 			e.recordGoodAuth(account, now)
+			// A login after failures on its own mailbox, or ones naming none,
+			// in this episode may be a password guessed below the crack
+			// threshold; an address that had standing then is the owner.
+			if !failed || t.standing.Has(ip, sprayMailbox, since) {
+				t.standing.Note(ip, sprayMailbox, at)
+			}
 		}
 		e.lastSeen = now
 		switch {
@@ -1195,24 +1339,24 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 		}
 	}()
 
-	// A mailbox that already succeeds from this IP is a legit owner who mistyped,
-	// not a takeover. Genuine password guessing is failure-dominant for the same
-	// mailbox. Use the per-IP evidence: account entries can be evicted before it.
-	e.times = pruneTimes(e.times, cutoff)
-	targetFailures := len(e.failedAccounts[account])
-	if targetFailures < 2 || e.accountSuccessDominant(account) || e.establishedGood(account, now, t.window) {
+	if !compromise {
 		return nil
 	}
-	recordGoodSource = false
+	// An address with login standing on the mailbox from before these
+	// failures is its owner correcting a saved password: it keeps its trust
+	// and the finding stays below the block.
 	// A login read from a log any local user can write still alerts, but it
 	// must not remove standing or trust that real logins earned.
-	if trusted {
+	if trusted && !standing {
 		delete(e.goodFirst, account)
 		delete(e.goodLast, account)
+		// Whoever cracked the mailbox may have earned standing on it from
+		// other addresses first; the owner earns it again.
+		t.standing.Revoke(sprayMailbox)
 	}
-	// The spray memory saw failures on this mailbox only and called the login
-	// clean; a cracked password earns no trust there either.
-	if !degraded && (trusted || t.fileLines) && t.spray != nil {
+	// Retain the crack in spray memory so later logins cannot restore trust
+	// after the shorter per-IP failure window empties.
+	if !standing && !degraded && (trusted || t.fileLines) && t.spray != nil {
 		t.spray.RevokeTrust(ip, sprayMailbox)
 	}
 	a, ok := t.accounts[account]
@@ -1225,6 +1369,12 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	suppressed := &a.compromiseSuppressed
 	if !trusted {
 		suppressed = &a.untrustedCompromiseSuppressed
+	}
+	if standing {
+		suppressed = &a.standingCompromiseSuppressed
+		if !trusted {
+			suppressed = &a.untrustedStandingCompromiseSuppressed
+		}
 	}
 	if now.Before(*suppressed) {
 		return nil
@@ -1245,7 +1395,11 @@ func (t *mailAuthTracker) recordSuccessAt(ip, account string, at time.Time, kind
 	if t.spray != nil {
 		failuresSince = t.spray.FirstUntrustedFailure(ip)
 	}
-	if n := e.establishedOtherGoodAccounts(account, now, t.window, failuresSince); n >= mailEstablishedSourceAccounts {
+	if standing {
+		severity = alert.High
+		message += " (address has login standing)"
+		details = "This address had login standing on this mailbox before these failures began: trusted logins on more than one day, so this is more likely the owner correcting a saved password than a takeover. Verify with the customer; not auto-blocked and the mailbox is not suspended."
+	} else if n := e.establishedOtherGoodAccounts(account, now, t.window, failuresSince); n >= mailEstablishedSourceAccounts {
 		severity = alert.High
 		message += " (established multi-mailbox source)"
 		details = fmt.Sprintf("Source IP holds established successful logins to %d other mailboxes on this host, so this is more likely a shared office or agency device with a stale credential than a takeover. Verify with the customer before acting; not auto-blocked.", n)

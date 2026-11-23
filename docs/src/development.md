@@ -1582,6 +1582,56 @@ evicted blocks. `UnresolvedIntents` gives the owner the same ordered intents
 as the handle-free startup reader. Callers must inspect each attempt's outcome:
 an executing intent is unresolved but cannot be retired as unknown.
 
+### Mail login standing index
+
+The login standing index holds trusted clean logins per address and mailbox.
+It keeps exact IPv6 addresses, folds mapped IPv4, and uses the normalized
+mailbox spelling, including names containing spaces.
+Each retained UTC date keeps its first and last trusted success. The first
+proves that the date precedes the decision; the last determines recency when
+it also precedes the decision. Later successes cannot excuse earlier failures.
+The stored `lasts` array preserves the latter timestamps; when absent, only the
+recorded first success of each date is known.
+
+The IMAP/POP/Sieve tracker classifies a login as a compromise before it updates
+login trust. A compromise softened by prior standing neither earns nor refreshes
+trust or standing, and revokes neither. Spray verdicts still apply.
+
+Both trackers withhold standing from a login that follows failures on its own
+mailbox, or failures naming none, in the address's active episode under any
+spelling, unless the address had standing when that episode began. Each
+tracker sees the other protocol's failures through the shared spray memory.
+That memory keeps the current tracker episode separately from the first spray
+failure, preserves it across saves, and retains failures for the longer of the
+spray and tracker windows. Overflow cannot move a known episode's start forward.
+Shared IPv6 /64 evidence gates earning standing only. Fast and slow block
+decisions and IMAP compromise severity use the tracker's earliest active
+exact-address episode, so a later address spelling cannot move the cutoff.
+Those decisions also drop standing for a mailbox whose failures in the
+tracker's fast window exceed `standingFailureCap` times its per-address
+threshold. The mail tracker counts them from its per-mailbox window lists; the
+SMTP tracker keeps the newest of them per mailbox in `fastAccounts`, bounded
+by at least `slowBruteMaxTimesPerIP` so every validated fast threshold can be
+applied on reload without losing relevant counts. Both counters combine address
+aliases and exclude expired timestamps even on entries not yet purged. Standing
+compromise advisories have separate suppression clocks from cracks, for both
+trusted and untrusted logins. The daemon
+loads the index before log readers start, saves it on the known-customer cycle,
+and mailbox response revokes the mailbox it acts on.
+
+Load the startup snapshot before recording or revoking logins. A later load
+cannot merge old history into live state; it schedules current rows or deletions
+for the supplied keys. The saver must serialize each `Changes`, store write,
+and `requeue` on failure. A retry uses current rows, never the failed snapshot.
+Pending deletions have their own budget; overflow requests a full bucket
+replacement. Store I/O and logging remain outside the index mutex.
+
+The index owns mailbox strings so log-line slices cannot retain oversized
+buffers. Address lists per mailbox, per-row dirty flags, and bounded date-array
+growth keep retained memory near its budget at the row caps. Tests cover
+maximum-length mailbox names, same-day renewal, historical decisions, eviction,
+revocation, snapshot validation, and persistence round trips.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

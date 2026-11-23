@@ -112,11 +112,15 @@ type Daemon struct {
 	version        string
 	blockDigest    *blockdigest.Collector
 	knownCustomers *knownCustomers
-	blockCauses    blockCauses
-	alertCh        chan alert.Finding
-	alertQueue     *queuehealth.Tracker
-	queueSourcesMu sync.RWMutex
-	queueSources   map[string]queueSource
+	// loginStanding is the trusted mail and SMTP trackers' shared login
+	// standing; loginStandingSaveMu runs one save at a time.
+	loginStanding       *loginStanding
+	loginStandingSaveMu sync.Mutex
+	blockCauses         blockCauses
+	alertCh             chan alert.Finding
+	alertQueue          *queuehealth.Tracker
+	queueSourcesMu      sync.RWMutex
+	queueSources        map[string]queueSource
 	// alertHold, while open, keeps the dispatcher draining alertCh into its
 	// batch without dispatching, so realtime producers (which never block)
 	// lose nothing during the synchronous startup baseline. The ingest queue
@@ -434,6 +438,12 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	d.knownCustomers.isInfra = func(ip string) bool { return isInfraIPDaemon(ip, d.currentCfg().InfraIPs) }
 	d.smtpAuthTracker.SetKnownCustomers(d.knownCustomers)
 	d.mailAuthTracker.SetKnownCustomers(d.knownCustomers)
+	// Only the trackers of the services' own logs share login standing:
+	// lines from a log file any local user can write never earn or use it.
+	d.loginStanding = newLoginStanding(time.Now)
+	d.smtpAuthTracker.SetLoginStanding(d.loginStanding)
+	d.mailAuthTracker.SetLoginStanding(d.loginStanding)
+	mailboxResponseStanding.Store(d.loginStanding)
 
 	// Mail auth backend (cpdoveauthd) health: an active socket probe drives
 	// brute-force suppression for both trackers and optional self-heal restart.
@@ -919,6 +929,8 @@ func (d *Daemon) Run() error {
 	// Restore the customer logins of the last run before any block can be
 	// checked against them.
 	d.loadKnownCustomers()
+	// Before log readers start: a later load cannot merge saved history.
+	d.loadLoginStanding()
 
 	// Recovered admission notices can dispatch as soon as the owner starts.
 	// Publish the collector before any producer can read it or call its hook.
@@ -1692,6 +1704,7 @@ func (d *Daemon) flushPendingAlertsOnShutdown() {
 	// Log readers and dispatch can note successes after the periodic saver
 	// observes stopCh. This final save runs once those producers have stopped.
 	d.persistKnownCustomers()
+	d.persistLoginStanding()
 	if d.blockDigest != nil {
 		d.blockDigest.Flush()
 	}

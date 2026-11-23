@@ -51,6 +51,9 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 		if err := csmstore.DisarmFirewallRollbackSnapshot(stagedDB); err != nil {
 			return fmt.Errorf("disarming restored firewall rollback: %w", err)
 		}
+		if err := csmstore.DisarmLoginStandingSnapshot(stagedDB); err != nil {
+			return fmt.Errorf("disarming restored login standing: %w", err)
+		}
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("inspecting restored state database: %w", statErr)
 	}
