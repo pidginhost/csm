@@ -120,6 +120,20 @@ func phpProcessUsers(root string, add func(uint32, string), addName func(string,
 			}
 		}
 		if liteSpeedServerName.MatchString(base) {
+			// LiteSpeed's server runs as root. Any local user can give a
+			// process this name; its files must not be read or trusted.
+			data, err := os.ReadFile(filepath.Join(dir, "status")) // #nosec G304 -- dir is procfs plus a validated numeric PID.
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("inspect LiteSpeed credentials: %w", err)
+			}
+			if uid, err := procRealUID(string(data)); err != nil {
+				return err
+			} else if uid != 0 {
+				continue
+			}
 			if exeErr != nil {
 				return fmt.Errorf("inspect LiteSpeed executable: %w", exeErr)
 			}
@@ -159,6 +173,22 @@ func phpProcessUsers(root string, add func(uint32, string), addName func(string,
 		}
 	}
 	return nil
+}
+
+// procRealUID reads the real UID from a procfs status file. A user cannot
+// start a process whose real UID is root; setuid programs keep the caller's.
+func procRealUID(status string) (uint32, error) {
+	for _, line := range strings.Split(status, "\n") {
+		if rest, ok := strings.CutPrefix(line, "Uid:"); ok {
+			if fields := strings.Fields(rest); len(fields) == 4 {
+				if n, err := strconv.ParseUint(fields[0], 10, 32); err == nil {
+					return uint32(n), nil
+				}
+			}
+			break
+		}
+	}
+	return 0, errors.New("invalid LiteSpeed process credentials")
 }
 
 func procWorkerUIDs(status string) ([2]uint32, error) {

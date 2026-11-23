@@ -44,6 +44,7 @@ func TestPHPRuntimeUsersLiteSpeedIsolation(t *testing.T) {
 			}
 			if tc.exe == "unreadable" {
 				writeRootFile(t, root, "proc/200/comm", "litespeed\n")
+				writeRootFile(t, root, "proc/200/status", "Name:\tlitespeed\nUid:\t0\t0\t0\t0\n")
 			} else if tc.exe != "" {
 				fakeProc(t, root, 200, tc.exe, 0)
 			}
@@ -132,5 +133,41 @@ func TestPHPRuntimeUsersStandaloneLSPHP(t *testing.T) {
 	got, err := phpRuntimeUsers(root)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("users = %v, error = %v; an interpreter package alone is not a LiteSpeed server", got, err)
+	}
+}
+
+// Any local user can give a process LiteSpeed's name, as a copied binary, a
+// hard link to a setuid program or a zombie. Only a process whose real
+// UID is root locates a server installation; a user's own copy and its files
+// prove nothing and must not stop the inspection.
+func TestPHPRuntimeUsersIgnoresUserLiteSpeedProcess(t *testing.T) {
+	for _, tc := range []struct{ name, exe, config, body string }{
+		{"missing configuration", "/home/site1/bin/lshttpd", "", ""},
+		{"user configuration", "/home/site1/bin/litespeed", "home/site1/conf/httpd_config.xml", "<httpServerConfig><user>root</user></httpServerConfig>"},
+		{"setuid program", "/home/site1/bin/lshttpd", "", ""},
+		{"exited process", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeRootFile(t, root, "etc/passwd", testPasswd)
+			switch {
+			case tc.exe == "":
+				writeRootFile(t, root, "proc/300/comm", "lshttpd\n")
+				writeRootFile(t, root, "proc/300/status", "Name:\tlshttpd\nState:\tZ (zombie)\nUid:\t1001\t1001\t1001\t1001\n")
+			case tc.name == "setuid program":
+				// Effective UID root, real UID the user's.
+				fakeProc(t, root, 300, tc.exe, 1001)
+				writeRootFile(t, root, "proc/300/status", "Name:\tlshttpd\nUid:\t1001\t0\t0\t0\n")
+			default:
+				fakeProc(t, root, 300, tc.exe, 1001)
+			}
+			if tc.config != "" {
+				writeRootFile(t, root, tc.config, tc.body)
+			}
+			got, err := phpRuntimeUsers(root)
+			if err != nil || len(got) != 0 {
+				t.Fatalf("users = %v, error = %v; a user's process named like LiteSpeed located a server", got, err)
+			}
+		})
 	}
 }
