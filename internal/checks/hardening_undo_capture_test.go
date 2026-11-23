@@ -161,6 +161,36 @@ func TestHardeningUndoCaptureSSH(t *testing.T) {
 	wantNoUndoRecord(t, "ssh_use_dns")
 }
 
+func TestHardeningUndoCaptureSSHBlockSyntax(t *testing.T) {
+	for _, setting := range []string{
+		"MaxAuthTries=6",
+		"MaxAuthTries =6",
+		"MaxAuthTries = 6",
+		"MaxAuthTries 6\nMaxAuthTries 7",
+	} {
+		t.Run(setting, func(t *testing.T) {
+			withHardeningUndoDir(t)
+			path := withTempSSHDConfig(t, strings.Join([]string{
+				sshdBlockBegin, setting, "UseDNS no", sshdBlockEnd, "Port 2222", "",
+			}, "\n"))
+			withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) { return nil, nil }})
+			since := time.Now()
+			out := applySSHFixes([]store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}})
+			if len(out) != 1 || out[0].Status != "applied" || strings.Contains(out[0].Message, " Undo is unavailable") {
+				t.Fatalf("results = %+v", out)
+			}
+			wantUndoRecord(t, since, HardeningUndoRecord{Name: "ssh_max_auth_tries", Category: "ssh", Kind: "ssh", SSH: &sshUndoState{
+				Keyword: "MaxAuthTries", PrevValue: "6", HadValue: true, AppliedValue: "4",
+			}})
+			wantNoUndoRecord(t, "ssh_use_dns")
+			want := strings.Join([]string{sshdBlockBegin, "MaxAuthTries 4", "UseDNS no", sshdBlockEnd, "Port 2222", ""}, "\n")
+			if data, err := os.ReadFile(path); err != nil || string(data) != want {
+				t.Fatalf("applied config = %q, %v; want %q", data, err, want)
+			}
+		})
+	}
+}
+
 func TestHardeningUndoCaptureSysctl(t *testing.T) {
 	t.Run("saved", func(t *testing.T) {
 		withHardeningUndoDir(t)
@@ -213,6 +243,106 @@ func TestHardeningUndoCaptureSysctl(t *testing.T) {
 			Key: "net.ipv4.conf.all.rp_filter", PrevRuntime: "2", AppliedValue: "1", RuntimeOnly: true,
 		}})
 	})
+}
+
+func TestHardeningUndoSysctlRecordsBeforeNextCommand(t *testing.T) {
+	withHardeningUndoDir(t)
+	withTempSysctl(t, "", map[string]string{"kernel.randomize_va_space": "1", "fs.protected_symlinks": "0"})
+	since := time.Now()
+	var calls int
+	withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+		calls++
+		if calls == 2 {
+			// The next command can stall until the worker is killed. The
+			// completed runtime change must already have a usable record.
+			wantUndoRecord(t, since, HardeningUndoRecord{Name: "os_sysctl_aslr", Category: "os", Kind: "sysctl", Sysctl: &sysctlUndoState{
+				Key: "kernel.randomize_va_space", PrevRuntime: "1", AppliedValue: "2", RuntimeOnly: true,
+			}})
+			return nil, errors.New("kernel refused the next key")
+		}
+		return kernelSysctl(name, args...)
+	}})
+	out := applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_aslr", Category: "os"}, {Name: "os_sysctl_symlinks", Category: "os"}})
+	if calls != 2 || len(out) != 2 || out[0].Status != "failed" || out[1].Status != "applied" {
+		t.Fatalf("calls = %d, results = %+v", calls, out)
+	}
+	wantUndoRecord(t, since, HardeningUndoRecord{Name: "os_sysctl_aslr", Category: "os", Kind: "sysctl", Sysctl: &sysctlUndoState{
+		Key: "kernel.randomize_va_space", PrevRuntime: "1", AppliedValue: "2",
+	}})
+	wantNoUndoRecord(t, "os_sysctl_symlinks")
+}
+
+func TestHardeningUndoPHPRecordsBeforeNextDirectory(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	withPHPReloadStubbed(t)
+	ver, _ := debianPHPTree(t, "cli", "fpm")
+	cli := filepath.Join(ver, "cli", "conf.d")
+	cliIni := filepath.Join(cli, hardeningPHPIniName)
+	oldSync := hardeningUndoSync
+	t.Cleanup(func() { hardeningUndoSync = oldSync })
+	recordWrites := 0
+	hardeningUndoSync = func(f *os.File) error {
+		if filepath.Dir(f.Name()) == dir && strings.HasSuffix(f.Name(), ".tmp") {
+			recordWrites++
+			if recordWrites == 1 {
+				if _, err := os.Stat(cliIni); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("next drop-in touched before recording the completed write: %v", err)
+				}
+			}
+		}
+		return f.Sync()
+	}
+	since := time.Now()
+	out := applyPHPFixes([]store.AuditResult{{Name: "php_expose_82", Category: "php"}}, []phpInstall{{shortID: "82", scanDir: cli}})
+	if len(out) != 1 || out[0].Status != "applied" || recordWrites != 2 {
+		t.Fatalf("results = %+v, record writes = %d", out, recordWrites)
+	}
+	wantUndoRecord(t, since, HardeningUndoRecord{Name: "php_expose_82", Category: "php", Kind: "php", PHP: []phpUndoState{
+		{Path: filepath.Join(ver, "fpm", "conf.d", hardeningPHPIniName), Key: "expose_php", Applied: "Off"},
+		{Path: cliIni, Key: "expose_php", Applied: "Off"},
+	}})
+}
+
+func TestHardeningUndoBatchRecordFailureRemovesInterimRecord(t *testing.T) {
+	for _, kind := range []string{"sysctl", "php"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := withHardeningUndoDir(t)
+			oldSync := hardeningUndoSync
+			t.Cleanup(func() { hardeningUndoSync = oldSync })
+			recordWrites := 0
+			hardeningUndoSync = func(f *os.File) error {
+				if filepath.Dir(f.Name()) == dir && strings.HasSuffix(f.Name(), ".tmp") {
+					recordWrites++
+					if recordWrites == 2 {
+						return errors.New("record sync failed")
+					}
+				}
+				return f.Sync()
+			}
+			var out []HardeningFixResult
+			var appliedPath, wantContent string
+			if kind == "sysctl" {
+				appliedPath = withTempSysctl(t, "kernel.randomize_va_space=1\n", map[string]string{"kernel.randomize_va_space": "1"})
+				wantContent = "kernel.randomize_va_space = 2\n"
+				withMockCmd(t, &mockCmd{run: kernelSysctl})
+				out = applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_aslr", Category: "os"}})
+			} else {
+				withPHPReloadStubbed(t)
+				ver, _ := debianPHPTree(t, "cli", "fpm")
+				cli := filepath.Join(ver, "cli", "conf.d")
+				appliedPath = filepath.Join(cli, hardeningPHPIniName)
+				wantContent = "; Managed by CSM: PHP settings applied from the hardening page.\nexpose_php = Off\n"
+				out = applyPHPFixes([]store.AuditResult{{Name: "php_expose_82", Category: "php"}}, []phpInstall{{shortID: "82", scanDir: cli}})
+			}
+			if recordWrites != 2 || len(out) != 1 || out[0].Status != "applied" || !strings.Contains(out[0].Message, " Undo is unavailable") {
+				t.Fatalf("record writes = %d, results = %+v", recordWrites, out)
+			}
+			wantNoUndoRecord(t, out[0].Name)
+			if data, err := os.ReadFile(appliedPath); err != nil || string(data) != wantContent {
+				t.Fatalf("applied content = %q, %v; want %q", data, err, wantContent)
+			}
+		})
+	}
 }
 
 func TestHardeningUndoCaptureTweak(t *testing.T) {

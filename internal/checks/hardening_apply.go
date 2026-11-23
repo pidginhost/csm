@@ -701,6 +701,7 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 		r       store.AuditResult
 		undo    sysctlUndoState
 		readErr error
+		note    string
 	}
 	var changes []change
 	var accepted []keyValue
@@ -711,7 +712,11 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 			out = append(out, failed(r, err))
 			continue
 		}
-		changes = append(changes, change{r, sysctlUndoState{Key: kv.key, PrevRuntime: prev, AppliedValue: kv.value}, readErr})
+		undo := sysctlUndoState{Key: kv.key, PrevRuntime: prev, AppliedValue: kv.value, RuntimeOnly: true}
+		// A later command can outlive the worker. Keep the completed runtime
+		// change undoable even before the batch reaches persistence.
+		note := recordHardeningUndo(r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &undo}, readErr)
+		changes = append(changes, change{r, undo, readErr, note})
 		accepted = append(accepted, kv)
 	}
 	if len(accepted) == 0 {
@@ -721,13 +726,14 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 	for i, c := range changes {
 		var res HardeningFixResult
 		if persistErr != nil {
-			c.undo.RuntimeOnly = true
 			res = failed(c.r, fmt.Errorf("set at runtime but not persisted: %w", persistErr))
 		} else {
+			c.undo.RuntimeOnly = false
 			c.undo.PrevLines = prevLines[i]
+			c.note = recordHardeningUndo(c.r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &c.undo}, c.readErr)
 			res = applied(c.r, fmt.Sprintf("%s = %s set and saved to %s.", accepted[i].key, accepted[i].value, hardeningSysctlConfPath))
 		}
-		res.Message += recordHardeningUndo(c.r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &c.undo}, c.readErr)
+		res.Message += c.note
 		out = append(out, res)
 	}
 	return out
@@ -863,6 +869,7 @@ func reloadSSHD() error {
 // keywords are commented out so the file reads the way sshd applies it.
 func rewriteSSHDConfig(content string, directives []keyValue) (string, []sshUndoState) {
 	block := map[string]keyValue{}
+	previous := map[string]string{}
 	var body []string
 	inBlock := false
 	for _, line := range strings.Split(content, "\n") {
@@ -875,6 +882,13 @@ func rewriteSSHDConfig(content string, directives []keyValue) (string, []sshUndo
 			inBlock = false
 			continue
 		case inBlock:
+			// Capture independently of the emitted block: sshd accepts '='
+			// separators and takes the first occurrence of each keyword.
+			if kw, value, ok := splitSSHDKeyword(t); ok && !strings.HasPrefix(t, "#") {
+				if _, seen := previous[kw]; !seen {
+					previous[kw] = value
+				}
+			}
 			if f := strings.Fields(t); len(f) >= 2 && !strings.HasPrefix(t, "#") {
 				block[strings.ToLower(f[0])] = keyValue{f[0], strings.Join(f[1:], " ")}
 			}
@@ -886,8 +900,8 @@ func rewriteSSHDConfig(content string, directives []keyValue) (string, []sshUndo
 	byKeyword := map[string]int{}
 	for i, d := range directives {
 		kw := strings.ToLower(d.key)
-		prev, had := block[kw]
-		undo[i] = sshUndoState{Keyword: d.key, PrevValue: prev.value, HadValue: had, AppliedValue: d.value}
+		prev, had := previous[kw]
+		undo[i] = sshUndoState{Keyword: d.key, PrevValue: prev, HadValue: had, AppliedValue: d.value}
 		byKeyword[kw] = i
 		block[kw] = d
 	}
@@ -983,6 +997,7 @@ func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []Hardening
 	for _, p := range plans {
 		var err error
 		undo := make([][]phpUndoState, len(p.items))
+		notes := make([]string, len(p.items))
 		for _, d := range p.dirs {
 			path := filepath.Join(d, hardeningPHPIniName)
 			var prev []phpUndoState
@@ -993,21 +1008,19 @@ func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []Hardening
 			written = append(written, d)
 			for i := range undo {
 				undo[i] = append(undo[i], prev[i])
+				// The next directory can fail or stall. Save the completed
+				// subset now, extending it after each successful write.
+				notes[i] = recordHardeningUndo(p.items[i], HardeningUndoRecord{Kind: "php", PHP: undo[i]}, nil)
 			}
 		}
 		for i, r := range p.items {
-			var note string
-			// A failed write can follow others, which did change their drop-ins.
-			if len(undo[i]) > 0 {
-				note = recordHardeningUndo(r, HardeningUndoRecord{Kind: "php", PHP: undo[i]}, nil)
-			}
 			if err != nil {
 				res := failed(r, err)
-				res.Message += note
+				res.Message += notes[i]
 				out = append(out, res)
 				continue
 			}
-			completed = append(completed, applied(r, fmt.Sprintf("%s = Off written to %s.", p.keys[i], strings.Join(phpDropInPaths(p.dirs), ", "))+note))
+			completed = append(completed, applied(r, fmt.Sprintf("%s = Off written to %s.", p.keys[i], strings.Join(phpDropInPaths(p.dirs), ", "))+notes[i]))
 		}
 	}
 	if len(written) > 0 {

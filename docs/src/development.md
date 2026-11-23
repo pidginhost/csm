@@ -1798,6 +1798,13 @@ The root hardening worker owns `/var/lib/csm-hardening-undo` with mode
 The daemon may list record names read-only, without opening their contents.
 Applying a fix writes its record; no undo action reads the records yet.
 
+Each successful sysctl runtime change is recorded before the next command,
+then its record is updated after the drop-in is saved. PHP records grow after
+each successful scan-directory write, so a later stalled operation does not
+lose recovery information for completed changes. SSH capture accepts both
+whitespace and equals separators and keeps the first value for each keyword
+in the managed block, matching sshd's interpretation of edited settings.
+
 Store operations validate fix names before constructing record paths. They
 use directory-relative, no-follow opens and check ownership and permissions
 on opened inodes. Each write uses a private temporary file, syncs its data,
