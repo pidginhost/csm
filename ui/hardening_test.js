@@ -134,3 +134,30 @@ test('fixes with a caution start unticked and show it', async () => {
     assert.equal(byName.ssh_use_dns.checked, true);
     assert.match(byName.ssh_max_auth_tries.closest('label').textContent, /Refuses clients that offer many keys\./);
 });
+
+for (const selected of [false, true]) {
+    test('a cautioned fix is sent only after opt-in: ' + selected, async () => {
+        const page = await hardeningPage([
+            { category: 'ssh', name: 'ssh_max_auth_tries', title: 'MaxAuthTries', status: 'warn', auto_fix: 'Sets MaxAuthTries 4.', auto_fix_caution: 'Can refuse clients.' },
+            FAILING[0]
+        ]);
+        const cautioned = boxes(page, 'ssh')[0];
+        if (selected) cautioned.checked = true;
+        page.document.querySelector('[data-apply-cat="ssh"]').click();
+        await settle();
+        const requests = page.pending('/api/v1/hardening/apply');
+        assert.equal(requests.length, 1);
+        const body = typeof requests[0].body === 'string' ? JSON.parse(requests[0].body) : requests[0].body;
+        assert.deepEqual(body, { category: 'ssh', names: selected ? ['ssh_max_auth_tries', 'ssh_use_dns'] : ['ssh_use_dns'] });
+    });
+}
+
+test('a section containing only cautioned fixes sends nothing by default', async () => {
+    const page = await hardeningPage([
+        { category: 'os', name: 'os_sysctl_rp_filter', title: 'Reverse path filtering', status: 'warn', auto_fix: 'Enables strict filtering.', auto_fix_caution: 'Can drop replies.' }
+    ]);
+    page.document.querySelector('[data-apply-cat="os"]').click();
+    await settle();
+    assert.equal(page.asked.length, 0);
+    assert.equal(page.pending('/api/v1/hardening/apply').length, 0);
+});

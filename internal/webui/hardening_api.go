@@ -25,6 +25,7 @@ func (s *Server) apiHardening(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, "failed to load report: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	checks.AnnotateHardeningCautions(report.Results)
 	writeJSON(w, report)
 }
 
@@ -65,7 +66,7 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 // apiHardeningApply applies the automatic fixes for one section of the
 // hardening report, then re-runs the audit so the page shows the result
 // (POST only). Body: {"category": "ssh", "names": ["ssh_use_dns"]}; an
-// empty names list applies every fixable check in the section. The fixes
+// empty names list applies only uncautioned fixes in the section. The fixes
 // run in a root worker outside the daemon's sandbox, which leaves the files
 // they change read-only.
 func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {

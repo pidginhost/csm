@@ -244,14 +244,23 @@ func annotateAutoFixes(results []store.AuditResult, installs []phpInstall) {
 			continue
 		}
 		results[i].AutoFix = autoFixDescription(results[i], installs)
-		if results[i].AutoFix != "" {
+	}
+	AnnotateHardeningCautions(results)
+}
+
+// AnnotateHardeningCautions attaches current cautions without re-running the
+// audit, so saved reports also require an explicit choice after an upgrade.
+func AnnotateHardeningCautions(results []store.AuditResult) {
+	for i := range results {
+		results[i].AutoFixCaution = ""
+		if results[i].Status != "pass" && results[i].AutoFix != "" {
 			results[i].AutoFixCaution = autoFixCautions[results[i].Name]
 		}
 	}
 }
 
 // ApplyHardening applies the automatic fixes for one category. names limits
-// the run to those checks; empty means every fixable check in the category.
+// the run to those checks; empty selects only uncautioned fixes in the category.
 // Only checks that fail a fresh audit are touched. The caller re-runs the
 // audit afterwards to show the result.
 func ApplyHardening(cfg *config.Config, category string, names []string) ([]HardeningFixResult, error) {
@@ -277,6 +286,10 @@ func ApplyHardening(cfg *config.Config, category string, names []string) ([]Hard
 			if len(names) > 0 {
 				out = append(out, skipped(r, skipReason(r)))
 			}
+			continue
+		}
+		if len(names) == 0 && r.AutoFixCaution != "" {
+			out = append(out, skipped(r, "Requires explicit selection: "+r.AutoFixCaution))
 			continue
 		}
 		targets = append(targets, r)

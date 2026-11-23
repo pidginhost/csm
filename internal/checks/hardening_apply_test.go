@@ -638,6 +638,9 @@ func TestLiteSpeedMarkerRefusesHardLink(t *testing.T) {
 // Five fixes can disrupt a working host; each carries what it can break, and
 // the Hardening page leaves those unticked.
 func TestAnnotateAutoFixesCautions(t *testing.T) {
+	if len(autoFixCautions) != 5 {
+		t.Fatalf("cautioned fixes = %d, want exactly five", len(autoFixCautions))
+	}
 	results := []store.AuditResult{
 		{Name: "os_sysctl_rp_filter", Status: "warn"},
 		{Name: "cp_max_emails_hour", Status: "warn"},

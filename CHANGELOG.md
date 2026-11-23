@@ -46,6 +46,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Slow failed mail logins from an address that regularly logs in to that mailbox now alert without blocking it, and a later login no longer suspends the mailbox.
 - Findings for a removed file written back now say how it came back and that restoring it from the Quarantine page stops CSM removing it again.
 - The Server Hardening page leaves fixes that can disrupt a working host unticked and says what each can break.
+- Server Hardening leaves disruptive fixes unticked, including in saved audits, and explains their risks; whole-section requests skip them unless explicitly selected.
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
 - Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
 - SSH, mail and FTP logins read from log files now alert without blocking.
