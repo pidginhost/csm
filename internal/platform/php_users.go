@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // PHPRuntimeUsers maps the UIDs PHP or CGI can run as to their source. An
@@ -103,76 +104,100 @@ func phpProcessUsers(root string, add func(uint32, string), addName func(string,
 		if _, err := strconv.ParseUint(entry.Name(), 10, 32); err != nil || !entry.IsDir() {
 			continue
 		}
-		dir := filepath.Join(root, "proc", entry.Name())
-		exe, exeErr := os.Readlink(filepath.Join(dir, "exe"))
-		base := filepath.Base(strings.TrimSuffix(exe, " (deleted)"))
-		if exeErr != nil {
-			comm, err := os.ReadFile(filepath.Join(dir, "comm")) // #nosec G304 -- dir is procfs plus a validated numeric PID.
-			if os.IsNotExist(err) {
-				continue // The process exited during the walk.
-			}
-			if err != nil {
-				return fmt.Errorf("inspect process name: %w", err)
-			}
-			base = strings.TrimSpace(string(comm))
-			if !phpWorkerName.MatchString(base) && !os.IsNotExist(exeErr) {
-				return fmt.Errorf("inspect process executable: %w", exeErr)
-			}
-		}
-		if liteSpeedServerName.MatchString(base) {
-			// LiteSpeed's server runs as root. Any local user can give a
-			// process this name; its files must not be read or trusted.
-			data, err := os.ReadFile(filepath.Join(dir, "status")) // #nosec G304 -- dir is procfs plus a validated numeric PID.
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("inspect LiteSpeed credentials: %w", err)
-			}
-			if uid, err := procRealUID(string(data)); err != nil {
-				return err
-			} else if uid != 0 {
-				continue
-			}
-			if exeErr != nil {
-				return fmt.Errorf("inspect LiteSpeed executable: %w", exeErr)
-			}
-			exe = strings.TrimSuffix(exe, " (deleted)")
-			if !filepath.IsAbs(exe) || filepath.Base(filepath.Dir(exe)) != "bin" {
-				return errors.New("cannot locate LiteSpeed server configuration")
-			}
-			conf := filepath.Join(root, filepath.Dir(filepath.Dir(exe)), "conf")
-			if err := liteSpeedConfigUsers(conf, addName); err != nil {
-				return err
-			}
-		}
-		if !phpWorkerName.MatchString(base) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(dir, "status")) // #nosec G304 -- dir is procfs plus a validated numeric PID.
+		// An open proc directory remains tied to this process even if its
+		// numeric PID is reused before the next credential or executable read.
+		proc, err := os.OpenRoot(filepath.Join(root, "proc", entry.Name()))
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("inspect PHP/CGI credentials: %w", err)
+			return fmt.Errorf("inspect process directory: %w", err)
 		}
-		ids, err := procWorkerUIDs(string(data))
+		err = phpProcessUser(root, proc, add, addName)
+		_ = proc.Close()
 		if err != nil {
 			return err
 		}
-		if ids[0] == 0 && ids[1] == 0 && strings.HasPrefix(base, "php-fpm") {
-			cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")) // #nosec G304 -- dir is procfs plus a validated numeric PID.
-			// Only a positively identified FPM supervisor is exempt. Root
-			// CGI workers and FPM pools can serve requests themselves.
-			if err == nil && strings.HasPrefix(string(cmd), "php-fpm: master process (") {
-				continue
-			}
-		}
-		for _, uid := range ids {
-			add(uid, "a running "+base+" process")
-		}
 	}
 	return nil
+}
+
+type phpProcessFiles interface {
+	Readlink(string) (string, error)
+	ReadFile(string) ([]byte, error)
+}
+
+func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string), addName func(string, string) error) error {
+	exe, exeErr := proc.Readlink("exe")
+	if errors.Is(exeErr, syscall.ESRCH) {
+		return nil
+	}
+	base := filepath.Base(strings.TrimSuffix(exe, " (deleted)"))
+	if exeErr != nil {
+		comm, err := proc.ReadFile("comm")
+		if procProcessExited(err) {
+			return nil // The process exited during the walk.
+		}
+		if err != nil {
+			return fmt.Errorf("inspect process name: %w", err)
+		}
+		base = strings.TrimSpace(string(comm))
+	}
+	worker := phpWorkerName.MatchString(base)
+	server := liteSpeedServerName.MatchString(base)
+	if !worker && !server && (exeErr == nil || os.IsNotExist(exeErr)) {
+		return nil
+	}
+	data, err := proc.ReadFile("status")
+	if procProcessExited(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect PHP/CGI process credentials: %w", err)
+	}
+	if !worker {
+		// A tenant can choose comm and deny exe access, including for setuid
+		// programs. Neither may locate configuration or abort inspection.
+		uid, uidErr := procRealUID(string(data))
+		if uidErr != nil {
+			return uidErr
+		}
+		if uid != 0 {
+			return nil
+		}
+		if exeErr != nil {
+			return fmt.Errorf("inspect process executable: %w", exeErr)
+		}
+	}
+	if server {
+		exe = strings.TrimSuffix(exe, " (deleted)")
+		if !filepath.IsAbs(exe) || filepath.Base(filepath.Dir(exe)) != "bin" {
+			return errors.New("cannot locate LiteSpeed server configuration")
+		}
+		conf := filepath.Join(root, filepath.Dir(filepath.Dir(exe)), "conf")
+		return liteSpeedConfigUsers(conf, addName)
+	}
+	ids, err := procWorkerUIDs(string(data))
+	if err != nil {
+		return err
+	}
+	if ids[0] == 0 && ids[1] == 0 && strings.HasPrefix(base, "php-fpm") {
+		cmd, err := proc.ReadFile("cmdline")
+		// Only a positively identified FPM supervisor is exempt. Root
+		// CGI workers and FPM pools can serve requests themselves.
+		if err == nil && strings.HasPrefix(string(cmd), "php-fpm: master process (") {
+			return nil
+		}
+	}
+	for _, uid := range ids {
+		add(uid, "a running "+base+" process")
+	}
+	return nil
+}
+
+// A proc file opened before exit can return ESRCH rather than ENOENT.
+func procProcessExited(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ESRCH)
 }
 
 // procRealUID reads the real UID from a procfs status file. A user cannot
@@ -188,7 +213,7 @@ func procRealUID(status string) (uint32, error) {
 			break
 		}
 	}
-	return 0, errors.New("invalid LiteSpeed process credentials")
+	return 0, errors.New("invalid process credentials")
 }
 
 func procWorkerUIDs(status string) ([2]uint32, error) {

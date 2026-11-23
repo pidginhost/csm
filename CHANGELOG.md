@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Tenant processes named like LiteSpeed no longer interrupt Stalwart isolation checks or redirect configuration inspection.
 - Stalwart setup and `csm doctor` refuse forwarded webmail addresses when site code can run as a user the webmail port lock admits, or this cannot be checked. Run `csm doctor` to see what runs as a shared user.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
