@@ -5,7 +5,6 @@ write these configuration directories when they exist:
 
 | Directory | Runtime writer |
 | --- | --- |
-| `/etc/csm` | CSM configuration and fragments |
 | `/etc/audit` | CSM audit rules and `augenrules` generated configuration |
 | `/etc/modprobe.d` | Repair of an existing, opted-in AF_ALG mitigation marker |
 | `/etc/apache2/conf.d` | cPanel Apache/LiteSpeed challenge snippet, virtual patches, and default overrides |
@@ -22,6 +21,16 @@ granted directory. Custom ModSecurity override locations require a drop-in that
 grants only their parent directory, followed by `systemctl daemon-reload` and
 `systemctl restart csm.service`. Atomic replacement requires a directory grant.
 See [custom account roots](custom-account-roots.md) for account grants.
+
+The daemon cannot write `/etc/csm`. A configuration it saves (web UI settings,
+`csm baseline`, the re-sign after a reload) is handed, already signed, to
+`csm config-write`, which runs in a transient unit with `ProtectSystem=strict`
+that can write only the directory the configuration file resolves to. The unit
+does not declare `ConfigurationDirectory=`: systemd binds that directory
+writable even under `ProtectSystem=strict`. The package creates `/etc/csm`
+with mode 0750. A configuration directory whose path holds whitespace, quotes,
+a backslash, `%` or `;` cannot be named in a unit property, so saves there fail
+with an error.
 
 The installer generates the unit for the systemd it finds. systemd 239 (EL8,
 CloudLinux 8) does not know `ProtectHostname`, `ProtectKernelLogs` or

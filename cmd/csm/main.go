@@ -111,6 +111,8 @@ func main() {
 		runPHPTaintWorker(os.Args[2:])
 	case "parse-worker":
 		runParseWorker(os.Args[2:])
+	case integrity.ConfigWriteCommand:
+		os.Exit(runConfigWrite(os.Stdin, os.Stderr))
 	case "install":
 		runInstall()
 	case "uninstall":

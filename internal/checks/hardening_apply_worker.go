@@ -113,7 +113,7 @@ func RunHardeningApplyWorker(ctx context.Context, cfg *config.Config, req Harden
 	if err != nil {
 		return nil, err
 	}
-	return runHardeningApplyWorker(ctx, binary, cfg, exec.LookPath, runWorkerCommand, req)
+	return runHardeningApplyWorker(ctx, binary, cfg, exec.LookPath, RunWorkerCommand, req)
 }
 
 func runHardeningApplyWorker(ctx context.Context, binary string, cfg *config.Config, lookPath systemdrun.LookPathFunc, run systemdrun.InputRunnerFunc, req HardeningApplyRequest) ([]HardeningFixResult, error) {
@@ -156,9 +156,9 @@ func runHardeningApplyWorker(ctx context.Context, binary string, cfg *config.Con
 	return reply.Results, nil
 }
 
-// runWorkerCommand returns stdout alone, so the reply stays parseable, and
-// adds stderr to the error.
-func runWorkerCommand(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
+// RunWorkerCommand runs a worker with input on stdin. It returns stdout
+// alone, so a reply stays parseable, and adds stderr to the error.
+func RunWorkerCommand(ctx context.Context, input []byte, name string, args ...string) ([]byte, error) {
 	// #nosec G204 -- this executable with a fixed worker subcommand, or systemd-run with fixed flags.
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = bytes.NewReader(input)

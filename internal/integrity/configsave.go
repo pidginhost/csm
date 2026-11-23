@@ -2,8 +2,12 @@ package integrity
 
 import (
 	"bytes"
+	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -133,6 +137,48 @@ func WriteSignedConfig(c SignedConfig) error {
 		return err
 	}
 	return atomicWriteFile(c.Path, c.Bytes, 0o600)
+}
+
+// ConfigWriteCommand is the csm subcommand that writes a signed config for a
+// process that cannot write the config's directory itself.
+const ConfigWriteCommand = "config-write"
+
+// maxSignedConfigBytes bounds the JSON a config-write helper accepts: the
+// config and its conf.d fragments, base64-encoded.
+const maxSignedConfigBytes = 16 << 20
+
+// ReadSignedConfig decodes the one signed config a helper receives. It
+// refuses unknown members, oversized input, and a path that is not an
+// absolute, clean .yaml or .yml file.
+func ReadSignedConfig(r io.Reader) (SignedConfig, error) {
+	var c SignedConfig
+	data, err := io.ReadAll(io.LimitReader(r, maxSignedConfigBytes+1))
+	if err != nil {
+		return c, err
+	}
+	if len(data) > maxSignedConfigBytes {
+		return c, errors.New("signed config too large")
+	}
+	if err := jsonv2.Unmarshal(data, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return c, fmt.Errorf("decode signed config: %w", err)
+	}
+	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
+		return c, fmt.Errorf("config path %q is not an absolute, clean path", c.Path)
+	}
+	if ext := filepath.Ext(c.Path); ext != ".yaml" && ext != ".yml" {
+		return c, fmt.Errorf("config path %q is not a YAML file", c.Path)
+	}
+	return c, nil
+}
+
+// ConfigWriteDir is the directory a write of path changes: the resolved
+// target's, since a symlinked config is written where it points.
+func ConfigWriteDir(path string) (string, error) {
+	target, err := atomicWriteTarget(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(target), nil
 }
 
 var configWriter atomic.Pointer[func(SignedConfig) error]

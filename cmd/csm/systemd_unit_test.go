@@ -55,6 +55,16 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	}
 
 	rwPaths := unitDirectiveFields(unit, "ReadWritePaths")
+	// Config saves go through csm config-write in a transient unit; the
+	// daemon itself cannot write its config directory.
+	if rwPaths["/etc/csm"] || rwPaths["-/etc/csm"] {
+		t.Error("the daemon unit grants write access to /etc/csm")
+	}
+	// ConfigurationDirectory= binds its directory writable even under
+	// ProtectSystem=strict (seen on systemd 239), so it would undo that.
+	if strings.Contains(unit, "ConfigurationDirectory") {
+		t.Error("the daemon unit declares ConfigurationDirectory, which makes /etc/csm writable")
+	}
 	for _, want := range []string{
 		"/var/lib/csm",
 		// Tolerate-absent: FHS installs never create /opt/csm/state, and an
@@ -66,7 +76,6 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"-/var/log/csm-php-shield",
 		// The web server writes the peer log; the daemon empties it.
 		"-/var/log/csm-web",
-		"/etc/csm",
 		"/opt/csm/quarantine",
 		"/opt/csm/rules",
 		"-/home",

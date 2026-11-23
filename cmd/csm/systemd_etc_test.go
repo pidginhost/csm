@@ -6,8 +6,8 @@ import (
 )
 
 func TestSystemdServiceLimitsConfigurationWrites(t *testing.T) {
+	// /etc/csm is not here: config saves run in csm config-write's own unit.
 	allowed := map[string]bool{
-		"/etc/csm":                  true,
 		"/etc/audit":                true,
 		"/etc/modprobe.d":           true,
 		"/etc/apache2/conf.d":       true,
