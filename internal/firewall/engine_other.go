@@ -187,3 +187,5 @@ func (e *Engine) SetLeaseFloor(_ time.Time) {}
 func (e *Engine) LeaseNow() time.Time { return time.Now() }
 
 func (e *Engine) SetBootClock(_ func() (string, time.Duration, error)) {}
+
+func (e *Engine) LockedLocalPortUIDs() map[int][]uint32 { return nil }

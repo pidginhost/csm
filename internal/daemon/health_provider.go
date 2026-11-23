@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -287,7 +288,11 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 		rc := engine.RuleCounts()
 		out.FirewallBlockedIPs = rc.Blocked
 		out.FirewallBlockedSubnets = rc.Subnets
-		out.FirewallLocalPortLocks = engine.LockedLocalPorts()
+		out.FirewallLocalPortLockUIDs = engine.LockedLocalPortUIDs()
+		for port := range out.FirewallLocalPortLockUIDs {
+			out.FirewallLocalPortLocks = append(out.FirewallLocalPortLocks, port)
+		}
+		slices.Sort(out.FirewallLocalPortLocks)
 	}
 	if mgr := rollback.Global(); mgr != nil {
 		st := mgr.Status()

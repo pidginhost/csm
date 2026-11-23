@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Stalwart setup no longer takes webmail client addresses from a forwarded header when site code runs as a user the webmail port lock admits. Run `csm doctor` to see whether PHP pools must move to their own users.
+- Stalwart setup and doctor refuse forwarded webmail addresses when PHP or CGI shares an admitted identity or isolation cannot be verified.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
 - Internal registry downloads between releases carry verified signatures even when only the AMD64 build is available.

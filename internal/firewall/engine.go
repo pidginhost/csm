@@ -53,6 +53,8 @@ type Engine struct {
 	// hashes cannot authenticate the rules currently installed in the kernel.
 	appliedRuleset   string
 	lockedLocalPorts []int
+	lockedLocalUIDs  map[int][]uint32
+	pendingLocalUIDs map[int][]uint32
 	readRuleset      func() (string, error)
 
 	// dryRunRecorder is called by BlockIP when auto_response.dry_run is
@@ -744,6 +746,7 @@ func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 		return fmt.Errorf("applying ruleset: %w", err)
 	}
 	e.lockedLocalPorts = configuredLockPorts(e.cfg)
+	e.lockedLocalUIDs = e.pendingLocalUIDs
 	if err := e.saveLeaseLocked(); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: lease checkpoint not saved: %v\n", err)
 	}

@@ -51,8 +51,7 @@ func stalwartDoctorChecks(cfg *config.Config, automation health.AutomationStatus
 				stalwartCDNBanCheck(lines, func(ip string) bool { return checks.KnownProxyPeer(ip, cfg) }))
 		}
 	}
-	in := stalwartInputs(cfg, platform.Detect().WebServerUsers(), &automation)
-	in.PHPUsers = platform.PHPRuntimeUsers()
+	in := stalwartInputs(cfg, platform.Detect().WebServerUsers(), &automation, platform.PHPRuntimeUsers)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	newAPI := func(url, user, password string) stalwartDoctorAPI {

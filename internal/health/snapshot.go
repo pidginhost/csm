@@ -106,9 +106,11 @@ type AutomationStatus struct {
 	FirewallBlockedSubnets int    `json:"firewall_blocked_subnets"`
 	// FirewallLocalPortLocks are the ports the live engine lets only listed
 	// users open new local connections to; empty without a live engine.
-	FirewallLocalPortLocks        []int `json:"firewall_local_port_locks,omitempty"`
-	FirewallRollbackPending       bool  `json:"firewall_rollback_pending"`
-	FirewallRollbackSecondsRemain int64 `json:"firewall_rollback_remaining_seconds,omitempty"`
+	FirewallLocalPortLocks []int `json:"firewall_local_port_locks,omitempty"`
+	// FirewallLocalPortLockUIDs are the UIDs admitted by those installed locks.
+	FirewallLocalPortLockUIDs     map[int][]uint32 `json:"firewall_local_port_lock_uids,omitempty"`
+	FirewallRollbackPending       bool             `json:"firewall_rollback_pending"`
+	FirewallRollbackSecondsRemain int64            `json:"firewall_rollback_remaining_seconds,omitempty"`
 	// FirewallConfirmation is a pending `csm firewall apply-confirmed`
 	// window; nil when none is.
 	FirewallConfirmation *FirewallConfirmation `json:"firewall_confirmation,omitempty"`

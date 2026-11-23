@@ -58,13 +58,13 @@ type Inputs struct {
 	LockedPorts []int
 	// WebUsers are the web server's users, for the lock line setup suggests.
 	WebUsers []string
-	// LockUsers are the users csm.yaml's local_port_locks admit on each
-	// port, besides root.
-	LockUsers map[int][]string
-	// PHPUsers maps each user PHP or CGI runs as on this host to what runs
-	// as it. Code a site runs as a user the webmail lock admits can connect
-	// and forge the forwarded header.
-	PHPUsers map[string]string
+	// LockUIDs are the identities admitted by the installed port locks,
+	// including root. Missing identities cannot prove worker isolation.
+	LockUIDs map[int][]uint32
+	// PHPUsers maps worker UIDs to their source, independent of user aliases.
+	PHPUsers map[uint32]string
+	// PHPUsersErr records an incomplete host inspection.
+	PHPUsersErr error
 	// LocalAPI is true when the API address is on this host, the only place
 	// CSM's key works from.
 	LocalAPI bool
@@ -721,6 +721,10 @@ func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Liste
 			state = "CSM's daemon is not managing the firewall"
 		}
 		reason = fmt.Sprintf("%s; add %s under firewall in csm.yaml and restart CSM", state, lockLine(ports, in.WebUsers))
+	case in.PHPUsersErr != nil:
+		reason = fmt.Sprintf("cannot inspect PHP/CGI isolation: %v; resolve this before trusting forwarded addresses", in.PHPUsersErr)
+	case !knownLockUIDs(ports, in.LockUIDs):
+		reason = "CSM's daemon does not report the installed port lock identities; restart an updated CSM daemon before trusting forwarded addresses"
 	default:
 		if shared := sharedPHPUsers(ports, in); len(shared) > 0 {
 			reason = fmt.Sprintf("PHP or CGI runs as a user the webmail port lock admits: %s, so code a site runs can connect and forge the header; run PHP-FPM pools and CGI as their own users, or lock the port to a web server user PHP does not use",
@@ -765,9 +769,9 @@ var safeForwarded = stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", Fo
 func sharedPHPUsers(ports []int, in Inputs) []string {
 	var out []string
 	for _, p := range ports {
-		for _, user := range append([]string{"root"}, in.LockUsers[p]...) {
+		for _, user := range in.LockUIDs[p] {
 			if source, ok := in.PHPUsers[user]; ok {
-				if entry := user + " (" + source + ")"; !slices.Contains(out, entry) {
+				if entry := fmt.Sprintf("uid %d (%s)", user, source); !slices.Contains(out, entry) {
 					out = append(out, entry)
 				}
 			}
@@ -775,6 +779,15 @@ func sharedPHPUsers(ports []int, in Inputs) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func knownLockUIDs(ports []int, locks map[int][]uint32) bool {
+	for _, port := range ports {
+		if len(locks[port]) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func allLocked(ports, locked []int) bool {
