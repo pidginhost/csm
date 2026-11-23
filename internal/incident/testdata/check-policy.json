@@ -105,6 +105,7 @@
       "email_filter_pipe",
       "email_mail_filters",
       "email_mailbox_response",
+      "email_mailbox_suspension_paused",
       "email_malware",
       "email_password_audit_incomplete",
       "email_phishing_content",
