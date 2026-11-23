@@ -49,3 +49,20 @@ func FuzzOpenLiteSpeedServerUser(f *testing.F) {
 		}
 	})
 }
+
+func FuzzProcNoUserspace(f *testing.F) {
+	for _, seed := range []string{"worker", "x) Z", "x\n) S (y", "", ")"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		// The task name is attacker controlled, including parentheses and
+		// newlines. Only fields after the final delimiter prove liveness.
+		stat := "300 (" + name + ") "
+		if inactive, err := procNoUserspace(stat + "S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1"); err != nil || inactive {
+			t.Fatalf("live task excluded: %v, %v", inactive, err)
+		}
+		if inactive, err := procNoUserspace(stat + "Z 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 2 0 1"); err == nil || inactive {
+			t.Fatalf("surviving thread excluded: %v, %v", inactive, err)
+		}
+	})
+}

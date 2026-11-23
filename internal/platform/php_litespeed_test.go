@@ -44,6 +44,7 @@ func TestPHPRuntimeUsersLiteSpeedIsolation(t *testing.T) {
 			}
 			if tc.exe == "unreadable" {
 				writeRootFile(t, root, "proc/200/comm", "litespeed\n")
+				writeRootFile(t, root, "proc/200/stat", "200 (litespeed) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1\n")
 				writeRootFile(t, root, "proc/200/status", "Name:\tlitespeed\nUid:\t0\t0\t0\t0\n")
 			} else if tc.exe != "" {
 				fakeProc(t, root, 200, tc.exe, 0)
@@ -55,7 +56,7 @@ func TestPHPRuntimeUsersLiteSpeedIsolation(t *testing.T) {
 				}
 				writeRootFile(t, root, config, tc.body)
 			}
-			got, err := phpRuntimeUsers(root)
+			got, err := fixturePHPRuntimeUsers(root)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("users = %v, error = %v; want error %v", got, err, tc.wantErr)
 			}
@@ -74,7 +75,7 @@ func TestPHPRuntimeUsersLiteSpeedBothFormats(t *testing.T) {
 	}
 	writeRootFile(t, root, "usr/local/lsws/conf/httpd_config.xml", `<httpServerConfig><phpSuExec>1</phpSuExec></httpServerConfig>`)
 	writeRootFile(t, root, "usr/local/lsws/conf/httpd_config.conf", "user www-data\n")
-	got, err := phpRuntimeUsers(root)
+	got, err := fixturePHPRuntimeUsers(root)
 	if err != nil || !maps.Equal(got, map[uint32]string{33: "LiteSpeed's PHP handler"}) {
 		t.Fatalf("users = %v, error = %v; an Enterprise configuration must not hide OpenLiteSpeed's shared user", got, err)
 	}
@@ -89,7 +90,7 @@ func TestPHPRuntimeUsersLiteSpeedMissingConfiguration(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "usr/local/lsws/conf"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := phpRuntimeUsers(root); err == nil {
+	if _, err := fixturePHPRuntimeUsers(root); err == nil {
 		t.Fatal("a missing server configuration must not guess nobody as the server user")
 	}
 }
@@ -130,7 +131,7 @@ func TestPHPRuntimeUsersStandaloneLSPHP(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "proc"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := phpRuntimeUsers(root)
+	got, err := fixturePHPRuntimeUsers(root)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("users = %v, error = %v; an interpreter package alone is not a LiteSpeed server", got, err)
 	}
@@ -153,6 +154,7 @@ func TestPHPRuntimeUsersIgnoresUserLiteSpeedProcess(t *testing.T) {
 			switch {
 			case tc.exe == "":
 				writeRootFile(t, root, "proc/300/comm", "lshttpd\n")
+				writeRootFile(t, root, "proc/300/stat", "300 (lshttpd) Z 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1\n")
 				writeRootFile(t, root, "proc/300/status", "Name:\tlshttpd\nState:\tZ (zombie)\nUid:\t1001\t1001\t1001\t1001\n")
 			case tc.name == "setuid program":
 				// Effective UID root, real UID the user's.
@@ -164,9 +166,15 @@ func TestPHPRuntimeUsersIgnoresUserLiteSpeedProcess(t *testing.T) {
 			if tc.config != "" {
 				writeRootFile(t, root, tc.config, tc.body)
 			}
-			got, err := phpRuntimeUsers(root)
-			if err != nil || len(got) != 0 {
-				t.Fatalf("users = %v, error = %v; a user's process named like LiteSpeed located a server", got, err)
+			got, err := fixturePHPRuntimeUsers(root)
+			want := map[uint32]string{1001: "a running process whose executable cannot be verified"}
+			if tc.name == "setuid program" {
+				want = map[uint32]string{0: "a running process whose executable cannot be verified"}
+			} else if tc.exe == "" {
+				want = map[uint32]string{}
+			}
+			if err != nil || !maps.Equal(got, want) {
+				t.Fatalf("users = %v, error = %v; want only process credentials %v", got, err, want)
 			}
 		})
 	}

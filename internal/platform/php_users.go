@@ -19,7 +19,13 @@ func PHPRuntimeUsers() (map[uint32]string, error) { return phpRuntimeUsers("/") 
 // The PHP command-line binary is not a web worker.
 var phpWorkerName = regexp.MustCompile(`^(php-cgi|php-fpm|lsphp)[0-9.]*$|^fcgiwrap$`)
 
+type phpExecutableCheck func(string, phpProcessFiles, string) bool
+
 func phpRuntimeUsers(root string) (map[uint32]string, error) {
+	return inspectPHPRuntimeUsers(root, phpExecutableTrusted)
+}
+
+func inspectPHPRuntimeUsers(root string, trusted phpExecutableCheck) (map[uint32]string, error) {
 	out := map[uint32]string{}
 	addUID := func(uid uint32, source string) {
 		if out[uid] == "" {
@@ -47,7 +53,7 @@ func phpRuntimeUsers(root string) (map[uint32]string, error) {
 			return out, err
 		}
 	}
-	if err := phpProcessUsers(root, addUID, add); err != nil {
+	if err := phpProcessUsers(root, addUID, add, trusted); err != nil {
 		return out, err
 	}
 	if err := apacheRuntimeUsers(root, add); err != nil {
@@ -95,7 +101,7 @@ func phpUserLookup(root string) (func(string) (uint32, error), error) {
 	}, nil
 }
 
-func phpProcessUsers(root string, add func(uint32, string), addName func(string, string) error) error {
+func phpProcessUsers(root string, add func(uint32, string), addName func(string, string) error, trusted phpExecutableCheck) error {
 	entries, err := os.ReadDir(filepath.Join(root, "proc"))
 	if err != nil {
 		return fmt.Errorf("inspect PHP/CGI processes: %w", err)
@@ -113,7 +119,7 @@ func phpProcessUsers(root string, add func(uint32, string), addName func(string,
 		if err != nil {
 			return fmt.Errorf("inspect process directory: %w", err)
 		}
-		err = phpProcessUser(root, proc, add, addName)
+		err = phpProcessUser(root, proc, add, addName, trusted)
 		_ = proc.Close()
 		if err != nil {
 			return err
@@ -123,29 +129,14 @@ func phpProcessUsers(root string, add func(uint32, string), addName func(string,
 }
 
 type phpProcessFiles interface {
+	Open(string) (*os.File, error)
 	Readlink(string) (string, error)
 	ReadFile(string) ([]byte, error)
 }
 
-func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string), addName func(string, string) error) error {
+func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string), addName func(string, string) error, trusted phpExecutableCheck) error {
 	exe, exeErr := proc.Readlink("exe")
 	if errors.Is(exeErr, syscall.ESRCH) {
-		return nil
-	}
-	base := filepath.Base(strings.TrimSuffix(exe, " (deleted)"))
-	if exeErr != nil {
-		comm, err := proc.ReadFile("comm")
-		if procProcessExited(err) {
-			return nil // The process exited during the walk.
-		}
-		if err != nil {
-			return fmt.Errorf("inspect process name: %w", err)
-		}
-		base = strings.TrimSpace(string(comm))
-	}
-	worker := phpWorkerName.MatchString(base)
-	server := liteSpeedServerName.MatchString(base)
-	if !worker && !server && (exeErr == nil || os.IsNotExist(exeErr)) {
 		return nil
 	}
 	data, err := proc.ReadFile("status")
@@ -159,42 +150,58 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 	if uidErr != nil {
 		return uidErr
 	}
-	if uid == 0 && exeErr != nil {
-		return fmt.Errorf("inspect process executable: %w", exeErr)
+	ids, err := procWorkerUIDs(string(data))
+	if err != nil {
+		return err
 	}
-	if exeErr != nil && !os.IsNotExist(exeErr) {
-		// Neither comm nor cmdline identifies an unreadable executable.
-		// In particular, a self-assigned FPM title cannot exempt its UIDs.
-		ids, idsErr := procWorkerUIDs(string(data))
-		if idsErr != nil {
-			return idsErr
+	if os.IsNotExist(exeErr) {
+		stat, statErr := proc.ReadFile("stat")
+		if procProcessExited(statErr) {
+			return nil
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspect process liveness: %w", statErr)
+		}
+		inactive, stateErr := procNoUserspace(string(stat))
+		if stateErr != nil {
+			return stateErr
+		}
+		if inactive {
+			return nil
+		}
+	}
+	base := filepath.Base(strings.TrimSuffix(exe, " (deleted)"))
+	worker := exeErr == nil && phpWorkerName.MatchString(base)
+	identified := exeErr == nil && trusted(root, proc, exe)
+	if !identified {
+		if uid == 0 && !worker {
+			return errors.New("cannot establish trusted process executable provenance")
+		}
+		source := "a running process whose executable cannot be verified"
+		if worker {
+			source = "a running " + base + " process"
 		}
 		for _, id := range ids {
-			add(id, "a running process whose executable cannot be inspected")
+			add(id, source)
 		}
 		return nil
 	}
-	// A user's process never locates server configuration.
-	if !worker && uid != 0 {
-		return nil
-	}
-	if server {
-		exe = strings.TrimSuffix(exe, " (deleted)")
-		if !filepath.IsAbs(exe) || filepath.Base(filepath.Dir(exe)) != "bin" {
+	if !worker {
+		// Only a root-started server with an operator-controlled executable
+		// can locate configuration. User copies have already been counted.
+		if uid != 0 || !liteSpeedServerName.MatchString(base) {
+			return nil
+		}
+		if filepath.Base(filepath.Dir(exe)) != "bin" {
 			return errors.New("cannot locate LiteSpeed server configuration")
 		}
 		conf := filepath.Join(root, filepath.Dir(filepath.Dir(exe)), "conf")
 		return liteSpeedConfigUsers(conf, addName)
 	}
-	ids, err := procWorkerUIDs(string(data))
-	if err != nil {
-		return err
-	}
-	if exeErr == nil && uid == 0 && ids[0] == 0 && ids[1] == 0 && strings.HasPrefix(base, "php-fpm") {
-		cmd, err := proc.ReadFile("cmdline")
-		// Only a positively identified FPM supervisor is exempt. Root
-		// CGI workers and FPM pools can serve requests themselves.
-		if err == nil && strings.HasPrefix(string(cmd), "php-fpm: master process (") {
+	if uid == 0 && ids[0] == 0 && ids[1] == 0 && strings.HasPrefix(base, "php-fpm") {
+		cmd, cmdErr := proc.ReadFile("cmdline")
+		// A title exempts only a trusted root-started FPM supervisor.
+		if cmdErr == nil && strings.HasPrefix(string(cmd), "php-fpm: master process (") {
 			return nil
 		}
 	}
@@ -202,6 +209,34 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 		add(id, "a running "+base+" process")
 	}
 	return nil
+}
+
+// The leader can be a zombie while other threads still run. Their credentials
+// may differ from the leader's, so a missing executable cannot exclude them.
+func procNoUserspace(stat string) (bool, error) {
+	_, rest, ok := strings.Cut(stat, " (")
+	end := strings.LastIndex(rest, ") ")
+	if !ok || end < 0 {
+		return false, errors.New("invalid process liveness")
+	}
+	fields := strings.Fields(rest[end+2:])
+	if len(fields) < 18 {
+		return false, errors.New("invalid process liveness")
+	}
+	flags, flagsErr := strconv.ParseUint(fields[6], 10, 64)
+	threads, threadsErr := strconv.ParseUint(fields[17], 10, 32)
+	if flagsErr != nil || threadsErr != nil || threads == 0 || len(fields[0]) != 1 {
+		return false, errors.New("invalid process liveness")
+	}
+	// PF_KTHREAD is kernel supplied, unlike comm and cmdline, and works on
+	// kernels older than the Kthread field in /proc/PID/status.
+	if flags&0x00200000 != 0 {
+		return true, nil
+	}
+	if threads != 1 {
+		return false, errors.New("cannot inspect surviving process threads without an executable")
+	}
+	return fields[0] == "Z" || fields[0] == "X", nil
 }
 
 // A proc file opened before exit can return ESRCH rather than ENOENT.

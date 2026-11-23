@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -87,7 +88,7 @@ func TestPHPRuntimeUsers(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.setup(t, root)
-			if got, err := phpRuntimeUsers(root); err != nil || !maps.Equal(got, tc.want) {
+			if got, err := fixturePHPRuntimeUsers(root); err != nil || !maps.Equal(got, tc.want) {
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -114,7 +115,7 @@ func TestPHPRuntimeUsersRegression(t *testing.T) {
 		{"root CGI", nil, "/usr/bin/php-cgi", 0, 0},
 		{"root FastCGI", nil, "/usr/sbin/fcgiwrap", 0, 0},
 		{"root FPM worker", map[string]string{"proc/200/cmdline": "php-fpm: pool www\x00"}, "/usr/sbin/php-fpm8.2", 0, 0},
-		{"nondumpable worker", map[string]string{"proc/200/comm": "php-fpm8.2\n", "proc/200/status": "Uid:\t33\t33\t33\t33\n"}, "", 0, 33},
+		{"nondumpable worker", map[string]string{"proc/200/comm": "php-fpm8.2\n", "proc/200/stat": "200 (php-fpm8.2) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1\n", "proc/200/status": "Uid:\t33\t33\t33\t33\n"}, "", 0, 33},
 		{"apache env comment", map[string]string{"etc/apache2/envvars": "export APACHE_RUN_USER=www-data # worker\n", "etc/apache2/mods-enabled/cgi.load": "LoadModule cgi_module modules/mod_cgi.so\n"}, "", 0, 33},
 		{"cpanel apache", map[string]string{"etc/apache2/conf/httpd.conf": "User www-data\nLoadModule cgi_module modules/mod_cgi.so\n"}, "", 0, 33},
 		{"directadmin apache", map[string]string{"usr/local/apache/conf/httpd.conf": "User www-data\nLoadModule php_module modules/libphp.so\n"}, "", 0, 33},
@@ -131,7 +132,7 @@ func TestPHPRuntimeUsersRegression(t *testing.T) {
 			for path, body := range tc.files {
 				writeRootFile(t, root, path, body)
 			}
-			if got, err := phpRuntimeUsers(root); err != nil || got[tc.want] == "" {
+			if got, err := fixturePHPRuntimeUsers(root); err != nil || got[tc.want] == "" {
 				t.Fatalf("users = %v, err %v; missing UID %d", got, err, tc.want)
 			}
 		})
@@ -155,7 +156,7 @@ func TestPHPRuntimeIdentityAndParsing(t *testing.T) {
 		{"unresolved environment", map[string]string{"etc/php-fpm.conf": "[www]\nuser = ${FPM_USER}\n"}, nil, true},
 		{"relative include", map[string]string{"etc/php-fpm.conf": "include = etc/pools/*.conf\n"}, nil, true},
 		{"malformed worker credentials", map[string]string{"proc/200/comm": "php-cgi\n", "proc/200/status": "Uid: missing\n"}, nil, true},
-		{"worker fsuid", map[string]string{"proc/200/comm": "lsphp\n", "proc/200/status": "Uid:\t1001\t1001\t1001\t33\n"}, map[uint32]string{33: "a running lsphp process", 1001: "a running lsphp process"}, false},
+		{"worker fsuid", map[string]string{"proc/200/comm": "lsphp\n", "proc/200/stat": "200 (lsphp) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1\n", "proc/200/status": "Uid:\t1001\t1001\t1001\t33\n"}, map[uint32]string{33: "a running process whose executable cannot be verified", 1001: "a running process whose executable cannot be verified"}, false},
 		{"commented Apache module", map[string]string{"etc/apache2/mods-enabled/php.load": "# LoadModule php_module modules/libphp.so\n"}, map[uint32]string{}, false},
 		{"Apache numeric user", map[string]string{"etc/httpd/conf/httpd.conf": "User #33\nLoadModule cgid_module modules/mod_cgid.so\n"}, map[uint32]string{33: "Apache's CGI module"}, false},
 		{"Apache includes", map[string]string{"etc/httpd/conf/httpd.conf": "User www-data\nInclude /srv/modules/*.conf\n", "srv/modules/php.conf": "loadmodule php_module modules/libphp.so\n"}, map[uint32]string{33: "Apache's PHP module"}, false},
@@ -169,7 +170,7 @@ func TestPHPRuntimeIdentityAndParsing(t *testing.T) {
 			for path, body := range tc.files {
 				writeRootFile(t, root, path, body)
 			}
-			got, err := phpRuntimeUsers(root)
+			got, err := fixturePHPRuntimeUsers(root)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error = %v, want error %v", err, tc.wantErr)
 			}
@@ -183,7 +184,7 @@ func TestPHPRuntimeIdentityAndParsing(t *testing.T) {
 func TestPHPRuntimeUsersReadErrors(t *testing.T) {
 	root := t.TempDir()
 	writeRootFile(t, root, "etc/passwd", testPasswd)
-	if _, err := phpRuntimeUsers(root); err == nil {
+	if _, err := fixturePHPRuntimeUsers(root); err == nil {
 		t.Fatal("missing procfs accepted as no PHP workers")
 	}
 	if err := os.Mkdir(filepath.Join(root, "proc"), 0o755); err != nil {
@@ -192,7 +193,7 @@ func TestPHPRuntimeUsersReadErrors(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "etc/php-fpm.conf"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := phpRuntimeUsers(root); err == nil {
+	if _, err := fixturePHPRuntimeUsers(root); err == nil {
 		t.Fatal("unreadable config accepted as no PHP pools")
 	}
 }
@@ -213,7 +214,7 @@ func TestPHPRuntimeUsersDistributionAndPanelPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeRootFile(t, root, path, "[www]\nuser = www-data\n")
-			got, err := phpRuntimeUsers(root)
+			got, err := fixturePHPRuntimeUsers(root)
 			if err != nil || !maps.Equal(got, map[uint32]string{33: "PHP-FPM pool www"}) {
 				t.Fatalf("users = %v, err %v", got, err)
 			}
@@ -242,7 +243,7 @@ func TestPHPRuntimeUsersApacheScriptModules(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeRootFile(t, root, "etc/apache2/mods-enabled/x.load", "LoadModule "+module+" /usr/lib/apache2/modules/x.so\n")
-			got, err := phpRuntimeUsers(root)
+			got, err := fixturePHPRuntimeUsers(root)
 			if err != nil || !maps.Equal(got, map[uint32]string{33: want}) {
 				t.Fatalf("users = %v, %v; want Apache's user with %q", got, err, want)
 			}
@@ -276,7 +277,7 @@ func TestPHPRuntimeUsersLiteSpeed(t *testing.T) {
 			for rel, body := range tc.files {
 				writeRootFile(t, root, rel, body)
 			}
-			if got, err := phpRuntimeUsers(root); err != nil || !maps.Equal(got, tc.want) {
+			if got, err := fixturePHPRuntimeUsers(root); err != nil || !maps.Equal(got, tc.want) {
 				t.Fatalf("users = %v, %v; want %v", got, err, tc.want)
 			}
 		})
@@ -290,8 +291,19 @@ func TestPHPRuntimeUsersLiteSpeed(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(root, "usr/local/lsws/conf/httpd_config.xml"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := phpRuntimeUsers(root); err == nil {
+		if _, err := fixturePHPRuntimeUsers(root); err == nil {
 			t.Fatal("an unreadable LiteSpeed configuration was taken as isolation")
 		}
 	})
+}
+
+// Configuration fixtures model installed binaries separately from procfs.
+// Executable provenance itself is exercised against metadata and real procfs
+// in php_executable_test.go; tenant copies never get that fixture proof.
+func fixturePHPExecutableTrusted(_ string, _ phpProcessFiles, exe string) bool {
+	return !strings.HasPrefix(exe, "/home/")
+}
+
+func fixturePHPRuntimeUsers(root string) (map[uint32]string, error) {
+	return inspectPHPRuntimeUsers(root, fixturePHPExecutableTrusted)
 }

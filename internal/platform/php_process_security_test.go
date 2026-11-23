@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"testing"
 )
@@ -16,7 +17,7 @@ import (
 // configuration, but whatever it runs as counts as a possible runtime user,
 // and an unidentifiable root process stops the inspection.
 func TestPHPRuntimeUsersUntrustedExecutableError(t *testing.T) {
-	const unknown = "a running process whose executable cannot be inspected"
+	const unknown = "a running process whose executable cannot be verified"
 	for _, name := range []string{"lshttpd", "litespeed", "openlitespeed", "unrelated", "php-fpm8.2", "php-cgi", "lsphp", "fcgiwrap"} {
 		for _, credentials := range []struct {
 			name, uids string
@@ -67,7 +68,7 @@ func TestPHPRuntimeUsersUntrustedSpecialConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := phpRuntimeUsers(root)
-			if err != nil || !maps.Equal(got, map[uint32]string{}) {
+			if err != nil || !maps.Equal(got, map[uint32]string{1001: "a running process whose executable cannot be verified"}) {
 				t.Fatalf("users = %v, error = %v; tenant configuration inspected", got, err)
 			}
 		})
@@ -82,7 +83,7 @@ func TestPHPProcessUserPinsIdentity(t *testing.T) {
 		oldUID, newUID       int
 		want                 map[uint32]string
 	}{
-		{"tenant replaced by root", "/home/site1/bin/lshttpd", "/usr/bin/sleep", 1001, 0, map[uint32]string{}},
+		{"tenant replaced by root", "/home/site1/bin/lshttpd", "/usr/bin/sleep", 1001, 0, map[uint32]string{1001: "a running process whose executable cannot be verified"}},
 		{"worker replaced by root", "/usr/bin/php-cgi", "/usr/bin/sleep", 1001, 0, map[uint32]string{1001: "a running php-cgi process"}},
 		{"root server replaced by tenant", "/opt/server/bin/lshttpd", "/home/site1/bin/lshttpd", 0, 1001, map[uint32]string{33: "LiteSpeed's PHP handler"}},
 	} {
@@ -109,7 +110,7 @@ func TestPHPProcessUserPinsIdentity(t *testing.T) {
 				}
 				got[33] = source
 				return nil
-			})
+			}, fixturePHPExecutableTrusted)
 			if err != nil || !maps.Equal(got, tc.want) {
 				t.Fatalf("users = %v, error = %v; want original process users %v", got, err, tc.want)
 			}
@@ -145,7 +146,7 @@ func (p failingProcessFile) ReadFile(name string) ([]byte, error) {
 // Permission errors on credentials must still fail closed.
 func TestPHPProcessUserExitDuringRead(t *testing.T) {
 	for _, name := range []string{"lshttpd", "php-cgi"} {
-		for _, file := range []string{"comm", "status"} {
+		for _, file := range []string{"stat", "status"} {
 			for _, readErr := range []error{syscall.ESRCH, os.ErrPermission} {
 				t.Run(name+"/"+file+"/"+readErr.Error(), func(t *testing.T) {
 					root := t.TempDir()
@@ -153,13 +154,14 @@ func TestPHPProcessUserExitDuringRead(t *testing.T) {
 						fakeProc(t, root, 300, "/opt/server/bin/"+name, 0)
 					} else {
 						writeRootFile(t, root, "proc/300/comm", name)
+						writeRootFile(t, root, "proc/300/status", "Uid:\t0\t0\t0\t0\n")
 					}
 					proc, err := os.OpenRoot(filepath.Join(root, "proc/300"))
 					if err != nil {
 						t.Fatal(err)
 					}
 					defer func() { _ = proc.Close() }()
-					err = phpProcessUser(root, failingProcessFile{proc, file, readErr}, func(uint32, string) { t.Fatal("added an exited process") }, func(string, string) error { t.Fatal("read configuration for an exited process"); return nil })
+					err = phpProcessUser(root, failingProcessFile{proc, file, readErr}, func(uint32, string) { t.Fatal("added an exited process") }, func(string, string) error { t.Fatal("read configuration for an exited process"); return nil }, fixturePHPExecutableTrusted)
 					if readErr == syscall.ESRCH {
 						if err != nil {
 							t.Fatalf("process exit stopped inspection: %v", err)
@@ -191,9 +193,75 @@ func TestPHPProcessUserMissingRootWorkerExecutable(t *testing.T) {
 	root := t.TempDir()
 	writeRootFile(t, root, "etc/passwd", testPasswd)
 	writeRootFile(t, root, "proc/300/comm", "php-fpm\n")
+	writeRootFile(t, root, "proc/300/stat", "300 (php-fpm) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1\n")
 	writeRootFile(t, root, "proc/300/status", "Uid:\t0\t0\t0\t0\n")
 	writeRootFile(t, root, "proc/300/cmdline", "php-fpm: master process (/etc/php-fpm.conf)\x00")
 	if _, err := phpRuntimeUsers(root); err == nil {
 		t.Fatal("unidentifiable root worker did not stop inspection")
+	}
+}
+
+// Readability does not make a name trustworthy: a copied executable or a
+// root-owned hard link in a writable directory can be named by its caller.
+func TestPHPRuntimeUsersRenamedExecutable(t *testing.T) {
+	for _, name := range []string{"unrelated", "lshttpd", "php-fpm"} {
+		for _, uid := range []int{33, 1001} {
+			t.Run(name+"/"+strconv.Itoa(uid), func(t *testing.T) {
+				root := t.TempDir()
+				writeRootFile(t, root, "etc/passwd", testPasswd)
+				binary := filepath.Join(root, "home/site1/bin", name)
+				writeRootFile(t, root, "home/site1/bin/"+name, "fixture")
+				fakeProc(t, root, 300, binary, uid)
+				got, err := phpRuntimeUsers(root)
+				if err != nil || len(got) != 1 || got[uint32(uid)] == "" {
+					t.Fatalf("users = %v, error = %v; renamed executable hid UID %d", got, err, uid)
+				}
+			})
+		}
+	}
+}
+
+func TestPHPProcessUserMissingExecutableLiveness(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, flags, threads string
+		uid                         int
+		wantUID, wantErr            bool
+	}{
+		{"live renamed worker", "S", "0", "1", 33, true, false},
+		{"live root worker", "S", "0", "1", 0, false, true},
+		{"zombie with surviving threads", "Z", "0", "2", 33, false, true},
+		{"root zombie with surviving threads", "Z", "0", "2", 0, false, true},
+		{"zombie", "Z", "0", "1", 33, false, false},
+		{"root zombie", "Z", "0", "1", 0, false, false},
+		{"kernel thread", "S", "2097152", "1", 0, false, false},
+		{"invalid stat", "S", "bad", "1", 33, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeRootFile(t, root, "etc/passwd", testPasswd)
+			writeRootFile(t, root, "proc/300/comm", "unrelated\n")
+			u := strconv.Itoa(tc.uid)
+			writeRootFile(t, root, "proc/300/status", "Uid:\t"+u+"\t"+u+"\t"+u+"\t"+u+"\n")
+			writeRootFile(t, root, "proc/300/stat", "300 (unrelated) "+tc.state+" 1 1 1 0 -1 "+tc.flags+" 0 0 0 0 0 0 0 0 20 0 "+tc.threads+" 0 1\n")
+			got, err := phpRuntimeUsers(root)
+			want := map[uint32]string{}
+			if tc.wantUID {
+				want[uint32(tc.uid)] = "a running process whose executable cannot be verified"
+			}
+			if (err != nil) != tc.wantErr || (!tc.wantErr && !maps.Equal(got, want)) {
+				t.Fatalf("users = %v, error = %v; want UID=%v, error=%v", got, err, tc.wantUID, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestPHPProcessUserCopiedRootSupervisor(t *testing.T) {
+	root := t.TempDir()
+	writeRootFile(t, root, "etc/passwd", testPasswd)
+	fakeProc(t, root, 300, "/home/site1/bin/php-fpm", 0)
+	writeRootFile(t, root, "proc/300/cmdline", "php-fpm: master process (/etc/php-fpm.conf)\x00")
+	got, err := phpRuntimeUsers(root)
+	if err != nil || !maps.Equal(got, map[uint32]string{0: "a running php-fpm process"}) {
+		t.Fatalf("users = %v, error = %v; copied executable and title hid root", got, err)
 	}
 }
