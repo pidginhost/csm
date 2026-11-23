@@ -482,9 +482,13 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		Details:   details.String(),
 		Mailbox:   mailbox,
 		Domain:    domain,
-		TenantID:  tenant,
 		Timestamp: time.Now(),
 	}}
 	stampMailAccountOwner(f, mailbox)
+	// The response resolved its own owner; a separate cache must not
+	// replace that account or erase it while retaining the mailbox claim.
+	if tenant != "" {
+		f[0].TenantID = tenant
+	}
 	return f[0]
 }

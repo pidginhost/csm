@@ -629,7 +629,7 @@ func (t *smtpAuthTracker) recordSuccessAt(ip, account string, at time.Time, src 
 		return nil
 	}
 	t.findingsEmitted++
-	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), t.now())}
+	return []alert.Finding{sprayFinding(protoSMTP, ip, v, t.spray.Mode(), at)}
 }
 
 // aliasEntries returns the entries ips holds for ip's address under every
