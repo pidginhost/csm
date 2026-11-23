@@ -634,3 +634,27 @@ func TestLiteSpeedMarkerRefusesHardLink(t *testing.T) {
 		t.Fatal("touched a file shared with another path")
 	}
 }
+
+// Five fixes can disrupt a working host; each carries what it can break, and
+// the Hardening page leaves those unticked.
+func TestAnnotateAutoFixesCautions(t *testing.T) {
+	results := []store.AuditResult{
+		{Name: "os_sysctl_rp_filter", Status: "warn"},
+		{Name: "cp_max_emails_hour", Status: "warn"},
+		{Name: "cp_nobodyspam", Status: "warn"},
+		{Name: "cp_cookie_validation", Status: "warn"},
+		{Name: "ssh_max_auth_tries", Status: "warn"},
+		{Name: "os_sysctl_aslr", Status: "warn"},
+		{Name: "ssh_max_auth_tries", Status: "pass"},
+	}
+	annotateAutoFixes(results, nil)
+	for i, r := range results {
+		wantCaution := i < 5
+		if (r.AutoFixCaution != "") != wantCaution {
+			t.Errorf("%s (%s): caution %q, want caution %v", r.Name, r.Status, r.AutoFixCaution, wantCaution)
+		}
+		if wantCaution && r.AutoFix == "" {
+			t.Errorf("%s: a caution without a fix", r.Name)
+		}
+	}
+}

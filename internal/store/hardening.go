@@ -18,6 +18,9 @@ type AuditResult struct {
 	// AutoFix describes the change CSM makes when the operator applies
 	// this check from the hardening page. Empty means the fix is manual.
 	AutoFix string `json:"auto_fix,omitempty"`
+	// AutoFixCaution says what applying the fix can break on a working
+	// host; the hardening page leaves such fixes unticked.
+	AutoFixCaution string `json:"auto_fix_caution,omitempty"`
 }
 
 // AuditReport is the full result of a hardening audit run.

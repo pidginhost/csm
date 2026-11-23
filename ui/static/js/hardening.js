@@ -174,7 +174,8 @@
                     var cb = document.createElement('input');
                     cb.type = 'checkbox';
                     cb.className = 'form-check-input';
-                    cb.checked = true;
+                    // A fix that can disrupt a working host starts unticked.
+                    cb.checked = !item.auto_fix_caution;
                     cb.setAttribute('data-fix-cat', cat);
                     cb.setAttribute('data-fix-name', item.name);
                     cb.setAttribute('data-fix-desc', item.auto_fix);
@@ -184,6 +185,12 @@
                     autoStrong.textContent = 'Auto-fix: ';
                     labelText.appendChild(autoStrong);
                     labelText.appendChild(document.createTextNode(item.auto_fix));
+                    if (item.auto_fix_caution) {
+                        var caution = document.createElement('div');
+                        caution.className = 'text-warning';
+                        caution.textContent = 'Can break: ' + item.auto_fix_caution;
+                        labelText.appendChild(caution);
+                    }
                     label.appendChild(cb);
                     label.appendChild(labelText);
                     autoTd.appendChild(label);

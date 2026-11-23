@@ -120,3 +120,17 @@ test('a worker error shows the fresh audit even when it could not be saved', asy
     assert.equal(page.pending('/api/v1/hardening').length, 0);
     assert.deepEqual(page.toasts.at(-1), ['Could not save the recheck', 'error']);
 });
+
+// A fix that can disrupt a working host starts unticked and says what it can
+// break; the others stay ticked.
+test('fixes with a caution start unticked and show it', async () => {
+    const page = await hardeningPage([
+        { category: 'ssh', name: 'ssh_max_auth_tries', title: 'MaxAuthTries', status: 'warn', message: '6', fix: 'Set 4', auto_fix: 'Sets MaxAuthTries 4.', auto_fix_caution: 'Refuses clients that offer many keys.' },
+        { category: 'ssh', name: 'ssh_use_dns', title: 'UseDNS', status: 'warn', message: 'UseDNS yes', fix: 'Set UseDNS no', auto_fix: 'Sets UseDNS no.' }
+    ]);
+    const boxes = Array.from(page.document.querySelectorAll('input[data-fix-name]'));
+    const byName = Object.fromEntries(boxes.map(b => [b.getAttribute('data-fix-name'), b]));
+    assert.equal(byName.ssh_max_auth_tries.checked, false);
+    assert.equal(byName.ssh_use_dns.checked, true);
+    assert.match(byName.ssh_max_auth_tries.closest('label').textContent, /Refuses clients that offer many keys\./);
+});

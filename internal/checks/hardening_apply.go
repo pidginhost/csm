@@ -226,13 +226,27 @@ func autoFixDescription(r store.AuditResult, installs []phpInstall) string {
 	return ""
 }
 
-// annotateAutoFixes fills AutoFix on every failing check CSM can apply.
+// autoFixCautions are the fixes that can disrupt a working host, with what
+// each can break. The hardening page leaves them unticked.
+var autoFixCautions = map[string]string{
+	"os_sysctl_rp_filter":  "Strict reverse-path filtering drops replies on hosts with asymmetric routing or several uplinks.",
+	"cp_max_emails_hour":   "Caps every domain at 200 messages an hour, which stops newsletters and other legitimate bulk mail.",
+	"cp_nobodyspam":        "Stops mail sent as the nobody user, which breaks PHP mail() where sites send as nobody.",
+	"cp_cookie_validation": "Logs cPanel, WHM and webmail users out when their IP address changes, as on mobile networks.",
+	"ssh_max_auth_tries":   "Refuses SSH clients that offer more than four keys before the right one.",
+}
+
+// annotateAutoFixes fills AutoFix on every failing check CSM can apply, and
+// the caution for fixes that can disrupt a working host.
 func annotateAutoFixes(results []store.AuditResult, installs []phpInstall) {
 	for i := range results {
 		if results[i].Status == "pass" {
 			continue
 		}
 		results[i].AutoFix = autoFixDescription(results[i], installs)
+		if results[i].AutoFix != "" {
+			results[i].AutoFixCaution = autoFixCautions[results[i].Name]
+		}
 	}
 }
 
