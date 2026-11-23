@@ -69,7 +69,7 @@ func restoreWriterChain(pid int, writtenAt time.Time, directWriter bool) []int {
 // back a removed file came to run: an SSH, cPanel, cron or FTP session, a web
 // request, a terminal, or a process detached under init.
 func RestoreWriterOrigin(pid int) string {
-	terminal := false
+	terminal, web := false, false
 	for p, depth := pid, 0; depth < maxRestoreChainDepth; depth++ {
 		id := strconv.Itoa(p)
 		parent, tty, ok := procParentAndTTY(id)
@@ -87,12 +87,17 @@ func RestoreWriterOrigin(pid int) string {
 		case base == "pure-ftpd" || base == "proftpd" || base == "vsftpd":
 			return "an FTP session"
 		case isWebServerExe(exe):
-			return "a web request"
+			// PHP can run scripts for a session farther up the chain.
+			// Do not call it a request before that ancestry is known.
+			web = true
 		}
 		terminal = terminal || tty != 0
 		if parent == 1 {
 			if terminal {
 				return "a terminal session"
+			}
+			if web {
+				return "a web request"
 			}
 			return "a process detached under init"
 		}

@@ -657,3 +657,74 @@ func TestRestoreWriterOrigin(t *testing.T) {
 		})
 	}
 }
+
+// A PHP server binary can also run a scheduled or interactive script. Its
+// presence must not hide the session farther up the ancestry.
+func TestRestoreWriterOriginPrefersSessionsAbovePHP(t *testing.T) {
+	for _, session := range []struct {
+		exe  string
+		tty  int
+		want string
+	}{
+		{"/usr/sbin/sshd-session", 0, "an SSH session"},
+		{"/usr/local/cpanel/cpsrvd", 0, "cPanel"},
+		{"/usr/sbin/crond", 0, "cron"},
+		{"/usr/sbin/proftpd", 0, "an FTP session"},
+		{bashPath, 34816, "a terminal session"},
+	} {
+		t.Run(session.want, func(t *testing.T) {
+			withProcTable(t, map[int]fakeProc{
+				800: {ppid: 700, exe: bashPath},
+				700: {ppid: 600, exe: lsphpPath},
+				600: {ppid: 1, exe: session.exe, tty: session.tty},
+			})
+			if got := RestoreWriterOrigin(800); got != session.want {
+				t.Fatalf("origin = %q, want %q", got, session.want)
+			}
+		})
+	}
+}
+
+func TestRestoreWriterOriginIncompletePHPAncestry(t *testing.T) {
+	withProcTable(t, map[int]fakeProc{800: {ppid: 700, exe: lsphpPath}})
+	if got := RestoreWriterOrigin(800); got != "a process CSM could not trace" {
+		t.Fatalf("incomplete ancestry reported as %q", got)
+	}
+}
+
+// Origin capture runs on event intake, so even cycles and ancestry beyond a
+// web worker must stay within the same small proc-read budget.
+func TestRestoreWriterOriginBoundsProcReads(t *testing.T) {
+	for _, cycle := range []bool{false, true} {
+		t.Run(strconv.FormatBool(cycle), func(t *testing.T) {
+			procs := make(map[int]fakeProc)
+			for i := 0; i < maxRestoreChainDepth; i++ {
+				procs[800+i] = fakeProc{ppid: 801 + i, exe: lsphpPath}
+			}
+			if cycle {
+				procs[800] = fakeProc{ppid: 800, exe: lsphpPath}
+			}
+			table := withProcTable(t, procs)
+			reads, links := 0, 0
+			withMockOS(t, &mockOS{
+				readFile: func(name string) ([]byte, error) {
+					reads++
+					if reads > maxRestoreChainDepth {
+						t.Fatal("origin exceeded proc read budget")
+					}
+					return table.ReadFile(name)
+				},
+				readlink: func(name string) (string, error) {
+					links++
+					if links > maxRestoreChainDepth {
+						t.Fatal("origin exceeded proc readlink budget")
+					}
+					return table.Readlink(name)
+				},
+			})
+			if got := RestoreWriterOrigin(800); got != "a process CSM could not trace" {
+				t.Fatalf("incomplete ancestry reported as %q", got)
+			}
+		})
+	}
+}

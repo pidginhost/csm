@@ -307,8 +307,8 @@ func TestRemovedFileWithoutDigestIsNeverMatched(t *testing.T) {
 	}
 }
 
-// The finding says how the bytes came back and how to keep the file: only a
-// restore from the Quarantine page stops CSM removing it again.
+// The finding explains origin, renewable removal memory, and how to keep the
+// file through an operator restore.
 func TestRemovedFileRestoredFindingExplainsOriginAndRelease(t *testing.T) {
 	path := "/home/alice/public_html/index.php"
 	removed := removalOf(path, restoredPayload, 1)
@@ -317,6 +317,11 @@ func TestRemovedFileRestoredFindingExplainsOriginAndRelease(t *testing.T) {
 		f := removedFileRestoredFinding(path, removed, "", writerPID, origin)
 		if !strings.Contains(f.Details, want) || !strings.Contains(f.Details, "Quarantine page") || !strings.Contains(f.Details, until) {
 			t.Fatalf("origin %q: details = %q", origin, f.Details)
+		}
+		for _, policy := range []string{"With automatic file quarantine enabled", "each successful removal starts a new seven-day window"} {
+			if !strings.Contains(f.Details, policy) {
+				t.Fatalf("details omit response policy %q: %q", policy, f.Details)
+			}
 		}
 	}
 }
@@ -351,5 +356,37 @@ func TestRemovedFileRestoredNamesCapturedOrigin(t *testing.T) {
 	got := restoredFindings(out)
 	if len(got) != 1 || !strings.Contains(got[0].Details, "through an FTP session") {
 		t.Fatalf("restore findings = %+v, want one naming the FTP session", got)
+	}
+}
+
+func TestRestoreOriginCaptureOnlyReadsRememberedWriters(t *testing.T) {
+	path := "/home/alice/public_html/index.php"
+	stubRemovedFileAt(t, map[string]checks.RemovedFile{path: removalOf(path, restoredPayload, 1)})
+	prevChain, prevOrigin := restoreWriterChain, restoreWriterOrigin
+	restoreWriterChain = func(int, time.Time) []int { return nil }
+	calls := 0
+	restoreWriterOrigin = func(pid int) string {
+		calls++
+		if pid != int(writerPID) {
+			t.Fatalf("read origin for unexpected PID %d", pid)
+		}
+		return "cron"
+	}
+	t.Cleanup(func() { restoreWriterChain, restoreWriterOrigin = prevChain, prevOrigin })
+	for _, event := range []fileEvent{
+		{path: path + ".new", pid: writerPID},
+		{path: path, pid: 0},
+		{path: path, pid: 1},
+		{path: path, pid: int32(os.Getpid())},
+	} {
+		captureRestoreWriterChain(&event)
+		if calls != 0 || event.writerOrigin != "" {
+			t.Fatalf("unrelated event read origin: calls=%d origin=%q", calls, event.writerOrigin)
+		}
+	}
+	event := fileEvent{path: path, pid: writerPID}
+	captureRestoreWriterChain(&event)
+	if calls != 1 || event.writerOrigin != "cron" {
+		t.Fatalf("remembered event: calls=%d origin=%q", calls, event.writerOrigin)
 	}
 }

@@ -70,15 +70,17 @@ var (
 )
 
 // removedFileRestoredFinding says how the bytes came back (origin) and how
-// to keep the file: CSM removes it again until the removal is forgotten, and
-// only a restore from the Quarantine page stops that sooner.
+// to keep the file: automatic quarantine repeats the response while the
+// removal is remembered, unless an operator restores from the Quarantine page.
 func removedFileRestoredFinding(path string, removed checks.RemovedFile, procInfo string, pid int32, origin string) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Critical,
 		Check:    checks.RemovedFileRestoredCheck,
 		Message:  fmt.Sprintf("File CSM removed was written back: %s", path),
 		Details: fmt.Sprintf("CSM %s this content at %s; the same bytes were written back through %s.\nSHA-256: %s\n"+
-			"CSM removes these bytes again whenever they reappear at this path until %s. To keep the file, restore it from CSM's Quarantine page instead.",
+			"With automatic file quarantine enabled, CSM removes these bytes again when they reappear at this path. "+
+			"The current removal is remembered until %s; each successful removal starts a new seven-day window. "+
+			"To keep the file, restore it from CSM's Quarantine page instead.",
 			removedActionPast(removed.Action), removed.At.UTC().Format(time.RFC3339), cmp.Or(origin, "a process"), removed.SHA256,
 			removed.ForgetAt().UTC().Format(time.RFC3339)),
 		FilePath:    path,
