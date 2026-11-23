@@ -58,6 +58,13 @@ type Inputs struct {
 	LockedPorts []int
 	// WebUsers are the web server's users, for the lock line setup suggests.
 	WebUsers []string
+	// LockUIDs are the identities admitted by the installed port locks,
+	// including root. Missing identities cannot prove worker isolation.
+	LockUIDs map[int][]uint32
+	// PHPUsers maps worker UIDs to their source, independent of user aliases.
+	PHPUsers map[uint32]string
+	// PHPUsersErr records an incomplete host inspection.
+	PHPUsersErr error
 	// LocalAPI is true when the API address is on this host, the only place
 	// CSM's key works from.
 	LocalAPI bool
@@ -671,9 +678,10 @@ func spamFilterStep(sp stalwartapi.SpamSettings, stageOff bool) Step {
 
 // clientAddressStep decides whether Stalwart's HTTP listeners may take the
 // client address from X-Forwarded-For. That is only safe when every HTTP
-// listener is reachable from this host alone and CSM's running firewall lets
-// only the web server and Stalwart connect to it: otherwise anyone who can
-// connect can claim any address.
+// listener is reachable from this host alone, CSM's running firewall lets
+// only the web server and Stalwart connect to it, and no PHP or CGI runs as a
+// user that lock admits: otherwise anyone who can connect can claim any
+// address.
 func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Listener, in Inputs) Step {
 	s := Step{Name: "webmail client addresses"}
 	forwarded := h.ClientIPSource != "" && h.ClientIPSource != "peer"
@@ -713,6 +721,15 @@ func clientAddressStep(h stalwartapi.HTTPSettings, listeners []stalwartapi.Liste
 			state = "CSM's daemon is not managing the firewall"
 		}
 		reason = fmt.Sprintf("%s; add %s under firewall in csm.yaml and restart CSM", state, lockLine(ports, in.WebUsers))
+	case in.PHPUsersErr != nil:
+		reason = fmt.Sprintf("cannot inspect PHP/CGI isolation: %v; resolve this before trusting forwarded addresses", in.PHPUsersErr)
+	case !knownLockUIDs(ports, in.LockUIDs):
+		reason = "CSM's daemon does not report the installed port lock identities; restart an updated CSM daemon before trusting forwarded addresses"
+	default:
+		if shared := sharedPHPUsers(ports, in); len(shared) > 0 {
+			reason = fmt.Sprintf("PHP or CGI runs as a user the webmail port lock admits: %s, so code a site runs can connect and forge the header; run PHP-FPM pools and CGI as their own users, or lock the port to a web server user PHP does not use",
+				strings.Join(shared, ", "))
+		}
 	}
 
 	switch {
@@ -746,6 +763,32 @@ const webServerHeader = "The web server must set the header itself, as nginx doe
 
 // safeForwarded takes the address the web server, the only hop, appends.
 var safeForwarded = stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1}
+
+// sharedPHPUsers lists, with what runs as each, the users the lock on any of
+// ports admits, root included, that PHP or CGI also runs as.
+func sharedPHPUsers(ports []int, in Inputs) []string {
+	var out []string
+	for _, p := range ports {
+		for _, user := range in.LockUIDs[p] {
+			if source, ok := in.PHPUsers[user]; ok {
+				if entry := fmt.Sprintf("uid %d (%s)", user, source); !slices.Contains(out, entry) {
+					out = append(out, entry)
+				}
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func knownLockUIDs(ports []int, locks map[int][]uint32) bool {
+	for _, port := range ports {
+		if len(locks[port]) == 0 {
+			return false
+		}
+	}
+	return true
+}
 
 func allLocked(ports, locked []int) bool {
 	for _, p := range ports {

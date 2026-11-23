@@ -32,7 +32,7 @@ func TestStalwartAddressListProbeGates(t *testing.T) {
 				h.api.spamErr = errors.New("unavailable")
 				wantProbes = 0
 			}
-			h.doctorIn = stalwartInputs(h.cfg, nil, nil)
+			h.doctorIn = stalwartInputs(h.cfg, nil, nil, nil)
 			checks := h.doctorChecks()
 			if len(h.api.probes) != wantProbes || len(h.api.writes) != 0 {
 				t.Fatalf("probes = %d, writes = %q; want %d probes and no writes", len(h.api.probes), h.api.writes, wantProbes)

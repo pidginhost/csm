@@ -211,7 +211,7 @@ func configuredAPI() *fakeAPI {
 }
 
 func fieldInputs() Inputs {
-	return Inputs{BlockExpiry: 24 * time.Hour, LockManaged: true, LockedPorts: []int{8080}, WebUsers: []string{"www-data"}}
+	return Inputs{BlockExpiry: 24 * time.Hour, LockManaged: true, LockedPorts: []int{8080}, LockUIDs: map[int][]uint32{8080: {0, 33, 999}}, WebUsers: []string{"www-data"}}
 }
 
 func inspect(t *testing.T, api *fakeAPI, in Inputs) Plan {
@@ -305,7 +305,7 @@ func TestPlanSkipsForwardedWhenHTTPListenerPublic(t *testing.T) {
 
 func TestPlanSkipsForwardedWithoutLock(t *testing.T) {
 	for name, in := range map[string]Inputs{
-		"daemon not managing the firewall": {BlockExpiry: 24 * time.Hour, LockManaged: false, LockedPorts: []int{8080}, WebUsers: []string{"www-data"}},
+		"daemon not managing the firewall": {BlockExpiry: 24 * time.Hour, LockManaged: false, LockedPorts: []int{8080}, LockUIDs: map[int][]uint32{8080: {0, 33, 999}}, WebUsers: []string{"www-data"}},
 		"port not locked":                  {BlockExpiry: 24 * time.Hour, LockManaged: true, WebUsers: []string{"www-data"}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1403,6 +1403,89 @@ func TestResponsePermissionsIncludeAddressList(t *testing.T) {
 	} {
 		if !slices.Contains(ResponsePermissions, p) {
 			t.Errorf("ResponsePermissions lacks %s", p)
+		}
+	}
+}
+
+// Tenant code that runs as a user the webmail port lock admits can connect
+// and forge X-Forwarded-For, so setup must not take addresses from it.
+func TestPlanRefusesForwardedWhenPHPSharesLockUser(t *testing.T) {
+	for name, tc := range map[string]struct {
+		current stalwartapi.HTTPSettings
+		php     map[uint32]string
+		want    State
+		names   string
+	}{
+		"not yet forwarded": {stalwartapi.HTTPSettings{}, map[uint32]string{33: "PHP-FPM pool www", 1001: "PHP-FPM pool site1"}, Skipped, "uid 33 (PHP-FPM pool www)"},
+		"already forwarded": {safeForwarded, map[uint32]string{33: "Apache's CGI module"}, Unsafe, "uid 33 (Apache's CGI module)"},
+		"php as root":       {stalwartapi.HTTPSettings{}, map[uint32]string{0: "a running php-cgi process"}, Skipped, "uid 0 (a running php-cgi process)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			api := freshAPI()
+			api.http = tc.current
+			in := fieldInputs()
+			in.LockUIDs = map[int][]uint32{8080: {0, 33, 999}}
+			in.PHPUsers = tc.php
+			p := inspect(t, api, in)
+			s := p.Steps[1]
+			if s.State != tc.want || !strings.Contains(s.Detail, tc.names) || strings.Contains(s.Detail, "site1") {
+				t.Fatalf("step 2 = %+v, want %v naming %s", s, tc.want, tc.names)
+			}
+			for _, c := range applyCalls(t, api, p) {
+				if strings.HasPrefix(c, "SetHTTPSettings") {
+					t.Fatalf("Apply changed the client address source: %q", c)
+				}
+			}
+		})
+	}
+}
+
+// PHP that runs as its own users leaves the lock's web server user alone, so
+// the forwarded address stays safe.
+func TestPlanForwardsWhenPHPRunsAsOwnUsers(t *testing.T) {
+	in := fieldInputs()
+	in.LockUIDs = map[int][]uint32{8080: {0, 996, 999}}
+	in.PHPUsers = map[uint32]string{1001: "PHP-FPM pool site1"}
+	if s := inspect(t, freshAPI(), in).Steps[1]; s.State != Change {
+		t.Fatalf("step 2 = %+v, want Change", s)
+	}
+}
+
+func TestPlanRefusesForwardedWithoutLockIdentities(t *testing.T) {
+	for _, current := range []stalwartapi.HTTPSettings{{}, safeForwarded} {
+		in := fieldInputs()
+		in.LockUIDs = nil
+		api := freshAPI()
+		api.http = current
+		s := inspect(t, api, in).Steps[1]
+		want := Skipped
+		if current == safeForwarded {
+			want = Unsafe
+		}
+		if s.State != want {
+			t.Fatalf("step = %+v, want %s without installed identities", s, want)
+		}
+	}
+}
+
+func TestPlanRefusesForwardedAfterIncompletePHPInspection(t *testing.T) {
+	for _, current := range []stalwartapi.HTTPSettings{{}, safeForwarded} {
+		in := fieldInputs()
+		in.PHPUsersErr = errors.New("cannot read worker credentials")
+		api := freshAPI()
+		api.http = current
+		plan := inspect(t, api, in)
+		want := Skipped
+		if current == safeForwarded {
+			want = Unsafe
+		}
+		if s := plan.Steps[1]; s.State != want || !strings.Contains(s.Detail, "cannot inspect PHP/CGI") {
+			t.Fatalf("step = %+v, want %s", s, want)
+		}
+		for _, call := range applyCalls(t, api, plan) {
+			if strings.HasPrefix(call, "SetHTTPSettings") {
+				t.Fatalf("applied unsafe setting: %s", call)
+			}
 		}
 	}
 }

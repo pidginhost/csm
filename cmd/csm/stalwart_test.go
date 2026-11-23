@@ -17,6 +17,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/stalwartapi"
@@ -254,12 +255,13 @@ func newSetupHarness(t *testing.T) *setupHarness {
 	cfg := &config.Config{}
 	cfg.AutoResponse.BlockExpiry = "12h"
 	cfg.Stalwart.APIURL = "http://127.0.0.1:8080"
-	status := setupStatusJSON(t, health.AutomationStatus{FirewallManaged: true, FirewallLocalPortLocks: []int{8080}})
+	status := setupStatusJSON(t, health.AutomationStatus{FirewallManaged: true, FirewallLocalPortLocks: []int{8080}, FirewallLocalPortLockUIDs: map[int][]uint32{8080: {0, 33, 999}}})
 	h.deps = stalwartSetupDeps{
 		loadConfig:    func() (*config.Config, error) { return cfg, nil },
 		readStatus:    func() ([]byte, error) { return status, nil },
 		detectMTA:     func() platform.MTAKind { return platform.MTAStalwart },
 		webUsers:      func() []string { return []string{"www-data"} },
+		phpUsers:      func() (map[uint32]string, error) { return map[uint32]string{}, nil },
 		getenv:        func(k string) string { return h.env[k] },
 		readFile:      os.ReadFile,
 		prompt:        io.Discard,
@@ -974,5 +976,66 @@ func TestStalwartSetupMissingUserRoleFails(t *testing.T) {
 				t.Fatal("dry run wrote settings")
 			}
 		})
+	}
+}
+
+// Setup learns who each installed port lock admits and who PHP runs as, so
+// the planner can refuse forwarded addresses a site's code could forge.
+func TestStalwartSetupInputsCarryLockAndPHPUsers(t *testing.T) {
+	h := newSetupHarness(t)
+	cfg, _ := h.deps.loadConfig()
+	cfg.Firewall = &firewall.FirewallConfig{LocalPortLocks: []string{"8080:www-data,stalwart"}}
+	h.deps.phpUsers = func() (map[uint32]string, error) { return map[uint32]string{33: "PHP-FPM pool www"}, nil }
+	in := stalwartSetupInputs(cfg, h.deps)
+	if !reflect.DeepEqual(in.LockUIDs, map[int][]uint32{8080: {0, 33, 999}}) {
+		t.Fatalf("LockUIDs = %v", in.LockUIDs)
+	}
+	if !reflect.DeepEqual(in.PHPUsers, map[uint32]string{33: "PHP-FPM pool www"}) {
+		t.Fatalf("PHPUsers = %v", in.PHPUsers)
+	}
+	_, out := h.run()
+	if !strings.Contains(out, "webmail client addresses: skipped: PHP or CGI runs as a user the webmail port lock admits: uid 33 (PHP-FPM pool www)") ||
+		h.api.http.ClientIPSource != "peer" || slices.Contains(h.api.writes, "http") {
+		t.Fatalf("source %q, output %q: want forwarding refused for the shared PHP user", h.api.http.ClientIPSource, out)
+	}
+}
+
+func TestStalwartSetupUsesInstalledLockUIDs(t *testing.T) {
+	h := newSetupHarness(t)
+	// The edited config no longer admits this worker, but the live firewall does.
+	h.cfg.Firewall = &firewall.FirewallConfig{LocalPortLocks: []string{"8080:nginx,stalwart"}}
+	h.deps.phpUsers = func() (map[uint32]string, error) { return map[uint32]string{33: "PHP-FPM pool www"}, nil }
+	_, out := h.run()
+	if !strings.Contains(out, "webmail client addresses: skipped: PHP or CGI") || slices.Contains(h.api.writes, "http") {
+		t.Fatalf("trusted config edit instead of installed identities: %s", out)
+	}
+}
+
+func TestStalwartSetupAndDoctorShareRuntimeInputs(t *testing.T) {
+	for _, scanErr := range []error{nil, errors.New("inspection denied")} {
+		h := newSetupHarness(t)
+		h.deps.phpUsers = func() (map[uint32]string, error) { return map[uint32]string{33: "PHP-FPM pool www"}, scanErr }
+		setup := stalwartSetupInputs(h.cfg, h.deps)
+		raw, _ := h.deps.readStatus()
+		var sr control.StatusResult
+		if err := json.Unmarshal(raw, &sr); err != nil {
+			t.Fatal(err)
+		}
+		doctor := stalwartInputs(h.cfg, h.deps.webUsers(), &sr.Snapshot.Automation, h.deps.phpUsers)
+		if !reflect.DeepEqual(setup.PHPUsers, doctor.PHPUsers) || !reflect.DeepEqual(setup.LockUIDs, doctor.LockUIDs) || setup.PHPUsersErr != scanErr || doctor.PHPUsersErr != scanErr {
+			t.Fatalf("setup/doctor inputs differ: %+v / %+v", setup, doctor)
+		}
+		api := &setupFakeAPI{http: stalwartapi.HTTPSettings{ClientIPSource: "xForwardedFor", ForwardedHops: 1}}
+		plan, err := stalwartsetup.Inspect(context.Background(), api, doctor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check := stalwartCheckNamed(t, stalwartStepChecks(plan), "stalwart webmail client addresses")
+		if check.Status != "fail" {
+			t.Fatalf("doctor accepted unsafe forwarding: %+v", check)
+		}
+		if len(api.writes) != 0 {
+			t.Fatalf("doctor wrote settings: %v", api.writes)
+		}
 	}
 }

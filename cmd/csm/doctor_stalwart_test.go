@@ -706,11 +706,11 @@ func TestStalwartDoctorOneProbe(t *testing.T) {
 
 func TestStalwartInputsObserveMode(t *testing.T) {
 	cfg := &config.Config{}
-	if stalwartInputs(cfg, nil, nil).Observe {
+	if stalwartInputs(cfg, nil, nil, nil).Observe {
 		t.Fatal("enforce mode read as observe")
 	}
 	cfg.Mode = config.ModeObserve
-	if !stalwartInputs(cfg, nil, nil).Observe {
+	if !stalwartInputs(cfg, nil, nil, nil).Observe {
 		t.Fatal("observe mode not passed to doctor")
 	}
 }

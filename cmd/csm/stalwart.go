@@ -29,8 +29,10 @@ type stalwartSetupDeps struct {
 	readStatus func() ([]byte, error)
 	detectMTA  func() platform.MTAKind
 	webUsers   func() []string
-	getenv     func(string) string
-	readFile   func(string) ([]byte, error)
+	// phpUsers maps each user PHP or CGI runs as to what runs as it.
+	phpUsers func() (map[uint32]string, error)
+	getenv   func(string) string
+	readFile func(string) ([]byte, error)
 	// stdin gives the password with --password-stdin. On a terminal, setup
 	// asks on prompt for what the environment and flags left out, and reads
 	// both lines without echo when the password is missing.
@@ -52,6 +54,7 @@ func defaultStalwartSetupDeps() stalwartSetupDeps {
 		readStatus:    func() ([]byte, error) { return sendControl(control.CmdStatus, nil) },
 		detectMTA:     platform.DetectMTA,
 		webUsers:      func() []string { return platform.Detect().WebServerUsers() },
+		phpUsers:      platform.PHPRuntimeUsers,
 		getenv:        os.Getenv,
 		readFile:      os.ReadFile,
 		stdin:         os.Stdin,
@@ -340,22 +343,28 @@ func stalwartSetupInputs(cfg *config.Config, deps stalwartSetupDeps) stalwartset
 			automation = &sr.Snapshot.Automation
 		}
 	}
-	return stalwartInputs(cfg, deps.webUsers(), automation)
+	return stalwartInputs(cfg, deps.webUsers(), automation, deps.phpUsers)
 }
 
 // stalwartInputs gathers what the planner needs from CSM. The lock counts
 // only when the running daemon reports it: a lock written to the config but
 // not loaded protects nothing.
-func stalwartInputs(cfg *config.Config, webUsers []string, automation *health.AutomationStatus) stalwartsetup.Inputs {
+func stalwartInputs(cfg *config.Config, webUsers []string, automation *health.AutomationStatus, phpUsers func() (map[uint32]string, error)) stalwartsetup.Inputs {
 	in := stalwartsetup.Inputs{WebUsers: webUsers, Observe: cfg.ObserveMode()}
 	expiry, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry)
 	if err != nil || expiry <= 0 {
 		expiry, _ = time.ParseDuration(config.DefaultBlockExpiry)
 	}
 	in.BlockExpiry = expiry
+	if phpUsers == nil {
+		in.PHPUsersErr = errors.New("PHP/CGI inspection unavailable")
+	} else {
+		in.PHPUsers, in.PHPUsersErr = phpUsers()
+	}
 	if automation != nil {
 		in.LockManaged = automation.FirewallManaged
 		in.LockedPorts = automation.FirewallLocalPortLocks
+		in.LockUIDs = automation.FirewallLocalPortLockUIDs
 	}
 	return in
 }

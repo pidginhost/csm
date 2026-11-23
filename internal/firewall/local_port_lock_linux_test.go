@@ -270,3 +270,47 @@ func TestLockedLocalPortsIgnoresSetElementCounts(t *testing.T) {
 		t.Fatal("a changed set size still reported the lock")
 	}
 }
+
+func TestLockedLocalPortUIDsFollowAppliedRules(t *testing.T) {
+	withLockUsers(t, map[string]string{"web": "33", "other": "48"})
+	conn, _ := nftConnCapturingRules(t)
+	live := "rules"
+	e := &Engine{conn: conn, cfg: &FirewallConfig{LocalPortLocks: []string{"8080:web"}}, statePath: t.TempDir(),
+		listTables:  func() ([]*nftables.Table, error) { return nil, nil },
+		readRuleset: func() (string, error) { return live, nil },
+	}
+	if got := e.LockedLocalPortUIDs(); len(got) != 0 {
+		t.Fatalf("unapplied: %v", got)
+	}
+	if err := e.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[int][]uint32{8080: {0, 33}}
+	if got := e.LockedLocalPortUIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("applied: %v", got)
+	}
+	e.SetConfig(&FirewallConfig{LocalPortLocks: []string{"8080:other"}})
+	got := e.LockedLocalPortUIDs()
+	got[8080][1] = 999
+	if got := e.LockedLocalPortUIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("config or caller changed applied UIDs: %v", got)
+	}
+	e.conn = nftConnReturningErr(t, syscall.EPERM)
+	if err := e.Apply(); err == nil {
+		t.Fatal("wanted failed transaction")
+	}
+	if got := e.LockedLocalPortUIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("failed transaction changed UIDs: %v", got)
+	}
+	e.conn = conn
+	if err := e.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.LockedLocalPortUIDs(); !reflect.DeepEqual(got, map[int][]uint32{8080: {0, 48}}) {
+		t.Fatalf("replacement: %v", got)
+	}
+	live = "external rules"
+	if got := e.LockedLocalPortUIDs(); len(got) != 0 {
+		t.Fatalf("unproven: %v", got)
+	}
+}
