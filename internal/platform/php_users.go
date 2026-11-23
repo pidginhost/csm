@@ -155,30 +155,28 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 	if err != nil {
 		return fmt.Errorf("inspect PHP/CGI process credentials: %w", err)
 	}
-	if !worker {
-		uid, uidErr := procRealUID(string(data))
-		if uidErr != nil {
-			return uidErr
+	uid, uidErr := procRealUID(string(data))
+	if uidErr != nil {
+		return uidErr
+	}
+	if uid == 0 && exeErr != nil {
+		return fmt.Errorf("inspect process executable: %w", exeErr)
+	}
+	if exeErr != nil && !os.IsNotExist(exeErr) {
+		// Neither comm nor cmdline identifies an unreadable executable.
+		// In particular, a self-assigned FPM title cannot exempt its UIDs.
+		ids, idsErr := procWorkerUIDs(string(data))
+		if idsErr != nil {
+			return idsErr
 		}
-		if uid == 0 && exeErr != nil {
-			return fmt.Errorf("inspect process executable: %w", exeErr)
+		for _, id := range ids {
+			add(id, "a running process whose executable cannot be inspected")
 		}
-		if uid != 0 {
-			// A user's process never locates server configuration. One whose
-			// executable cannot be read is named only by itself, and its own
-			// code can change that name, so whatever it runs as counts.
-			if exeErr == nil || os.IsNotExist(exeErr) {
-				return nil
-			}
-			ids, idsErr := procWorkerUIDs(string(data))
-			if idsErr != nil {
-				return idsErr
-			}
-			for _, id := range ids {
-				add(id, "a running process whose executable cannot be inspected")
-			}
-			return nil
-		}
+		return nil
+	}
+	// A user's process never locates server configuration.
+	if !worker && uid != 0 {
+		return nil
 	}
 	if server {
 		exe = strings.TrimSuffix(exe, " (deleted)")
@@ -192,7 +190,7 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 	if err != nil {
 		return err
 	}
-	if ids[0] == 0 && ids[1] == 0 && strings.HasPrefix(base, "php-fpm") {
+	if exeErr == nil && uid == 0 && ids[0] == 0 && ids[1] == 0 && strings.HasPrefix(base, "php-fpm") {
 		cmd, err := proc.ReadFile("cmdline")
 		// Only a positively identified FPM supervisor is exempt. Root
 		// CGI workers and FPM pools can serve requests themselves.
@@ -200,8 +198,8 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 			return nil
 		}
 	}
-	for _, uid := range ids {
-		add(uid, "a running "+base+" process")
+	for _, id := range ids {
+		add(id, "a running "+base+" process")
 	}
 	return nil
 }

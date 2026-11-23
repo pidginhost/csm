@@ -17,7 +17,7 @@ import (
 // and an unidentifiable root process stops the inspection.
 func TestPHPRuntimeUsersUntrustedExecutableError(t *testing.T) {
 	const unknown = "a running process whose executable cannot be inspected"
-	for _, name := range []string{"lshttpd", "litespeed", "openlitespeed", "unrelated"} {
+	for _, name := range []string{"lshttpd", "litespeed", "openlitespeed", "unrelated", "php-fpm8.2", "php-cgi", "lsphp", "fcgiwrap"} {
 		for _, credentials := range []struct {
 			name, uids string
 			want       map[uint32]string
@@ -25,6 +25,7 @@ func TestPHPRuntimeUsersUntrustedExecutableError(t *testing.T) {
 		}{
 			{"tenant", "1001\t1001\t1001\t1001", map[uint32]string{1001: unknown}, false},
 			{"web server user", "33\t33\t33\t33", map[uint32]string{33: unknown}, false},
+			{"different filesystem user", "1001\t1001\t1001\t33", map[uint32]string{1001: unknown, 33: unknown}, false},
 			{"setuid", "1001\t0\t0\t0", map[uint32]string{0: unknown}, false},
 			{"root", "0\t0\t0\t0", nil, true},
 		} {
@@ -35,6 +36,7 @@ func TestPHPRuntimeUsersUntrustedExecutableError(t *testing.T) {
 				// requiring root or changing the test runner's capabilities.
 				writeRootFile(t, root, "proc/300/exe", "")
 				writeRootFile(t, root, "proc/300/comm", name+"\n")
+				writeRootFile(t, root, "proc/300/cmdline", "php-fpm: master process (/etc/php-fpm.conf)\x00")
 				writeRootFile(t, root, "proc/300/status", "Uid:\t"+credentials.uids+"\n")
 				got, err := phpRuntimeUsers(root)
 				if credentials.wantErr {
@@ -168,5 +170,30 @@ func TestPHPProcessUserExitDuringRead(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// A setuid executable retains the caller's real UID. A title supplied by
+// that caller cannot establish a root-owned FPM supervisor.
+func TestPHPProcessUserUntrustedSupervisorTitle(t *testing.T) {
+	root := t.TempDir()
+	writeRootFile(t, root, "etc/passwd", testPasswd)
+	fakeProc(t, root, 300, "/home/site1/bin/php-fpm", 1001)
+	writeRootFile(t, root, "proc/300/status", "Uid:\t1001\t0\t0\t0\n")
+	writeRootFile(t, root, "proc/300/cmdline", "php-fpm: master process (/etc/php-fpm.conf)\x00")
+	got, err := phpRuntimeUsers(root)
+	if err != nil || !maps.Equal(got, map[uint32]string{0: "a running php-fpm process"}) {
+		t.Fatalf("users = %v, error = %v; caller-controlled title hid UID 0", got, err)
+	}
+}
+
+func TestPHPProcessUserMissingRootWorkerExecutable(t *testing.T) {
+	root := t.TempDir()
+	writeRootFile(t, root, "etc/passwd", testPasswd)
+	writeRootFile(t, root, "proc/300/comm", "php-fpm\n")
+	writeRootFile(t, root, "proc/300/status", "Uid:\t0\t0\t0\t0\n")
+	writeRootFile(t, root, "proc/300/cmdline", "php-fpm: master process (/etc/php-fpm.conf)\x00")
+	if _, err := phpRuntimeUsers(root); err == nil {
+		t.Fatal("unidentifiable root worker did not stop inspection")
 	}
 }
