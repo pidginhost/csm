@@ -11,8 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Guessed mail logins still trigger containment when address spellings change, another detector reports the login, or an earlier warning is quieted.
-- Sending abuse can suspend a mailbox previously left open after a login alert.
 - Stalwart setup and `csm doctor` refuse forwarded webmail addresses when site code can run as a user the webmail port lock admits, or this cannot be checked. Run `csm doctor` to see what runs as a shared user.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
@@ -55,8 +53,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Concurrent sending suspensions count toward the pause on further login-based suspensions.
-- Old queued account logins no longer hold outgoing mail, and unsaved holds now direct operators to manual release.
 - A forward that keeps a copy of the mail no longer counts toward suspending the mailbox unless something else corroborates it.
 - Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
 
