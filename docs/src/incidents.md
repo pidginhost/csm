@@ -766,6 +766,7 @@ Attribution gaps:
 | `email_mail_filters` | ignored | self-health |  |
 | `email_mailbox_compromise` | security event |  |  |
 | `email_mailbox_response` | ignored | response |  |
+| `email_mailbox_suspension_paused` | ignored | response |  |
 | `email_malware` | ignored | attacker-side |  |
 | `email_outbound_reputation` | security event |  |  |
 | `email_password_audit_incomplete` | ignored | self-health |  |

@@ -146,6 +146,8 @@ type mailResponseResult struct {
 	changed  bool
 	recorded bool
 	err      error
+	// withheld names the allowance that kept the mailbox open.
+	withheld string
 }
 
 // The caller holds the target's lifecycle lock through the server and store updates.
@@ -181,6 +183,14 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		}
 	}
 
+	if db != nil && strings.Contains(c.Subject, "@") {
+		mailboxCapMu.Lock()
+		defer mailboxCapMu.Unlock()
+		if label, capped := capMailboxSuspension(db, c, now); capped {
+			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s not suspended: %s reached its hourly limit\n", stamp, c.Subject, label)
+			return mailResponseResult{withheld: label}
+		}
+	}
 	c.Previous = uncertain
 	applied, err := backend.suspend(c)
 	if errors.Is(err, errMailAlreadyRestricted) {

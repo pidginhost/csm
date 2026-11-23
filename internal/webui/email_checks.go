@@ -21,6 +21,7 @@ var emailChecks = []emailCheck{
 	{"mail_account_compromised", "compromised_account"},
 	{"email_mailbox_compromise", "compromised_account"},
 	{"email_mailbox_response", "compromised_account"},
+	{"email_mailbox_suspension_paused", "compromised_account"},
 	{"email_pipe_forwarder", "compromised_account"},
 	{"email_suspicious_forwarder", "compromised_account"},
 

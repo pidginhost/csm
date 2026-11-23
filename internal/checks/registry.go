@@ -367,6 +367,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_php_relay_action_failed", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "email_mailbox_compromise", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
 	{Name: "email_mailbox_response", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
+	{Name: "email_mailbox_suspension_paused", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "email_php_relay_action_skipped", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonResponse},
 	{Name: "email_php_relay_cpanel_limit_unreadable", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_php_relay_disabled", Category: CategoryEmail, Internal: true, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

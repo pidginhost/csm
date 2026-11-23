@@ -436,6 +436,9 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 		}
 		applied = result.record
 		switch {
+		case result.withheld != "":
+			verb = "Would suspend"
+			todo = fmt.Sprintf("Mailbox suspension is paused for %s after %d suspensions in the last hour. Change the mailbox password now.", result.withheld, mailboxSuspensionsPerHour)
 		case result.changed:
 			verb = "Suspended"
 			todo = mailRestrictionDetails(result.record) + " Have the customer change the mailbox password."
