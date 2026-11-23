@@ -280,6 +280,37 @@ func TestPHPProcessUserIgnoresUpgradedRootDaemon(t *testing.T) {
 	}
 }
 
+// A root-started process can drop only its effective or filesystem UID
+// before running site code. Its real UID cannot exempt those identities.
+func TestPHPProcessUserUnverifiedRootStartedIdentities(t *testing.T) {
+	const unknown = "a running process whose executable cannot be verified"
+	for _, exe := range []string{"/usr/sbin/service (deleted)", "/home/site1/bin/service"} {
+		for _, tc := range []struct {
+			name, uids string
+			want       map[uint32]string
+		}{
+			{"root", "0\t0\t0\t0", map[uint32]string{}},
+			{"effective user", "0\t33\t0\t0", map[uint32]string{0: unknown, 33: unknown}},
+			{"filesystem user", "0\t0\t0\t33", map[uint32]string{0: unknown, 33: unknown}},
+			{"dropped user", "0\t33\t0\t33", map[uint32]string{33: unknown}},
+			{"distinct users", "0\t1001\t0\t33", map[uint32]string{1001: unknown, 33: unknown}},
+			{"tenant", "1001\t1001\t1001\t1001", map[uint32]string{1001: unknown}},
+			{"setuid", "1001\t0\t0\t0", map[uint32]string{0: unknown}},
+		} {
+			t.Run(exe+"/"+tc.name, func(t *testing.T) {
+				root := t.TempDir()
+				writeRootFile(t, root, "etc/passwd", testPasswd)
+				fakeProc(t, root, 300, exe, 0)
+				writeRootFile(t, root, "proc/300/status", "Uid:\t"+tc.uids+"\n")
+				got, err := phpRuntimeUsers(root)
+				if err != nil || !maps.Equal(got, tc.want) {
+					t.Fatalf("users = %v, error = %v; want %v", got, err, tc.want)
+				}
+			})
+		}
+	}
+}
+
 // A LiteSpeed server's executable names the configuration CSM reads, so a
 // root one whose executable cannot be verified still stops the inspection.
 func TestPHPProcessUserUnverifiedRootLiteSpeedServer(t *testing.T) {
