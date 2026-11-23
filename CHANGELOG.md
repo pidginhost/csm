@@ -11,7 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- The daemon cannot write its configuration directory, and saved settings must match their integrity hashes; invalid requests leave configuration unchanged.
+- The daemon can no longer write its configuration directory; settings it saves are written by a separate helper sandboxed to that directory.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
 - Internal registry downloads between releases carry verified signatures even when only the AMD64 build is available.
@@ -47,7 +47,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Firewall rollback and scoped rehash remain available with configuration write isolation, including relative and symlinked configuration locations.
 - Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
 
 ## [4.15.0] - 2026-11-20
