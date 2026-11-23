@@ -198,7 +198,7 @@ func observeMailboxSignal(cfg *config.Config, mailbox string, s mailboxSignal) (
 	}
 
 	response := evidenceResponse{hasBackend: hostHasMailBackend(), id: addressID}
-	if response.hasBackend && cfg != nil && cfg.AutoResponse.Enabled && !cfg.AutoResponseDryRunEnabled() {
+	if response.hasBackend && cfg != nil && cfg.AutoResponse.Enabled && !cfg.AutoResponseDryRunEnabled() && cfg.SuspendMailboxesEnabled() {
 		response.id, response.ref, response.err = mailResponseTarget(mailbox)
 		if response.err != nil {
 			response.id = addressID
@@ -427,6 +427,8 @@ func (r evidenceResponse) finding(cfg *config.Config, db *store.DB, mailbox stri
 	case cfg.AutoResponseDryRunEnabled():
 		recordMailDryRun(c)
 		verb, todo = "Would suspend", "Automatic response is in dry-run. Change the mailbox password now."
+	case !cfg.SuspendMailboxesEnabled():
+		verb, todo = "Would suspend", "Mailbox suspension is off (auto_response.suspend_mailboxes). Change the mailbox password now."
 	default:
 		result := mailResponseResult{err: r.err}
 		if r.err == nil {

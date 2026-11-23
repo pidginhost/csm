@@ -104,6 +104,11 @@ func respondToCompromise(cfg *config.Config, c mailboxCompromise) bool {
 		recordMailDryRun(c)
 		return false
 	}
+	// An account's outgoing hold for a domain is not a mailbox suspension.
+	if strings.Contains(c.Subject, "@") && !cfg.SuspendMailboxesEnabled() {
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would suspend %s (auto_response.suspend_mailboxes off)\n", stamp, c.Subject)
+		return false
+	}
 
 	id, ref, err := mailResponseTarget(c.Subject)
 	c.Ref = ref

@@ -768,6 +768,8 @@ type Config struct {
 		EnforcePermissions  bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
 		FixWPCron           bool   `yaml:"fix_wp_cron"`         // auto-disable WP-Cron + install per-user system cron on perf_wp_cron findings (default false)
 		BlockCpanelLogins   bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
+		// SuspendMailboxes lets automatic response suspend mailboxes. nil = true.
+		SuspendMailboxes *bool `yaml:"suspend_mailboxes"`
 		// HTTPScannerAction selects the response for http_scanner_profile
 		// findings. "challenge" (default) routes the IP to the PoW
 		// challenge when the challenge subsystem is enabled and falls
@@ -1636,6 +1638,12 @@ func (c *Config) BPFEnforcementDryRunEnabled() bool {
 		return true
 	}
 	return *c.BPFEnforcement.DryRun
+}
+
+// SuspendMailboxesEnabled reports whether automatic response may suspend
+// mailboxes. Default true; explicit false keeps every finding and incident.
+func (c *Config) SuspendMailboxesEnabled() bool {
+	return c.AutoResponse.SuspendMailboxes == nil || *c.AutoResponse.SuspendMailboxes
 }
 
 // BotVerifyEnabled reports whether async PTR+forward-A verification of

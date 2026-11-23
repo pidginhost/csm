@@ -32,6 +32,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
+- A new `auto_response.suspend_mailboxes` setting, on by default, stops automatic mailbox suspensions while keeping every finding and incident.
 - A shell left by a web request that keeps returning after CSM stops it now raises a Critical finding and queues a malware scan of the account.
 - `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
 - A new `backup` setting has the daemon export its state on a schedule, delete archives past retention, and warn when an export fails.
