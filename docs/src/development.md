@@ -1801,6 +1801,17 @@ restores what it lists while the host still holds the applied state, and
 removes the record once the fix is undone; nothing calls it yet. It runs
 under the apply worker's unit name, so systemd never runs the two at once.
 
+A failed sysctl runtime restore puts the applied runtime value and drop-in
+back. A failed PHP write or service reload puts the applied drop-ins back; a
+failed SSH reload puts the applied SSH configuration back. Failed cPanel
+commands and owner or mode restores also roll back completed steps.
+Configuration writes that fail after rename restore the applied content.
+Reload failures retain the record and report failure, so the operator can
+retry once the service problem is resolved. If rollback also fails, the error
+names the recovery failure and the record stays. Undo refuses sysctl drop-in
+symlinks and SSH managed blocks that were nested, duplicated, or moved into a
+Match section.
+
 Each successful sysctl runtime change is recorded before the next command,
 then its record is updated after the drop-in is saved. PHP records grow after
 each successful scan-directory write, so a later stalled operation does not

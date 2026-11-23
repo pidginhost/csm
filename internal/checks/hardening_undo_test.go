@@ -883,21 +883,21 @@ func TestHardeningUndoPartialSysctl(t *testing.T) {
 	wantNoUndoRecord(t, "os_sysctl_rp_filter")
 }
 
-// The drop-in is restored before the runtime value. When the kernel then
-// refuses the earlier value, the result says what was restored and what is
-// left to do, and the record stays.
+// A runtime failure must leave the applied drop-in and record available
+// for a retry, including when undo had removed the last managed setting.
 func TestHardeningUndoSysctlRuntimeFailure(t *testing.T) {
 	withHardeningUndoDir(t)
 	conf := withTempSysctl(t, "", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
 	withMockCmd(t, &mockCmd{run: kernelSysctl})
 	applyOK(t, applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}))
 	rec := storedUndoRecord(t, "os_sysctl_rp_filter")
+	applied := fileText(t, conf)
 	withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) {
 		return []byte("sysctl: permission denied on key"), errors.New("exit status 255")
 	}})
-	wantUndoResult(t, UndoHardening("os_sysctl_rp_filter"), "os_sysctl_rp_filter", "failed", conf+" was restored, but setting net.ipv4.conf.all.rp_filter back to 2")
-	if got := fileText(t, conf); got != "<absent>" {
-		t.Errorf("drop-in = %q, want it restored to none", got)
+	wantUndoResult(t, UndoHardening("os_sysctl_rp_filter"), "os_sysctl_rp_filter", "failed", "permission denied")
+	if got := fileText(t, conf); got != applied {
+		t.Errorf("drop-in = %q, want applied state %q", got, applied)
 	}
 	if got := runtimeValue(t, "net.ipv4.conf.all.rp_filter"); got != "1" {
 		t.Errorf("runtime = %q, want the applied 1", got)
@@ -905,6 +905,12 @@ func TestHardeningUndoSysctlRuntimeFailure(t *testing.T) {
 	if got := storedUndoRecord(t, "os_sysctl_rp_filter"); !reflect.DeepEqual(got, rec) {
 		t.Errorf("record = %+v, want it kept as %+v", got, rec)
 	}
+	withMockCmd(t, &mockCmd{run: kernelSysctl})
+	wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
+	if got := runtimeValue(t, rec.Sysctl.Key); got != "2" {
+		t.Fatalf("runtime after retry = %q", got)
+	}
+	wantNoUndoRecord(t, rec.Name)
 }
 
 // The apply wrote some drop-ins before one failed: undo restores those and
@@ -969,24 +975,33 @@ func TestHardeningUndoSSHDCheckFailureRestores(t *testing.T) {
 	}
 }
 
-// The restored file passed sshd -t, so the undo stands when only the
-// reload fails; the result says to reload by hand.
+// A reload failure must keep the applied file and record retryable.
 func TestHardeningUndoSSHReloadFailure(t *testing.T) {
 	withHardeningUndoDir(t)
 	path := withTempSSHDConfig(t, "MaxAuthTries 6\n")
 	recordCommands(t)
 	applyOK(t, applySSHFixes([]store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}}))
+	applied := fileText(t, path)
+	rec := storedUndoRecord(t, "ssh_max_auth_tries")
 	withMockCmd(t, &mockCmd{run: func(name string, _ ...string) ([]byte, error) {
 		if name == "systemctl" {
 			return []byte("Unit not found."), errors.New("exit status 5")
 		}
 		return nil, nil
 	}})
-	wantUndoResult(t, UndoHardening("ssh_max_auth_tries"), "ssh_max_auth_tries", "undone", "reload it manually")
-	if got := fileText(t, path); got != "MaxAuthTries 6\n" {
+	wantUndoResult(t, UndoHardening("ssh_max_auth_tries"), "ssh_max_auth_tries", "failed", "reloading sshd failed")
+	if got := fileText(t, path); got != applied {
 		t.Fatalf("config = %q", got)
 	}
-	wantNoUndoRecord(t, "ssh_max_auth_tries")
+	if got := storedUndoRecord(t, rec.Name); !reflect.DeepEqual(got, rec) {
+		t.Fatalf("record changed: %+v", got)
+	}
+	recordCommands(t)
+	wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
+	if got := fileText(t, path); got != "MaxAuthTries 6\n" {
+		t.Fatalf("config after retry = %q", got)
+	}
+	wantNoUndoRecord(t, rec.Name)
 }
 
 func TestHardeningUndoNoRecord(t *testing.T) {
@@ -1017,4 +1032,352 @@ func TestHardeningUndoNoRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHardeningUndoPHPReloadFailureIsRetryable(t *testing.T) {
+	for _, failingUnit := range []string{"php*-fpm.service", "apache2.service"} {
+		t.Run(failingUnit, func(t *testing.T) {
+			withHardeningUndoDir(t)
+			withPHPRestartLogged(t)
+			ver, _ := debianPHPTree(t, "cli", "fpm", "apache2")
+			installs := []phpInstall{{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")}}
+			withPHPInstalls(t, installs)
+			applyOK(t, applyPHPFixes([]store.AuditResult{{Name: "php_expose_82", Category: "php"}, {Name: "php_enable_dl_82", Category: "php"}}, installs))
+			rec := storedUndoRecord(t, "php_expose_82")
+			before := map[string]string{}
+			for _, p := range rec.PHP {
+				before[p.Path] = fileText(t, p.Path)
+			}
+			withMockCmd(t, &mockCmd{run: func(_ string, args ...string) ([]byte, error) {
+				if slices.Contains(args, failingUnit) {
+					return nil, errors.New("reload failed")
+				}
+				return nil, nil
+			}})
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "failed", "reload failed")
+			for path, want := range before {
+				if got := fileText(t, path); got != want {
+					t.Errorf("%s = %q, want applied state %q", path, got, want)
+				}
+			}
+			if got := storedUndoRecord(t, rec.Name); !reflect.DeepEqual(got, rec) {
+				t.Fatalf("record changed: %+v", got)
+			}
+			recordCommands(t)
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
+			for path := range before {
+				if got, want := fileText(t, path), phpDropInHeader+"\nenable_dl = Off\n"; got != want {
+					t.Errorf("%s after retry = %q, want %q", path, got, want)
+				}
+			}
+			wantNoUndoRecord(t, rec.Name)
+			storedUndoRecord(t, "php_enable_dl_82")
+		})
+	}
+}
+
+func TestHardeningUndoRefusesChangedSSHBlockStructure(t *testing.T) {
+	for name, replacement := range map[string]string{
+		"scoped":       "Match User backup\n" + sshdBlockBegin,
+		"nested":       sshdBlockBegin + "\n" + sshdBlockBegin,
+		"match inside": sshdBlockBegin + "\nMatch User backup",
+		"second block": sshdBlockBegin + "\n" + sshdBlockEnd + "\n" + sshdBlockBegin,
+	} {
+		t.Run(name, func(t *testing.T) {
+			withHardeningUndoDir(t)
+			path := withTempSSHDConfig(t, "Port 2222\n")
+			calls := recordCommands(t)
+			applyOK(t, applySSHFixes([]store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}}))
+			editFile(t, path, sshdBlockBegin, replacement)
+			before := fileText(t, path)
+			*calls = nil
+			wantUndoResult(t, UndoHardening("ssh_max_auth_tries"), "ssh_max_auth_tries", "refused", "changed since")
+			if got := fileText(t, path); got != before || len(*calls) != 0 {
+				t.Fatalf("changed block touched: %q, commands %q", got, *calls)
+			}
+			storedUndoRecord(t, "ssh_max_auth_tries")
+		})
+	}
+}
+
+func TestHardeningUndoPHPWriteFailureIsRetryable(t *testing.T) {
+	for _, afterWrite := range []bool{false, true} {
+		t.Run(fmt.Sprint("after write=", afterWrite), func(t *testing.T) {
+			withHardeningUndoDir(t)
+			withPHPRestartLogged(t)
+			ver, _ := debianPHPTree(t, "cli", "fpm")
+			installs := []phpInstall{{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")}}
+			withPHPInstalls(t, installs)
+			applyOK(t, applyPHPFixes([]store.AuditResult{{Name: "php_expose_82", Category: "php"}}, installs))
+			rec := storedUndoRecord(t, "php_expose_82")
+			before := map[string]string{}
+			for _, p := range rec.PHP {
+				if err := os.Chmod(p.Path, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				before[p.Path] = fileText(t, p.Path)
+			}
+			old := hardeningUndoWriteDropIn
+			t.Cleanup(func() { hardeningUndoWriteDropIn = old })
+			calls := 0
+			hardeningUndoWriteDropIn = func(path, header string, lines []string) error {
+				calls++
+				if calls == 2 {
+					if afterWrite {
+						if err := old(path, header, lines); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return errors.New("injected write failure")
+				}
+				return old(path, header, lines)
+			}
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "failed", "injected write failure")
+			for path, want := range before {
+				if info, err := os.Stat(path); err == nil && info.Mode().Perm() != 0o600 {
+					t.Errorf("%s mode = %04o, want 0600", path, info.Mode().Perm())
+				}
+				if got := fileText(t, path); got != want {
+					t.Errorf("%s = %q, want applied state %q", path, got, want)
+				}
+			}
+			if got := storedUndoRecord(t, rec.Name); !reflect.DeepEqual(got, rec) {
+				t.Fatalf("record changed: %+v", got)
+			}
+			hardeningUndoWriteDropIn = old
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
+			for path := range before {
+				if got := fileText(t, path); got != "<absent>" {
+					t.Errorf("%s after retry = %q", path, got)
+				}
+			}
+			wantNoUndoRecord(t, rec.Name)
+		})
+	}
+}
+
+func TestHardeningUndoSysctlRefusesSymlink(t *testing.T) {
+	withHardeningUndoDir(t)
+	conf := withTempSysctl(t, "", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
+	withMockCmd(t, &mockCmd{run: kernelSysctl})
+	applyOK(t, applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}))
+	target := conf + ".original"
+	if err := os.Rename(conf, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, conf); err != nil {
+		t.Fatal(err)
+	}
+	before := fileText(t, target)
+	wantUndoResult(t, UndoHardening("os_sysctl_rp_filter"), "os_sysctl_rp_filter", "failed", "")
+	if got, err := os.Readlink(conf); err != nil || got != target {
+		t.Fatalf("symlink changed: %q, %v", got, err)
+	}
+	if got := fileText(t, target); got != before {
+		t.Fatalf("target changed: %q", got)
+	}
+	if got := runtimeValue(t, "net.ipv4.conf.all.rp_filter"); got != "1" {
+		t.Fatalf("runtime changed: %q", got)
+	}
+	storedUndoRecord(t, "os_sysctl_rp_filter")
+}
+
+func TestHardeningUndoSysctlLateCommandFailureIsRetryable(t *testing.T) {
+	for _, runtimeOnly := range []bool{false, true} {
+		t.Run(fmt.Sprint("runtime only=", runtimeOnly), func(t *testing.T) {
+			withHardeningUndoDir(t)
+			conf := withTempSysctl(t, "", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
+			withMockCmd(t, &mockCmd{run: kernelSysctl})
+			applyOK(t, applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}))
+			rec := storedUndoRecord(t, "os_sysctl_rp_filter")
+			rec.Sysctl.RuntimeOnly = runtimeOnly
+			if err := writeHardeningUndo(rec); err != nil {
+				t.Fatal(err)
+			}
+			before := fileText(t, conf)
+			withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+				out, err := kernelSysctl(name, args...)
+				if err == nil && slices.Contains(args, "net.ipv4.conf.all.rp_filter=2") {
+					return out, errors.New("command failed after write")
+				}
+				return out, err
+			}})
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "failed", "command failed after write")
+			if got := runtimeValue(t, rec.Sysctl.Key); got != "1" {
+				t.Errorf("runtime after failure = %q, want applied 1", got)
+			}
+			if got := fileText(t, conf); got != before {
+				t.Errorf("drop-in after failure = %q, want %q", got, before)
+			}
+			storedUndoRecord(t, rec.Name)
+			withMockCmd(t, &mockCmd{run: kernelSysctl})
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
+			if got := runtimeValue(t, rec.Sysctl.Key); got != "2" {
+				t.Errorf("runtime after retry = %q, want 2", got)
+			}
+			wantNoUndoRecord(t, rec.Name)
+		})
+	}
+}
+
+func TestHardeningUndoModeFailureRestoresOwner(t *testing.T) {
+	withHardeningUndoDir(t)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, os.ModeSticky|0o777); err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := fileOwner(t, dir)
+	oldDirs, oldChown, oldChmod := hardeningTmpDirs, hardeningUndoChown, hardeningUndoChmod
+	t.Cleanup(func() {
+		hardeningTmpDirs, hardeningUndoChown, hardeningUndoChmod = oldDirs, oldChown, oldChmod
+	})
+	hardeningTmpDirs = map[string]string{"os_tmp_permissions": dir}
+	rec := HardeningUndoRecord{Name: "os_tmp_permissions", Kind: "mode", Mode: &modeUndoState{
+		Path: dir, UID: uid + 1, GID: gid + 1, Mode: 0o755,
+		AppliedUID: uid, AppliedGID: gid, AppliedMode: 0o1777,
+	}}
+	if err := writeHardeningUndo(rec); err != nil {
+		t.Fatal(err)
+	}
+	// Model ownership without requiring root in the test runner.
+	owner, group := int(uid), int(gid)
+	hardeningUndoChown = func(_ *os.File, u, g int) error {
+		owner, group = u, g
+		return nil
+	}
+	fail := true
+	hardeningUndoChmod = func(f *os.File, mode uint32) error {
+		if fail {
+			fail = false
+			return errors.New("chmod failed")
+		}
+		return oldChmod(f, mode)
+	}
+	wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "failed", "chmod failed")
+	if owner != int(uid) || group != int(gid) {
+		t.Fatalf("owner after failure = %d:%d, want %d:%d", owner, group, uid, gid)
+	}
+	if got := fileModeOwner(t, dir); got != fmt.Sprintf("1777 %d:%d", uid, gid) {
+		t.Fatalf("mode after failure = %s", got)
+	}
+	storedUndoRecord(t, rec.Name)
+	wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
+	if owner != int(uid+1) || group != int(gid+1) {
+		t.Fatalf("owner after retry = %d:%d", owner, group)
+	}
+	if got := fileModeOwner(t, dir); got != fmt.Sprintf("0755 %d:%d", uid, gid) {
+		t.Fatalf("mode after retry = %s", got)
+	}
+	wantNoUndoRecord(t, rec.Name)
+}
+
+func TestHardeningUndoLateConfigWriteFailureIsRetryable(t *testing.T) {
+	for _, name := range []string{"ssh_max_auth_tries", "cp_updates"} {
+		t.Run(name, func(t *testing.T) {
+			withHardeningUndoDir(t)
+			calls := recordCommands(t)
+			var path string
+			if name == "cp_updates" {
+				path = withTempCPUpdateConf(t)
+				if err := os.WriteFile(path, []byte("UPDATES=manual\n"), 0o640); err != nil {
+					t.Fatal(err)
+				}
+				applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: name, Category: "cpanel"})})
+			} else {
+				path = withTempSSHDConfig(t, "MaxAuthTries 6\n")
+				applyOK(t, applySSHFixes([]store.AuditResult{{Name: name, Category: "ssh"}}))
+			}
+			rec := storedUndoRecord(t, name)
+			before := fileText(t, path)
+			*calls = nil
+			old := hardeningConfigWrite
+			t.Cleanup(func() { hardeningConfigWrite = old })
+			hardeningConfigWrite = func(path string, perm os.FileMode, data []byte) error {
+				if err := old(path, perm, data); err != nil {
+					return err
+				}
+				return errors.New("directory sync failed after rename")
+			}
+			wantUndoResult(t, UndoHardening(name), name, "failed", "directory sync failed")
+			if got := fileText(t, path); got != before {
+				t.Errorf("configuration after failure = %q, want applied %q", got, before)
+			}
+			if len(*calls) != 0 {
+				t.Errorf("commands after failed write = %q", *calls)
+			}
+			if got := storedUndoRecord(t, name); !reflect.DeepEqual(got, rec) {
+				t.Fatalf("record changed: %+v", got)
+			}
+			hardeningConfigWrite = old
+			wantUndoResult(t, UndoHardening(name), name, "undone", "")
+			wantNoUndoRecord(t, name)
+		})
+	}
+}
+
+func TestHardeningUndoTweakLateFailureIsRetryable(t *testing.T) {
+	withHardeningUndoDir(t)
+	previous := "0"
+	whm := withFakeWHMTweak(t, "maxemailsperhour", &previous)
+	applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"})})
+	rec := storedUndoRecord(t, "cp_max_emails_hour")
+	withMockCmd(t, &mockCmd{runContextStdout: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := whm.run(ctx, name, args...)
+		if slices.Contains(args, "value=0") {
+			return nil, errors.New("reply lost after setting tweak")
+		}
+		return out, err
+	}})
+	wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "failed", "reply lost")
+	if *whm.value != rec.Tweak.Applied {
+		t.Errorf("value after failure = %s, want %s", *whm.value, rec.Tweak.Applied)
+	}
+	storedUndoRecord(t, rec.Name)
+	withMockCmd(t, &mockCmd{runContextStdout: whm.run})
+	wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
+	if *whm.value != previous {
+		t.Errorf("value after retry = %s, want %s", *whm.value, previous)
+	}
+	wantNoUndoRecord(t, rec.Name)
+}
+
+func TestHardeningUndoCompilerScriptFailureIsRetryable(t *testing.T) {
+	withHardeningUndoDir(t)
+	dir := t.TempDir()
+	cc, script := filepath.Join(dir, "cc"), filepath.Join(dir, "compilers")
+	for _, path := range []string{cc, script} {
+		if err := os.WriteFile(path, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withCompilerPaths(t, cc, script)
+	compilersScript(t, cc)
+	applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_compilers", Category: "cpanel"})})
+	fail := true
+	withMockCmd(t, &mockCmd{run: func(_ string, args ...string) ([]byte, error) {
+		mode := os.FileMode(0o750)
+		if args[0] == "on" {
+			mode = 0o755
+		}
+		if err := os.Chmod(cc, mode); err != nil {
+			return nil, err
+		}
+		if args[0] == "on" && fail {
+			fail = false
+			return nil, errors.New("script failed after opening access")
+		}
+		return nil, nil
+	}})
+	wantUndoResult(t, UndoHardening("cp_compilers"), "cp_compilers", "failed", "script failed")
+	info, err := os.Stat(cc)
+	if err != nil || info.Mode().Perm() != 0o750 {
+		t.Fatalf("compiler after failure: %v, %v", info, err)
+	}
+	storedUndoRecord(t, "cp_compilers")
+	wantUndoResult(t, UndoHardening("cp_compilers"), "cp_compilers", "undone", "")
+	info, err = os.Stat(cc)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("compiler after retry: %v, %v", info, err)
+	}
+	wantNoUndoRecord(t, "cp_compilers")
 }

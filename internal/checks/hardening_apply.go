@@ -967,6 +967,8 @@ func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 	return out
 }
 
+var hardeningConfigWrite = atomicio.AtomicWrite
+
 // replaceSSHDConfig writes updated over orig, keeping orig in .csm-bak, and
 // puts orig back when sshd -t rejects the new file.
 func replaceSSHDConfig(perm os.FileMode, orig, updated []byte) error {
@@ -974,7 +976,11 @@ func replaceSSHDConfig(perm os.FileMode, orig, updated []byte) error {
 	if err := atomicio.AtomicWrite(backup, perm, orig); err != nil {
 		return fmt.Errorf("backup: %w", err)
 	}
-	if err := atomicio.AtomicWrite(sshdConfigPath, perm, updated); err != nil {
+	if err := hardeningConfigWrite(sshdConfigPath, perm, updated); err != nil {
+		// An error after rename can leave updated in place without validation.
+		if rerr := atomicio.AtomicWrite(sshdConfigPath, perm, orig); rerr != nil {
+			return errors.Join(err, fmt.Errorf("restoring %s failed: %w; the original is in %s", sshdConfigPath, rerr, backup))
+		}
 		return err
 	}
 	if _, err := hardeningRun(sshdBinary(), "-t", "-f", sshdConfigPath); err != nil {
@@ -1274,15 +1280,23 @@ func restartPHPFPM() (string, error) {
 // mod_php directory was written, and LiteSpeed's detached lsphp processes.
 // It reports what it did; a failure names what to restart by hand.
 func reloadPHP(dirs []string) string {
+	msg, _ := reloadPHPResult(dirs)
+	return msg
+}
+
+func reloadPHPResult(dirs []string) (string, error) {
 	var notes []string
+	var errs []error
 	if msg, err := restartPHPFPM(); err != nil {
 		notes = append(notes, "Restart PHP-FPM manually ("+err.Error()+").")
+		errs = append(errs, fmt.Errorf("restarting PHP-FPM: %w", err))
 	} else {
 		notes = append(notes, msg)
 	}
 	if slices.ContainsFunc(dirs, func(d string) bool { return filepath.Base(filepath.Dir(d)) == "apache2" }) {
 		if _, err := hardeningRun("systemctl", "try-reload-or-restart", "apache2.service"); err != nil {
 			notes = append(notes, "Reload Apache manually ("+err.Error()+").")
+			errs = append(errs, fmt.Errorf("reloading Apache: %w", err))
 		} else {
 			notes = append(notes, "Apache reloaded.")
 		}
@@ -1290,11 +1304,12 @@ func reloadPHP(dirs []string) string {
 	if info, err := os.Stat(hardeningLSWSCtrl); err == nil && info.Mode().IsRegular() {
 		if err := touchNoFollow(hardeningLSPHPRestartMarker); err != nil {
 			notes = append(notes, "Restart LiteSpeed PHP manually ("+err.Error()+").")
+			errs = append(errs, fmt.Errorf("restarting LiteSpeed PHP: %w", err))
 		} else {
 			notes = append(notes, "LiteSpeed PHP restart requested.")
 		}
 	}
-	return strings.Join(notes, " ")
+	return strings.Join(notes, " "), errors.Join(errs...)
 }
 
 // touchNoFollow creates path if needed without following a symlink in its

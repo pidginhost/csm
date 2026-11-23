@@ -22,6 +22,10 @@ import (
 // from, found the way the apply finds them.
 var hardeningPHPInstalls = func() []phpInstall { return discoverPHPInstalls(detectServerType()) }
 
+var hardeningUndoWriteDropIn = writeDropIn
+var hardeningUndoChown = (*os.File).Chown
+var hardeningUndoChmod = func(f *os.File, mode uint32) error { return syscall.Fchmod(int(f.Fd()), mode) }
+
 // undoRefusal is an undo that changed nothing; the record stays.
 type undoRefusal string
 
@@ -129,7 +133,15 @@ func undoSSH(rec HardeningUndoRecord, keyword string) (string, error) {
 	}
 	msg := keyword + " restored in " + sshdConfigPath + " and sshd reloaded."
 	if err := reloadSSHD(); err != nil {
-		msg = keyword + " restored in " + sshdConfigPath + ", but reloading sshd failed (" + err.Error() + "); reload it manually."
+		failure := fmt.Errorf("reloading sshd failed: %w", err)
+		if rerr := atomicio.AtomicWrite(sshdConfigPath, info.Mode().Perm(), orig); rerr != nil {
+			return "", errors.Join(failure, fmt.Errorf("restoring the applied SSH config failed: %w; recover it from %s.csm-bak", rerr, sshdConfigPath))
+		}
+		// A failed reload may have reached the daemon before its caller failed.
+		if rerr := reloadSSHD(); rerr != nil {
+			failure = errors.Join(failure, fmt.Errorf("applied SSH config restored, but reload it manually: %w", rerr))
+		}
+		return "", failure
 	}
 	return msg, nil
 }
@@ -145,12 +157,16 @@ func undoSSHDConfig(content string, s sshUndoState) (string, error) {
 	changed := changedSince(s.Keyword + " in " + sshdConfigPath)
 	kw := strings.ToLower(s.Keyword)
 	var out, enabled []string
-	inBlock, inMatch, found := false, false, false
+	inBlock, inMatch, found, seenBlock := false, false, false, false
 	begin := 0
 	for _, line := range strings.Split(content, "\n") {
 		t := strings.TrimSpace(line)
 		switch {
 		case t == sshdBlockBegin:
+			if inBlock || inMatch || seenBlock {
+				return "", changed
+			}
+			seenBlock = true
 			inBlock, begin = true, len(out)
 		case inBlock && t == sshdBlockEnd:
 			inBlock = false
@@ -159,7 +175,11 @@ func undoSSHDConfig(content string, s sshUndoState) (string, error) {
 				continue
 			}
 		case inBlock:
-			if k, v, ok := splitSSHDKeyword(t); ok && k == kw {
+			k, v, ok := splitSSHDKeyword(t)
+			if k == "match" {
+				return "", changed
+			}
+			if ok && k == kw {
 				// sshd takes the first value for a keyword.
 				if !found && v != s.AppliedValue {
 					return "", changed
@@ -218,31 +238,52 @@ func undoSysctl(rec HardeningUndoRecord, key string) (string, error) {
 		return "", changedSince(key)
 	}
 	msg := key + " set back to " + s.PrevRuntime + "."
+	var original appliedDropIn
 	if !s.RuntimeOnly {
 		// The drop-in can change apart from the runtime value, and a record
 		// can carry an earlier apply's drop-in change, so check it as well.
-		// #nosec G304 -- CSM-owned sysctl drop-in.
-		data, err := os.ReadFile(hardeningSysctlConfPath)
+		snapshot, err := readUndoDropIn(hardeningSysctlConfPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
-		lines, err := restoreKeyLines(string(data), key+" in "+hardeningSysctlConfPath, s.AppliedValue, s.PrevLines,
+		original = snapshot
+		lines, err := restoreKeyLines(string(snapshot.data), key+" in "+hardeningSysctlConfPath, s.AppliedValue, s.PrevLines,
 			func(line string) (string, bool) { return sysctlLineValue(line, key) })
 		if err != nil {
 			return "", err
 		}
-		if err := writeDropIn(hardeningSysctlConfPath, sysctlDropInHeader, lines); err != nil {
-			return "", err
+		if err := hardeningUndoWriteDropIn(hardeningSysctlConfPath, sysctlDropInHeader, lines); err != nil {
+			return "", errors.Join(err, restoreAppliedDropIns([]appliedDropIn{original}))
 		}
 		msg = key + " set back to " + s.PrevRuntime + " and restored in " + hardeningSysctlConfPath + "."
 	}
 	if _, err := hardeningRun("sysctl", "-w", key+"="+s.PrevRuntime); err != nil {
+		failure := errors.Join(err, restoreAppliedSysctl(*s))
 		if !s.RuntimeOnly {
-			return "", fmt.Errorf("%s was restored, but setting %s back to %s at runtime failed (%w); set it by hand", hardeningSysctlConfPath, key, s.PrevRuntime, err)
+			failure = errors.Join(failure, restoreAppliedDropIns([]appliedDropIn{original}))
 		}
-		return "", err
+		return "", failure
 	}
 	return msg, nil
+}
+
+// A command can fail after its write reached the kernel. Do not leave that
+// completed step blocking the unchanged record's guard on the next retry.
+func restoreAppliedSysctl(s sysctlUndoState) error {
+	value, err := sysctlRuntime(s.Key)
+	if err != nil {
+		return fmt.Errorf("checking runtime rollback: %w", err)
+	}
+	if value == s.AppliedValue {
+		return nil
+	}
+	if value != s.PrevRuntime {
+		return fmt.Errorf("%s changed during undo; runtime rollback refused", s.Key)
+	}
+	if _, err := hardeningRun("sysctl", "-w", s.Key+"="+s.AppliedValue); err != nil {
+		return fmt.Errorf("restoring applied runtime value for %s: %w", s.Key, err)
+	}
+	return nil
 }
 
 // restoreKeyLines returns content's lines with prev put back in place of the
@@ -306,9 +347,27 @@ func undoTweak(rec HardeningUndoRecord, key string) (string, error) {
 		return "", undoRefusal(key + " had no value before the apply, and whmapi1 cannot remove one. Set it back to its default in WHM Tweak Settings.")
 	}
 	if err := setWHMTweak(key, tw.Previous); err != nil {
-		return "", err
+		return "", errors.Join(err, restoreAppliedTweak(*tw))
 	}
 	return "Tweak setting " + key + " set back to " + tw.Previous + ".", nil
+}
+
+// A missing or failed reply does not prove that WHM left the value alone.
+func restoreAppliedTweak(tw tweakUndoState) error {
+	value, had, err := getWHMTweak(tw.Key)
+	if err != nil {
+		return fmt.Errorf("checking WHM rollback: %w", err)
+	}
+	if had && value == tw.Applied {
+		return nil
+	}
+	if !had || value != tw.Previous {
+		return fmt.Errorf("%s changed during undo; WHM rollback refused", tw.Key)
+	}
+	if err := setWHMTweak(tw.Key, tw.Applied); err != nil {
+		return fmt.Errorf("restoring applied WHM value for %s: %w", tw.Key, err)
+	}
+	return nil
 }
 
 // undoCompilers opens compiler access again: with cPanel's own script when
@@ -330,6 +389,9 @@ func undoCompilers(rec HardeningUndoRecord) (string, error) {
 			return "", changedSince("Compiler access")
 		}
 		if _, err := hardeningRun(hardeningCompilersScript, "on"); err != nil {
+			if _, rerr := hardeningRun(hardeningCompilersScript, "off"); rerr != nil {
+				return "", errors.Join(err, fmt.Errorf("restoring restricted compiler access: %w", rerr))
+			}
 			return "", err
 		}
 		return "Compiler access restored with " + hardeningCompilersScript + " on.", nil
@@ -368,7 +430,10 @@ func undoFile(rec HardeningUndoRecord, path string) (string, error) {
 	if string(data) != file.Applied {
 		return "", changedSince(path)
 	}
-	if err := atomicio.AtomicWrite(path, info.Mode().Perm(), []byte(file.Previous)); err != nil {
+	if err := hardeningConfigWrite(path, info.Mode().Perm(), []byte(file.Previous)); err != nil {
+		if rerr := atomicio.AtomicWrite(path, info.Mode().Perm(), data); rerr != nil {
+			return "", errors.Join(err, fmt.Errorf("restoring applied configuration in %s failed: %w", path, rerr))
+		}
 		return "", err
 	}
 	return path + " restored.", nil
@@ -410,13 +475,21 @@ func restoreModeByFD(st modeUndoState, wantDir bool) (string, error) {
 	if cur.Mode != st.AppliedMode || cur.UID != st.AppliedUID || cur.GID != st.AppliedGID {
 		return "", changedSince("The owner or mode of " + st.Path)
 	}
-	if st.UID != cur.UID || st.GID != cur.GID {
-		if err := f.Chown(int(st.UID), int(st.GID)); err != nil {
+	ownerChanged := st.UID != cur.UID || st.GID != cur.GID
+	if ownerChanged {
+		if err := hardeningUndoChown(f, int(st.UID), int(st.GID)); err != nil {
 			return "", err
 		}
 	}
 	// After the chown, which clears the setuid and setgid bits.
-	if err := syscall.Fchmod(int(f.Fd()), st.Mode&0o7777); err != nil {
+	if err := hardeningUndoChmod(f, st.Mode&0o7777); err != nil {
+		if ownerChanged {
+			chownErr := hardeningUndoChown(f, int(cur.UID), int(cur.GID))
+			chmodErr := hardeningUndoChmod(f, cur.Mode)
+			if rollbackErr := errors.Join(chownErr, chmodErr); rollbackErr != nil {
+				return "", errors.Join(err, fmt.Errorf("restoring applied owner and mode of %s: %w", st.Path, rollbackErr))
+			}
+		}
 		return "", err
 	}
 	return fmt.Sprintf("%s is mode %04o, owner %d:%d again.", st.Path, st.Mode, st.UID, st.GID), nil
@@ -437,8 +510,14 @@ func undoPHP(rec HardeningUndoRecord, key, suffix string) (string, error) {
 		return "", errUndoMismatch
 	}
 	restored := make([][]string, len(rec.PHP))
+	original := make([]appliedDropIn, len(rec.PHP))
 	for i, p := range rec.PHP {
-		lines, err := restorePHPDropIn(p)
+		snapshot, err := readUndoDropIn(p.Path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		original[i] = snapshot
+		lines, err := restorePHPDropIn(p, string(snapshot.data))
 		if err != nil {
 			return "", err
 		}
@@ -446,36 +525,64 @@ func undoPHP(rec HardeningUndoRecord, key, suffix string) (string, error) {
 	}
 	var dirs []string
 	for i, p := range rec.PHP {
-		if err := writeDropIn(p.Path, phpDropInHeader, restored[i]); err != nil {
+		if err := hardeningUndoWriteDropIn(p.Path, phpDropInHeader, restored[i]); err != nil {
 			err = fmt.Errorf("restoring %s: %w", p.Path, err)
-			if len(dirs) > 0 {
-				err = fmt.Errorf("%w; restored before it: %s. %s", err, strings.Join(phpDropInPaths(dirs), ", "), reloadPHP(dirs))
-			}
-			return "", err
+			// Include the failed write: rename may have succeeded before fsync failed.
+			return "", errors.Join(err, restoreAppliedDropIns(original[:i+1]))
 		}
 		dirs = append(dirs, filepath.Dir(p.Path))
 	}
-	return key + " restored in " + strings.Join(phpDropInPaths(dirs), ", ") + ". " + reloadPHP(dirs), nil
+	msg, err := reloadPHPResult(dirs)
+	if err != nil {
+		rerr := restoreAppliedDropIns(original)
+		// Some services may have reloaded before another service failed.
+		_, reloadErr := reloadPHPResult(dirs)
+		return "", errors.Join(err, rerr, reloadErr)
+	}
+	return key + " restored in " + strings.Join(phpDropInPaths(dirs), ", ") + ". " + msg, nil
 }
 
 // restorePHPDropIn returns the drop-in's lines with the key's earlier line
 // back in place of the applied one.
-func restorePHPDropIn(p phpUndoState) ([]string, error) {
-	var data []byte
-	f, err := (realOS{}).openRegularFile(p.Path, syscall.O_NOFOLLOW)
-	if err == nil {
-		defer func() { _ = f.Close() }()
-		data, err = io.ReadAll(f)
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
+func restorePHPDropIn(p phpUndoState, content string) ([]string, error) {
 	var prev []string
 	if p.HadKey {
 		prev = []string{p.PrevLine}
 	}
-	return restoreKeyLines(string(data), p.Key+" in "+p.Path, p.Applied, prev, func(line string) (string, bool) {
+	return restoreKeyLines(content, p.Key+" in "+p.Path, p.Applied, prev, func(line string) (string, bool) {
 		k, v, ok := phpIniSetting(line)
 		return v, ok && k == p.Key
 	})
+}
+
+// Snapshots are taken only after deriving paths from the fix name. Rolling
+// back failed undos keeps the unchanged record's Applied guards retryable.
+type appliedDropIn struct {
+	path string
+	data []byte
+	perm os.FileMode
+}
+
+func restoreAppliedDropIns(files []appliedDropIn) error {
+	var errs []error
+	for _, file := range files {
+		if err := atomicio.AtomicWrite(file.path, file.perm, file.data); err != nil {
+			errs = append(errs, fmt.Errorf("restoring applied settings in %s failed: %w", file.path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func readUndoDropIn(path string) (appliedDropIn, error) {
+	f, err := (realOS{}).openRegularFile(path, syscall.O_NOFOLLOW)
+	if err != nil {
+		return appliedDropIn{}, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return appliedDropIn{}, err
+	}
+	data, err := io.ReadAll(f)
+	return appliedDropIn{path: path, data: data, perm: info.Mode().Perm()}, err
 }
