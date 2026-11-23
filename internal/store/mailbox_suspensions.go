@@ -49,6 +49,18 @@ type MailboxSuspension struct {
 	SuspendedAt time.Time  `json:"suspended_at"`
 	ReleasedAt  *time.Time `json:"released_at,omitempty"`
 	ReleasedBy  string     `json:"released_by,omitempty"`
+	// RecentMailboxSuspensions preserves allowance usage when an account
+	// hold replaces this response or an alias changes its domain.
+	// Nil means an older row; an empty list means its usage has expired.
+	RecentMailboxSuspensions []MailboxSuspensionEvent `json:"recent_mailbox_suspensions"`
+}
+
+// MailboxSuspensionEvent retains the latest mailbox suspension in each
+// hosting account or unowned domain for this response identity.
+type MailboxSuspensionEvent struct {
+	Subject     string    `json:"subject"`
+	Account     string    `json:"account,omitempty"`
+	SuspendedAt time.Time `json:"suspended_at"`
 }
 
 // MailboxSuspensionID is the stable key of a subject on one mail server.

@@ -1858,11 +1858,11 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// A Critical login after brute force adds mailbox evidence; an incident
 	// reports the response when independent signs add up.
 	responseFindings = append(responseFindings, stolenLoginResponses(cfg, remediableFindings)...)
+	// A redirect the mail filter audit reports is evidence for its mailbox.
+	responseFindings = append(responseFindings, mailFilterEvidence(cfg, remediableFindings)...)
 	// An account whose mailbox suspensions hit the hourly limit is reported
 	// once, whichever response held a mailbox back.
 	responseFindings = append(responseFindings, drainMailboxCapNotices()...)
-	// A redirect the mail filter audit reports is evidence for its mailbox.
-	responseFindings = append(responseFindings, mailFilterEvidence(cfg, remediableFindings)...)
 
 	if len(responseFindings) == 0 {
 		// A scan applies its own blocks and hands them over as findings,

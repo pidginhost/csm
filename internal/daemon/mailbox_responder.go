@@ -152,12 +152,15 @@ type mailResponseResult struct {
 
 // The caller holds the target's lifecycle lock through the server and store updates.
 func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailResponseResult {
-	now := time.Now()
-	stamp := now.Format("2006-01-02 15:04:05")
+	stamp := time.Now().Format("2006-01-02 15:04:05")
 	backend := activeMailBackend
 	var uncertain store.MailboxSuspension
+	var previous store.MailboxSuspension
 	if db != nil {
 		prev, ok, err := db.GetMailboxSuspension(id)
+		if err == nil && ok {
+			previous = prev
+		}
 		switch {
 		case err != nil:
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: reading suspension record for %s: %v\n", stamp, c.Subject, err)
@@ -186,7 +189,9 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 	if db != nil && strings.Contains(c.Subject, "@") {
 		mailboxCapMu.Lock()
 		defer mailboxCapMu.Unlock()
-		if label, capped := capMailboxSuspension(db, c, now); capped {
+		// Count at lock acquisition: status reads and other suspensions
+		// may have completed while this caller waited.
+		if label, capped := capMailboxSuspension(db, id, c, time.Now()); capped {
 			fmt.Fprintf(os.Stderr, "[%s] auto-suspend: %s not suspended: %s reached its hourly limit\n", stamp, c.Subject, label)
 			return mailResponseResult{withheld: label}
 		}
@@ -200,6 +205,7 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not stop %s: %v\n", stamp, c.Subject, err)
 		return mailResponseResult{record: store.MailboxSuspension{Backend: backend.name()}, err: err}
 	}
+	mailboxApplied := applied.Kind == store.SuspensionKindMailbox
 	if uncertain.Account == applied.Account {
 		parts := slices.Clone(uncertain.Applied)
 		for _, part := range applied.Applied {
@@ -222,8 +228,9 @@ func applyMailResponse(db *store.DB, id string, c mailboxCompromise) mailRespons
 		Applied:     applied.Applied,
 		Check:       c.Check,
 		Reason:      c.Reason,
-		SuspendedAt: now,
+		SuspendedAt: time.Now(),
 	}
+	rec.RecentMailboxSuspensions = updatedMailboxSuspensionHistory(previous, rec, mailboxApplied)
 	result := mailResponseResult{stopped: true, changed: true, record: rec}
 	if db != nil {
 		if err := db.PutMailboxSuspension(rec); err != nil {

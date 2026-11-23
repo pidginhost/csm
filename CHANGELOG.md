@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Mailbox suspension limits still apply after account holds or Stalwart address changes and during simultaneous responses; repeated suspensions remain allowed.
 - Stalwart setup and `csm doctor` refuse forwarded webmail addresses when PHP or CGI runs as a user the webmail port lock admits, or this cannot be checked. Run `csm doctor` to see whether PHP pools must move to their own users.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.
 - `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
@@ -32,7 +33,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Added
 
-- A new `auto_response.suspend_mailboxes` setting, on by default, stops automatic mailbox suspensions while keeping every finding and incident.
+- Automatic mailbox suspension can be turned off while keeping every finding and incident; it remains on by default.
 - A shell left by a web request that keeps returning after CSM stops it now raises a Critical finding and queues a malware scan of the account.
 - `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
 - A new `backup` setting has the daemon export its state on a schedule, delete archives past retention, and warn when an export fails.
@@ -53,6 +54,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
+- Mailbox suspension pause alerts include redirect detections from the same batch.
 - A forward that keeps a copy of the mail no longer counts toward suspending the mailbox unless something else corroborates it.
 - Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
 
