@@ -11,6 +11,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
+- Server Hardening undo storage rejects unsafe saved state and preserves complete records across concurrent writes and crashes.
 - Stalwart setup and `csm doctor` refuse forwarded webmail addresses when site code can run as a user the webmail port lock admits, or this cannot be checked. Run `csm doctor` to see what runs as a shared user.
 - The daemon can no longer write its configuration directory; settings it saves are written by a separate helper sandboxed to that directory.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.

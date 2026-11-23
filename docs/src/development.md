@@ -1790,6 +1790,22 @@ PHP taint worker (`csm phptaint-worker`) runs through `UnitLauncher` as
 512 MiB memory cap. The YARA workers run through it too; the section below
 describes them.
 
+### Hardening undo storage
+
+The root hardening worker owns `/var/lib/csm-hardening-undo` with mode
+`0700`. Each `<name>.json` record is a root-owned regular file with mode
+`0600`. Requests carry fix names only; saved values come from the worker.
+The daemon may list record names read-only, without opening their contents.
+This store is not yet connected to apply or undo actions.
+
+Store operations validate fix names before constructing record paths. They
+use directory-relative, no-follow opens and check ownership and permissions
+on opened inodes. Each write uses a private temporary file, syncs its data,
+then renames it and syncs the directory. Creating the store also syncs its
+parent; deleting a record syncs the store, including on a deletion retry.
+A sync failure is returned to the caller. Failure after rename or unlink
+can mean the change is visible but not yet durable.
+
 ### Parse worker units
 
 The archive parse worker (`csm parse-worker`) runs through `UnitLauncher`:

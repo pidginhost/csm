@@ -8,8 +8,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // withHardeningUndoDir points the undo store at a path under t.TempDir()
@@ -21,6 +25,260 @@ func withHardeningUndoDir(t *testing.T) string {
 	hardeningUndoDir, hardeningUndoOwner = dir, os.Getuid()
 	t.Cleanup(func() { hardeningUndoDir, hardeningUndoOwner = prevDir, prevOwner })
 	return dir
+}
+
+func TestHardeningUndoDirRechecksOpenedPermissions(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkOpenedUndoDir(root); err == nil {
+		t.Fatal("accepted a directory made writable after opening")
+	}
+}
+
+func TestHardeningUndoRejectsUnsafeRecordModes(t *testing.T) {
+	for _, mode := range []fs.FileMode{0o666, 0o644, 0o400, 0o600 | os.ModeSetuid} {
+		t.Run(mode.String(), func(t *testing.T) {
+			dir := withHardeningUndoDir(t)
+			rec := testHardeningUndoRecords()[0]
+			if err := writeHardeningUndo(rec); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, rec.Name+".json"), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok, err := readHardeningUndo(rec.Name); ok || err == nil {
+				t.Fatalf("accepted record with mode %v: ok=%v err=%v", mode, ok, err)
+			}
+			if err := writeHardeningUndo(rec); err == nil {
+				t.Fatal("replaced a record with unsafe permissions")
+			}
+		})
+	}
+}
+
+func TestHardeningUndoConcurrentWrites(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	const writers = 16
+	recs := make([]HardeningUndoRecord, writers)
+	for i := range recs {
+		recs[i] = testHardeningUndoRecords()[7]
+		recs[i].File.Previous = strings.Repeat(string(rune('a'+i)), 256*1024)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, rec := range recs {
+		wg.Go(func() {
+			<-start
+			if err := writeHardeningUndo(rec); err != nil {
+				t.Errorf("concurrent write: %v", err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	got, ok, err := readHardeningUndo(recs[0].Name)
+	if err != nil || !ok {
+		t.Fatalf("read after concurrent writes: ok=%v err=%v", ok, err)
+	}
+	if !slices.ContainsFunc(recs, func(rec HardeningUndoRecord) bool { return reflect.DeepEqual(rec, got) }) {
+		t.Fatal("stored record is not a complete submitted record")
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 || entries[0].Name() != recs[0].Name+".json" {
+		t.Fatalf("unexpected records after concurrent writes: %v, %v", entries, err)
+	}
+}
+
+func TestHardeningUndoSyncsDirectoryChanges(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	prev := hardeningUndoSync
+	t.Cleanup(func() { hardeningUndoSync = prev })
+	var synced []string
+	hardeningUndoSync = func(f *os.File) error {
+		synced = append(synced, filepath.Clean(f.Name()))
+		return f.Sync()
+	}
+	rec := testHardeningUndoRecords()[0]
+	if err := writeHardeningUndo(rec); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(synced, filepath.Dir(dir)) {
+		t.Error("first write did not persist the store's parent directory")
+	}
+	if len(synced) == 0 || synced[len(synced)-1] != dir {
+		t.Errorf("write did not finish by syncing the record directory: %v", synced)
+	}
+	synced = nil
+	if err := deleteHardeningUndo(rec.Name); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(synced, []string{dir}) {
+		t.Errorf("delete synced %v; want [%s]", synced, dir)
+	}
+	synced = nil
+	if err := deleteHardeningUndo(rec.Name); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(synced, []string{dir}) {
+		t.Errorf("delete retry synced %v; want [%s]", synced, dir)
+	}
+}
+
+func TestHardeningUndoOpenedRecordOwner(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	rec := testHardeningUndoRecords()[0]
+	if err := writeHardeningUndo(rec); err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(filepath.Join(dir, rec.Name+".json"), &st); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkUndoRecordStat(&st); err != nil {
+		t.Fatal(err)
+	}
+	st.Uid++
+	if err := checkUndoRecordStat(&st); err == nil {
+		t.Fatal("accepted an opened record owned by another user")
+	}
+}
+
+func TestHardeningUndoAllowsLinkedParent(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	parentLink := filepath.Join(t.TempDir(), "parent")
+	if err := os.Symlink(filepath.Dir(dir), parentLink); err != nil {
+		t.Fatal(err)
+	}
+	hardeningUndoDir = filepath.Join(parentLink, "undo")
+	rec := testHardeningUndoRecords()[0]
+	if err := writeHardeningUndo(rec); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := readHardeningUndo(rec.Name); err != nil || !ok || !reflect.DeepEqual(got, rec) {
+		t.Fatalf("record under linked parent: %+v, %v, %v", got, ok, err)
+	}
+}
+
+func TestHardeningUndoOpenRefusesSwappedLink(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	rec := testHardeningUndoRecords()[0]
+	if err := writeHardeningUndo(rec); err != nil {
+		t.Fatal(err)
+	}
+	root, err := openHardeningUndoDir(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	file := rec.Name + ".json"
+	if err = undoRecordInfo(root, file); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(filepath.Join(dir, file), filepath.Join(dir, "kept")); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink("kept", filepath.Join(dir, file)); err != nil {
+		t.Fatal(err)
+	}
+	// The link targets the very same inode the metadata check accepted.
+	f, err := openUndoFile(root, file, os.O_RDONLY, 0)
+	if err == nil {
+		f.Close()
+		t.Fatal("followed a link substituted after checking the record")
+	}
+	if !errors.Is(err, unix.ELOOP) {
+		t.Fatalf("open error = %v; want ELOOP", err)
+	}
+}
+
+func TestHardeningUndoRejectsCorruptRecords(t *testing.T) {
+	dir := withHardeningUndoDir(t)
+	rec := testHardeningUndoRecords()[0]
+	if err := writeHardeningUndo(rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{`, `null`, `{"name":"cp_updates"}`} {
+		if err := os.WriteFile(filepath.Join(dir, rec.Name+".json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok, err := readHardeningUndo(rec.Name); err == nil || ok || !reflect.DeepEqual(got, HardeningUndoRecord{}) {
+			t.Fatalf("invalid record accepted: %+v, %v, %v", got, ok, err)
+		}
+		// Listing must not parse or read record contents.
+		if names, err := HardeningUndoNames(); err != nil || !slices.Equal(names, []string{rec.Name}) {
+			t.Fatalf("listing corrupt record = %v, %v", names, err)
+		}
+	}
+}
+
+func TestHardeningUndoReportsSyncFailures(t *testing.T) {
+	for _, stage := range []string{"parent", "file", "rename", "delete"} {
+		t.Run(stage, func(t *testing.T) {
+			dir := withHardeningUndoDir(t)
+			rec := testHardeningUndoRecords()[0]
+			if err := writeHardeningUndo(rec); err != nil {
+				t.Fatal(err)
+			}
+			prev := hardeningUndoSync
+			t.Cleanup(func() { hardeningUndoSync = prev })
+			wantErr := errors.New("sync failed")
+			hardeningUndoSync = func(f *os.File) error {
+				path := filepath.Clean(f.Name())
+				if (stage == "parent" && path == filepath.Dir(dir)) ||
+					(stage == "file" && filepath.Dir(path) == dir) ||
+					((stage == "rename" || stage == "delete") && path == dir) {
+					return wantErr
+				}
+				return f.Sync()
+			}
+			newer := rec
+			newer.AppliedAt = rec.AppliedAt.Add(time.Hour)
+			var err error
+			if stage == "delete" {
+				err = deleteHardeningUndo(rec.Name)
+			} else {
+				err = writeHardeningUndo(newer)
+			}
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("%s sync failure = %v; want %v", stage, err, wantErr)
+			}
+			got, ok, err := readHardeningUndo(rec.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stage == "delete" {
+				if ok {
+					t.Fatal("record survived unlink")
+				}
+			} else {
+				want := rec
+				if stage == "rename" {
+					want = newer
+				}
+				if !ok || !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s failure left unexpected record: %+v, %v", stage, got, ok)
+				}
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if e.Name() != rec.Name+".json" {
+					t.Errorf("temporary entry survived failure: %s", e.Name())
+				}
+			}
+		})
+	}
 }
 
 // testHardeningUndoRecords holds one record for every kind of fix.
@@ -187,13 +445,22 @@ func TestHardeningUndoStoreRefusesUnsafePaths(t *testing.T) {
 		{"directory owned by another user", func(*testing.T, string) {
 			hardeningUndoOwner = os.Getuid() + 1
 		}, true},
-		// The link stays inside the directory, where os.Root alone follows it.
+		// Even links within the record directory are refused.
 		{"record file is a symlink", func(t *testing.T, dir string) {
 			file := filepath.Join(dir, rec.Name+".json")
 			if err := os.Rename(file, filepath.Join(dir, "kept")); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink("kept", file); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"record file is a pipe", func(t *testing.T, dir string) {
+			file := filepath.Join(dir, rec.Name+".json")
+			if err := os.Rename(file, file+".kept"); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Mkfifo(file, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}, false},
@@ -275,11 +542,22 @@ func TestHardeningUndoNamesIgnoresStrayFiles(t *testing.T) {
 	if err := os.Symlink(recs[0].Name+".json", filepath.Join(dir, "ssh_x11_forwarding.json")); err != nil {
 		t.Fatal(err)
 	}
+	outside := filepath.Join(t.TempDir(), "external.json")
+	if err := os.WriteFile(outside, []byte("not a record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "ssh_use_dns.json")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(dir, "os_sysctl_aslr.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"cp_updates", "ssh_max_auth_tries"}
+	before := undoTreeState(t, dir)
 	if names, err := HardeningUndoNames(); err != nil || !slices.Equal(names, want) {
 		t.Fatalf("names = %v, %v; want %v", names, err, want)
+	}
+	if after := undoTreeState(t, dir); !maps.Equal(before, after) {
+		t.Fatalf("listing changed records: before %v, after %v", before, after)
 	}
 }

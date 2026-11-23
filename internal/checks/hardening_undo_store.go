@@ -1,15 +1,19 @@
 package checks
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
-	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // The root hardening worker keeps each applied fix's previous state in a
@@ -23,6 +27,8 @@ var hardeningUndoDir = "/var/lib/csm-hardening-undo"
 // hardeningUndoOwner is the uid that must own hardeningUndoDir. Tests use
 // their own uid.
 var hardeningUndoOwner = 0
+
+var hardeningUndoSync = (*os.File).Sync
 
 // HardeningUndoRecord is what one applied fix changed. Kind is ssh, sysctl,
 // tweak, php, mode, compilers or file, and names the one state field set.
@@ -134,58 +140,71 @@ func knownHardeningFix(name string) bool {
 // openHardeningUndoDir opens the record directory once it is a root-owned
 // 0700 directory and not a link. Only the worker creates it; when it is
 // missing, readers get fs.ErrNotExist.
-func openHardeningUndoDir(create bool) (*os.Root, error) {
+func openHardeningUndoDir(create bool) (*os.File, error) {
+	parent, err := os.OpenFile(filepath.Dir(hardeningUndoDir), os.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	name := filepath.Base(hardeningUndoDir)
 	if create {
-		if err := os.Mkdir(hardeningUndoDir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		if err = unix.Mkdirat(int(parent.Fd()), name, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 			return nil, err
 		}
 	}
-	info, err := os.Lstat(hardeningUndoDir)
+	dir, err := openUndoFile(parent, name, os.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0o700 {
-		return nil, fmt.Errorf("%s must be a directory with mode 0700, not a link", hardeningUndoDir)
-	}
-	root, err := os.OpenRoot(hardeningUndoDir)
-	if err != nil {
+	if err := checkOpenedUndoDir(dir); err != nil {
+		_ = dir.Close()
 		return nil, err
 	}
-	if err := checkOpenedUndoDir(root, info); err != nil {
-		_ = root.Close()
-		return nil, err
+	// Sync even when another writer created the directory: its mkdir may
+	// not have reached stable storage yet.
+	if create {
+		if err := hardeningUndoSync(parent); err != nil {
+			_ = dir.Close()
+			return nil, err
+		}
 	}
-	return root, nil
+	return dir, nil
 }
 
-// checkOpenedUndoDir checks the opened directory, since the path can be
-// swapped after the Lstat.
-func checkOpenedUndoDir(root *os.Root, checked fs.FileInfo) error {
-	opened, err := root.Stat(".")
+// The directory handle pins all operations to the inode whose permissions
+// we checked. O_NOFOLLOW refuses links at open time, including racing swaps.
+func openUndoFile(dir *os.File, name string, flags int, mode uint32) (*os.File, error) {
+	fd, err := unix.Openat(int(dir.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, mode)
 	if err != nil {
+		return nil, &os.PathError{Op: "openat", Path: name, Err: err}
+	}
+	return os.NewFile(uintptr(fd), filepath.Join(dir.Name(), name)), nil
+}
+
+func checkOpenedUndoDir(dir *os.File) error {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(dir.Fd()), &st); err != nil {
 		return err
 	}
-	if !os.SameFile(checked, opened) {
-		return fmt.Errorf("%s changed while opening", hardeningUndoDir)
-	}
-	st, ok := opened.Sys().(*syscall.Stat_t)
-	if !ok || int(st.Uid) != hardeningUndoOwner {
-		return fmt.Errorf("%s is not owned by root", hardeningUndoDir)
+	if st.Mode&(unix.S_IFMT|0o7777) != unix.S_IFDIR|0o700 || int(st.Uid) != hardeningUndoOwner {
+		return fmt.Errorf("%s must be a root-owned directory with mode 0700", hardeningUndoDir)
 	}
 	return nil
 }
 
-// undoRecordInfo refuses a record file that is not a regular file, so no
-// read or write goes through a link.
-func undoRecordInfo(root *os.Root, file string) (fs.FileInfo, error) {
-	info, err := root.Lstat(file)
-	if err != nil {
-		return nil, err
+func checkUndoRecordStat(st *unix.Stat_t) error {
+	if st.Mode&(unix.S_IFMT|0o7777) != unix.S_IFREG|0o600 || int(st.Uid) != hardeningUndoOwner {
+		return errors.New("undo record must be a root-owned regular file with mode 0600")
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("undo record %s is not a regular file", file)
+	return nil
+}
+
+func undoRecordInfo(dir *os.File, file string) error {
+	var st unix.Stat_t
+	if err := unix.Fstatat(int(dir.Fd()), file, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
 	}
-	return info, nil
+	return checkUndoRecordStat(&st)
 }
 
 // writeHardeningUndo stores rec as the record for rec.Name, replacing an
@@ -204,39 +223,31 @@ func writeHardeningUndo(rec HardeningUndoRecord) error {
 	}
 	defer func() { _ = root.Close() }()
 	file := rec.Name + ".json"
-	if _, err = undoRecordInfo(root, file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err = undoRecordInfo(root, file); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	tmp := "." + rec.Name + ".tmp"
-	if err = root.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	// os.Root never follows a link when it creates a file exclusively.
-	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// Writers must never remove or publish another writer's staging file.
+	tmp := "." + rec.Name + "." + rand.Text() + ".tmp"
+	f, err := openUndoFile(root, tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
 	_, err = f.Write(data)
 	if err == nil {
-		err = f.Sync()
+		err = hardeningUndoSync(f)
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err == nil {
-		err = root.Rename(tmp, file)
+		err = unix.Renameat(int(root.Fd()), tmp, int(root.Fd()), file)
 	}
 	if err != nil {
-		_ = root.Remove(tmp)
+		_ = unix.Unlinkat(int(root.Fd()), tmp, 0)
 		return err
 	}
 	// Sync the directory so the rename survives a crash.
-	dir, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dir.Close() }()
-	return dir.Sync()
+	return hardeningUndoSync(root)
 }
 
 // readHardeningUndo returns the record for name; ok is false when there is
@@ -271,23 +282,17 @@ func readUndoRecordFile(name string) ([]byte, error) {
 	}
 	defer func() { _ = root.Close() }()
 	file := name + ".json"
-	info, err := undoRecordInfo(root, file)
-	if err != nil {
-		return nil, err
-	}
-	// os.Root follows links inside the root, so match the opened file to
-	// the checked entry.
-	f, err := root.OpenFile(file, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := openUndoFile(root, file, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	opened, err := f.Stat()
-	if err != nil {
+	var st unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
 		return nil, err
 	}
-	if !os.SameFile(info, opened) {
-		return nil, fmt.Errorf("undo record %s changed while opening", file)
+	if err := checkUndoRecordStat(&st); err != nil {
+		return nil, err
 	}
 	return io.ReadAll(f)
 }
@@ -298,14 +303,18 @@ func deleteHardeningUndo(name string) error {
 		return fmt.Errorf("unknown hardening fix %q", name)
 	}
 	root, err := openHardeningUndoDir(false)
-	if err == nil {
-		err = root.Remove(name + ".json")
-		_ = root.Close()
-	}
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := unix.Unlinkat(int(root.Fd()), name+".json", 0); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	// Also sync a retry after an earlier unlink whose sync failed.
+	return hardeningUndoSync(root)
 }
 
 // HardeningUndoNames lists the fixes that have an undo record. It only
@@ -320,7 +329,7 @@ func HardeningUndoNames() ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	entries, err := fs.ReadDir(root.FS(), ".")
+	entries, err := root.ReadDir(-1)
 	if err != nil {
 		return nil, err
 	}
@@ -331,5 +340,6 @@ func HardeningUndoNames() ([]string, error) {
 			names = append(names, name)
 		}
 	}
+	slices.Sort(names)
 	return names, nil
 }
