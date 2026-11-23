@@ -226,12 +226,14 @@ func TestPHPRuntimeUsersDistributionAndPanelPaths(t *testing.T) {
 // isolates them, which setup cannot see. Each one counts.
 func TestPHPRuntimeUsersApacheScriptModules(t *testing.T) {
 	for module, want := range map[string]string{
-		"fcgid_module":  "Apache's FastCGI module",
-		"wsgi_module":   "Apache's WSGI module",
-		"perl_module":   "Apache's Perl module",
-		"python_module": "Apache's Python module",
-		"lua_module":    "Apache's Lua module",
-		"lsapi_module":  "Apache's LSAPI module",
+		"fcgid_module":     "Apache's FastCGI module",
+		"fastcgi_module":   "Apache's FastCGI module",
+		"passenger_module": "Apache's Passenger module",
+		"wsgi_module":      "Apache's WSGI module",
+		"perl_module":      "Apache's Perl module",
+		"python_module":    "Apache's Python module",
+		"lua_module":       "Apache's Lua module",
+		"lsapi_module":     "Apache's LSAPI module",
 	} {
 		t.Run(module, func(t *testing.T) {
 			root := t.TempDir()
@@ -241,7 +243,7 @@ func TestPHPRuntimeUsersApacheScriptModules(t *testing.T) {
 			}
 			writeRootFile(t, root, "etc/apache2/mods-enabled/x.load", "LoadModule "+module+" /usr/lib/apache2/modules/x.so\n")
 			got, err := phpRuntimeUsers(root)
-			if err != nil || got[33] != want {
+			if err != nil || !maps.Equal(got, map[uint32]string{33: want}) {
 				t.Fatalf("users = %v, %v; want Apache's user with %q", got, err, want)
 			}
 		})

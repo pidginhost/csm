@@ -46,7 +46,7 @@ func phpRuntimeUsers(root string) (map[uint32]string, error) {
 			return out, err
 		}
 	}
-	if err := phpProcessUsers(root, addUID); err != nil {
+	if err := phpProcessUsers(root, addUID, add); err != nil {
 		return out, err
 	}
 	if err := apacheRuntimeUsers(root, add); err != nil {
@@ -94,7 +94,7 @@ func phpUserLookup(root string) (func(string) (uint32, error), error) {
 	}, nil
 }
 
-func phpProcessUsers(root string, add func(uint32, string)) error {
+func phpProcessUsers(root string, add func(uint32, string), addName func(string, string) error) error {
 	entries, err := os.ReadDir(filepath.Join(root, "proc"))
 	if err != nil {
 		return fmt.Errorf("inspect PHP/CGI processes: %w", err)
@@ -117,6 +117,19 @@ func phpProcessUsers(root string, add func(uint32, string)) error {
 			base = strings.TrimSpace(string(comm))
 			if !phpWorkerName.MatchString(base) && !os.IsNotExist(exeErr) {
 				return fmt.Errorf("inspect process executable: %w", exeErr)
+			}
+		}
+		if liteSpeedServerName.MatchString(base) {
+			if exeErr != nil {
+				return fmt.Errorf("inspect LiteSpeed executable: %w", exeErr)
+			}
+			exe = strings.TrimSuffix(exe, " (deleted)")
+			if !filepath.IsAbs(exe) || filepath.Base(filepath.Dir(exe)) != "bin" {
+				return errors.New("cannot locate LiteSpeed server configuration")
+			}
+			conf := filepath.Join(root, filepath.Dir(filepath.Dir(exe)), "conf")
+			if err := liteSpeedConfigUsers(conf, addName); err != nil {
+				return err
 			}
 		}
 		if !phpWorkerName.MatchString(base) {

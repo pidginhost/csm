@@ -12,14 +12,16 @@ import (
 // cannot see isolates them (suEXEC, a WSGI daemon user, per-vhost users), so
 // each one counts: refusing forwarded addresses is the safe answer.
 var apacheScriptModules = map[string]string{
-	"cgi_module":    "Apache's CGI module",
-	"cgid_module":   "Apache's CGI module",
-	"fcgid_module":  "Apache's FastCGI module",
-	"wsgi_module":   "Apache's WSGI module",
-	"perl_module":   "Apache's Perl module",
-	"python_module": "Apache's Python module",
-	"lua_module":    "Apache's Lua module",
-	"lsapi_module":  "Apache's LSAPI module",
+	"cgi_module":       "Apache's CGI module",
+	"cgid_module":      "Apache's CGI module",
+	"fcgid_module":     "Apache's FastCGI module",
+	"fastcgi_module":   "Apache's FastCGI module",
+	"passenger_module": "Apache's Passenger module",
+	"wsgi_module":      "Apache's WSGI module",
+	"perl_module":      "Apache's Perl module",
+	"python_module":    "Apache's Python module",
+	"lua_module":       "Apache's Lua module",
+	"lsapi_module":     "Apache's LSAPI module",
 }
 
 type apacheReader struct {
