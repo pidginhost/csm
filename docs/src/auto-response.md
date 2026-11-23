@@ -209,6 +209,19 @@ again. The daemon keeps this memory across restarts. A file cleaned with
 UI quarantine page, CSM's own writes and official WordPress release files are
 never treated as the file coming back.
 
+Any other restore of the same bytes, including the account's own through SSH,
+cPanel or FTP, is removed again: a stolen login replays a payload the same
+way. The finding says how the bytes came back (an SSH, cPanel, cron or FTP
+session, a web request, a terminal, or a process detached under init).
+Sessions take precedence over PHP workers in the ancestry; running PHP from
+cron or a terminal does not make it a web request. Incomplete ancestry is
+reported as untraceable.
+
+The finding gives the current removal's expiry time. Each successful removal
+starts a new seven-day window, so repeated restores can extend it. Automatic
+removal still requires `quarantine_files`. To keep the file, restore it from
+the quarantine page.
+
 The saved history is read only from a private file the daemon owns. A damaged
 or unsafe one is logged and ignored, and detection carries on without it.
 

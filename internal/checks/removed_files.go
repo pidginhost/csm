@@ -267,6 +267,9 @@ func RemovedFiles() []RemovedFile {
 	return out
 }
 
+// ForgetAt is when CSM stops recognising this removal's bytes coming back.
+func (r RemovedFile) ForgetAt() time.Time { return r.At.Add(removedFileMemory) }
+
 // ForgetRemovedFile drops path before an operator restores it, so the restore
 // is not taken for the removed file coming back.
 func ForgetRemovedFile(path string) {

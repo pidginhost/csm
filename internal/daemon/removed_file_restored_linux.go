@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"time"
@@ -43,7 +44,7 @@ func (fm *FileMonitor) checkRemovedFileRestored(event fileEvent, procInfo string
 	if !ok || latest != removed {
 		return false
 	}
-	f := removedFileRestoredFinding(event.path, removed, procInfo, event.pid)
+	f := removedFileRestoredFinding(event.path, removed, procInfo, event.pid, event.writerOrigin)
 	f.WriterChain, f.WriterObservedAt = event.writerChain, event.at
 	fm.sendFileFinding(f)
 	return true
@@ -57,19 +58,31 @@ func captureRestoreWriterChain(event *fileEvent) {
 	}
 	if _, ok := removedFileAt(event.path); ok {
 		event.writerChain = restoreWriterChain(int(event.pid), event.at)
+		event.writerOrigin = restoreWriterOrigin(int(event.pid))
 	}
 }
 
-// restoreWriterChain lets tests observe what the detector captures.
-var restoreWriterChain = checks.RestoreWriterChain
+// restoreWriterChain and restoreWriterOrigin let tests observe what the
+// detector captures.
+var (
+	restoreWriterChain  = checks.RestoreWriterChain
+	restoreWriterOrigin = checks.RestoreWriterOrigin
+)
 
-func removedFileRestoredFinding(path string, removed checks.RemovedFile, procInfo string, pid int32) alert.Finding {
+// removedFileRestoredFinding says how the bytes came back (origin) and how
+// to keep the file: automatic quarantine repeats the response while the
+// removal is remembered, unless an operator restores from the Quarantine page.
+func removedFileRestoredFinding(path string, removed checks.RemovedFile, procInfo string, pid int32, origin string) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Critical,
 		Check:    checks.RemovedFileRestoredCheck,
 		Message:  fmt.Sprintf("File CSM removed was written back: %s", path),
-		Details: fmt.Sprintf("CSM %s this content at %s; a process wrote the same bytes back.\nSHA-256: %s",
-			removedActionPast(removed.Action), removed.At.UTC().Format(time.RFC3339), removed.SHA256),
+		Details: fmt.Sprintf("CSM %s this content at %s; the same bytes were written back through %s.\nSHA-256: %s\n"+
+			"With automatic file quarantine enabled, CSM removes these bytes again when they reappear at this path. "+
+			"The current removal is remembered until %s; each successful removal starts a new seven-day window. "+
+			"To keep the file, restore it from CSM's Quarantine page instead.",
+			removedActionPast(removed.Action), removed.At.UTC().Format(time.RFC3339), cmp.Or(origin, "a process"), removed.SHA256,
+			removed.ForgetAt().UTC().Format(time.RFC3339)),
 		FilePath:    path,
 		ProcessInfo: procInfo,
 		PID:         int(pid),
