@@ -794,6 +794,10 @@ func (d *Daemon) registerFirewallMetrics() {
 func (d *Daemon) Run() error {
 	d.alertQueue = queuehealth.New(cap(d.alertCh), time.Minute)
 	defer alert.RegisterQueue(d.alertCh, d.alertQueue)()
+	// Config saves go through a helper from here on: the sandbox cannot
+	// write the config's directory.
+	routeConfigWrites()
+	defer integrity.SetConfigWriter(nil)
 	if err := d.checkObserveStartupRecovery(); err != nil {
 		return err
 	}

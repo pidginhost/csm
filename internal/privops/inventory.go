@@ -388,11 +388,12 @@ var operations = []Op{
 		ID:               "state.sign_config",
 		Risk:             RiskObserve,
 		Subsystem:        "csm state",
-		Summary:          "rewrite CSM's own integrity hashes into csm.yaml after an approved change",
+		Summary:          "rewrite CSM's own integrity hashes into csm.yaml after an approved change, through csm config-write in a transient unit that can write only the config's directory",
 		Privileges:       []Privilege{Root},
 		Trigger:          Operator,
 		Writes:           []string{"/etc/csm"},
 		WithoutPrivilege: "the integrity hashes cannot be re-recorded, so the next restart refuses to start after any config edit",
+		Unsandboxed:      true,
 	},
 	{
 		ID:               "state.update_signatures",

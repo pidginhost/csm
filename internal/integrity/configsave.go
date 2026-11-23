@@ -2,11 +2,16 @@ package integrity
 
 import (
 	"bytes"
+	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -25,7 +30,7 @@ func ConfigWriteMutex() *sync.Mutex {
 // bytes (e.g. restoring a snapshot whose hash already matches its content)
 // where re-signing would mutate the integrity block we want to preserve.
 func WriteConfigBytesAtomic(path string, data []byte) error {
-	return atomicWriteFile(path, data, 0o600)
+	return writeConfig(SignedConfig{Path: path, Bytes: data})
 }
 
 // SignAndSavePreserving writes editedBytes to path after patching
@@ -107,16 +112,132 @@ func signAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 	intendedClone.Integrity.ConfigHash = newConfigHash
 	intendedClone.Integrity.ConfdHash = newConfdHash
 
-	if err := keepPreviousConfig(path, patched); err != nil {
+	return writeConfig(SignedConfig{Path: path, Bytes: patched, ConfdHash: newConfdHash, Fragments: fragmentContents})
+}
+
+// SignedConfig is a signed main config ready to write: the bytes for Path
+// and the conf.d fragment record they were signed over.
+type SignedConfig struct {
+	Path      string `json:"path"`
+	Bytes     []byte `json:"bytes"`
+	ConfdHash string `json:"confd_hash"`
+	// Nil preserves the existing backup and fragment record for an exact-byte restore.
+	Fragments map[string][]byte `json:"fragments"`
+}
+
+// WriteSignedConfig keeps the previous file as <path>.bak, records the
+// fragments, then replaces the config atomically. With nil Fragments it
+// restores only the main file, leaving both sidecars untouched.
+func WriteSignedConfig(c SignedConfig) error {
+	if c.Fragments == nil {
+		return atomicWriteFile(c.Path, c.Bytes, 0o600)
+	}
+	if err := keepPreviousConfig(c.Path, c.Bytes); err != nil {
 		return err
 	}
 	// The record goes first: if the config write then fails, the record
 	// names a digest the config does not carry and is ignored, rather than
 	// a signed config being left without one.
-	if err := writeFragmentRecord(path, newConfdHash, fragmentContents); err != nil {
+	if err := writeFragmentRecord(c.Path, c.ConfdHash, c.Fragments); err != nil {
 		return err
 	}
-	return atomicWriteFile(path, patched, 0o600)
+	return atomicWriteFile(c.Path, c.Bytes, 0o600)
+}
+
+// ConfigWriteCommand is the csm subcommand that writes a signed config for a
+// process that cannot write the config's directory itself.
+const ConfigWriteCommand = "config-write"
+
+// maxSignedConfigBytes bounds the JSON a config-write helper accepts: the
+// config and its conf.d fragments, base64-encoded.
+const maxSignedConfigBytes = 16 << 20
+
+// ReadSignedConfig decodes the one signed config a helper receives. It
+// refuses unknown members, oversized input, and a path that is not an
+// absolute, clean .yaml or .yml file resolving to a YAML target. The config
+// and any supplied fragment record must match their recorded digests.
+func ReadSignedConfig(r io.Reader) (SignedConfig, error) {
+	var c SignedConfig
+	data, err := io.ReadAll(io.LimitReader(r, maxSignedConfigBytes+1))
+	if err != nil {
+		return c, err
+	}
+	if len(data) > maxSignedConfigBytes {
+		return c, errors.New("signed config too large")
+	}
+	if decodeErr := jsonv2.Unmarshal(data, &c, jsonv2.RejectUnknownMembers(true)); decodeErr != nil {
+		return c, fmt.Errorf("decode signed config: %w", decodeErr)
+	}
+	if !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path {
+		return c, fmt.Errorf("config path %q is not an absolute, clean path", c.Path)
+	}
+	if ext := filepath.Ext(c.Path); ext != ".yaml" && ext != ".yml" {
+		return c, fmt.Errorf("config path %q is not a YAML file", c.Path)
+	}
+	target, err := ResolveConfigWritePath(c.Path)
+	if err != nil {
+		return c, err
+	}
+	if ext := filepath.Ext(target); ext != ".yaml" && ext != ".yml" {
+		return c, errors.New("resolved config target is not a YAML file")
+	}
+	c.Path = target
+	cfg, err := decodeForSigning(c.Bytes)
+	if err != nil {
+		return c, errors.New("signed config is not a valid CSM configuration")
+	}
+	if cfg.Integrity.ConfigHash == "" || HashConfigStableBytes(c.Bytes) != cfg.Integrity.ConfigHash {
+		return c, errors.New("signed config content does not match its integrity hash")
+	}
+	if c.Fragments != nil {
+		if cfg.Integrity.ConfdHash != c.ConfdHash {
+			return c, errors.New("fragment digest does not match signed config")
+		}
+		if validateErr := (fragmentRecord{ConfdHash: c.ConfdHash, Fragments: c.Fragments}).validate(); validateErr != nil {
+			return c, validateErr
+		}
+	} else if c.ConfdHash != "" {
+		return c, errors.New("fragment digest supplied without fragment contents")
+	}
+	return c, nil
+}
+
+// ResolveConfigWritePath resolves the main file and its parent directories
+// before a helper with a different working directory receives the request.
+func ResolveConfigWritePath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	target, err := atomicWriteTarget(path)
+	if err != nil {
+		return "", err
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return "", fmt.Errorf("resolve config directory: %w", err)
+	}
+	return filepath.Join(dir, filepath.Base(target)), nil
+}
+
+var configWriter atomic.Pointer[func(SignedConfig) error]
+
+// SetConfigWriter routes every signed config write through fn; nil restores
+// the direct write. A sandboxed daemon that cannot write the config's
+// directory hands its saves to a helper that can.
+func SetConfigWriter(fn func(SignedConfig) error) {
+	if fn == nil {
+		configWriter.Store(nil)
+		return
+	}
+	configWriter.Store(&fn)
+}
+
+func writeConfig(c SignedConfig) error {
+	if fn := configWriter.Load(); fn != nil {
+		return (*fn)(c)
+	}
+	return WriteSignedConfig(c)
 }
 
 // keepPreviousConfig copies the current file to <path>.bak before it is
