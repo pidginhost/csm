@@ -235,18 +235,14 @@ the same rules every time it is seen. When CSM stops one for the same account,
 or the same user outside an account, a second time within 24 hours, it raises
 `detached_web_process_respawn` once a day: something, most likely a PHP file
 that requests still run, keeps starting it. For a hosting account CSM also
-queues a malware scan of the account, which quarantines when automatic
-quarantine would, using the current `enabled`, `quarantine_files` and observe-mode
-settings plus the automatic file-action safety limits. Scan reports include
-quarantine, cleaning and safety-refusal outcomes. All eligible processes in a
-batch are stopped before escalation tracking or scan submission begins.
-Stopping never backs off, so a shell that keeps coming back is stopped every time.
+queues a malware scan of the account. It quarantines and cleans only as
+automatic quarantine would at that moment, within the same safety limits, and
+its report shows what it quarantined, cleaned or refused. Stopping never backs
+off, so a shell that keeps coming back is stopped every time.
 
-Respawn tracking keeps only the latest stop and escalation time for each owner,
-with room for 4096 owners. When full, new owners remain untracked until a slot
-expires after 24 hours without a stop. Tracked owners retain their daily alert
-suppression; all owners' processes remain eligible for stopping. Tracking resets
-when CSM restarts.
+CSM tracks up to 4096 owners and forgets them when it restarts. Past that, a new
+owner's shells are still stopped every time but not escalated until a tracked
+owner has gone a day without a stop.
 
 ### Restoring quarantined files
 
