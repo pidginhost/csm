@@ -359,8 +359,12 @@ func (t *smtpAuthTracker) recordFailure(ip, account string, exist mailboxExisten
 		e.episodeStart = now
 	}
 	e.times = append(e.times, now)
+	// Only a password that failed counts, and not during an outage.
+	if !degraded && credential && account != "" {
+		t.standing.NoteFailure(ip, account, now)
+	}
 	limit := standingFailureCap * t.perIPThreshold
-	overCap := func(account string) bool { return t.standingFailureOverCap(ip, account, cutoff) }
+	overCap := func(account string) bool { return t.standingFailureOverCap(ip, account, now) }
 	var trackedFast bool
 	// Retain enough history for any validated threshold reload, not just
 	// today's limit. The existing slow-history bound exceeds the largest
@@ -654,8 +658,8 @@ func aliasEntries[E any](ips map[string]E, ip string, aliased bool) []E {
 
 // standingFailureOverCap counts one mailbox across spellings of the same
 // address. Alias entries may not have been pruned yet. Caller holds t.mu.
-func (t *smtpAuthTracker) standingFailureOverCap(ip, account string, cutoff time.Time) bool {
-	limit := standingFailureCap * t.perIPThreshold
+func (t *smtpAuthTracker) standingFailureOverCap(ip, account string, now time.Time) bool {
+	limit, cutoff := standingFailureCap*t.perIPThreshold, now.Add(-t.window)
 	n := 0
 	for _, e := range aliasEntries(t.ips, ip, t.aliased) {
 		n += countTimesAtOrAfter(e.fastAccounts[account], cutoff)
@@ -663,7 +667,7 @@ func (t *smtpAuthTracker) standingFailureOverCap(ip, account string, cutoff time
 			return true
 		}
 	}
-	return false
+	return t.standing.OverDailyCap(ip, account, now)
 }
 
 // episodeFailedOn reports whether ip's current failures, under any spelling

@@ -714,8 +714,10 @@ logins.
 
 Standing excuses at most ten times the brute-force threshold
 (`mail_bruteforce_threshold`, or `smtp_bruteforce_threshold` for SMTP) of
-failures on one mailbox within the brute-force window. A device retrying an old
-saved password stays far below that; a guessing tool does not. Past it the
+failures on one mailbox within the brute-force window, and at most 1000 failures
+on one mailbox from that address in a day, counted over every mail protocol and
+starting over a day after the first. A device retrying an old saved password
+stays far below both; a guessing tool does not. Past either the
 mailbox has no standing for that address: the failures block as they would
 without standing, and a login after them is reported as a password crack.
 Alternate spellings of the same address share this count, and each protocol is
