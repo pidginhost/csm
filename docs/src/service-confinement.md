@@ -23,7 +23,8 @@ grants only their parent directory, followed by `systemctl daemon-reload` and
 See [custom account roots](custom-account-roots.md) for account grants.
 
 The daemon cannot write `/etc/csm`. A configuration it saves (web UI settings,
-`csm baseline`, the re-sign after a reload) is handed, already signed, to
+`csm baseline`, the re-sign after a reload, a firewall rollback's restore) is
+handed, already signed, to
 `csm config-write`, which runs in a transient unit with `ProtectSystem=strict`
 that can write only the directory the configuration file resolves to. The unit
 does not declare `ConfigurationDirectory=`: systemd binds that directory
