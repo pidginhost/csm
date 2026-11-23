@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -107,16 +108,51 @@ func signAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 	intendedClone.Integrity.ConfigHash = newConfigHash
 	intendedClone.Integrity.ConfdHash = newConfdHash
 
-	if err := keepPreviousConfig(path, patched); err != nil {
+	return writeConfig(SignedConfig{Path: path, Bytes: patched, ConfdHash: newConfdHash, Fragments: fragmentContents})
+}
+
+// SignedConfig is a signed main config ready to write: the bytes for Path
+// and the conf.d fragment record they were signed over.
+type SignedConfig struct {
+	Path      string            `json:"path"`
+	Bytes     []byte            `json:"bytes"`
+	ConfdHash string            `json:"confd_hash"`
+	Fragments map[string][]byte `json:"fragments"`
+}
+
+// WriteSignedConfig keeps the previous file as <path>.bak, records the
+// fragments, then replaces the config atomically.
+func WriteSignedConfig(c SignedConfig) error {
+	if err := keepPreviousConfig(c.Path, c.Bytes); err != nil {
 		return err
 	}
 	// The record goes first: if the config write then fails, the record
 	// names a digest the config does not carry and is ignored, rather than
 	// a signed config being left without one.
-	if err := writeFragmentRecord(path, newConfdHash, fragmentContents); err != nil {
+	if err := writeFragmentRecord(c.Path, c.ConfdHash, c.Fragments); err != nil {
 		return err
 	}
-	return atomicWriteFile(path, patched, 0o600)
+	return atomicWriteFile(c.Path, c.Bytes, 0o600)
+}
+
+var configWriter atomic.Pointer[func(SignedConfig) error]
+
+// SetConfigWriter routes every signed config write through fn; nil restores
+// the direct write. A sandboxed daemon that cannot write the config's
+// directory hands its saves to a helper that can.
+func SetConfigWriter(fn func(SignedConfig) error) {
+	if fn == nil {
+		configWriter.Store(nil)
+		return
+	}
+	configWriter.Store(&fn)
+}
+
+func writeConfig(c SignedConfig) error {
+	if fn := configWriter.Load(); fn != nil {
+		return (*fn)(c)
+	}
+	return WriteSignedConfig(c)
 }
 
 // keepPreviousConfig copies the current file to <path>.bak before it is
