@@ -8,6 +8,22 @@ import (
 	"strings"
 )
 
+// apacheScriptModules run site code as Apache's user unless something setup
+// cannot see isolates them (suEXEC, a WSGI daemon user, per-vhost users), so
+// each one counts: refusing forwarded addresses is the safe answer.
+var apacheScriptModules = map[string]string{
+	"cgi_module":       "Apache's CGI module",
+	"cgid_module":      "Apache's CGI module",
+	"fcgid_module":     "Apache's FastCGI module",
+	"fastcgi_module":   "Apache's FastCGI module",
+	"passenger_module": "Apache's Passenger module",
+	"wsgi_module":      "Apache's WSGI module",
+	"perl_module":      "Apache's Perl module",
+	"python_module":    "Apache's Python module",
+	"lua_module":       "Apache's Lua module",
+	"lsapi_module":     "Apache's LSAPI module",
+}
+
 type apacheReader struct {
 	root, serverRoot, user, envUser string
 	source                          string
@@ -111,8 +127,8 @@ func (r *apacheReader) read(path string, depth int) error {
 			module := strings.ToLower(runtimeConfigValue(fields[1]))
 			if strings.HasPrefix(module, "php") {
 				r.source = "Apache's PHP module"
-			} else if (module == "cgi_module" || module == "cgid_module") && r.source == "" {
-				r.source = "Apache's CGI module"
+			} else if source, ok := apacheScriptModules[module]; ok && r.source == "" {
+				r.source = source
 			}
 		}
 	}

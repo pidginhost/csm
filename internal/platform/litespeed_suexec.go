@@ -3,6 +3,8 @@ package platform
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -16,48 +18,61 @@ func liteSpeedRunsPHPAsServer(path string) bool {
 	if err != nil {
 		return true
 	}
+	_, isolated, err := parseLiteSpeedServerXML(data)
+	return err != nil || !isolated
+}
+
+// Only direct children of the server document describe the server identity.
+// Nested application users and commented settings must never establish trust.
+func parseLiteSpeedServerXML(data []byte) (string, bool, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
-	depth, settings := 0, 0
-	root, inSetting := false, false
+	depth := 0
+	root := false
+	setting := ""
+	values := map[string]string{}
 	var value strings.Builder
+	invalid := errors.New("ambiguous LiteSpeed server configuration")
 	for {
 		token, err := d.Token()
 		if err == io.EOF {
-			v := strings.TrimSpace(value.String())
-			return !root || depth != 0 || settings != 1 || (v != "1" && v != "2")
+			if !root || depth != 0 {
+				return "", false, invalid
+			}
+			return values["user"], values["phpSuExec"] == "1" || values["phpSuExec"] == "2", nil
 		}
 		if err != nil {
-			return true
+			return "", false, fmt.Errorf("parse LiteSpeed configuration: %w", err)
 		}
 		switch t := token.(type) {
 		case xml.StartElement:
-			if inSetting {
-				return true
+			if setting != "" {
+				return "", false, invalid
 			}
 			if depth == 0 {
 				if root || t.Name != (xml.Name{Local: "httpServerConfig"}) {
-					return true
+					return "", false, invalid
 				}
 				root = true
 			}
-			if t.Name.Local == "phpSuExec" {
-				settings++
-				if depth != 1 || settings != 1 || t.Name.Space != "" || len(t.Attr) != 0 {
-					return true
+			if t.Name.Local == "phpSuExec" || (depth == 1 && t.Name.Local == "user") {
+				if _, duplicate := values[t.Name.Local]; duplicate || depth != 1 || t.Name.Space != "" || len(t.Attr) != 0 {
+					return "", false, invalid
 				}
-				inSetting = true
+				setting = t.Name.Local
+				value.Reset()
 			}
 			depth++
 		case xml.EndElement:
-			if inSetting {
-				inSetting = false
+			if setting != "" {
+				values[setting] = strings.TrimSpace(value.String())
+				setting = ""
 			}
 			depth--
 		case xml.CharData:
 			if depth == 0 && strings.TrimSpace(string(t)) != "" {
-				return true
+				return "", false, invalid
 			}
-			if inSetting {
+			if setting != "" {
 				value.Write(t)
 			}
 		}
