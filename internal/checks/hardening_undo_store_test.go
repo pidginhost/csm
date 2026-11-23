@@ -292,7 +292,7 @@ func testHardeningUndoRecords() []HardeningUndoRecord {
 			Key: "net.ipv4.conf.all.rp_filter", PrevRuntime: "2", PrevLines: []string{"net.ipv4.conf.all.rp_filter = 2"}, AppliedValue: "1",
 		}},
 		{Name: "cp_max_emails_hour", Category: "cpanel", Kind: "tweak", AppliedAt: at, Tweak: &tweakUndoState{
-			Key: "maxemailsperhour", Previous: "0", Applied: "200",
+			Key: "maxemailsperhour", Previous: "0", HadValue: true, Applied: "200",
 		}},
 		{Name: "php_expose_81", Category: "php", Kind: "php", AppliedAt: at, PHP: []phpUndoState{
 			{Path: "/opt/cpanel/ea-php81/root/etc/php.d/zz-csm-hardening.ini", Key: "expose_php", PrevLine: "expose_php = On", HadKey: true, Applied: "Off"},

@@ -68,10 +68,13 @@ type sysctlUndoState struct {
 	RuntimeOnly  bool     `json:"runtime_only"`
 }
 
-// tweakUndoState is one WHM tweak setting.
+// tweakUndoState is one WHM tweak setting. Previous is its value before the
+// apply when HadValue; get_tweaksetting leaves the value out for a tweak
+// that has none.
 type tweakUndoState struct {
 	Key      string `json:"key"`
 	Previous string `json:"previous"`
+	HadValue bool   `json:"had_value"`
 	Applied  string `json:"applied"`
 }
 

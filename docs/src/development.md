@@ -1796,7 +1796,7 @@ The root hardening worker owns `/var/lib/csm-hardening-undo` with mode
 `0700`. Each `<name>.json` record is a root-owned regular file with mode
 `0600`. Requests carry fix names only; saved values come from the worker.
 The daemon may list record names read-only, without opening their contents.
-This store is not yet connected to apply or undo actions.
+Applying a fix writes its record; no undo action reads the records yet.
 
 Store operations validate fix names before constructing record paths. They
 use directory-relative, no-follow opens and check ownership and permissions

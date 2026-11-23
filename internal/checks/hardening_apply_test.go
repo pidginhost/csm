@@ -24,7 +24,7 @@ func TestRewriteSSHDConfigPrependsBlockAndDisablesGlobals(t *testing.T) {
 		"Match User backup",
 		"    X11Forwarding yes",
 	}, "\n")
-	got := rewriteSSHDConfig(in, []keyValue{{"UseDNS", "no"}, {"MaxAuthTries", "4"}})
+	got, _ := rewriteSSHDConfig(in, []keyValue{{"UseDNS", "no"}, {"MaxAuthTries", "4"}})
 	lines := strings.Split(got, "\n")
 	want := []string{sshdBlockBegin, "MaxAuthTries 4", "UseDNS no", sshdBlockEnd, "Include /etc/ssh/sshd_config.d/*.conf"}
 	for i, w := range want {
@@ -40,8 +40,8 @@ func TestRewriteSSHDConfigPrependsBlockAndDisablesGlobals(t *testing.T) {
 }
 
 func TestRewriteSSHDConfigMergesExistingBlock(t *testing.T) {
-	first := rewriteSSHDConfig("Port 2222\n", []keyValue{{"UseDNS", "no"}})
-	second := rewriteSSHDConfig(first, []keyValue{{"X11Forwarding", "no"}})
+	first, _ := rewriteSSHDConfig("Port 2222\n", []keyValue{{"UseDNS", "no"}})
+	second, _ := rewriteSSHDConfig(first, []keyValue{{"X11Forwarding", "no"}})
 	if strings.Count(second, sshdBlockBegin) != 1 {
 		t.Fatalf("block duplicated:\n%s", second)
 	}
@@ -50,7 +50,7 @@ func TestRewriteSSHDConfigMergesExistingBlock(t *testing.T) {
 			t.Errorf("missing %q in\n%s", w, second)
 		}
 	}
-	if third := rewriteSSHDConfig(second, []keyValue{{"X11Forwarding", "no"}}); third != second {
+	if third, _ := rewriteSSHDConfig(second, []keyValue{{"X11Forwarding", "no"}}); third != second {
 		t.Errorf("rewrite not idempotent:\n%s\n---\n%s", second, third)
 	}
 }
@@ -93,7 +93,7 @@ func TestSetKeyValueFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("CPANEL=release\n# UPDATES=daily\nUPDATES=manual\nRPMUP=daily\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := setKeyValueFile(path, "UPDATES", "daily"); err != nil {
+	if _, err := setKeyValueFile(path, "UPDATES", "daily"); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
@@ -206,10 +206,10 @@ func TestApplySSHFixesRestoresOnValidationFailure(t *testing.T) {
 
 func TestWritePHPDropInMerges(t *testing.T) {
 	path := filepath.Join(t.TempDir(), hardeningPHPIniName)
-	if err := writePHPDropIn(path, []string{"expose_php"}); err != nil {
+	if _, err := writePHPDropIn(path, []string{"expose_php"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePHPDropIn(path, []string{"enable_dl", "expose_php"}); err != nil {
+	if _, err := writePHPDropIn(path, []string{"enable_dl", "expose_php"}); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
@@ -259,10 +259,10 @@ func TestChmodRegularRefusesSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := chmodRegular(link, 0o600); err == nil {
+	if _, err := chmodRegular(link, 0o600); err == nil {
 		t.Fatal("chmod followed a symlink")
 	}
-	if err := chmodRegular(target, 0o600); err != nil {
+	if _, err := chmodRegular(target, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if info, _ := os.Stat(target); info.Mode().Perm() != 0o600 {
@@ -274,7 +274,7 @@ func TestPersistSysctlDoesNotCreateTheDirectory(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "sysctl.d")
 	hardeningSysctlConfPath = filepath.Join(missing, "99-zz-csm-hardening.conf")
 	t.Cleanup(func() { hardeningSysctlConfPath = "/etc/sysctl.d/99-zz-csm-hardening.conf" })
-	if err := persistSysctl([]keyValue{{"kernel.randomize_va_space", "2"}}); err == nil {
+	if _, err := persistSysctl([]keyValue{{"kernel.randomize_va_space", "2"}}); err == nil {
 		t.Fatal("persisted into a directory that does not exist")
 	}
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
@@ -598,7 +598,7 @@ func TestWritePHPDropInRejectsLinkedFile(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePHPDropIn(link, []string{"expose_php"}); err == nil {
+	if _, err := writePHPDropIn(link, []string{"expose_php"}); err == nil {
 		t.Fatal("merged a symlink target into the drop-in")
 	}
 	if dest, err := os.Readlink(link); err != nil || dest != target {

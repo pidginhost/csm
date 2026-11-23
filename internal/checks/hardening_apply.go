@@ -32,6 +32,7 @@ import (
 // Paths the fixers write. Package variables so tests can redirect them.
 var (
 	hardeningSysctlConfPath  = "/etc/sysctl.d/99-zz-csm-hardening.conf"
+	hardeningProcSys         = "/proc/sys"
 	hardeningCPUpdateConf    = "/etc/cpupdate.conf"
 	hardeningCompilerPath    = "/usr/bin/cc"
 	hardeningCompilersScript = "/scripts/compilers"
@@ -344,6 +345,24 @@ func skipped(r store.AuditResult, msg string) HardeningFixResult {
 	return HardeningFixResult{Name: r.Name, Title: r.Title, Status: "skipped", Message: msg}
 }
 
+// recordHardeningUndo stores what fix r just changed. When it cannot,
+// because of captureErr (reading the previous state failed) or the write,
+// it returns a note for the result instead: the change stands either way.
+func recordHardeningUndo(r store.AuditResult, rec HardeningUndoRecord, captureErr error) string {
+	err := captureErr
+	if err == nil {
+		rec.Name, rec.Category, rec.AppliedAt = r.Name, r.Category, time.Now().UTC()
+		if err = writeHardeningUndo(rec); err == nil {
+			return ""
+		}
+	}
+	// An older record would undo to the state before an earlier apply.
+	if derr := deleteHardeningUndo(r.Name); derr != nil {
+		err = fmt.Errorf("%w; removing the older record failed: %v", err, derr)
+	}
+	return " Undo is unavailable (" + err.Error() + ")."
+}
+
 func hardeningRun(name string, args ...string) ([]byte, error) {
 	return hardeningRunWith(cmdExec.RunContext, name, args...)
 }
@@ -379,40 +398,82 @@ func firstLines(s string, n int) string {
 
 func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 	if kv, ok := cpTweakFixes[r.Name]; ok {
+		prev, had, readErr := getWHMTweak(kv.key)
 		if err := setWHMTweak(kv.key, kv.value); err != nil {
 			return failed(r, err)
 		}
-		return applied(r, fmt.Sprintf("Tweak setting %s set to %s.", kv.key, kv.value))
+		undo := tweakUndoState{Key: kv.key, Previous: prev, HadValue: had, Applied: kv.value}
+		return applied(r, fmt.Sprintf("Tweak setting %s set to %s.", kv.key, kv.value)+
+			recordHardeningUndo(r, HardeningUndoRecord{Kind: "tweak", Tweak: &undo}, readErr))
 	}
 	if dir, ok := hardeningTmpDirs[r.Name]; ok {
-		if err := fixTmpDir(dir); err != nil {
+		undo, err := fixTmpDir(dir)
+		if err != nil {
 			return failed(r, err)
 		}
-		return applied(r, dir+" is now 1777 root:root.")
+		return applied(r, dir+" is now 1777 root:root."+recordHardeningUndo(r, HardeningUndoRecord{Kind: "mode", Mode: &undo}, nil))
 	}
 	switch r.Name {
 	case "os_shadow_permissions":
-		mode, err := fixShadow(hardeningShadowPath)
+		undo, err := fixShadow(hardeningShadowPath)
 		if err != nil {
 			return failed(r, err)
 		}
-		return applied(r, fmt.Sprintf("%s is now %04o.", hardeningShadowPath, mode))
+		return applied(r, fmt.Sprintf("%s is now %04o.", hardeningShadowPath, undo.AppliedMode)+
+			recordHardeningUndo(r, HardeningUndoRecord{Kind: "mode", Mode: &undo}, nil))
 	case "cp_compilers":
-		msg, err := restrictCompilers()
+		msg, undo, err := restrictCompilers()
 		if err != nil {
 			return failed(r, err)
 		}
-		return applied(r, msg)
+		return applied(r, msg+recordHardeningUndo(r, HardeningUndoRecord{Kind: "compilers", Compilers: &undo}, nil))
 	case "cp_updates":
-		if err := setKeyValueFile(hardeningCPUpdateConf, "UPDATES", "daily"); err != nil {
+		undo, err := setKeyValueFile(hardeningCPUpdateConf, "UPDATES", "daily")
+		if err != nil {
 			return failed(r, err)
 		}
-		return applied(r, "UPDATES=daily written to "+hardeningCPUpdateConf+".")
+		return applied(r, "UPDATES=daily written to "+hardeningCPUpdateConf+"."+
+			recordHardeningUndo(r, HardeningUndoRecord{Kind: "file", File: &undo}, nil))
 	}
 	return skipped(r, "No automatic fix; apply it manually.")
 }
 
 // --- cPanel ---
+
+// getWHMTweak returns a WHM tweak setting's value, and false when the setting
+// has none: get_tweaksetting then leaves the value out of its reply.
+func getWHMTweak(key string) (string, bool, error) {
+	out, err := hardeningRunStdout("whmapi1", "--output=json", "get_tweaksetting", "key="+key)
+	if err != nil {
+		return "", false, err
+	}
+	var reply struct {
+		Data struct {
+			Tweaksetting struct {
+				Key   string  `json:"key"`
+				Value *string `json:"value"`
+			} `json:"tweaksetting"`
+		} `json:"data"`
+		Metadata struct {
+			Result int    `json:"result"`
+			Reason string `json:"reason"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(out, &reply); err != nil {
+		return "", false, fmt.Errorf("unreadable whmapi1 reply: %w", err)
+	}
+	if reply.Metadata.Result != 1 {
+		return "", false, fmt.Errorf("whmapi1 did not return %s: %s", key, reply.Metadata.Reason)
+	}
+	// A missing value means unset only in a reply about this key.
+	if reply.Data.Tweaksetting.Key != key {
+		return "", false, fmt.Errorf("whmapi1 did not return %s", key)
+	}
+	if reply.Data.Tweaksetting.Value == nil {
+		return "", false, nil
+	}
+	return *reply.Data.Tweaksetting.Value, true, nil
+}
 
 func setWHMTweak(key, value string) error {
 	out, err := hardeningRunStdout("whmapi1", "--output=json", "set_tweaksetting", "key="+key, "value="+value)
@@ -434,37 +495,40 @@ func setWHMTweak(key, value string) error {
 	return nil
 }
 
-func restrictCompilers() (string, error) {
+func restrictCompilers() (string, compilersUndoState, error) {
 	if info, err := os.Stat(hardeningCompilersScript); err == nil && info.Mode().IsRegular() {
 		if _, err := hardeningRun(hardeningCompilersScript, "off"); err != nil {
-			return "", err
+			return "", compilersUndoState{}, err
 		}
-		return "Compiler access restricted with " + hardeningCompilersScript + " off.", nil
+		return "Compiler access restricted with " + hardeningCompilersScript + " off.", compilersUndoState{Method: "script"}, nil
 	}
 	target, err := filepath.EvalSymlinks(hardeningCompilerPath)
 	if err != nil {
-		return "", err
+		return "", compilersUndoState{}, err
 	}
-	if err := chmodRegular(target, 0o750); err != nil {
-		return "", err
+	st, err := chmodRegular(target, 0o750)
+	if err != nil {
+		return "", compilersUndoState{}, err
 	}
-	return target + " is now 0750.", nil
+	return target + " is now 0750.", compilersUndoState{Method: "chmod", Path: st.Path, Mode: st.Mode, UID: st.UID, GID: st.GID,
+		AppliedMode: st.AppliedMode, AppliedUID: st.AppliedUID, AppliedGID: st.AppliedGID}, nil
 }
 
 // setKeyValueFile sets KEY=value in a shell-style config file, replacing
-// the first active assignment or appending one.
-func setKeyValueFile(path, key, value string) error {
+// the first active assignment or appending one. It returns the content
+// before and after.
+func setKeyValueFile(path, key, value string) (fileUndoState, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return err
+		return fileUndoState{}, err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", path)
+		return fileUndoState{}, fmt.Errorf("%s is not a regular file", path)
 	}
 	// #nosec G304 -- fixed operator config path.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return fileUndoState{}, err
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	done := false
@@ -486,16 +550,20 @@ func setKeyValueFile(path, key, value string) error {
 	if !done {
 		lines = append(lines, key+"="+value)
 	}
-	return atomicio.AtomicWrite(path, info.Mode().Perm(), []byte(strings.Join(lines, "\n")+"\n"))
+	updated := strings.Join(lines, "\n") + "\n"
+	if err := atomicio.AtomicWrite(path, info.Mode().Perm(), []byte(updated)); err != nil {
+		return fileUndoState{}, err
+	}
+	return fileUndoState{Path: path, Previous: string(data), Applied: updated}, nil
 }
 
 // --- OS ---
 
-func fixTmpDir(dir string) error {
+func fixTmpDir(dir string) (modeUndoState, error) {
 	return setModeByFD(dir, os.ModeSticky|0o777, true, true)
 }
 
-func chmodRegular(path string, mode os.FileMode) error {
+func chmodRegular(path string, mode os.FileMode) (modeUndoState, error) {
 	return setModeByFD(path, mode, false, false)
 }
 
@@ -519,58 +587,97 @@ func shadowFixMode(gid uint32, lookup func(string) (*user.Group, error)) (os.Fil
 }
 
 // fixShadow sets the shadow file's mode through a descriptor opened without
-// following a final symlink, keeping the shadow group's read access.
-func fixShadow(path string) (os.FileMode, error) {
+// following a final symlink, keeping the shadow group's read access. It
+// returns the state it replaced and the one it set.
+func fixShadow(path string) (modeUndoState, error) {
 	// #nosec G304 -- fixed system path chosen by the fixer table.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return 0, err
+		return modeUndoState{}, err
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return 0, err
+		return modeUndoState{}, err
 	}
 	if !info.Mode().IsRegular() {
-		return 0, fmt.Errorf("%s is not a regular file", path)
+		return modeUndoState{}, fmt.Errorf("%s is not a regular file", path)
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, fmt.Errorf("%s: no owner information", path)
-	}
-	mode, err := shadowFixMode(st.Gid, user.LookupGroup)
+	undo, err := modeState(path, info)
 	if err != nil {
-		return 0, err
+		return modeUndoState{}, err
 	}
-	return mode, f.Chmod(mode)
+	mode, err := shadowFixMode(undo.GID, user.LookupGroup)
+	if err != nil {
+		return modeUndoState{}, err
+	}
+	if err := f.Chmod(mode); err != nil {
+		return modeUndoState{}, err
+	}
+	undo.AppliedMode, undo.AppliedUID, undo.AppliedGID = stModeBits(mode), undo.UID, undo.GID
+	return undo, nil
 }
 
 // setModeByFD opens path without following a final symlink and changes the
 // mode (and, with chownRoot, the owner) through the descriptor, so the
-// object checked is the one changed.
-func setModeByFD(path string, mode os.FileMode, chownRoot, wantDir bool) error {
+// object checked is the one changed. It returns the state it replaced and
+// the one it set.
+func setModeByFD(path string, mode os.FileMode, chownRoot, wantDir bool) (modeUndoState, error) {
 	// #nosec G304 -- fixed system paths chosen by the fixer table.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return err
+		return modeUndoState{}, err
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return err
+		return modeUndoState{}, err
 	}
 	if wantDir && !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", path)
+		return modeUndoState{}, fmt.Errorf("%s is not a directory", path)
 	}
 	if !wantDir && !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", path)
+		return modeUndoState{}, fmt.Errorf("%s is not a regular file", path)
 	}
+	undo, err := modeState(path, info)
+	if err != nil {
+		return modeUndoState{}, err
+	}
+	undo.AppliedMode, undo.AppliedUID, undo.AppliedGID = stModeBits(mode), undo.UID, undo.GID
 	if chownRoot {
 		if err := f.Chown(0, 0); err != nil {
-			return err
+			return modeUndoState{}, err
 		}
+		undo.AppliedUID, undo.AppliedGID = 0, 0
 	}
-	return f.Chmod(mode)
+	if err := f.Chmod(mode); err != nil {
+		return modeUndoState{}, err
+	}
+	return undo, nil
+}
+
+// modeState is the owner and mode that info, from an fstat, reports for path.
+func modeState(path string, info os.FileInfo) (modeUndoState, error) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return modeUndoState{}, fmt.Errorf("%s: no owner information", path)
+	}
+	return modeUndoState{Path: path, Mode: stModeBits(info.Mode()), UID: st.Uid, GID: st.Gid}, nil
+}
+
+// stModeBits converts mode to the st_mode permission bits records keep.
+func stModeBits(mode os.FileMode) uint32 {
+	bits := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		bits |= syscall.S_ISUID
+	}
+	if mode&os.ModeSetgid != 0 {
+		bits |= syscall.S_ISGID
+	}
+	if mode&os.ModeSticky != 0 {
+		bits |= syscall.S_ISVTX
+	}
+	return bits
 }
 
 // applySysctlFixes sets each key at runtime, then persists the ones the
@@ -590,34 +697,55 @@ func applySysctlFixes(items []store.AuditResult) []HardeningFixResult {
 		}
 		return out
 	}
+	type change struct {
+		r       store.AuditResult
+		undo    sysctlUndoState
+		readErr error
+	}
+	var changes []change
 	var accepted []keyValue
-	var acceptedItems []store.AuditResult
 	for _, r := range items {
 		kv := sysctlFixes[r.Name]
+		prev, readErr := sysctlRuntime(kv.key)
 		if _, err := hardeningRun("sysctl", "-w", kv.key+"="+kv.value); err != nil {
 			out = append(out, failed(r, err))
 			continue
 		}
+		changes = append(changes, change{r, sysctlUndoState{Key: kv.key, PrevRuntime: prev, AppliedValue: kv.value}, readErr})
 		accepted = append(accepted, kv)
-		acceptedItems = append(acceptedItems, r)
 	}
 	if len(accepted) == 0 {
 		return out
 	}
-	if err := persistSysctl(accepted); err != nil {
-		for _, r := range acceptedItems {
-			out = append(out, failed(r, fmt.Errorf("set at runtime but not persisted: %w", err)))
+	prevLines, persistErr := persistSysctl(accepted)
+	for i, c := range changes {
+		var res HardeningFixResult
+		if persistErr != nil {
+			c.undo.RuntimeOnly = true
+			res = failed(c.r, fmt.Errorf("set at runtime but not persisted: %w", persistErr))
+		} else {
+			c.undo.PrevLines = prevLines[i]
+			res = applied(c.r, fmt.Sprintf("%s = %s set and saved to %s.", accepted[i].key, accepted[i].value, hardeningSysctlConfPath))
 		}
-		return out
-	}
-	for i, r := range acceptedItems {
-		out = append(out, applied(r, fmt.Sprintf("%s = %s set and saved to %s.", accepted[i].key, accepted[i].value, hardeningSysctlConfPath)))
+		res.Message += recordHardeningUndo(c.r, HardeningUndoRecord{Kind: "sysctl", Sysctl: &c.undo}, c.readErr)
+		out = append(out, res)
 	}
 	return out
 }
 
-// persistSysctl writes into the existing system configuration directory.
-func persistSysctl(kvs []keyValue) error {
+// sysctlRuntime reads a kernel parameter's current value.
+func sysctlRuntime(key string) (string, error) {
+	// #nosec G304 -- kernel parameter path built from the fixer table.
+	data, err := os.ReadFile(filepath.Join(hardeningProcSys, strings.ReplaceAll(key, ".", "/")))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// persistSysctl writes into the existing system configuration directory. It
+// returns, for each key, the drop-in's lines it replaced.
+func persistSysctl(kvs []keyValue) ([][]string, error) {
 	var lines []string
 	// #nosec G304 -- CSM-owned sysctl drop-in.
 	if data, err := os.ReadFile(hardeningSysctlConfPath); err == nil {
@@ -625,23 +753,26 @@ func persistSysctl(kvs []keyValue) error {
 	} else if errors.Is(err, os.ErrNotExist) {
 		lines = []string{"# Managed by CSM: sysctl values applied from the hardening page."}
 	} else {
-		return err
+		return nil, err
 	}
-	for _, kv := range kvs {
+	prev := make([][]string, len(kvs))
+	for n, kv := range kvs {
 		entry := kv.key + " = " + kv.value
-		replaced := false
 		for i, line := range lines {
 			k, _, ok := strings.Cut(strings.TrimSpace(line), "=")
 			if ok && !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.TrimSpace(k) == kv.key {
+				prev[n] = append(prev[n], line)
 				lines[i] = entry
-				replaced = true
 			}
 		}
-		if !replaced {
+		if len(prev[n]) == 0 {
 			lines = append(lines, entry)
 		}
 	}
-	return atomicio.AtomicWrite(hardeningSysctlConfPath, 0o644, []byte(strings.Join(lines, "\n")+"\n"))
+	if err := atomicio.AtomicWrite(hardeningSysctlConfPath, 0o644, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
+		return nil, err
+	}
+	return prev, nil
 }
 
 // --- SSH ---
@@ -675,7 +806,7 @@ func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 	if err != nil {
 		return fail(err)
 	}
-	updated := rewriteSSHDConfig(string(orig), directives)
+	updated, undo := rewriteSSHDConfig(string(orig), directives)
 	backup := sshdConfigPath + ".csm-bak"
 	if err := atomicio.AtomicWrite(backup, info.Mode().Perm(), orig); err != nil {
 		return fail(fmt.Errorf("backup: %w", err))
@@ -690,13 +821,17 @@ func applySSHFixes(items []store.AuditResult) []HardeningFixResult {
 		return fail(fmt.Errorf("sshd -t rejected the change, original restored: %w", err))
 	}
 
+	notes := make([]string, len(items))
+	for i, r := range items {
+		notes[i] = recordHardeningUndo(r, HardeningUndoRecord{Kind: "ssh", SSH: &undo[i]}, nil)
+	}
 	msg := "Written to " + sshdConfigPath + " and sshd reloaded."
 	if err := reloadSSHD(); err != nil {
 		msg = "Written to " + sshdConfigPath + ", but reloading sshd failed (" + err.Error() + "); reload it manually."
 	}
 	out := make([]HardeningFixResult, 0, len(items))
-	for _, r := range items {
-		out = append(out, applied(r, msg))
+	for i, r := range items {
+		out = append(out, applied(r, msg+notes[i]))
 	}
 	return out
 }
@@ -723,10 +858,10 @@ func reloadSSHD() error {
 }
 
 // rewriteSSHDConfig returns content with directives set in the CSM block
-// at the top of the file. Directives already in the block are kept, and
-// active global lines for the same keywords are commented out so the file
-// reads the way sshd applies it.
-func rewriteSSHDConfig(content string, directives []keyValue) string {
+// at the top of the file, and what it changed for each directive. Directives
+// already in the block are kept, and active global lines for the same
+// keywords are commented out so the file reads the way sshd applies it.
+func rewriteSSHDConfig(content string, directives []keyValue) (string, []sshUndoState) {
 	block := map[string]keyValue{}
 	var body []string
 	inBlock := false
@@ -747,8 +882,14 @@ func rewriteSSHDConfig(content string, directives []keyValue) string {
 		}
 		body = append(body, line)
 	}
-	for _, d := range directives {
-		block[strings.ToLower(d.key)] = d
+	undo := make([]sshUndoState, len(directives))
+	byKeyword := map[string]int{}
+	for i, d := range directives {
+		kw := strings.ToLower(d.key)
+		prev, had := block[kw]
+		undo[i] = sshUndoState{Keyword: d.key, PrevValue: prev.value, HadValue: had, AppliedValue: d.value}
+		byKeyword[kw] = i
+		block[kw] = d
 	}
 
 	inMatch := false
@@ -766,6 +907,11 @@ func rewriteSSHDConfig(content string, directives []keyValue) string {
 		}
 		if _, managed := block[kw]; managed {
 			body[i] = sshdDisabledBy + line
+			// A keyword already in the block may disable a line too; no
+			// directive of this apply owns it.
+			if d, ok := byKeyword[kw]; ok {
+				undo[d].DisabledLines = append(undo[d].DisabledLines, line)
+			}
 		}
 	}
 
@@ -779,7 +925,7 @@ func rewriteSSHDConfig(content string, directives []keyValue) string {
 		head = append(head, block[k].key+" "+block[k].value)
 	}
 	head = append(head, sshdBlockEnd)
-	return strings.Join(append(head, body...), "\n")
+	return strings.Join(append(head, body...), "\n"), undo
 }
 
 // splitSSHDKeyword returns the lowercased keyword of an sshd_config line,
@@ -836,20 +982,32 @@ func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []Hardening
 	var completed []HardeningFixResult
 	for _, p := range plans {
 		var err error
+		undo := make([][]phpUndoState, len(p.items))
 		for _, d := range p.dirs {
 			path := filepath.Join(d, hardeningPHPIniName)
-			if err = writePHPDropIn(path, p.keys); err != nil {
+			var prev []phpUndoState
+			if prev, err = writePHPDropIn(path, p.keys); err != nil {
 				err = fmt.Errorf("updating %s: %w", path, err)
 				break
 			}
 			written = append(written, d)
+			for i := range undo {
+				undo[i] = append(undo[i], prev[i])
+			}
 		}
 		for i, r := range p.items {
+			var note string
+			// A failed write can follow others, which did change their drop-ins.
+			if len(undo[i]) > 0 {
+				note = recordHardeningUndo(r, HardeningUndoRecord{Kind: "php", PHP: undo[i]}, nil)
+			}
 			if err != nil {
-				out = append(out, failed(r, err))
+				res := failed(r, err)
+				res.Message += note
+				out = append(out, res)
 				continue
 			}
-			completed = append(completed, applied(r, fmt.Sprintf("%s = Off written to %s.", p.keys[i], strings.Join(phpDropInPaths(p.dirs), ", "))))
+			completed = append(completed, applied(r, fmt.Sprintf("%s = Off written to %s.", p.keys[i], strings.Join(phpDropInPaths(p.dirs), ", "))+note))
 		}
 	}
 	if len(written) > 0 {
@@ -862,7 +1020,10 @@ func applyPHPFixes(items []store.AuditResult, installs []phpInstall) []Hardening
 	return out
 }
 
-func writePHPDropIn(path string, keys []string) error {
+// writePHPDropIn sets keys Off in the drop-in at path. It returns, for each
+// key, the drop-in's line for it before; the whole drop-in is rewritten in
+// the "key = value" form, so that is the form recorded.
+func writePHPDropIn(path string, keys []string) ([]phpUndoState, error) {
 	values := map[string]string{}
 	var order []string
 	f, err := (realOS{}).openRegularFile(path, syscall.O_NOFOLLOW)
@@ -870,7 +1031,7 @@ func writePHPDropIn(path string, keys []string) error {
 		defer func() { _ = f.Close() }()
 		data, readErr := io.ReadAll(f)
 		if readErr != nil {
-			return readErr
+			return nil, readErr
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			t := strings.TrimSpace(line)
@@ -888,7 +1049,14 @@ func writePHPDropIn(path string, keys []string) error {
 			values[k] = strings.TrimSpace(v)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+		return nil, err
+	}
+	undo := make([]phpUndoState, len(keys))
+	for i, k := range keys {
+		undo[i] = phpUndoState{Path: path, Key: k, Applied: "Off"}
+		if v, had := values[k]; had {
+			undo[i].PrevLine, undo[i].HadKey = k+" = "+v, true
+		}
 	}
 	for _, k := range keys {
 		if _, dup := values[k]; !dup {
@@ -901,7 +1069,10 @@ func writePHPDropIn(path string, keys []string) error {
 	for _, k := range order {
 		b.WriteString(k + " = " + values[k] + "\n")
 	}
-	return atomicio.AtomicWrite(path, 0o644, []byte(b.String()))
+	if err := atomicio.AtomicWrite(path, 0o644, []byte(b.String())); err != nil {
+		return nil, err
+	}
+	return undo, nil
 }
 
 func restartPHPFPM() (string, error) {
