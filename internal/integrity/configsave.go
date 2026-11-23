@@ -28,11 +28,9 @@ func ConfigWriteMutex() *sync.Mutex {
 // WriteConfigBytesAtomic writes data to path with the same atomic-rename
 // semantics SignAndSaveAtomic uses. Intended for paths that ship pre-signed
 // bytes (e.g. restoring a snapshot whose hash already matches its content)
-// where re-signing would mutate the integrity block we want to preserve. It
-// goes through the config writer, so a sandboxed daemon's restore reaches
-// the helper.
+// where re-signing would mutate the integrity block we want to preserve.
 func WriteConfigBytesAtomic(path string, data []byte) error {
-	return writeConfig(SignedConfig{Path: path, Bytes: data, BytesOnly: true})
+	return atomicWriteFile(path, data, 0o600)
 }
 
 // SignAndSavePreserving writes editedBytes to path after patching
@@ -124,17 +122,11 @@ type SignedConfig struct {
 	Bytes     []byte            `json:"bytes"`
 	ConfdHash string            `json:"confd_hash"`
 	Fragments map[string][]byte `json:"fragments"`
-	// BytesOnly restores earlier signed bytes: no backup and no fragment
-	// record, which still describe the restored config.
-	BytesOnly bool `json:"bytes_only,omitempty"`
 }
 
 // WriteSignedConfig keeps the previous file as <path>.bak, records the
 // fragments, then replaces the config atomically.
 func WriteSignedConfig(c SignedConfig) error {
-	if c.BytesOnly {
-		return atomicWriteFile(c.Path, c.Bytes, 0o600)
-	}
 	if err := keepPreviousConfig(c.Path, c.Bytes); err != nil {
 		return err
 	}
