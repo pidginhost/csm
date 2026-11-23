@@ -720,7 +720,7 @@ func StoreLatestScanFindingsWithCoverage(st *state.Store, purgeChecks []string, 
 		coverage,
 		DerivedCorrelationChecks(),
 		func(merged []alert.Finding) []alert.Finding {
-			res := defaultCorrelator.Correlate(merged, now)
+			res := defaultCorrelator.correlate(merged, now, st.ScanAcknowledgements(merged, findings))
 			for i := range res.Derived {
 				if res.Derived[i].Timestamp.IsZero() {
 					res.Derived[i].Timestamp = now
@@ -1229,7 +1229,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	if len(findings) > 0 {
 		annotateModsecDisabledMalware(platform.Detect(), findings)
 	}
-	correlated := CorrelateBatchFindings(findings)
+	correlated := correlateBatchFindings(findings, store.ScanAcknowledgements(findings, findings))
 	for i := range correlated.Derived {
 		if correlated.Derived[i].Timestamp.IsZero() {
 			correlated.Derived[i].Timestamp = now

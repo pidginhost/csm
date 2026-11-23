@@ -44,6 +44,10 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Hosts that leave `auto_response.max_blocks_per_hour` unset now allow at most 1000 automatic blocks an hour instead of 2000; `csm doctor` warns only below 1000.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 
+### Fixed
+
+- Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
+
 ## [4.15.0] - 2026-11-20
 
 ### Highlights
