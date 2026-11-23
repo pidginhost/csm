@@ -11,15 +11,22 @@ import (
 
 // A nondumpable process can deny exe access even to a privileged inspector
 // without CAP_SYS_PTRACE. Its comm is still entirely chosen by its owner.
+// A process whose executable cannot be read is identified only by the name
+// it gives itself, which its own code can change. It never locates server
+// configuration, but whatever it runs as counts as a possible runtime user,
+// and an unidentifiable root process stops the inspection.
 func TestPHPRuntimeUsersUntrustedExecutableError(t *testing.T) {
+	const unknown = "a running process whose executable cannot be inspected"
 	for _, name := range []string{"lshttpd", "litespeed", "openlitespeed", "unrelated"} {
 		for _, credentials := range []struct {
 			name, uids string
+			want       map[uint32]string
 			wantErr    bool
 		}{
-			{"tenant", "1001\t1001\t1001\t1001", false},
-			{"setuid", "1001\t0\t0\t0", false},
-			{"root", "0\t0\t0\t0", true},
+			{"tenant", "1001\t1001\t1001\t1001", map[uint32]string{1001: unknown}, false},
+			{"web server user", "33\t33\t33\t33", map[uint32]string{33: unknown}, false},
+			{"setuid", "1001\t0\t0\t0", map[uint32]string{0: unknown}, false},
+			{"root", "0\t0\t0\t0", nil, true},
 		} {
 			t.Run(name+"/"+credentials.name, func(t *testing.T) {
 				root := t.TempDir()
@@ -34,8 +41,8 @@ func TestPHPRuntimeUsersUntrustedExecutableError(t *testing.T) {
 					if err == nil {
 						t.Fatal("uninspectable root process accepted as isolated")
 					}
-				} else if err != nil || len(got) != 0 {
-					t.Fatalf("users = %v, error = %v; tenant process stopped inspection", got, err)
+				} else if err != nil || !maps.Equal(got, credentials.want) {
+					t.Fatalf("users = %v, error = %v; want %v", got, err, credentials.want)
 				}
 			})
 		}

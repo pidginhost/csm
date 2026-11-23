@@ -156,17 +156,28 @@ func phpProcessUser(root string, proc phpProcessFiles, add func(uint32, string),
 		return fmt.Errorf("inspect PHP/CGI process credentials: %w", err)
 	}
 	if !worker {
-		// A tenant can choose comm and deny exe access, including for setuid
-		// programs. Neither may locate configuration or abort inspection.
 		uid, uidErr := procRealUID(string(data))
 		if uidErr != nil {
 			return uidErr
 		}
-		if uid != 0 {
-			return nil
-		}
-		if exeErr != nil {
+		if uid == 0 && exeErr != nil {
 			return fmt.Errorf("inspect process executable: %w", exeErr)
+		}
+		if uid != 0 {
+			// A user's process never locates server configuration. One whose
+			// executable cannot be read is named only by itself, and its own
+			// code can change that name, so whatever it runs as counts.
+			if exeErr == nil || os.IsNotExist(exeErr) {
+				return nil
+			}
+			ids, err := procWorkerUIDs(string(data))
+			if err != nil {
+				return err
+			}
+			for _, id := range ids {
+				add(id, "a running process whose executable cannot be inspected")
+			}
+			return nil
 		}
 	}
 	if server {
