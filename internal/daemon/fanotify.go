@@ -610,6 +610,8 @@ type fileEvent struct {
 	// to have existed under its PID.
 	at          time.Time
 	writerChain []int
+	// writerOrigin names how the writer came to run, read with writerChain.
+	writerOrigin string
 	// tmpAncestry is what the writer's process chain proved when the event
 	// was admitted, for a root-owned file under a temp root. Nil when no
 	// capture ran.

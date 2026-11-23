@@ -65,6 +65,45 @@ func restoreWriterChain(pid int, writtenAt time.Time, directWriter bool) []int {
 	return nil
 }
 
+// RestoreWriterOrigin names, for the operator, how the process that wrote
+// back a removed file came to run: an SSH, cPanel, cron or FTP session, a web
+// request, a terminal, or a process detached under init.
+func RestoreWriterOrigin(pid int) string {
+	terminal := false
+	for p, depth := pid, 0; depth < maxRestoreChainDepth; depth++ {
+		id := strconv.Itoa(p)
+		parent, tty, ok := procParentAndTTY(id)
+		exe := strings.TrimSuffix(getProcessExe(id), " (deleted)")
+		if !ok || exe == "" {
+			break
+		}
+		switch base := filepath.Base(exe); {
+		case base == "sshd" || base == "sshd-session" || base == "sshd-auth":
+			return "an SSH session"
+		case base == "cpsrvd" || base == "cpsrvd-dormant" || strings.HasPrefix(exe, "/usr/local/cpanel/"):
+			return "cPanel"
+		case base == "cron" || base == "crond" || base == "anacron":
+			return "cron"
+		case base == "pure-ftpd" || base == "proftpd" || base == "vsftpd":
+			return "an FTP session"
+		case isWebServerExe(exe):
+			return "a web request"
+		}
+		terminal = terminal || tty != 0
+		if parent == 1 {
+			if terminal {
+				return "a terminal session"
+			}
+			return "a process detached under init"
+		}
+		if parent < 1 {
+			break
+		}
+		p = parent
+	}
+	return "a process CSM could not trace"
+}
+
 // isSessionExe identifies administrative origins even when they run as the
 // account or PHP appears between the session and the writer.
 func isSessionExe(exe string) bool {

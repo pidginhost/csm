@@ -605,3 +605,55 @@ func TestRestoreWriterChainLeavesPHPRunByCPanel(t *testing.T) {
 		t.Fatalf("chain = %v, want nothing for a cPanel task", got)
 	}
 }
+
+// The finding for a file written back says how the writer came to run, so the
+// operator can tell an account's own restore from a loop.
+func TestRestoreWriterOrigin(t *testing.T) {
+	const tty = 34816
+	for _, tc := range []struct {
+		name  string
+		procs map[int]fakeProc
+		want  string
+	}{
+		{"ssh", map[int]fakeProc{
+			800: {ppid: 700, uid: "1001", exe: "/usr/bin/cp", tty: tty},
+			700: {ppid: 600, uid: "1001", exe: bashPath, tty: tty},
+			600: {ppid: 1, uid: "0", exe: "/usr/sbin/sshd"},
+		}, "an SSH session"},
+		{"cpanel", map[int]fakeProc{
+			800: {ppid: 600, uid: "1001", exe: "/usr/local/cpanel/uapi"},
+			600: {ppid: 1, uid: "0", exe: "/usr/local/cpanel/cpsrvd"},
+		}, "cPanel"},
+		{"cron", map[int]fakeProc{
+			800: {ppid: 700, uid: "1001", exe: "/opt/cpanel/ea-php84/root/usr/bin/php"},
+			700: {ppid: 600, uid: "1001", exe: "/bin/sh"},
+			600: {ppid: 1, uid: "0", exe: "/usr/sbin/crond"},
+		}, "cron"},
+		{"ftp", map[int]fakeProc{
+			800: {ppid: 600, uid: "1001", exe: "/usr/sbin/pure-ftpd"},
+			600: {ppid: 1, uid: "0", exe: "/usr/sbin/pure-ftpd"},
+		}, "an FTP session"},
+		{"web request", map[int]fakeProc{
+			800: {ppid: 700, uid: "1001", exe: bashPath},
+			700: {ppid: 600, uid: "1001", exe: lsphpPath},
+			600: {ppid: 1, uid: "0", exe: "/usr/local/lsws/bin/lshttpd"},
+		}, "a web request"},
+		{"detached loop", map[int]fakeProc{
+			800: {ppid: 700, uid: "1001", exe: curlPath},
+			700: {ppid: 1, uid: "1001", exe: bashPath},
+		}, "a process detached under init"},
+		{"local terminal", map[int]fakeProc{
+			800: {ppid: 1, uid: "1001", exe: bashPath, tty: tty},
+		}, "a terminal session"},
+		{"untraceable", map[int]fakeProc{
+			800: {ppid: 700, uid: "1001", exe: bashPath},
+		}, "a process CSM could not trace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withProcTable(t, tc.procs)
+			if got := RestoreWriterOrigin(800); got != tc.want {
+				t.Fatalf("origin = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -205,7 +205,7 @@ func TestRemovedFileRestoreKeySurvivesSequenceReset(t *testing.T) {
 	first := removalOf(path, restoredPayload, 1)
 	second := first
 	second.At = second.At.Add(time.Second)
-	if removedFileRestoredFinding(path, first, "", writerPID).Key() == removedFileRestoredFinding(path, second, "", writerPID).Key() {
+	if removedFileRestoredFinding(path, first, "", writerPID, "").Key() == removedFileRestoredFinding(path, second, "", writerPID, "").Key() {
 		t.Fatal("removals across daemon restarts share a finding key")
 	}
 }
@@ -275,7 +275,7 @@ func TestRemovedFileRestoreIgnoresUnknownPathsAndSizes(t *testing.T) {
 // The finding names the file, which is what ties it to the hosting account.
 func TestRemovedFileRestoredFindingAttributesByPath(t *testing.T) {
 	path := "/home/alice/public_html/wp-content/themes/x/index.php"
-	f := removedFileRestoredFinding(path, removalOf(path, restoredPayload, 1), "", writerPID)
+	f := removedFileRestoredFinding(path, removalOf(path, restoredPayload, 1), "", writerPID, "")
 	requireOwner(t, []alert.Finding{f}, checks.RemovedFileRestoredCheck, "")
 	res := checks.CorrelateFindings([]alert.Finding{f, {Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "carol"}, {Severity: alert.Critical, Check: "db_rogue_admin", TenantID: "dave"}})
 	if len(res.Derived) != 1 || len(res.Unattributed) != 0 {
@@ -304,5 +304,52 @@ func TestRemovedFileWithoutDigestIsNeverMatched(t *testing.T) {
 
 	if fm.checkRemovedFileRestored(fileEvent{path: path, fd: fd, pid: writerPID}, "") {
 		t.Fatalf("an unhashed removal matched an unreadable write: %+v", <-ch)
+	}
+}
+
+// The finding says how the bytes came back and how to keep the file: only a
+// restore from the Quarantine page stops CSM removing it again.
+func TestRemovedFileRestoredFindingExplainsOriginAndRelease(t *testing.T) {
+	path := "/home/alice/public_html/index.php"
+	removed := removalOf(path, restoredPayload, 1)
+	until := removed.At.Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	for origin, want := range map[string]string{"cPanel": "through cPanel", "": "through a process"} {
+		f := removedFileRestoredFinding(path, removed, "", writerPID, origin)
+		if !strings.Contains(f.Details, want) || !strings.Contains(f.Details, "Quarantine page") || !strings.Contains(f.Details, until) {
+			t.Fatalf("origin %q: details = %q", origin, f.Details)
+		}
+	}
+}
+
+// The origin is read when the write is seen, while the writer still runs,
+// and reaches the finding the analyzer raises later.
+func TestRemovedFileRestoredNamesCapturedOrigin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.php")
+	stubRemovedFileAt(t, map[string]checks.RemovedFile{path: removalOf(path, restoredPayload, 7)})
+	prevChain, prevOrigin := restoreWriterChain, restoreWriterOrigin
+	restoreWriterChain = func(int, time.Time) []int { return nil }
+	restoreWriterOrigin = func(pid int) string {
+		if pid == int(writerPID) {
+			return "an FTP session"
+		}
+		return ""
+	}
+	t.Cleanup(func() { restoreWriterChain, restoreWriterOrigin = prevChain, prevOrigin })
+	if err := os.WriteFile(path, []byte(restoredPayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	event := fileEvent{path: path, fd: openRawFd(t, path), pid: writerPID, at: time.Now()}
+	captureRestoreWriterChain(&event)
+	ch := make(chan alert.Finding, 16)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(event)
+	close(ch)
+	var out []alert.Finding
+	for f := range ch {
+		out = append(out, f)
+	}
+	got := restoredFindings(out)
+	if len(got) != 1 || !strings.Contains(got[0].Details, "through an FTP session") {
+		t.Fatalf("restore findings = %+v, want one naming the FTP session", got)
 	}
 }
