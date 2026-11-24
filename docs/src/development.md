@@ -1790,6 +1790,91 @@ PHP taint worker (`csm phptaint-worker`) runs through `UnitLauncher` as
 512 MiB memory cap. The YARA workers run through it too; the section below
 describes them.
 
+### Hardening undo storage
+
+The root hardening worker owns `/var/lib/csm-hardening-undo` with mode
+`0700`. Each `<name>.json` record is a root-owned regular file with mode
+`0600`. Requests carry fix names only; saved values come from the worker.
+The daemon may list record names read-only, without opening their contents.
+Applying a fix writes its record. The undo worker reads one fix's record,
+restores what it lists while the host still holds the applied state, and
+removes the record once the fix is undone. The web UI starts it for
+`POST /api/v1/hardening/undo` and writes the `operate.undo_hardening` action
+log record, since the worker has no action log. It runs under the apply
+worker's unit name, so systemd never runs the two at once.
+
+A failed sysctl runtime restore puts the applied runtime value and drop-in
+back. A failed PHP drop-in write puts the applied drop-ins back. Failed
+cPanel commands and owner or mode restores also roll back completed steps.
+Configuration writes that fail after rename restore the applied content. If
+rollback also fails, the error names the recovery failure and the record
+stays. An undo that would rewrite a symlinked sysctl drop-in fails before
+anything changes. Undo refuses SSH managed blocks that were nested,
+duplicated, or moved into a Match section. A failed service reload is
+handled as on apply: once `sshd -t` passed, the restored files stay, the
+undo reports `undone` with the apply's manual reload note, and the record
+goes, so a host where a reload always fails can still undo.
+
+Before checking that the host still holds the applied state, undo checks
+whether every element of the record already holds its earlier state: the SSH
+block value or its absence and the global lines enabled in recorded order with
+no remaining CSM-disabled lines for that keyword, the sysctl runtime and
+drop-in values, the tweak value, each PHP drop-in's key, the owner and mode,
+open compiler access for the script method, and the
+`UPDATES` values. Then it changes nothing, removes the record and reports
+`undone`, so an operator who reset a setting by hand is not left with an Undo
+button that only refuses. For tweaks, no value and an empty one count as the
+same, since WHM's own reset leaves no value.
+
+`whmapi1 set_tweaksetting` saves a setting only when given a value, and
+cPanel validates the value. An earlier tweak value that is missing or empty,
+or one the call refuses with `metadata.result` 0, makes undo refuse, keeping
+the record and the applied value, and point to WHM Tweak Settings; a failed
+command or unreadable reply is still a failure. The apply result says undo
+will need WHM Tweak Settings when the recorded earlier tweak value was absent
+or empty, including after repeated applies.
+
+The `cp_updates` record holds the whole file before and after the apply.
+Undo reads the apply's edits from the two: the first active `UPDATES` line
+set (even if already daily), or one added, and later active ones commented
+out. A record with any other edit is refused as not matching the fix. Undo
+checks only the current active `UPDATES` lines against the applied value and
+restores only those
+lines, enabling commented duplicates in place, or after the restored line
+when a cPanel save dropped the comments. Missing duplicates follow the
+nearest surviving earlier setting so their original order is preserved.
+If only some identical comments survived, undo refuses rather than guessing
+which comment the apply created. Every other line stays as it is.
+
+Each successful sysctl runtime change is recorded before the next command,
+then its record is updated after the drop-in is saved. PHP records grow after
+each successful scan-directory write, so a later stalled operation does not
+lose recovery information for completed changes. SSH capture accepts both
+whitespace and equals separators and keeps the first value for each keyword
+in the managed block, matching sshd's interpretation of edited settings.
+
+Applying a fix again, as a retry after a partial apply or over a setting
+that still holds what CSM set, reads the fix's record before changing
+anything. Each setting that still holds the earlier apply's value keeps the
+state from before that apply; a setting changed by hand since keeps the state
+found now, and PHP drop-ins this apply did not write keep their earlier
+entries. If that record cannot be read, the fix still applies, the record is
+removed, and the result says undo is unavailable. The same happens when the
+state before the change cannot be read or the new record cannot be written.
+Permissions, owner and group are compared independently, so editing one does
+not lose the original state of the others. Global SSH lines that CSM still
+holds disabled stay in the record in their current file order, also when the
+block value was edited or removed by hand; removed or edited comments are not
+carried forward, and uncommenting a line does not record it twice.
+
+Store operations validate fix names before constructing record paths. They
+use directory-relative, no-follow opens and check ownership and permissions
+on opened inodes. Each write uses a private temporary file, syncs its data,
+then renames it and syncs the directory. Creating the store also syncs its
+parent; deleting a record syncs the store, including on a deletion retry.
+A sync failure is returned to the caller. Failure after rename or unlink
+can mean the change is visible but not yet durable.
+
 ### Parse worker units
 
 The archive parse worker (`csm parse-worker`) runs through `UnitLauncher`:

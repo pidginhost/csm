@@ -92,6 +92,8 @@ const (
 	opFirewall opShape = iota
 	opProcess
 	opFile
+	// opHardeningFix targets a hardening fix name, mapped like a pid.
+	opHardeningFix
 )
 
 // actionOps are the operations whose action-log writers were audited; each
@@ -104,6 +106,7 @@ var actionOps = map[string]opShape{
 	"respond.kill_process":       opProcess,
 	"respond.quarantine_file":    opFile,
 	"respond.clean_file":         opFile,
+	"operate.undo_hardening":     opHardeningFix,
 }
 
 // firewallActionLogActions is every action a firewall-family writer records,
@@ -482,7 +485,7 @@ func parseActionTarget(shape opShape, action, raw string) (parsedTarget, error) 
 	switch {
 	case shape == opFile || manualFirewallFileActions[action]:
 		return parseOpaqueTarget(raw, "path")
-	case shape == opProcess:
+	case shape == opProcess || shape == opHardeningFix:
 		return parseOpaqueTarget(raw, "opaque")
 	case firewallOpaqueActions[action] && raw != "":
 		return parseOpaqueTarget(raw, "opaque")
@@ -668,7 +671,7 @@ func actionTargetKinds(shape opShape, action string) map[string]bool {
 	switch {
 	case shape == opFile || manualFirewallFileActions[action]:
 		return map[string]bool{"path": true}
-	case shape == opProcess:
+	case shape == opProcess || shape == opHardeningFix:
 		return map[string]bool{"opaque": true}
 	case firewallOpaqueActions[action]:
 		return map[string]bool{"opaque": true, "empty": true}

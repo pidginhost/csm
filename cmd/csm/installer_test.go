@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
 	"gopkg.in/yaml.v3"
@@ -914,8 +915,9 @@ func TestInstallerUninstallPreservesStateAndLogsWithoutPurge(t *testing.T) {
 	if !slices.Contains(removed, inst.BinaryPath) {
 		t.Fatalf("binary was not removed: %v", removed)
 	}
-	if slices.Contains(removedAll, inst.StatePath) || slices.Contains(removedAll, filepath.Dir(inst.LogPath)) {
-		t.Fatalf("state or logs removed without --purge: %v", removedAll)
+	if slices.Contains(removedAll, inst.StatePath) || slices.Contains(removedAll, filepath.Dir(inst.LogPath)) ||
+		slices.Contains(removedAll, checks.HardeningUndoDir) {
+		t.Fatalf("state, logs or hardening undo records removed without --purge: %v", removedAll)
 	}
 }
 
@@ -951,6 +953,9 @@ func TestInstallerUninstallPurgeUsesResolvedConfigDirectory(t *testing.T) {
 	}
 	if !slices.Contains(removedAll, filepath.Dir(inst.BinaryPath)) {
 		t.Fatalf("CSM install directory was not purged: %v", removedAll)
+	}
+	if !slices.Contains(removedAll, checks.HardeningUndoDir) {
+		t.Fatalf("hardening undo records were not purged: %v", removedAll)
 	}
 	if slices.Contains(removedAll, "/opt/csm/conf.d") {
 		t.Fatalf("purge derived the wrong config directory from legacy config path: %v", removedAll)

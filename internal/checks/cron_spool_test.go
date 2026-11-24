@@ -1,7 +1,9 @@
 package checks
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -14,5 +16,14 @@ func TestMain(m *testing.M) {
 	SetZipLister(inProcessZipLister{})
 	// The test host's web server is not the one a test describes.
 	SetHTTPRewrite(HTTPRewrite{State: RewriteNone})
-	os.Exit(m.Run())
+	// Every applied fix writes an undo record; keep them out of the real store.
+	undoRoot, err := os.MkdirTemp("", "csm-hardening-undo-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	hardeningUndoDir, hardeningUndoOwner = filepath.Join(undoRoot, "undo"), os.Getuid()
+	code := m.Run()
+	_ = os.RemoveAll(undoRoot)
+	os.Exit(code)
 }

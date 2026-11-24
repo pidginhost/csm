@@ -19,7 +19,7 @@ func runHardeningApplyWorker() {
 // writes the results to stdout. The daemon starts it outside its sandbox,
 // which leaves the files the fixes change read-only.
 func hardeningApplyWorker(euid int, args []string, in io.Reader, out, errOut io.Writer, apply func(string, []string) ([]checks.HardeningFixResult, error)) int {
-	if euid != 0 || !hardeningApplyWorkerArgs(args) {
+	if euid != 0 || !hardeningWorkerArgs(checks.HardeningApplyWorkerCommand, args) {
 		_, _ = fmt.Fprintln(errOut, "hardening apply worker requires root and reads one request from stdin")
 		return 1
 	}
@@ -30,19 +30,30 @@ func hardeningApplyWorker(euid int, args []string, in io.Reader, out, errOut io.
 	return 0
 }
 
-func hardeningApplyWorkerArgs(args []string) bool {
+func hardeningWorkerArgs(command string, args []string) bool {
 	switch len(args) {
 	case 1:
-		return args[0] == checks.HardeningApplyWorkerCommand
+		return args[0] == command
 	case 5:
-		return hardeningApplyWorkerArgs(args[:3]) && args[3] == "--config-dir" && filepath.IsAbs(args[4])
+		return hardeningWorkerArgs(command, args[:3]) && args[3] == "--config-dir" && filepath.IsAbs(args[4])
 	case 3:
-		return args[0] == checks.HardeningApplyWorkerCommand && args[1] == "--config" && args[2] != ""
+		return args[0] == command && args[1] == "--config" && args[2] != ""
 	}
 	return false
 }
 
 func applyHardeningWithConfig(category string, names []string) ([]checks.HardeningFixResult, error) {
+	cfg, err := loadHardeningWorkerConfig()
+	if err != nil {
+		return nil, err
+	}
+	return checks.ApplyHardening(cfg, category, names)
+}
+
+// loadHardeningWorkerConfig loads the configuration the daemon passed and
+// installs its platform overrides, so a worker sees the host as the daemon
+// does.
+func loadHardeningWorkerConfig() (*config.Config, error) {
 	var cfg *config.Config
 	var err error
 	if len(os.Args) == 6 && os.Args[5] == defaultConfDir {
@@ -57,5 +68,5 @@ func applyHardeningWithConfig(category string, names []string) ([]checks.Hardeni
 	if !daemon.InstallPlatformOverrides(cfg) {
 		return nil, fmt.Errorf("cannot apply the configured platform overrides")
 	}
-	return checks.ApplyHardening(cfg, category, names)
+	return cfg, nil
 }

@@ -435,8 +435,9 @@ func (inst *Installer) Uninstall(purge bool) error {
 			return err
 		}
 		// A remaining peer log snippet tolerates its missing directory, and a
-		// kept one would grow with no daemon left to empty it.
-		for _, target := range []string{filepath.Dir(inst.LogPath), filepath.Dir(webserver.PeerLogFile), inst.ConfigDir} {
+		// kept one would grow with no daemon left to empty it. Hardening undo
+		// records are of no use without CSM to act on them.
+		for _, target := range []string{filepath.Dir(inst.LogPath), filepath.Dir(webserver.PeerLogFile), inst.ConfigDir, checks.HardeningUndoDir} {
 			if target == "" {
 				continue
 			}

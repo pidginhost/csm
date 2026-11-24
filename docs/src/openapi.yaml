@@ -1244,6 +1244,26 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/hardening/undo":
+    post:
+      operationId: post_hardening_undo
+      summary: "post /api/v1/hardening/undo (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/health":
     get:
       operationId: get_health

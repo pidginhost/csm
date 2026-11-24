@@ -124,25 +124,9 @@ func runHardeningApplyWorker(ctx context.Context, binary string, cfg *config.Con
 	if err != nil {
 		return nil, err
 	}
-	args := []string{HardeningApplyWorkerCommand}
-	if cfg.ConfigFile != "" {
-		path, pathErr := filepath.Abs(cfg.ConfigFile)
-		if pathErr != nil {
-			return nil, pathErr
-		}
-		args = append(args, "--config", path)
-		if cfg.ConfigDir != "" {
-			args = append(args, "--config-dir", cfg.ConfigDir)
-		}
-	}
-	// Required: inside the sandbox most fixes would fail half-way, after
-	// the /tmp ones had already changed the host.
-	out, err := systemdrun.RunInput(ctx, lookPath, run, systemdrun.Options{Required: true, Unit: "csm-hardening-apply.service", RuntimeMax: HardeningApplyWorkerTimeout}, body, binary, args...)
+	out, err := runHardeningWorker(ctx, binary, cfg, lookPath, run, HardeningApplyWorkerCommand, body)
 	if err != nil {
-		if errors.Is(err, systemdrun.ErrUnavailable) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("hardening worker: %w", err)
+		return nil, err
 	}
 	var reply hardeningApplyReply
 	if err := jsonv2.Unmarshal(out, &reply, jsonv2.RejectUnknownMembers(true)); err != nil || reply.Results == nil {
@@ -154,6 +138,38 @@ func runHardeningApplyWorker(ctx context.Context, binary string, cfg *config.Con
 		}
 	}
 	return reply.Results, nil
+}
+
+// hardeningWorkerUnit names the transient unit of both hardening workers.
+// systemd will not start a second unit under a name in use, so an apply and
+// an undo never change the same files and records at once.
+const hardeningWorkerUnit = "csm-hardening-apply.service"
+
+// runHardeningWorker runs a hardening worker command as a transient unit
+// outside the sandbox, with body on stdin, and returns its stdout. The
+// worker receives the same main configuration and drop-in directory.
+func runHardeningWorker(ctx context.Context, binary string, cfg *config.Config, lookPath systemdrun.LookPathFunc, run systemdrun.InputRunnerFunc, command string, body []byte) ([]byte, error) {
+	args := []string{command}
+	if cfg.ConfigFile != "" {
+		path, err := filepath.Abs(cfg.ConfigFile)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--config", path)
+		if cfg.ConfigDir != "" {
+			args = append(args, "--config-dir", cfg.ConfigDir)
+		}
+	}
+	// Required: inside the sandbox most fixes would fail half-way, after
+	// the /tmp ones had already changed the host.
+	out, err := systemdrun.RunInput(ctx, lookPath, run, systemdrun.Options{Required: true, Unit: hardeningWorkerUnit, RuntimeMax: HardeningApplyWorkerTimeout}, body, binary, args...)
+	if err != nil {
+		if errors.Is(err, systemdrun.ErrUnavailable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("hardening worker: %w", err)
+	}
+	return out, nil
 }
 
 // RunWorkerCommand runs a worker with input on stdin. It returns stdout

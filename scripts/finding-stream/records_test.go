@@ -255,6 +255,7 @@ func TestActionKnownWriterFixtures(t *testing.T) {
 		{"respond.kill_process", "", "pid 4242", "opaque"},
 		{"respond.quarantine_file", "", "/home/alice/public_html/x.php", "path"},
 		{"respond.clean_file", "", "/home/alice/public_html/y.php", "path"},
+		{"operate.undo_hardening", "", "ssh_max_auth_tries", "opaque"},
 	} {
 		t.Run(tc.op+"/"+tc.action, func(t *testing.T) {
 			a := NewAnonymizer(testSalt())
@@ -325,6 +326,8 @@ func TestActionTransformRefusals(t *testing.T) {
 		"opaque as address":   {func(r *actionlog.Record) { r.Target = "csm" }, errTargetAddress},
 		"missing file target": {func(r *actionlog.Record) { r.Op = "respond.clean_file"; r.Action = ""; r.Target = "" }, errTargetMissing},
 		"missing pid target":  {func(r *actionlog.Record) { r.Op = "respond.kill_process"; r.Action = ""; r.Target = "" }, errTargetMissing},
+		"action on undo op":   {func(r *actionlog.Record) { r.Op = "operate.undo_hardening"; r.Target = "ssh_use_dns" }, errUnknownAction},
+		"missing fix target":  {func(r *actionlog.Record) { r.Op = "operate.undo_hardening"; r.Action = ""; r.Target = "" }, errTargetMissing},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rec := fullRecord()

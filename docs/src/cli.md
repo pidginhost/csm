@@ -150,7 +150,9 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 | `csm harden --copy-fail` | Apply the CVE-2026-31431 (Copy Fail) modprobe mitigation: blacklist `algif_aead` + `af_alg`, unload them. Refuses on built-in-AF_ALG kernels. |
 | `csm harden --copy-fail-seccomp` | Apply the CVE-2026-31431 seccomp mitigation: write systemd `RestrictAddressFamilies=~AF_ALG` drop-ins for LiteSpeed, Apache/Nginx, every PHP-FPM pool, cron, and mail units. The right path on built-in-AF_ALG kernels (typical cPanel/CloudLinux 8). |
 
-The web UI's Server Hardening page can also apply fixes one section at a time. A failing check that has a safe, mechanical fix shows an **Auto-fix** checkbox. **Apply selected fixes** changes only the checked items, then re-runs the audit. The page waits for the worker to finish. Only one hardening worker can run at a time, including across daemon restarts. It uses the daemon's main configuration and drop-in directory. Applying fixes requires root and `systemd-run`.
+The web UI's Server Hardening page can also apply fixes one section at a time. A failing check that has a safe, mechanical fix shows an **Auto-fix** checkbox. Five fixes that can disrupt a working host start unticked and say what they can break: strict reverse-path filtering, the 200 messages an hour cap, blocking mail sent as nobody, strict cookie IP validation, and `MaxAuthTries 4`. Saved audits also show these cautions without needing a new audit. **Apply selected fixes** changes only the checked items, then re-runs the audit. The page waits for the worker to finish. Only one hardening worker can run at a time, including across daemon restarts. It uses the daemon's main configuration and drop-in directory. Applying fixes requires root and `systemd-run`.
+
+For API callers and the root worker, an omitted or empty `names` list applies the section's uncautioned fixes. Cautioned fixes return `skipped` with an explanation. Include their check names explicitly in `names` to apply them. The request and response formats are unchanged.
 
 - SSH `MaxAuthTries 4`, `X11Forwarding no` and `UseDNS no` go into a CSM block at the top of `sshd_config`. The file is checked with `sshd -t` before sshd reloads, and restored if the check fails. The previous file is kept as `sshd_config.csm-bak`.
 - Kernel settings are set with `sysctl -w` and saved to `/etc/sysctl.d/99-zz-csm-hardening.conf`. A missing drop-in directory stops the fix before kernel settings change.
@@ -159,6 +161,24 @@ The web UI's Server Hardening page can also apply fixes one section at a time. A
 - PHP `expose_php`, `enable_dl`, upload progress and fatal error backtraces are turned off in `zz-csm-hardening.ini` in each build's scan directory, and in every SAPI's `conf.d` on Debian and Ubuntu. If a Debian or Ubuntu web SAPI cannot be updated, the CLI setting stays pending for retry. Linked or unreadable SAPI directories require manual changes. PHP-FPM restarts, Apache reloads when mod_php was changed, and LiteSpeed receives a fresh restart request on each apply.
 
 SSH port, password and root login settings, `disable_functions`, `allow_url_fopen`, and the mail, web server and firewall checks stay manual.
+
+Fixes CSM applied show an **Undo** button. Undo puts back what the last apply of that one fix changed and leaves other fixes alone, including fixes that share its file. The audit then runs again, unless the undo was refused. Like Apply, Undo runs in the root worker and needs root and `systemd-run`.
+
+- SSH: the setting leaves CSM's block, or gets back the value the block had, and an empty block is removed. Every line CSM commented out for that setting is enabled again, including lines commented out before the last apply of this fix. As on apply, sshd checks the file before it reloads, and the file before the change is kept as `sshd_config.csm-bak`.
+- Kernel settings: the drop-in gets back the lines it had for that key, or loses the key, and `sysctl -w` sets the runtime value back. When the drop-in write failed on apply, only the runtime value is set back.
+- `/tmp`, `/var/tmp` and `/etc/shadow` get back their owner and mode.
+- WHM tweak settings are set back with `whmapi1 set_tweaksetting`. cPanel has no call that clears a value, so a tweak that had no value or an empty one before the apply cannot be put back, and cPanel's own checks can refuse an earlier value, such as 0 for max emails per hour. Undo then refuses, leaves the applied value, and asks you to set it back in WHM Tweak Settings. When the tweak had no value or an empty one, the apply result says so even on repeated applies, and once WHM shows no value again the next undo clears the record. WHM cannot store a refused value such as 0, so that Undo keeps refusing until the next apply.
+- Compilers: if the apply changed the compiler's mode, undo puts back its owner and mode. If the apply ran `/scripts/compilers off`, undo runs `/scripts/compilers on`, which sets cPanel's own modes, not the earlier ones.
+- cPanel updates: `/etc/cpupdate.conf` gets back its earlier `UPDATES` lines, including any the apply commented out, in their earlier order. Undo refuses if identical comments cannot be distinguished after an edit. Every other line stays as it is now, so saving WHM Update Preferences after the apply does not block undo.
+- PHP: each drop-in the apply wrote gets back the key's earlier line, or loses the key, and PHP reloads as on apply.
+
+A CSM drop-in left with only its header is removed.
+
+Undo refuses when the setting no longer holds what the apply set, because it was changed since. A refused undo changes nothing and keeps the record, so the page keeps offering Undo until the next apply replaces the record. SSH counts as already restored only when its global lines are enabled in their earlier order and no line for that setting remains disabled by CSM. When the setting is already back to its state before the apply, for example after you reset a tweak that had no value in WHM Tweak Settings, undo changes nothing, removes the record and reports the fix undone. A failed undo puts back what it had changed and keeps the record, so it can be retried; if that also fails, the message says what is left to fix. A failed sshd or PHP reload does not fail the undo: as on apply, the restored settings stay and the result says what to reload by hand.
+
+Applying a fix again keeps the state from before the first apply for each setting that still holds CSM's change, so undo goes back to the state before CSM changed it. If CSM cannot record the earlier state, the fix still applies, its result says "Undo is unavailable", and it shows no Undo button. Fixes applied by an older CSM have no record either.
+
+The records live in `/var/lib/csm-hardening-undo`, which only root can read or write, and `csm uninstall --purge` removes them. Each fix has at most one record: its next apply replaces it and a successful undo removes it. The root worker writes and removes them; the daemon only lists their names to show the Undo button, and an undo request carries only the fix name.
 
 ## Remediation
 

@@ -38,6 +38,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - `csm support-bundle <path>` packs store diagnostics, the recent service log, redacted configuration and versions into one archive.
 - A new `backup` setting has the daemon export its state on a schedule, delete archives past retention, and warn when an export fails.
 - `csm clean --preview`, `csm virtual-patch`, `csm db-clean --option --preview` and dry-run virtual patches show the change as a unified diff; `csm clean` also cleans `.htaccess` files.
+- The Server Hardening page can undo applied fixes unless the setting changed since; some WHM tweaks must be reset in WHM instead. Fixes applied before upgrading show no Undo button.
 
 ### Changed
 
@@ -45,6 +46,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - A mail login after a few failed logins no longer suspends the mailbox or holds the account by itself; one after a brute-force run of failures still does.
 - Slow failed mail logins from an address that regularly logs in to that mailbox now alert without blocking it, and a later login no longer suspends the mailbox.
 - Findings for a removed file written back now say how it came back and that restoring it from the Quarantine page stops CSM removing it again.
+- The Server Hardening page leaves fixes that can disrupt a working host unticked and says what each can break; applying a whole section skips them.
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
 - Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
 - SSH, mail and FTP logins read from log files now alert without blocking.

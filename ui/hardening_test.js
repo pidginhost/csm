@@ -54,6 +54,7 @@ test('apply sends only the checked fixes of its section after listing them', asy
     await settle();
     const outcome = page.document.querySelector('[role="status"]');
     assert.ok(outcome, 'no outcome shown');
+    assert.match(outcome.textContent, /Last apply \(audit re-run afterwards\)/);
     assert.match(outcome.textContent, /applied UseDNS: Written and sshd reloaded\./);
     assert.deepEqual(boxes(page, 'ssh').map(b => b.getAttribute('data-fix-name')), ['ssh_x11_forwarding'], 'the recheck did not re-render the section');
     assert.deepEqual(page.toasts.at(-1), ['SSH: 1 applied. Audit re-run.', 'success']);
@@ -119,4 +120,206 @@ test('a worker error shows the fresh audit even when it could not be saved', asy
     assert.equal(boxes(page, 'os').length, 0);
     assert.equal(page.pending('/api/v1/hardening').length, 0);
     assert.deepEqual(page.toasts.at(-1), ['Could not save the recheck', 'error']);
+});
+
+// A fix that can disrupt a working host starts unticked and says what it can
+// break; the others stay ticked.
+test('fixes with a caution start unticked and show it', async () => {
+    const page = await hardeningPage([
+        { category: 'ssh', name: 'ssh_max_auth_tries', title: 'MaxAuthTries', status: 'warn', message: '6', fix: 'Set 4', auto_fix: 'Sets MaxAuthTries 4.', auto_fix_caution: 'Refuses clients that offer many keys.' },
+        { category: 'ssh', name: 'ssh_use_dns', title: 'UseDNS', status: 'warn', message: 'UseDNS yes', fix: 'Set UseDNS no', auto_fix: 'Sets UseDNS no.' }
+    ]);
+    const boxes = Array.from(page.document.querySelectorAll('input[data-fix-name]'));
+    const byName = Object.fromEntries(boxes.map(b => [b.getAttribute('data-fix-name'), b]));
+    assert.equal(byName.ssh_max_auth_tries.checked, false);
+    assert.equal(byName.ssh_use_dns.checked, true);
+    assert.match(byName.ssh_max_auth_tries.closest('label').textContent, /Refuses clients that offer many keys\./);
+});
+
+for (const selected of [false, true]) {
+    test('a cautioned fix is sent only after opt-in: ' + selected, async () => {
+        const page = await hardeningPage([
+            { category: 'ssh', name: 'ssh_max_auth_tries', title: 'MaxAuthTries', status: 'warn', auto_fix: 'Sets MaxAuthTries 4.', auto_fix_caution: 'Can refuse clients.' },
+            FAILING[0]
+        ]);
+        const cautioned = boxes(page, 'ssh')[0];
+        if (selected) cautioned.checked = true;
+        page.document.querySelector('[data-apply-cat="ssh"]').click();
+        await settle();
+        const requests = page.pending('/api/v1/hardening/apply');
+        assert.equal(requests.length, 1);
+        const body = typeof requests[0].body === 'string' ? JSON.parse(requests[0].body) : requests[0].body;
+        assert.deepEqual(body, { category: 'ssh', names: selected ? ['ssh_max_auth_tries', 'ssh_use_dns'] : ['ssh_use_dns'] });
+    });
+}
+
+test('a section containing only cautioned fixes sends nothing by default', async () => {
+    const page = await hardeningPage([
+        { category: 'os', name: 'os_sysctl_rp_filter', title: 'Reverse path filtering', status: 'warn', auto_fix: 'Enables strict filtering.', auto_fix_caution: 'Can drop replies.' }
+    ]);
+    page.document.querySelector('[data-apply-cat="os"]').click();
+    await settle();
+    assert.equal(page.asked.length, 0);
+    assert.equal(page.pending('/api/v1/hardening/apply').length, 0);
+});
+
+// A fix CSM applied and kept a record of offers Undo in its result row. Undo
+// asks first, sends only the fix name, and shows what the root worker did,
+// including a refusal and its reason, above the section's checks.
+const APPLIED = [
+    { category: 'ssh', name: 'ssh_use_dns', title: 'UseDNS', status: 'pass', message: 'UseDNS no', undo_available: true },
+    { category: 'ssh', name: 'ssh_x11_forwarding', title: 'X11', status: 'warn', message: 'X11 on', fix: 'Set X11Forwarding no', auto_fix: 'Sets X11Forwarding no.' },
+    { category: 'cpanel', name: 'cp_max_emails_hour', title: 'Max Emails Per Hour', status: 'pass', message: '200', undo_available: true },
+    { category: 'os', name: 'os_sysctl_aslr', title: 'ASLR', status: 'pass', message: '2' }
+];
+
+function undoButtons(page) {
+    return Array.from(page.document.querySelectorAll('[data-undo-name]'));
+}
+
+test('only a fix with an undo record gets an Undo button, in its result row', async () => {
+    const page = await hardeningPage(APPLIED);
+    const buttons = undoButtons(page);
+    assert.deepEqual(buttons.map(b => b.getAttribute('data-undo-name')), ['ssh_use_dns', 'cp_max_emails_hour']);
+    assert.match(buttons[0].closest('tr').textContent, /UseDNS no/);
+    assert.equal(buttons[0].getAttribute('aria-label'), 'Undo UseDNS');
+});
+
+test('undo sends the fix name after asking, holds every action while it runs, then shows the outcome and the recheck', async () => {
+    const page = await hardeningPage(APPLIED);
+    undoButtons(page)[0].click();
+    await settle();
+    assert.equal(page.asked.length, 1);
+    assert.match(page.asked[0].message, /UseDNS/);
+    // A refused undo returns the saved report; only other outcomes re-run the audit.
+    assert.match(page.asked[0].message, /The audit runs again unless the undo is refused\./);
+    // Undo turns a protection off, so the dialog marks it as dangerous.
+    assert.deepEqual({ ...page.asked[0].opts }, { okLabel: 'Undo', danger: true });
+    const post = page.pending('/api/v1/hardening/undo')[0];
+    assert.ok(post, 'no undo request');
+    assert.deepEqual(typeof post.body === 'string' ? JSON.parse(post.body) : post.body, { name: 'ssh_use_dns' });
+    assert.deepEqual(undoButtons(page).map(b => b.disabled), [true, true]);
+    assert.equal(page.document.querySelector('[data-apply-cat="ssh"]').disabled, true);
+    assert.equal(page.document.getElementById('btn-run-audit').disabled, true);
+    const after = APPLIED.map(r => r.name === 'ssh_use_dns' ? { category: 'ssh', name: 'ssh_use_dns', title: 'UseDNS', status: 'warn', message: 'UseDNS yes', auto_fix: 'Sets UseDNS no.' } : r);
+    page.respond('/api/v1/hardening/undo', 200, Object.assign({ ok: true, result: { name: 'ssh_use_dns', title: 'ssh_use_dns', status: 'undone', message: 'UseDNS taken out of the CSM block; sshd reloaded.' } }, report(after)));
+    await settle();
+    const outcome = page.document.querySelector('[role="status"]');
+    assert.ok(outcome, 'no outcome shown');
+    assert.ok(outcome.classList.contains('alert-success'));
+    assert.match(outcome.textContent, /Last undo/);
+    assert.match(outcome.textContent, /undone UseDNS: UseDNS taken out of the CSM block; sshd reloaded\./);
+    assert.deepEqual(undoButtons(page).map(b => [b.getAttribute('data-undo-name'), b.disabled]), [['cp_max_emails_hour', false]]);
+    assert.equal(page.document.querySelector('[data-apply-cat="ssh"]').disabled, false);
+    assert.equal(page.document.getElementById('btn-run-audit').disabled, false);
+    assert.deepEqual(page.toasts.at(-1), ['UseDNS: undone.', 'success']);
+});
+
+test('a refused undo shows its reason as the outcome and keeps Undo', async () => {
+    const page = await hardeningPage(APPLIED);
+    undoButtons(page)[1].click();
+    await settle();
+    const why = 'maxemailsperhour had no value before the apply, and whmapi1 cannot remove one. Set it back to its default in WHM Tweak Settings.';
+    page.respond('/api/v1/hardening/undo', 200, Object.assign({ ok: true, result: { name: 'cp_max_emails_hour', title: 'cp_max_emails_hour', status: 'refused', message: why } }, report(APPLIED)));
+    await settle();
+    const outcome = page.document.querySelector('[role="status"]');
+    assert.ok(outcome, 'no outcome shown');
+    assert.ok(outcome.classList.contains('alert-warning'));
+    assert.ok(outcome.textContent.includes('refused Max Emails Per Hour: ' + why), outcome.textContent);
+    assert.doesNotMatch(outcome.textContent, /re-run/);
+    assert.deepEqual(undoButtons(page).map(b => b.disabled), [false, false]);
+    assert.deepEqual(page.toasts.at(-1), ['Max Emails Per Hour: refused.', 'warning']);
+});
+
+test('an undo that cannot start leaves the page as it was', async () => {
+    const page = await hardeningPage(APPLIED);
+    undoButtons(page)[0].click();
+    await settle();
+    page.respond('/api/v1/hardening/undo', 503, { error: 'Undoing a fix needs systemd-run, so nothing was changed: systemd-run not found' });
+    await settle();
+    assert.deepEqual(page.toasts.at(-1), ['Undoing a fix needs systemd-run, so nothing was changed: systemd-run not found', 'error']);
+    assert.deepEqual(undoButtons(page).map(b => [b.textContent, b.disabled]), [['Undo', false], ['Undo', false]]);
+    assert.equal(page.pending('/api/v1/hardening').length, 0);
+    assert.equal(page.document.querySelector('[role="status"]'), null);
+});
+
+test('a worker error during undo shows the rechecked report', async () => {
+    const page = await hardeningPage(APPLIED);
+    undoButtons(page)[0].click();
+    await settle();
+    const after = APPLIED.map(r => r.name === 'ssh_use_dns' ? Object.assign({}, r, { undo_available: false }) : r);
+    page.respond('/api/v1/hardening/undo', 500, { error: 'Hardening undo: hardening worker: signal: killed. The audit was re-run.', report: report(after) });
+    await settle();
+    assert.deepEqual(undoButtons(page).map(b => b.getAttribute('data-undo-name')), ['cp_max_emails_hour']);
+    assert.equal(page.pending('/api/v1/hardening').length, 0);
+    assert.deepEqual(page.toasts.at(-1), ['Hardening undo: hardening worker: signal: killed. The audit was re-run.', 'error']);
+});
+
+for (const status of ['undone', 'failed']) {
+    test('undo keeps the worker outcome when saving the recheck fails: ' + status, async () => {
+        const page = await hardeningPage(APPLIED);
+        undoButtons(page)[0].click();
+        await settle();
+        const after = APPLIED.map(r => r.name === 'ssh_use_dns' ? Object.assign({}, r, { undo_available: status !== 'undone' }) : r);
+        page.respond('/api/v1/hardening/undo', 500, {
+            error: 'Hardening undo: failed to save the recheck. The audit was re-run.',
+            result: { name: 'ssh_use_dns', status, message: 'Worker outcome <b>must stay text</b>.' },
+            report: report(after)
+        });
+        await settle();
+        const outcome = page.document.querySelector('[role="status"]');
+        assert.ok(outcome, 'the save failure hid the worker outcome');
+        assert.ok(outcome.textContent.includes(status + ' UseDNS: Worker outcome <b>must stay text</b>.'));
+        assert.equal(outcome.querySelectorAll('b').length, 0);
+        assert.ok(outcome.classList.contains(status === 'undone' ? 'alert-success' : 'alert-warning'));
+        assert.equal(page.toasts.at(-1)[1], 'error', 'the storage error must also remain visible');
+        assert.equal(page.pending('/api/v1/hardening').length, 0);
+    });
+}
+
+for (const failure of [false, true]) {
+    test('an older report refresh cannot replace the undo recheck: ' + (failure ? 'error' : 'report'), async () => {
+        const page = await hardeningPage(APPLIED);
+        page.window.CSM.refresh.manual();
+        await settle();
+        assert.equal(page.pending('/api/v1/hardening').length, 1);
+        undoButtons(page)[0].click();
+        await settle();
+        const after = APPLIED.map(r => r.name === 'ssh_use_dns' ? Object.assign({}, r, { undo_available: false, message: 'UseDNS restored' }) : r);
+        page.respond('/api/v1/hardening/undo', 200, Object.assign({ ok: true, result: { name: 'ssh_use_dns', status: 'undone', message: 'Restored.' } }, report(after)));
+        await settle();
+        page.respond('/api/v1/hardening', failure ? 500 : 200, failure ? { error: 'Old load failed' } : report(APPLIED));
+        await settle();
+        assert.deepEqual(undoButtons(page).map(b => b.getAttribute('data-undo-name')), ['cp_max_emails_hour']);
+        assert.equal(page.document.querySelector('.csm-load-error'), null, 'an obsolete load error hid the fresh report');
+        assert.match(page.document.getElementById('categories-container').textContent, /UseDNS restored/);
+        assert.match(page.document.querySelector('[role="status"]').textContent, /undone UseDNS: Restored\./);
+    });
+}
+
+test('manual refresh does not load saved state while undo is pending', async () => {
+    const page = await hardeningPage(APPLIED);
+    undoButtons(page)[0].click();
+    await settle();
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/hardening').filter(r => r.method === 'GET').length, 0);
+    assert.deepEqual(undoButtons(page).map(b => b.disabled), [true, true]);
+});
+
+test('undo renders fix names, titles and worker messages as text', async () => {
+    const name = '\"><img src=x onerror=alert(1)>';
+    const title = '<b>Fix title</b>';
+    const results = [{ category: 'ssh', name, title, status: 'pass', undo_available: true }];
+    const page = await hardeningPage(results);
+    const btn = undoButtons(page)[0];
+    assert.equal(btn.getAttribute('data-undo-name'), name);
+    assert.equal(btn.getAttribute('aria-label'), 'Undo ' + title);
+    btn.click();
+    await settle();
+    page.respond('/api/v1/hardening/undo', 200, Object.assign({ result: { name, status: 'refused', message: '<script>bad()</script>' } }, report(results)));
+    await settle();
+    const container = page.document.getElementById('categories-container');
+    assert.equal(container.querySelectorAll('img, b, script').length, 0);
+    assert.ok(container.querySelector('[role="status"]').textContent.includes('refused ' + title + ': <script>bad()</script>'));
 });
