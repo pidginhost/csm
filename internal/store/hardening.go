@@ -21,6 +21,10 @@ type AuditResult struct {
 	// AutoFixCaution says what applying the fix can break on a working
 	// host; the hardening page leaves such fixes unticked.
 	AutoFixCaution string `json:"auto_fix_caution,omitempty"`
+	// UndoAvailable says the root worker kept a record of what CSM's last
+	// apply of this fix changed, so the hardening page offers to undo it.
+	// It is worked out when a report is served and never saved.
+	UndoAvailable bool `json:"undo_available,omitempty"`
 }
 
 // AuditReport is the full result of a hardening audit run.

@@ -14,8 +14,8 @@
         fail: '<span class="text-danger"><i class="ti ti-circle-x"></i></span>'
     };
 
-    // Outcome of the last "Apply fixes" per section, shown above that
-    // section's checks after the recheck re-renders the page.
+    // Outcome of the last apply or undo per section ({heading, results}),
+    // shown above that section's checks after the recheck re-renders the page.
     var lastApply = {};
     var applying = false;
 
@@ -139,6 +139,8 @@
                 var msgSpan = document.createElement('span');
                 msgSpan.className = 'text-muted';
                 msgSpan.textContent = item.message;
+                // An applied fix passes and has no checkbox row, so Undo sits here.
+                if (item.undo_available) tdContent.appendChild(undoButton(item));
                 tdContent.appendChild(strong);
                 tdContent.appendChild(br);
                 tdContent.appendChild(msgSpan);
@@ -228,23 +230,26 @@
         }
     }
 
-    // Lists what the last apply did in a section: applied, failed, skipped.
+    var outcomeClass = { applied: 'text-success', undone: 'text-success', refused: 'text-warning', failed: 'text-danger' };
+
+    // Lists what the last apply or undo did in a section: applied, skipped,
+    // undone, refused or failed.
     function renderApplyOutcome(outcome) {
         var box = document.createElement('div');
-        var anyFailed = outcome.some(function(o) { return o.status === 'failed'; });
+        var anyFailed = outcome.results.some(function(o) { return o.status === 'failed' || o.status === 'refused'; });
         box.className = 'alert m-3 ' + (anyFailed ? 'alert-warning' : 'alert-success');
         box.setAttribute('role', 'status');
         var title = document.createElement('div');
         title.className = 'fw-bold mb-1';
-        title.textContent = 'Last apply (audit re-run afterwards)';
+        title.textContent = outcome.heading;
         box.appendChild(title);
         var list = document.createElement('ul');
         list.className = 'mb-0';
-        for (var i = 0; i < outcome.length; i++) {
-            var o = outcome[i];
+        for (var i = 0; i < outcome.results.length; i++) {
+            var o = outcome.results[i];
             var li = document.createElement('li');
             var st = document.createElement('strong');
-            st.className = o.status === 'applied' ? 'text-success' : (o.status === 'failed' ? 'text-danger' : 'text-muted');
+            st.className = outcomeClass[o.status] || 'text-muted';
             st.textContent = o.status;
             li.appendChild(st);
             li.appendChild(document.createTextNode(' ' + (o.title || o.name) + ': ' + (o.message || '')));
@@ -256,7 +261,7 @@
 
     function setApplyBusy(busy) {
         applying = busy;
-        document.querySelectorAll('[data-apply-cat]').forEach(function(b) { b.disabled = busy; });
+        document.querySelectorAll('[data-apply-cat], [data-undo-name]').forEach(function(b) { b.disabled = busy; });
         document.getElementById('btn-run-audit').disabled = busy;
     }
 
@@ -286,7 +291,7 @@
                 .then(function(resp) {
                     var outcome = (resp && resp.applied) || [];
                     lastApply = {};
-                    lastApply[cat] = outcome;
+                    lastApply[cat] = { heading: 'Last apply (audit re-run afterwards)', results: outcome };
                     applying = false;
                     renderReport(resp);
                     setApplyBusy(false);
@@ -304,17 +309,64 @@
                         btn.appendChild(document.createTextNode('\u00a0Apply selected fixes'));
                     }
                     CSM.toast((err && err.message) || 'Applying fixes failed', 'error');
-                    // A failed worker may have changed some files; the server
-                    // re-ran the audit, so show that report.
-                    if (err && err.status === 500) {
-                        lastApply = {};
-                        if (err.body && err.body.report) {
-                            renderReport(err.body.report);
-                        } else {
-                            setApplyBusy(true);
-                            loadReport().finally(function() { setApplyBusy(false); });
-                        }
-                    }
+                    showRecheck(err);
+                });
+        }, function() {});
+    }
+
+    // A failed worker may have changed some files; the server re-ran the
+    // audit, so show that report.
+    function showRecheck(err) {
+        if (!err || err.status !== 500) return;
+        lastApply = {};
+        if (err.body && err.body.report) {
+            renderReport(err.body.report);
+        } else {
+            setApplyBusy(true);
+            loadReport().finally(function() { setApplyBusy(false); });
+        }
+    }
+
+    function undoButton(item) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-outline-secondary btn-sm float-end ms-2';
+        btn.setAttribute('data-undo-name', item.name);
+        btn.setAttribute('aria-label', 'Undo ' + item.title);
+        btn.textContent = 'Undo';
+        btn.disabled = applying;
+        btn.addEventListener('click', function() { undoFix(item, btn); });
+        return btn;
+    }
+
+    function undoFix(item, btn) {
+        var msg = 'Undo "' + item.title + '"?\n\nCSM puts back what its last apply of this fix changed, ' +
+            'unless the setting was changed since, then re-runs the audit.';
+        // Undo turns a protection off.
+        CSM.confirm(msg, { okLabel: 'Undo', danger: true }).then(function() {
+            setApplyBusy(true);
+            // Safe: hardcoded spinner HTML, no user data
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Undoing...';
+            CSM.post('/api/v1/hardening/undo', { name: item.name }, { timeoutMs: 0 })
+                .then(function(resp) {
+                    // The worker knows the fix by its name; the page shows its title.
+                    var res = Object.assign({}, resp.result, { title: item.title });
+                    lastApply = {};
+                    // A refused undo changed nothing, so the server kept the saved audit.
+                    lastApply[item.category] = {
+                        heading: res.status === 'refused' ? 'Last undo' : 'Last undo (audit re-run afterwards)',
+                        results: [res]
+                    };
+                    applying = false;
+                    renderReport(resp);
+                    setApplyBusy(false);
+                    CSM.toast(item.title + ': ' + res.status + '.', res.status === 'undone' ? 'success' : 'warning');
+                })
+                .catch(function(err) {
+                    setApplyBusy(false);
+                    btn.textContent = 'Undo';
+                    CSM.toast((err && err.message) || 'Undoing the fix failed', 'error');
+                    showRecheck(err);
                 });
         }, function() {});
     }
