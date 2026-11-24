@@ -57,7 +57,8 @@ func storeNoticeRecord(tx *bolt.Tx, old, r admission.NoticeRecord) error {
 // raise records one notice event under key: in its own record, or, when a
 // new key finds no room in the notice share, in its kind's overflow
 // record. A Critical event also counts in the Critical summary, except a
-// partial containment: its response ran. A zero candidate names no example.
+// partial containment, whose response ran, and a protected refusal, whose
+// block is never wanted. A zero candidate names no example.
 func (q *queueTx) raise(key admission.NoticeKey, id admission.CandidateID, transitions uint32) error {
 	return q.notify(key, func(r admission.NoticeRecord) (admission.NoticeRecord, error) {
 		return r.Add(q.now, id, transitions)
@@ -99,7 +100,7 @@ func (q *queueTx) notify(key admission.NoticeKey, add func(admission.NoticeRecor
 	if err = storeNoticeRecord(q.tx, r, next); err != nil {
 		return err
 	}
-	if !key.Kind.Critical() || key.Partial() {
+	if !key.Kind.Critical() || key.Partial() || key.Reason == admission.ReasonProtected {
 		return nil
 	}
 	return q.notify(admission.NoticeKey{Kind: admission.NoticeCriticalSummary}, add)

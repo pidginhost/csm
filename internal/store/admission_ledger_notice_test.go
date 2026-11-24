@@ -583,3 +583,30 @@ func TestAdmissionLedgerNoticeNamesTheActionFamily(t *testing.T) {
 		t.Fatalf("records = %+v", f.notices())
 	}
 }
+
+// A refused block of a protected address keeps its withheld record, but
+// blocking that address is never wanted, so it is no gap: the Critical
+// summary and the doctor's gap row stay as they were.
+func TestAdmissionLedgerProtectedRefusalIsNoGap(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.criticalQueued()
+	if _, err := f.l.Terminate(id, admission.ReasonProtected); err != nil {
+		t.Fatal(err)
+	}
+	got := f.notices()
+	if r := got[sshKey(admission.NoticeWithheld, admission.ReasonProtected)]; r.Count != 1 || r.Examples[0].Candidate != id {
+		t.Fatalf("protected record = %+v", r)
+	}
+	if got[criticalSummary].Count != 0 {
+		t.Fatalf("a protected refusal counted as a Critical gap: %+v", got[criticalSummary])
+	}
+	s := f.l.Status()
+	if !s.Notices.LastCriticalGap.IsZero() {
+		t.Fatalf("last Critical gap = %v, want none", s.Notices.LastCriticalGap)
+	}
+	for _, row := range admission.DoctorChecks(&s, nil, f.wall, true) {
+		if row.Name == admission.ResponseGapsRow && row.Status != admission.DoctorOK {
+			t.Fatalf("doctor gap row = %+v", row)
+		}
+	}
+}
