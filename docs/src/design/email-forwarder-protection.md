@@ -236,7 +236,7 @@ The row actions are: disable forwarder, add to skip-list, view held.
 | intel parsers | Real-format exim deferral lines (TSS04, Gmail, Spamhaus), plus fuzz. |
 | quarantine | Release re-injects correctly. Retention prune. Per-forwarder counts. |
 
-No live-mail tests run on production. Cross-compile and vet locally, then verify on phctl scratch hosts (fresh Ubuntu + AlmaLinux).
+No live-mail tests run on production. Cross-compile and vet locally, then verify on scratch hosts (fresh Ubuntu + AlmaLinux).
 
 ## Roadmap
 
@@ -275,7 +275,7 @@ Each item is its own spec slice, plan, TDD cycle, review and MR.
 | `internal/platform` | The OS/panel/path/MTA abstraction. |
 | `internal/health/capabilities.go` | Capability flags. |
 
-## Conventions (from AGENTS.md)
+## Conventions
 
 - Production-grade, no shortcuts.
 - TDD for security-relevant logic: write the test first.

@@ -843,7 +843,7 @@ The workers speak workerproc frames on the unit's socket pair.
 
 This section is reference material for people who change response admission. Admission is the path that decides whether an automatic response, such as an IP block, goes ahead. [Auto-Response](auto-response.md) describes it from the operator's side.
 
-`internal/admission` is a standard-library-only package that live responses reach only as a preview. Its persisted enum values are fixed by golden tests.
+`internal/admission` is a standard-library-only package. Its persisted enum values are fixed by golden tests.
 
 The section uses these terms:
 
@@ -1172,7 +1172,7 @@ The ledger's schema number rises as it stores new kinds of data. Older builds re
 
 Each schema from 2 to 7 is created by an upgrade: the first open upgrades any earlier schema in the same transaction. The sections below give each schema's rules.
 
-This build opens schemas 7 to 14 without rewriting them. An unchanged schema-7 ledger stays readable by older builds until a write needs a newer format.
+This build opens schemas 7 to 15 without rewriting them. An unchanged schema-7 ledger stays readable by older builds until a write needs a newer format.
 
 Ledger buckets without schema metadata are an error, including unfamiliar buckets.
 

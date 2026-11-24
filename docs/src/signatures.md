@@ -259,7 +259,7 @@ signatures:
 
 ### The download mirror
 
-YARA Forge's upstream GitHub releases publish ZIP files, but not CSM detached signatures. CSM therefore requires `yara_forge.download_url` to point at a mirror you operate.
+YARA Forge's upstream GitHub releases publish ZIP files, but not CSM detached signatures. CSM therefore requires `yara_forge.download_url` to point at a signed mirror: the project mirror shown above, or one you operate.
 
 - The URL may contain `{tier}` and `{version}` placeholders.
 - The detached signature must be available at the resolved ZIP URL plus `.sig`.

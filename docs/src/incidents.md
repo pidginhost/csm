@@ -47,12 +47,9 @@ csm incidents bulk-status --older-than 24h [--last-seen-before RFC3339] [--statu
 | `GET /api/v1/incidents/<id>` | Returns one incident. |
 | `POST /api/v1/incidents/<id>/status` | Changes the status. |
 
-The list route has two response shapes:
+The list route always answers a JSON object: `{"items":[...], "total":N, "offset":N, "limit":N, "status":"...", "truncated":false}`. `truncated` is true when matches were left out of the page.
 
-- Without query parameters, the response is a bare JSON array. This is the existing wire shape that phpanel and SIEM consumers decode.
-- When `?limit=`, `?offset=`, or `?status=` is present, the response is an envelope: `{"items":[...], "total":N, "offset":N, "limit":N, "status":"..."}`.
-
-`status` accepts the four statuses plus `active`, which means open and contained and is the default Web UI filter. The server caps `limit` at 500.
+`?status=` accepts the four statuses plus `active`, which means open and contained and is the default Web UI filter. Without it, the list holds every status. `?limit=` defaults to 50 and the server caps it at 500.
 
 See [api.md](api.md) for endpoint detail.
 

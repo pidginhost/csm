@@ -2158,7 +2158,7 @@ JSONL and syslog audit events include `cidrs` for new findings, and for parked f
 
 ### `GET /api/v1/incidents`
 
-Returns one page of incidents sorted by `updated_at` descending, with `items`, `total`, `offset`, `limit` and `status`.
+Returns one page of incidents sorted by `updated_at` descending, with `items`, `total`, `offset`, `limit`, `status` and `truncated`.
 
 - `limit` defaults to 50 and is at most 500.
 - `status` filters by `open`, `contained`, `resolved`, `dismissed`, or `active` for open and contained. Empty means all.
