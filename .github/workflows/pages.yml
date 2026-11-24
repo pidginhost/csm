@@ -24,12 +24,12 @@ jobs:
     # Pinned rather than ubuntu-latest: that label migrates to Ubuntu 26
     # from 2026-10-19, and every action here is pinned by commit for the
     # same reason. Move this deliberately, with a run to check it.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5  # v7.1.0
         with:
           # Read the version from go.mod rather than repeating it here. A
           # literal pin silently fell behind a go.mod bump and broke this
@@ -167,7 +167,7 @@ jobs:
     # Pinned rather than ubuntu-latest: that label migrates to Ubuntu 26
     # from 2026-10-19, and every action here is pinned by commit for the
     # same reason. Move this deliberately, with a run to check it.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

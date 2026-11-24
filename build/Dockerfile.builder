@@ -20,7 +20,7 @@
 #   docker build -f build/Dockerfile.builder -t csm/builder:glibc-2.28 .
 #   docker tag csm/builder:glibc-2.28 csm/builder:latest
 
-FROM almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b
+FROM almalinux:8@sha256:768bedc30fe0a536adb0a65d2eddb7caad364e514fbddd0ae9e026975f590342
 
 # System development tooling. PowerTools (aka CRB on newer Alma)
 # exposes dev packages that are not in the base repos.
@@ -104,7 +104,7 @@ RUN curl -fsSL https://sh.rustup.rs | \
 # cargo-c: builds Rust libraries as C-compatible .a + .h + .pc.
 RUN cargo install cargo-c@0.10.26 --locked
 
-# Compile YARA-X v1.23.0 static library, install to /usr/local. The
+# Compile YARA-X v1.24.0 static library, install to /usr/local. The
 # --library-type=staticlib flag ensures cargo-c emits only the .a
 # (not a .so) — we link YARA-X statically into the csm binary so
 # there is no external YARA-X dependency at deploy time. The csm
@@ -114,7 +114,7 @@ RUN cargo install cargo-c@0.10.26 --locked
 # go.mod — the Go bindings reference C symbols (e.g.
 # yrx_scanner_fast_scan added in 1.17) that must exist in the
 # linked static lib.
-RUN git clone --depth 1 --branch v1.23.0 \
+RUN git clone --depth 1 --branch v1.24.0 \
         https://github.com/VirusTotal/yara-x.git /tmp/yara-x \
     && cd /tmp/yara-x \
     && cargo cinstall -p yara-x-capi --release \

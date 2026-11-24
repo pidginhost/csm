@@ -166,15 +166,19 @@ func TestAnalyze_CancellationReasonDoesNotExposeInternalText(t *testing.T) {
 	}
 }
 
-func TestAnalyze_KnownArrowDefaultParserFailures(t *testing.T) {
+func TestAnalyze_ArrowDestructuringDefaultsParse(t *testing.T) {
 	fixtures := []string{
 		`var f = ({a} = {a: 1}) => a;`,
 		`var f = ({a: {b} = {b: 1}}) => b;`,
 	}
 	for _, fixture := range fixtures {
 		src := fixture + `/* keydown fetch */`
-		if got := Analyze(context.Background(), []byte(src)); got.Status != StatusParseError {
-			t.Errorf("Status = %v, want StatusParseError for %q", got.Status, fixture)
+		got := Analyze(context.Background(), []byte(src))
+		if got.Status != StatusAnalyzed {
+			t.Errorf("Status = %v (%s), want StatusAnalyzed for %q", got.Status, got.Reason, fixture)
+		}
+		if got.TotalResults != 0 {
+			t.Errorf("TotalResults = %d, want 0 for %q", got.TotalResults, fixture)
 		}
 	}
 }

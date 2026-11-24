@@ -18,7 +18,7 @@ module is absent and fail when `CSM_REQUIRE_PYTHON_VERIFIER=1`, which the CI
 test jobs set so a missing module cannot pass as a silent skip. The Web UI
 JavaScript tests need Node 24 or newer the same way: they skip without it and
 fail when `CSM_REQUIRE_NODE=1`, which the CI test job sets. Builds with `yara,journal,bpf` also need
-CGO, pkg-config, YARA-X 1.23.0 and the systemd
+CGO, pkg-config, YARA-X 1.24.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a
 stale image fails instead of downloading another toolchain in every job.
@@ -237,6 +237,10 @@ When an image definition changes on a branch, run its blocking manual
 image jobs: ci-tools, or both builder architectures. Preflight waits for
 those builds, and both release builds wait for preflight while still
 running alongside lint and tests.
+
+Keep govulncheck at v1.9.0 in the Makefile and CI tools image for Go 1.27.4.
+Version v1.10.0 fails to type-check that toolchain's standard library with
+"requires go1.27 or later" errors. Recheck that failure before lifting the pin.
 
 Release builds and preflight run in branch and tag pipelines, including
 scheduled and manually started runs. They are excluded from merge-request

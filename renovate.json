@@ -1,4 +1,21 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>infrastructure/renovate"]
+  "extends": [
+    "local>infrastructure/renovate"
+  ],
+  "packageRules": [
+    {
+      "description": "The builder stays on AlmaLinux 8 so shipped binaries keep running on glibc 2.28 hosts.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "almalinux"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    }
+  ]
 }
