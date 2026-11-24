@@ -1,9 +1,6 @@
 # Upstream Threat-Intel HTTP Contract (v1)
 
-This document specifies the HTTP API CSM expects when
-`reputation.upstream.enabled: true`. A panel host (or any HTTP server)
-can implement it; phpanel's reference implementation lives in
-`phpanel-server-agent`.
+This document specifies the HTTP API CSM expects when `reputation.upstream.enabled: true`. A panel host, or any HTTP server, can implement it. phpanel's reference implementation lives in `phpanel-server-agent`.
 
 ## Endpoint
 
@@ -11,26 +8,19 @@ can implement it; phpanel's reference implementation lives in
 GET <reputation.upstream.url>/lookup?ip=<ip>
 ```
 
-`reputation.upstream.url` must be an `https://` URL with a host. Plain
-`http://` is accepted only for loopback hosts such as `127.0.0.1`,
-`[::1]`, or `localhost`. CSM appends `/lookup` to that base URL.
+`reputation.upstream.url` must be an `https://` URL with a host. Plain `http://` is accepted only for loopback hosts such as `127.0.0.1`, `[::1]`, or `localhost`. CSM appends `/lookup` to that base URL.
 
 ## Authentication
 
-CSM sends `Authorization: Bearer <token>` when
-`reputation.upstream.token` (or its env var) is set. The server SHOULD
-reject requests with a missing/invalid token via HTTP 401.
+CSM sends `Authorization: Bearer <token>` when `reputation.upstream.token` (or its env var) is set. The server SHOULD reject requests with a missing or invalid token with HTTP 401.
 
-Before each HTTP request, CSM reads `reputation.upstream.token_env` from
-its process environment. A non-empty value overrides the static `token`
-field. Editing an environment file or exporting a value in another shell
-requires a daemon restart to take effect; configuration reload does not
-replace the process environment. See [credential rotation](credential-rotation.md).
+Before each HTTP request, CSM reads `reputation.upstream.token_env` from its process environment. A non-empty value overrides the static `token` field.
+
+Editing an environment file, or exporting a value in another shell, takes effect only after a daemon restart. A configuration reload does not replace the process environment. See [credential rotation](credential-rotation.md).
 
 ## Request
 
-- `ip` query parameter: IPv4 dotted-quad (e.g. `1.2.3.4`) or IPv6 in
-  any RFC 5952 form. The server SHOULD normalize before lookup.
+The `ip` query parameter is an IPv4 dotted-quad (e.g. `1.2.3.4`) or an IPv6 address in any RFC 5952 form. The server SHOULD normalize before lookup.
 
 ## Response
 
@@ -45,43 +35,36 @@ replace the process environment. See [credential rotation](credential-rotation.m
 }
 ```
 
-- `ip` (required): echoes the input.
-- `score` (required): integer 0..100. Higher means worse. `0` is "no
-  signal" and the aggregator excludes it from averaging.
-- `source` (optional): free-form identifier the server may set for
-  audit-log surfacing.
-- `ttl_sec` (optional): number of seconds CSM should cache this answer.
-  Overrides `reputation.upstream.cache_ttl_min`. The server SHOULD
-  return the smaller of its own cache lifetime and a sane default.
+| Field | Required | Value |
+|---|---|---|
+| `ip` | Yes | Echoes the input. |
+| `score` | Yes | Integer 0..100. Higher means worse. `0` is "no signal" and the aggregator excludes it from averaging. |
+| `source` | No | Free-form identifier the server may set for audit-log surfacing. |
+| `ttl_sec` | No | Number of seconds CSM should cache this answer. Overrides `reputation.upstream.cache_ttl_min`. |
+
+The server SHOULD return in `ttl_sec` the smaller of its own cache lifetime and a sane default.
+
+CSM rejects malformed `200` responses. That includes an `ip` field that does not match the requested IP and a `score` outside `0..100`.
 
 ### 401 / 403
 
-CSM treats as "no signal" - does not retry, does not cache. Logged as a
-warning so operators see auth misconfigurations.
+CSM treats the answer as "no signal". It does not retry and does not cache. It logs a warning so operators see auth misconfigurations.
 
 ### 4xx / 5xx other
 
-Treated as "no signal." The aggregator continues with whatever scores
-the other sources returned.
-
-CSM rejects malformed `200` responses, including an `ip` field that
-does not match the requested IP or a `score` outside `0..100`.
+CSM treats the answer as "no signal". The aggregator continues with whatever scores the other sources returned.
 
 ## Caching
 
-CSM caches each (ip, score) pair locally for `cache_ttl_min` minutes
-(default 15) or for `ttl_sec` if the response provides it. A cache hit
-does not contact the upstream. Bursts of detection events that touch
-the same IP within the TTL window produce a single upstream call.
+CSM caches each (ip, score) pair locally for `cache_ttl_min` minutes (default 15), or for `ttl_sec` if the response provides it. A cache hit does not contact the upstream. Bursts of detection events that touch the same IP within the TTL window produce a single upstream call.
 
-The local cache is capped at 10,000 IPs. When the cap is reached, CSM
-prunes expired entries first and then removes the entry with the nearest
-expiry time until the cache is back under the cap.
+The local cache is capped at 10,000 IPs. When the cap is reached, CSM prunes expired entries first. It then removes the entry with the nearest expiry time until the cache is back under the cap.
 
-After repeated upstream failures, CSM opens a short circuit breaker and
-temporarily treats the source as "no signal." When the cooldown expires,
-only one probe request is allowed through; concurrent callers keep using
-the fail-open path until that probe succeeds or fails.
+## Repeated upstream failures
+
+After repeated upstream failures, CSM opens a short circuit breaker and temporarily treats the source as "no signal".
+
+When the cooldown expires, CSM lets only one probe request through. Concurrent callers keep getting "no signal" until that probe succeeds or fails.
 
 ## Sample server stub (Go)
 

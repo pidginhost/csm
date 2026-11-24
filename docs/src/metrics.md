@@ -1,18 +1,12 @@
 # Metrics (Prometheus)
 
-CSM exposes a `/metrics` endpoint on its HTTPS web UI port
-(default 9443). The endpoint serves the Prometheus text exposition
-format (`Content-Type: text/plain; version=0.0.4`) and is safe to
-scrape every 15 seconds.
+CSM exposes a `/metrics` endpoint on its HTTPS web UI port (default 9443). The endpoint serves the Prometheus text exposition format (`Content-Type: text/plain; version=0.0.4`) and is safe to scrape every 15 seconds. Metrics are on whenever the Web UI is on.
 
-"Available metrics" below is the shipped set. New call sites are
-instrumented in ongoing releases; check `CHANGELOG.md` under
-`## [Unreleased]` for the latest additions.
+[Available metrics](#available-metrics) is the shipped set. New call sites are instrumented in ongoing releases; check `CHANGELOG.md` under `## [Unreleased]` for the latest additions.
 
 ## Enabling
 
-Metrics are on whenever `webui.enabled: true` is set in `csm.yaml`.
-The endpoint has its own auth knob:
+Metrics are on whenever `webui.enabled: true` is set in `csm.yaml`. The endpoint has its own auth knob:
 
 ```yaml
 webui:
@@ -24,19 +18,24 @@ webui:
   metrics_token_expires_at: "<optional UTC RFC3339 expiry; leave empty for none>"
 ```
 
-`metrics_token` is optional. When set, a Bearer header containing
-this exact value grants access to `/metrics`. The UI `auth_token` or a valid
-UI session cookie is also accepted so the dashboard can self-scrape,
-but keeping the two tokens separate is recommended: rotating
-`auth_token` does not then break Prometheus scraping, and giving
-your monitoring stack the scrape token does not also give it UI
-access.
+`metrics_token` is optional. `/metrics` accepts any of these credentials:
 
-Each credential expires at its `expires_at` setting and never expires
-without one. Rotate the metrics token and its dates together, update the
-scraper's secret, then send SIGHUP to CSM. A malformed or future issue time,
-or a malformed or past expiry, refuses the metrics credential. See
-[credential rotation](webui.md#credential-rotation) for recovery instructions.
+- a Bearer header containing the exact `metrics_token` value, when one is set
+- the UI `auth_token`
+- a valid UI session cookie
+
+The last two let the dashboard scrape itself. Keeping `metrics_token` and `auth_token` as separate values is recommended:
+
+- Rotating `auth_token` does not then break Prometheus scraping.
+- Giving your monitoring stack the scrape token does not also give it UI access.
+
+Each credential expires at its `expires_at` setting and never expires without one. To rotate the metrics token:
+
+1. Set a new `metrics_token` and update `metrics_token_issued_at` and `metrics_token_expires_at` in the same edit.
+2. Update the scraper's secret.
+3. Send SIGHUP to CSM.
+
+A malformed or future issue time, or a malformed or past expiry, refuses the metrics credential. See [credential rotation](webui.md#credential-rotation) for recovery instructions.
 
 ## Prometheus scrape config
 
@@ -57,10 +56,7 @@ scrape_configs:
           - csm-host-2.example.internal:9443
 ```
 
-A complete, validated version of this snippet (with `global:` block)
-ships as `docs/src/examples/prometheus-scrape.yml`. The CI pipeline
-runs `promtool check config` against that file in the `promtool-check`
-job; if the example ever stops validating, the pipeline fails.
+A complete, validated version of this snippet (with `global:` block) ships as `docs/src/examples/prometheus-scrape.yml`. The CI pipeline runs `promtool check config` against that file in the `promtool-check` job. If the example ever stops validating, the pipeline fails.
 
 ## Quick check
 
@@ -71,17 +67,17 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
 
 ## Available metrics
 
+Each entry gives the metric name with its labels, its type, and what it measures. Indented points under an entry explain its labels and how to use it.
+
 ### Build / process
 
 - `csm_build_info{version}` (gauge, always 1): build metadata.
-  Scrape once to discover the running version. Join on it in
-  queries via `group_left(version)`.
+  - Scrape once to discover the running version.
+  - Join on it in queries via `group_left(version)`.
 
 ### Go runtime
 
-Always exposed. Use these to watch daemon memory over time and tell live
-growth from GC headroom (rising `heap_alloc` = real growth; large
-`heap_idle` = retained-but-freed memory).
+Always exposed. Use these to watch daemon memory over time and tell live growth from GC headroom: rising `heap_alloc` is real growth, and a large `heap_idle` is retained-but-freed memory.
 
 - `go_memstats_heap_alloc_bytes` (gauge): heap bytes allocated and still in use (live).
 - `go_memstats_heap_inuse_bytes` / `go_memstats_heap_idle_bytes` / `go_memstats_heap_released_bytes` (gauges): in-use spans, idle spans, and bytes returned to the OS.
@@ -90,23 +86,21 @@ growth from GC headroom (rising `heap_alloc` = real growth; large
 - `go_memstats_gc_cpu_fraction` (gauge): fraction of CPU time spent in GC since start.
 - `go_goroutines` (gauge): live goroutine count.
 
-For a deeper leak hunt, enable the loopback pprof endpoint (`debug.pprof_listen`)
-and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tunnel.
+#### Profiling with pprof
 
-The same endpoint serves `profile` (CPU, 30s by default), `goroutine`, `mutex`
-and `block`. Contention sampling for the last two starts with the listener and
-stops when the last listener exits, including on a listener failure. Failed or
-refused binds do not enable sampling.
+For a deeper leak hunt, enable the loopback pprof endpoint (`debug.pprof_listen`) and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tunnel.
 
-While enabled, mutex profiling samples one in 100 contention events. Block
-profiling samples waits of at least 10 microseconds and a proportion of shorter
-waits. Timing and collecting these samples adds CPU overhead even when nobody
-fetches a profile, so use this endpoint for diagnostics and leave
-`debug.pprof_listen` empty when it is not needed. Profiles accumulate for the
-process lifetime; disabling sampling does not erase previously recorded data.
+The same endpoint serves `profile` (CPU, 30s by default), `goroutine`, `mutex` and `block`. The last two need contention sampling:
 
-For a CPU investigation, collect the CPU profile first and the goroutine dump
-alongside it:
+- Sampling starts with the listener and stops when the last listener exits, including on a listener failure.
+- Failed or refused binds do not enable sampling.
+- While enabled, mutex profiling samples one in 100 contention events.
+- Block profiling samples waits of at least 10 microseconds and a proportion of shorter waits.
+- Profiles accumulate for the process lifetime. Disabling sampling does not erase data already recorded.
+
+Timing and collecting these samples adds CPU overhead even when nobody fetches a profile. Use this endpoint for diagnostics and leave `debug.pprof_listen` empty when it is not needed.
+
+For a CPU investigation, collect the CPU profile first and the goroutine dump alongside it:
 
 ```bash
 curl -o cpu.pb.gz 'http://127.0.0.1:<port>/debug/pprof/profile?seconds=60'
@@ -115,173 +109,121 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
 
 ### YARA-X worker (default-on; off only if `signatures.yara_worker_enabled: false`)
 
-- `csm_yara_worker_restarts_total` (counter): cumulative number of counted
-  YARA scan worker failures (failed start, timeout, crash, out of memory
-  or protocol), including launches that never create a worker. Rule reloads
-  and lifetime retirement do not count. Alert on sustained growth: a steady
-  climb means scans keep failing and are reported as not scanned.
+- `csm_yara_worker_restarts_total` (counter): cumulative number of counted YARA scan worker failures.
+  - A failure is counted for a failed start, a timeout, a crash, running out of memory or a protocol error. Launches that never create a worker count too.
+  - Rule reloads and lifetime retirement do not count.
+  - Alert on sustained growth: a steady climb means scans keep failing and are reported as not scanned.
 
 ### Findings
 
-- `csm_findings_total{severity}` (counter): every finding CSM
-  records is counted here. Severities are `CRITICAL`, `HIGH`, and
-  `WARNING` (matching the `alert.Severity` enum). Use `rate(...)`
-  for arrival velocity; watch for sudden CRITICAL spikes.
+- `csm_findings_total{severity}` (counter): every finding CSM records is counted here.
+  - Severities are `CRITICAL`, `HIGH`, and `WARNING` (matching the `alert.Severity` enum).
+  - Use `rate(...)` for arrival velocity. Watch for sudden CRITICAL spikes.
 
 ### Alert delivery
 
-- `csm_alert_dispatch_failures_total` (counter): alert channel sends
-  that failed after CSM detected findings. Counts email, webhook, and
-  phpanel delivery failures. Sustained growth means findings are not
-  reaching operators; check SMTP, webhook reachability, and credentials.
-
-- `csm_audit_sink_degraded{sink}` (gauge): one when an enabled JSONL or syslog
-  destination failed to open or write, zero when healthy or disabled. Values
-  appear after the audit pipeline first runs and remain degraded during retry
-  backoff. Syslog reports local write results, not receiver acknowledgement.
-- `csm_audit_events_dropped_total{sink}` (counter): events whose destination
-  was unavailable or whose write failed. Use `csm export --since <when>` for
-  backfill; failed live deliveries are not replayed automatically.
+- `csm_alert_dispatch_failures_total` (counter): alert channel sends that failed after CSM detected findings.
+  - Counts email, webhook, and phpanel delivery failures.
+  - Sustained growth means findings are not reaching operators. Check SMTP, webhook reachability, and credentials.
+- `csm_audit_sink_degraded{sink}` (gauge): one when an enabled JSONL or syslog destination failed to open or write, zero when healthy or disabled.
+  - Values appear after the audit pipeline first runs and remain degraded during retry backoff.
+  - Syslog reports local write results, not receiver acknowledgement.
+- `csm_audit_events_dropped_total{sink}` (counter): events whose destination was unavailable or whose write failed.
+  - Use `csm export --since <when>` for backfill. Failed live deliveries are not replayed automatically.
 
 ### State
 
-- `csm_store_size_bytes` (gauge): on-disk size of the bbolt state
-  database (`/var/lib/csm/state/csm.db` by default). Retention sweeps
-  bound logical growth. Startup compaction reclaims freelisted pages
-  automatically when the file is large and mostly slack; `csm store
-  compact` does the same immediately with the daemon stopped. The
-  retention sweep logs a restart hint only under that same condition. It
-  includes deleted pages still held by active readers, which become
-  reclaimable when the daemon stops. Later writes can change whether
-  compaction is due at startup.
-  History and attack-event writes pack pages densely when their timestamps
-  arrive mostly in order. A write uses balanced page splits when events older
-  than the newest stored one are most of its records or at least half its
-  inserted data. Space savings depend on record sizes and arrival order.
-  Archive imports keep the snapshot's page layout; compaction repacks an
-  existing file.
+- `csm_store_size_bytes` (gauge): on-disk size of the bbolt state database (`/var/lib/csm/state/csm.db` by default).
+  - Retention sweeps bound logical growth.
+  - Startup compaction reclaims freelisted pages automatically when the file is large and mostly slack. `csm store compact` does the same immediately with the daemon stopped.
+  - The retention sweep logs a restart hint only when the file is large and mostly slack. The slack includes deleted pages still held by active readers, which become reclaimable when the daemon stops.
+  - Later writes can change whether compaction is due at startup.
+  - History and attack-event writes pack pages densely when their timestamps arrive mostly in order.
+  - A write uses balanced page splits when events older than the newest stored one are most of its records or at least half its inserted data.
+  - Space savings depend on record sizes and arrival order.
+  - Archive imports keep the snapshot's page layout. Compaction repacks an existing file.
 
 ### Fanotify realtime monitor
 
-- `csm_fanotify_queue_depth` (gauge): current number of queued
-  events waiting for the analyzer pool. The queue capacity is 4000;
-  sustained values near that cap mean drops are imminent. Alert
-  target: `max_over_time(csm_fanotify_queue_depth[5m]) > 3500`.
-- `csm_fanotify_events_total` (counter): delivered fanotify file events whose
-  admission decision has completed. Filesystem marks receive writes anywhere on
-  their superblocks, including other bind mounts. Kernel queue overflow
-  notifications are counted separately.
-- `csm_fanotify_events_admitted_total` (counter): events queued for analysis,
-  including dropper tracking. Subtract this counter and
-  `csm_fanotify_events_dropped_total` from `csm_fanotify_events_total` to count
-  events rejected before queue admission. This includes path-resolution failures
-  as well as filter rejections. Use rates over the same interval to compare
-  these independently scraped counters.
-- `csm_fanotify_events_dropped_total` (counter): cumulative events
-  dropped because the analyzer queue was full. The reconcile pass
-  still rescans drop-affected directories 60 s later, so dropped
-  events do not disappear from detection -- they arrive delayed.
-  Alert target: `rate(csm_fanotify_events_dropped_total[5m]) > 0`
-  paired with a short for-clause.
-- `csm_fanotify_placement_unverified_total` (counter): files and
-  directories moved, linked or created into watched trees that did not
-  open as the file the placement monitor reported, so realtime did not
-  check them there. A file replaced again right after it was placed is
-  counted here. Sustained growth means placements are being raced; the
-  deep scan covers those files.
-- `csm_fanotify_placement_skipped_total` (counter): placed files not
-  analyzed again because the same version was analyzed recently under
-  the same conditions, such as an atomic save renamed to its final name.
-- `csm_fanotify_kernel_queue_overflow_total` (counter): kernel-side
-  fanotify queue overflows (FAN_Q_OVERFLOW). Unlike analyzer-queue
-  drops, the kernel gives no file descriptor for lost events, so
-  only directories with concurrent analyzer drops can be reconciled;
-  the rest are covered by the next scheduled deep scan. Any nonzero
-  rate during a write storm means realtime coverage had a gap.
-- `csm_spool_fanotify_queue_overflow_total` (counter): kernel queue
-  overflows on the mail spool watcher. In permission mode an
-  overflowed event means the message was delivered without being
-  scanned; a Warning finding is raised when this happens.
-- `csm_fanotify_reconcile_latency_seconds` (histogram): how long
-  the post-overflow reconcile pass takes to walk drop-affected
-  directories and rescan recent files. Buckets: 0.01 s .. 60 s.
-  Watch p95: reconcile stealing tens of seconds means bulk events
-  are piling up faster than the walker can keep up.
-- `csm_checks_domlog_discovery_dropped_total{reason}` (counter):
-  per-vhost access-log paths the WP brute-force domlog discovery
-  helper dropped before scanning. Labels: `reason` is
-  `evalsymlinks_error` (broken symlink, attacker-removed log file)
-  or `stat_error` (file vanished between glob and stat, permission
-  regression on the log directory). Steady growth means a real chunk
-  of vhosts is being silently skipped each cycle. Stale-mtime
-  drops are intentional filtering and are NOT counted here.
-- `csm_realtime_content_scan_truncated_total{check}` (counter):
-  cumulative real-time content checks where the underlying file was
-  larger than the main read window, so the full-rule pass saw only
-  the leading window. The read cap protects RE2 cost on huge files;
-  sustained growth on a label means full-rule coverage is capped on
-  large files. Labels currently emitted: `phpcontent_inline` (known
-  webshell filename), `phpcontent_uploads` (PHP in uploads),
-  `php_check` (generic PHP content scan), `crontab` (per-user
-  /var/spool/cron write), `htaccess` (per-vhost .htaccess write),
-  `user_ini` (per-vhost .user.ini write), `html_phishing` (HTML
-  phishing heuristic), and `cgi_backdoor` (CGI backdoor heuristic).
-  Compare against
-  finding history for `webshell_content_realtime` (or the matching
-  check name for non-PHP labels) to judge whether a raised cap would
-  surface real findings.
+- `csm_fanotify_queue_depth` (gauge): current number of queued events waiting for the analyzer pool.
+  - The queue capacity is 4000. Sustained values near that cap mean drops are imminent.
+  - Alert target: `max_over_time(csm_fanotify_queue_depth[5m]) > 3500`.
+- `csm_fanotify_events_total` (counter): delivered fanotify file events whose admission decision has completed.
+  - Filesystem marks receive writes anywhere on their superblocks, including other bind mounts.
+  - Kernel queue overflow notifications are counted separately.
+- `csm_fanotify_events_admitted_total` (counter): events queued for analysis, including dropper tracking.
+  - Subtract this counter and `csm_fanotify_events_dropped_total` from `csm_fanotify_events_total` to count events rejected before queue admission. This includes path-resolution failures as well as filter rejections.
+  - Use rates over the same interval to compare these independently scraped counters.
+- `csm_fanotify_events_dropped_total` (counter): cumulative events dropped because the analyzer queue was full.
+  - The reconcile pass still rescans drop-affected directories 60 s later, so dropped events do not disappear from detection. They arrive delayed.
+  - Alert target: `rate(csm_fanotify_events_dropped_total[5m]) > 0` paired with a short for-clause.
+- `csm_fanotify_placement_unverified_total` (counter): files and directories moved, linked or created into watched trees that did not open as the file the placement monitor reported, so realtime did not check them there.
+  - A file replaced again right after it was placed is counted here.
+  - Sustained growth means placements are being raced. The deep scan covers those files.
+- `csm_fanotify_placement_skipped_total` (counter): placed files not analyzed again because the same version was analyzed recently under the same conditions, such as an atomic save renamed to its final name.
+- `csm_fanotify_kernel_queue_overflow_total` (counter): kernel-side fanotify queue overflows (FAN_Q_OVERFLOW).
+  - Unlike analyzer-queue drops, the kernel gives no file descriptor for lost events. Only directories with concurrent analyzer drops can be reconciled; the rest are covered by the next scheduled deep scan.
+  - Any nonzero rate during a write storm means realtime coverage had a gap.
+- `csm_spool_fanotify_queue_overflow_total` (counter): kernel queue overflows on the mail spool watcher.
+  - In permission mode an overflowed event means the message was delivered without being scanned. A Warning finding is raised when this happens.
+- `csm_fanotify_reconcile_latency_seconds` (histogram): how long the post-overflow reconcile pass takes to walk drop-affected directories and rescan recent files.
+  - Buckets: 0.01 s .. 60 s.
+  - Watch p95: reconcile stealing tens of seconds means bulk events are piling up faster than the walker can keep up.
+- `csm_checks_domlog_discovery_dropped_total{reason}` (counter): per-vhost access-log paths the WP brute-force domlog discovery helper dropped before scanning.
+  - `reason` is one of:
+    - `evalsymlinks_error`: broken symlink, attacker-removed log file
+    - `stat_error`: file vanished between glob and stat, permission regression on the log directory
+  - Steady growth means a real chunk of vhosts is being silently skipped each cycle.
+  - Stale-mtime drops are intentional filtering and are NOT counted here.
+- `csm_realtime_content_scan_truncated_total{check}` (counter): cumulative real-time content checks where the underlying file was larger than the main read window, so the full-rule pass saw only the leading window.
+  - The read cap protects RE2 cost on huge files. Sustained growth on a label means full-rule coverage is capped on large files.
+  - Labels emitted:
+    - `phpcontent_inline`: known webshell filename
+    - `phpcontent_uploads`: PHP in uploads
+    - `php_check`: generic PHP content scan
+    - `crontab`: per-user /var/spool/cron write
+    - `htaccess`: per-vhost .htaccess write
+    - `user_ini`: per-vhost .user.ini write
+    - `html_phishing`: HTML phishing heuristic
+    - `cgi_backdoor`: CGI backdoor heuristic
+  - Compare against finding history for `webshell_content_realtime` (or the matching check name for non-PHP labels) to judge whether a raised cap would surface real findings.
 
 ### Mail scanning and parse workers
 
-- `csm_spool_hold_expired_total{stage}` (counter): mail opens
-  answered under `email_av.fail_mode` because the hold budget ran
-  out. `stage` records where the message was when its hold expired:
-  `queued` (no scan slot yet; these count toward the hold bypass), `waiting` (behind another message from the
-  same sender) or `scanning` (a slow scan; the scan continues and
-  can still quarantine). Sustained `queued` growth means scan
-  capacity is short.
-- `csm_spool_source_waits_total{outcome}` (counter): mail opens
-  whose sender was already using its share of the scan slots.
-  `outcome` is `waited` (the message waited its turn without
-  taking a scan slot) or `overflow` (too many messages from that
-  sender were already waiting, so it was scanned at once without
-  waiting its turn). Overflow scans can use every scan slot.
-  `overflow` growth raises an
-  `email_av_source_backlog` finding naming the sender, at most
-  once a minute.
-- `csm_parse_worker_jobs_total{pool,outcome}` (counter): parse
-  worker jobs. `pool` is `mail` (email attachments) or `zip`
-  (tenant zips checked for phishing kits). `outcome` is `ok`,
-  `timeout`, `oom`, `crash`, `protocol` (reply rejected), `spawn`
-  (the unit did not start), `refused` (the worker is failing
-  repeatedly) or `skipped` (the message killed workers before, so
-  it was not unpacked again). Anything but `ok` means a message or
-  zip was not fully checked.
-  Canceled requests, stopped workers and local descriptor exhaustion do not
-  increment this counter.
-- `csm_parse_worker_starts_total{pool}` (counter): worker units
-  started. A worker serves many jobs; a start rate close to the
-  job rate means workers keep dying or being retired.
-- `csm_parse_worker_memory_bytes{pool}` (histogram): worker memory
-  and swap in use after a successful job. Buckets: 32 MiB ..
-  1 GiB. Compare the high buckets with
-  `email_av.worker_memory_limit`.
-  Unavailable memory readings are omitted; earlier readings are not reused.
+- `csm_spool_hold_expired_total{stage}` (counter): mail opens answered under `email_av.fail_mode` because the hold budget ran out.
+  - `stage` records where the message was when its hold expired:
+    - `queued`: no scan slot yet; these count toward the hold bypass
+    - `waiting`: behind another message from the same sender
+    - `scanning`: a slow scan; the scan continues and can still quarantine
+  - Sustained `queued` growth means scan capacity is short.
+- `csm_spool_source_waits_total{outcome}` (counter): mail opens whose sender was already using its share of the scan slots.
+  - `outcome` is one of:
+    - `waited`: the message waited its turn without taking a scan slot
+    - `overflow`: too many messages from that sender were already waiting, so it was scanned at once without waiting its turn
+  - Overflow scans can use every scan slot.
+  - `overflow` growth raises an `email_av_source_backlog` finding naming the sender, at most once a minute.
+- `csm_parse_worker_jobs_total{pool,outcome}` (counter): parse worker jobs.
+  - `pool` is `mail` (email attachments) or `zip` (tenant zips checked for phishing kits).
+  - `outcome` is `ok`, `timeout`, `oom`, `crash`, `protocol` (reply rejected), `spawn` (the unit did not start), `refused` (the worker is failing repeatedly) or `skipped` (the message killed workers before, so it was not unpacked again).
+  - Anything but `ok` means a message or zip was not fully checked.
+  - Canceled requests, stopped workers and local descriptor exhaustion do not increment this counter.
+- `csm_parse_worker_starts_total{pool}` (counter): worker units started.
+  - A worker serves many jobs. A start rate close to the job rate means workers keep dying or being retired.
+- `csm_parse_worker_memory_bytes{pool}` (histogram): worker memory and swap in use after a successful job.
+  - Buckets: 32 MiB .. 1 GiB.
+  - Compare the high buckets with `email_av.worker_memory_limit`.
+  - Unavailable memory readings are omitted; earlier readings are not reused.
 
 ### Periodic check runner
 
-- `csm_checks_crontab_base64_truncated_total` (counter):
-  crontab base64 candidates that exceeded the per-blob decode cap
-  before decoded-content pattern matching ran. Sustained growth means
-  encoded cron content is larger than the scanner currently inspects;
-  review affected crontabs and tune the scanner before redeploying.
-- `csm_check_duration_seconds{name,tier}` (histogram): wall-clock
-  time each check takes to complete. Label `name` is one of the
-  periodic check-runner names (`fake_kernel_threads`, `webshells`, ...);
-  label `tier` is
-  `critical`, `deep`, or `all`. Buckets: 0.01 s .. 900 s. Most checks
-  keep the 300 s timeout ceiling; heavy filesystem checks can run up to
-  900 s. Useful aggregations:
+- `csm_checks_crontab_base64_truncated_total` (counter): crontab base64 candidates that exceeded the per-blob decode cap before decoded-content pattern matching ran.
+  - Sustained growth means encoded cron content is larger than the scanner currently inspects. Review affected crontabs and tune the scanner before redeploying.
+- `csm_check_duration_seconds{name,tier}` (histogram): wall-clock time each check takes to complete.
+  - Label `name` is one of the periodic check-runner names (`fake_kernel_threads`, `webshells`, ...).
+  - Label `tier` is `critical`, `deep`, or `all`.
+  - Buckets: 0.01 s .. 900 s. Most checks keep the 300 s timeout ceiling; heavy filesystem checks can run up to 900 s.
+
+  Useful aggregations:
 
   ```
   # p95 of the slowest check in the critical tier:
@@ -299,263 +241,229 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
 
 Registered when `reputation.upstream.enabled: true`.
 
-- `csm_threatintel_cache_hits_total` (counter): upstream threat-intel
-  lookups served from CSM's local per-IP cache.
-- `csm_threatintel_cache_misses_total` (counter): upstream
-  threat-intel lookups not served from the local cache. A miss may
-  still fail open without an HTTP request when the breaker is open.
-- `csm_threatintel_backend_failures_total` (counter): upstream
-  backend failures from network errors, non-200 responses, malformed
-  JSON, response IP mismatches, or out-of-range scores.
-- `csm_threatintel_breaker_open` (gauge): 1 while the upstream
-  circuit breaker is refusing calls, 0 when closed or allowing its
-  single cooldown probe.
+- `csm_threatintel_cache_hits_total` (counter): upstream threat-intel lookups served from CSM's local per-IP cache.
+- `csm_threatintel_cache_misses_total` (counter): upstream threat-intel lookups not served from the local cache.
+  - A miss may still fail open without an HTTP request when the breaker is open.
+- `csm_threatintel_backend_failures_total` (counter): upstream backend failures from network errors, non-200 responses, malformed JSON, response IP mismatches, or out-of-range scores.
+- `csm_threatintel_breaker_open` (gauge): 1 while the upstream circuit breaker is refusing calls, 0 when closed or allowing its single cooldown probe.
 
 ### AI-crawler IP ranges
 
-- `csm_botranges_refresh_total{result}` (counter): AI-crawler IP-range
-  refresh attempts, labelled `success` (at least one vendor feed
-  updated) or `failure`. Driven by the daemon's auto-updater and by
-  `csm update-bot-ranges`.
-- `csm_botranges_prefixes{bot}` (gauge): current number of published IP
-  prefixes per crawler identity in the active overlay.
-- `csm_botranges_last_success_timestamp_seconds` (gauge): Unix time of
-  the last successful refresh.
+- `csm_botranges_refresh_total{result}` (counter): AI-crawler IP-range refresh attempts.
+  - `result` is `success` (at least one vendor feed updated) or `failure`.
+  - Driven by the daemon's auto-updater and by `csm update-bot-ranges`.
+- `csm_botranges_prefixes{bot}` (gauge): current number of published IP prefixes per crawler identity in the active overlay.
+- `csm_botranges_last_success_timestamp_seconds` (gauge): Unix time of the last successful refresh.
 
 ### Firewall
 
-- `csm_blocked_ips_total` (gauge): number of IPs currently on the
-  firewall block list. Excludes expired temp bans -- the store's
-  `LoadFirewallState` filters those before the gauge reads.
-- `csm_firewall_rules_total` (gauge): total firewall rules across
-  all four categories (blocked IPs, allowed IPs, blocked subnets,
-  port-specific allows). Excludes expired temp blocks and allow-list
-  rows. Sudden drops are worth investigating; expected drops happen
-  when temporary block or allow deadlines pass.
+- `csm_blocked_ips_total` (gauge): number of IPs currently on the firewall block list.
+  - Excludes expired temp bans. The store's `LoadFirewallState` filters those before the gauge reads.
+- `csm_firewall_rules_total` (gauge): total firewall rules across all four categories (blocked IPs, allowed IPs, blocked subnets, port-specific allows).
+  - Excludes expired temp blocks and allow-list rows.
+  - Sudden drops are worth investigating. Expected drops happen when temporary block or allow deadlines pass.
 
 ### Config reloads
 
-- `csm_config_reloads_total{result}` (counter): SIGHUP reload
-  attempts, by outcome. Labels: `result` is one of:
-  - `success` -- safe fields swapped in place, integrity hash
-    re-recorded, live config updated.
-  - `restart_required` -- one or more fields that need a full
-    restart changed; live settings unchanged.
-  - `error` -- YAML parse, validation, re-hash, or subsystem apply
-    failure; live settings unchanged. If signing succeeded before an
-    apply failure, the live integrity hashes follow the signed config.
-  - `noop` -- file edit produced no semantic change (identical
-    values, whitespace edit, etc.).
-  Alert target: `rate(csm_config_reloads_total{result="error"}[5m]) > 0`
-  paired with a short for-clause.
+- `csm_config_reloads_total{result}` (counter): SIGHUP reload attempts, by outcome.
+  - `result` is one of:
+    - `success`: safe fields swapped in place, integrity hash re-recorded, live config updated.
+    - `restart_required`: one or more fields that need a full restart changed; live settings unchanged.
+    - `error`: YAML parse, validation, re-hash, or subsystem apply failure; live settings unchanged. If signing succeeded before an apply failure, the live integrity hashes follow the signed config.
+    - `noop`: file edit produced no semantic change (identical values, whitespace edit, etc.).
+  - Alert target: `rate(csm_config_reloads_total{result="error"}[5m]) > 0` paired with a short for-clause.
 
 ### Auto-response
 
-- `csm_auto_response_actions_total{action}` (counter): every
-  auto-response action fired, by class. Labels: `action` is
-  `kill`, `quarantine`, or `block`. Incremented once per finding
-  the corresponding `Auto*` helper produces, so a batch blocking
-  four IPs in one cycle adds 4 to `action=block`. Useful for
-  detecting response storms. Verified admission blocks also increment this
-  counter, from every source admission runs (scan, challenge, central and
-  incident), once per engine result, without waiting for alert delivery:
-  `rate(csm_auto_response_actions_total[5m])`.
-- `csm_admission_handoff_seconds` (histogram): how long a response
-  funnel waits to hand an automatic response to the admission ledger,
-  which applies, previews or forecasts it. Preparing evidence for a possible later
-  response adds no sample; selected refusals and responses each add one. Buckets: 0.001 s .. 1 s. The share of
-  handoffs at or under 10 ms is
-  `csm_admission_handoff_seconds_bucket{le="0.01"} / csm_admission_handoff_seconds_count`;
-  it should stay at or above 0.99. Building the finding's evidence comes
-  before the handoff and is not timed here.
-- `csm_web_peer_settle_seconds` (histogram): how long a web finding's peer
-  verdict waited for the web server to flush its peer log before CSM
-  trusted a direct connection. Buckets: 0.01 s .. 5 s. The wait holds the
-  alert dispatcher, so values near 2 s on most findings show where
-  rewritten web traffic slows alert delivery.
+- `csm_auto_response_actions_total{action}` (counter): every auto-response action fired, by class.
+  - `action` is `kill`, `quarantine`, or `block`.
+  - Incremented once per finding the corresponding `Auto*` helper produces, so a batch blocking four IPs in one cycle adds 4 to `action=block`.
+  - Verified admission blocks also increment this counter, from every source admission runs (scan, challenge, central and incident). They count once per engine result, without waiting for alert delivery.
+  - Useful for detecting response storms: `rate(csm_auto_response_actions_total[5m])`.
+- `csm_admission_handoff_seconds` (histogram): how long a response funnel waits to hand an automatic response to the admission ledger, which applies, previews or forecasts it.
+  - Preparing evidence for a possible later response adds no sample. Selected refusals and responses each add one.
+  - Building the finding's evidence comes before the handoff and is not timed here.
+  - Buckets: 0.001 s .. 1 s.
+  - The share of handoffs at or under 10 ms is `csm_admission_handoff_seconds_bucket{le="0.01"} / csm_admission_handoff_seconds_count`. It should stay at or above 0.99.
+- `csm_web_peer_settle_seconds` (histogram): how long a web finding's peer verdict waited for the web server to flush its peer log before CSM trusted a direct connection.
+  - Buckets: 0.01 s .. 5 s.
+  - The wait holds the alert dispatcher, so values near 2 s on most findings show where rewritten web traffic slows alert delivery.
 
 ### Challenge
 
-- `csm_challenge_routed_total{check}` (counter): IPs routed to the
-  proof-of-work challenge, labelled by the source `check` that flagged
-  them (e.g. `http_scanner_profile`, `wp_login_bruteforce`,
-  `ip_reputation`). Graph per-detector challenge volume with
-  `sum by (check) (rate(csm_challenge_routed_total[5m]))`.
-- `csm_challenge_escalated_total{outcome}` (counter): challenge entries
-  that timed out and were escalated to a hard block, by firewall
-  `outcome`: `live` (a new block landed), `noop` (the IP was already
-  blocked), plus `dry_run`, `allowed`, and `allowlisted`. `outcome=live`
-  is how many challenges actually became blocks, including those applied by
-  admission after the timeout handoff.
-- `csm_challenge_passed_total{method}` (counter): challenged addresses
-  that got through, by `method`: `pow` (solved the puzzle), `captcha`,
-  `verify_cookie` (passed earlier and came back), `admin_cookie`, and
-  `crawler` (verified search crawler).
+- `csm_challenge_routed_total{check}` (counter): IPs routed to the proof-of-work challenge.
+  - `check` is the source check that flagged them (e.g. `http_scanner_profile`, `wp_login_bruteforce`, `ip_reputation`).
+  - Graph per-detector challenge volume with `sum by (check) (rate(csm_challenge_routed_total[5m]))`.
+- `csm_challenge_escalated_total{outcome}` (counter): challenge entries that timed out and were escalated to a hard block, by firewall `outcome`.
+  - `outcome` is `live` (a new block landed), `noop` (the IP was already blocked), plus `dry_run`, `allowed`, and `allowlisted`.
+  - `outcome=live` is how many challenges actually became blocks, including those applied by admission after the timeout handoff.
+- `csm_challenge_passed_total{method}` (counter): challenged addresses that got through, by `method`.
+  - `method` is `pow` (solved the puzzle), `captcha`, `verify_cookie` (passed earlier and came back), `admin_cookie`, and `crawler` (verified search crawler).
 
 ### Firewall blocks
 
-- `csm_firewall_block_outcome_total{outcome,source}` (counter): every IP
-  block attempt, labelled by firewall `outcome` (`live`, `dry_run`,
-  `allowed`, `allowlisted`, `noop`, `protected` for refused
-  infrastructure IPs, `error` for engine failures or an unavailable
-  engine) and by `source` (`scan`, `challenge`, `incident`,
-  `central_intel`, `cli`, `web_ui`, or `unknown` for an invalid internal
-  source). All combinations are exported at zero from startup, and
-  unexpected outcome or source values collapse into the fixed `error` or
-  `unknown` buckets instead of creating new labels.
-  Admission execution reports into these same counters. Failed or unknown
-  batch outcomes count as errors; forecasts and queued deferrals add no
-  attempts. Retrying an outcome write or audit delivery adds no count.
-  This is the aliveness signal for auto-response: alert when
-  `sum(rate(csm_firewall_block_outcome_total{outcome="live",source!~"cli|web_ui"}[1h])) == 0`
-  while attack findings keep coming, and watch `outcome="error"` for a
-  dying engine.
+- `csm_firewall_block_outcome_total{outcome,source}` (counter): every IP block attempt, labelled by firewall `outcome` and by `source`.
+  - `outcome` is `live`, `dry_run`, `allowed`, `allowlisted`, `noop`, `protected` for refused infrastructure IPs, or `error` for engine failures or an unavailable engine.
+  - `source` is `scan`, `challenge`, `incident`, `central_intel`, `cli`, `web_ui`, or `unknown` for an invalid internal source.
+  - All combinations are exported at zero from startup. Unexpected outcome or source values collapse into the fixed `error` or `unknown` buckets instead of creating new labels.
+  - Admission execution reports into these same counters. Failed or unknown batch outcomes count as errors.
+  - Forecasts and queued deferrals add no attempts. Retrying an outcome write or audit delivery adds no count.
+  - This is the aliveness signal for auto-response. Alert when `sum(rate(csm_firewall_block_outcome_total{outcome="live",source!~"cli|web_ui"}[1h])) == 0` while attack findings keep coming, and watch `outcome="error"` for a dying engine.
 
 ### Retention (when `retention.enabled: true`)
 
-- `csm_retention_sweeps_total` (counter): number of retention
-  sweep cycles completed since daemon start. A flatline after a
-  restart means the sweep goroutine is not scheduling; a healthy
-  daemon increments this on every `sweep_interval` tick.
-- `csm_retention_deleted_total` (counter): cumulative entries
-  deleted across the `history`, `attacks:events`, and `reputation`
-  buckets. Spikes on the first sweep after enabling retention
-  (initial backlog), then settles to the steady-state churn. Useful
-  for estimating when the file might benefit from a restart or a
-  `csm store compact` maintenance window.
+- `csm_retention_sweeps_total` (counter): number of retention sweep cycles completed since daemon start.
+  - A healthy daemon increments this on every `sweep_interval` tick.
+  - A flatline after a restart means the sweep goroutine is not scheduling.
+- `csm_retention_deleted_total` (counter): cumulative entries deleted across the `history`, `attacks:events`, and `reputation` buckets.
+  - Spikes on the first sweep after enabling retention (initial backlog), then settles to the steady-state churn.
+  - Useful for estimating when the file might benefit from a restart or a `csm store compact` maintenance window.
 
 ### PHP-relay (email abuse, cPanel only)
 
 All series are prefixed `csm_php_relay_`. Registered when `email_protection.php_relay.enabled: true` and the host is cPanel; otherwise zero across the board. See [Real-time detection](detection-realtime.md#php-relay-mail-abuse-cpanel-only).
 
-- `csm_php_relay_findings_total{path}` (counter): findings emitted per detection path. Labels: `path` is one of `header`, `volume`, `volume_account`, `fanout` (and later `baseline`, `reputation` for Stages 2-3). Use `rate(...)` to spot detection storms; a sudden rate jump on `header` typically means a contact-form vulnerability is being exploited, on `volume_account` typically means an account password was leaked.
-- `csm_php_relay_actions_total{action,result}` (counter): auto-freeze invocations attempted. Labels: `action` is currently `freeze`; `result` is `ok` or `fail`. Pair with `csm_php_relay_findings_total` to confirm freeze keeps up with detection.
-- `csm_php_relay_action_gone_total` (counter): messages already absent from the spool by the time `exim -Mf` ran. Normal queue churn; not a failure. Sustained growth means the spool is moving fast and the freezer is racing the queue runner.
-- `csm_php_relay_path_skipped_total{path,reason}` (counter): path evaluation that bailed before producing a finding. Labels: `path` matches the finding labels above; `reason` enumerates the gate that fired (e.g. ignore-list match, missing scriptKey).
-- `csm_php_relay_spool_scan_fallbacks_total{reason}` (counter): AutoFreeze fell back to a full spool walk to find msgIDs. Labels: `reason` is `capped` (the in-memory `activeMsgs` per script hit its cap, so a fresh disk walk was needed) or `reputation` (a late reputation finding arrived for a script with no live `activeMsgs`). Sustained growth on `capped` means a single script is firing faster than the in-memory window keeps state for; consider raising `header_score_volume_min` or adding an ignore.
-- `csm_php_relay_active_msgs_capped_total` (counter): per-script `activeMsgs` set hit its cap and dropped the oldest entry. Counts the eviction event itself; the next freeze for that script will land in `csm_php_relay_spool_scan_fallbacks_total{reason="capped"}`.
-- `csm_php_relay_windows_active{kind}` (gauge): retained per-script / per-IP / per-account window state. Labels: `kind` is `script`, `ip`, or `account`. Sized by Flow E sweep cadence (5 min for windows, 24 h retention for accounts); flat values across hours are normal.
-- `csm_php_relay_msgid_index_size{layer}` (gauge): msgID dedup index size by storage layer. Labels: `layer` is `memory` (in-process map) or `bbolt` (persisted batch writer). Memory ceiling is 200k entries; bbolt grows freely until the 25 h Flow E sweep prunes it.
-- `csm_php_relay_msgindex_persist_dropped_total` (counter): bbolt persist queue overflow drops (the 4096-deep buffered channel was full when the watcher tried to enqueue). Should be zero in steady state; a non-zero value means the bbolt writer is blocked on disk and the in-memory dedup is the only thing protecting against double-fire on a queue-runner re-write.
-- `csm_php_relay_msgindex_persist_errors_total` (counter): bbolt commit failures from the async batch writer. Each bump also emits a Critical `email_php_relay_msgindex_persist_failed` finding. Disk-full or permissions issue on `/var/lib/csm/state/csm.db`.
-- `csm_php_relay_inotify_overflows_total` (counter): kernel `IN_Q_OVERFLOW` events on the spool watcher. Each one triggers a bounded recovery scan (default cap 1000 files); if the cap fires, also emits `email_php_relay_overflow_scan_truncated` Critical. Sustained growth means the spool is churning faster than inotify can keep up -- usually a backup restore or a real attack.
-- `csm_php_relay_spool_read_errors_total` (counter): `emailspool.ParseHeaders` errors on `-H` files the watcher tried to consume. Usually transient (file disappeared between inotify event and open) and self-correcting; sustained growth points at a permissions or filesystem problem.
-- `csm_php_relay_userdata_errors_total` (counter): `cpanelUserDomains` resolver errors reading `/var/cpanel/userdata/`. Used by the Path 1 `From` mismatch check; errors here mean Path 1 is potentially undercounting until the read recovers.
+- `csm_php_relay_findings_total{path}` (counter): findings emitted per detection path.
+  - `path` is one of `header`, `volume`, `volume_account`, `fanout` (and later `baseline`, `reputation` for Stages 2-3).
+  - Use `rate(...)` to spot detection storms.
+  - A sudden rate jump on `header` typically means a contact-form vulnerability is being exploited.
+  - A sudden rate jump on `volume_account` typically means an account password was leaked.
+- `csm_php_relay_actions_total{action,result}` (counter): auto-freeze invocations attempted.
+  - `action` is currently `freeze`. `result` is `ok` or `fail`.
+  - Pair with `csm_php_relay_findings_total` to confirm freeze keeps up with detection.
+- `csm_php_relay_action_gone_total` (counter): messages already absent from the spool by the time `exim -Mf` ran.
+  - Normal queue churn; not a failure.
+  - Sustained growth means the spool is moving fast and the freezer is racing the queue runner.
+- `csm_php_relay_path_skipped_total{path,reason}` (counter): path evaluation that bailed before producing a finding.
+  - `path` matches the finding labels above.
+  - `reason` enumerates the gate that fired (e.g. ignore-list match, missing scriptKey).
+- `csm_php_relay_spool_scan_fallbacks_total{reason}` (counter): AutoFreeze fell back to a full spool walk to find msgIDs.
+  - `reason` is one of:
+    - `capped`: the in-memory `activeMsgs` per script hit its cap, so a fresh disk walk was needed
+    - `reputation`: a late reputation finding arrived for a script with no live `activeMsgs`
+  - Sustained growth on `capped` means a single script is firing faster than the in-memory window keeps state for. Consider raising `header_score_volume_min` or adding an ignore.
+- `csm_php_relay_active_msgs_capped_total` (counter): per-script `activeMsgs` set hit its cap and dropped the oldest entry.
+  - Counts the eviction event itself. The next freeze for that script will land in `csm_php_relay_spool_scan_fallbacks_total{reason="capped"}`.
+- `csm_php_relay_windows_active{kind}` (gauge): retained per-script / per-IP / per-account window state.
+  - `kind` is `script`, `ip`, or `account`.
+  - Sized by Flow E sweep cadence (5 min for windows, 24 h retention for accounts). Flat values across hours are normal.
+- `csm_php_relay_msgid_index_size{layer}` (gauge): msgID dedup index size by storage layer.
+  - `layer` is `memory` (in-process map) or `bbolt` (persisted batch writer).
+  - Memory ceiling is 200k entries. bbolt grows freely until the 25 h Flow E sweep prunes it.
+- `csm_php_relay_msgindex_persist_dropped_total` (counter): bbolt persist queue overflow drops (the 4096-deep buffered channel was full when the watcher tried to enqueue).
+  - Should be zero in steady state.
+  - A non-zero value means the bbolt writer is blocked on disk, and the in-memory dedup is the only thing protecting against double-fire on a queue-runner re-write.
+- `csm_php_relay_msgindex_persist_errors_total` (counter): bbolt commit failures from the async batch writer.
+  - Each bump also emits a Critical `email_php_relay_msgindex_persist_failed` finding.
+  - Disk-full or permissions issue on `/var/lib/csm/state/csm.db`.
+- `csm_php_relay_inotify_overflows_total` (counter): kernel `IN_Q_OVERFLOW` events on the spool watcher.
+  - Each one triggers a bounded recovery scan (default cap 1000 files). If the cap fires, it also emits `email_php_relay_overflow_scan_truncated` Critical.
+  - Sustained growth means the spool is churning faster than inotify can keep up, usually a backup restore or a real attack.
+- `csm_php_relay_spool_read_errors_total` (counter): `emailspool.ParseHeaders` errors on `-H` files the watcher tried to consume.
+  - Usually transient (file disappeared between inotify event and open) and self-correcting.
+  - Sustained growth points at a permissions or filesystem problem.
+- `csm_php_relay_userdata_errors_total` (counter): `cpanelUserDomains` resolver errors reading `/var/cpanel/userdata/`.
+  - Used by the Path 1 `From` mismatch check. Errors here mean Path 1 is potentially undercounting until the read recovers.
 
 ### Anti-spam learning
 
-All series are prefixed `csm_antispam_learning_`. Pass totals and state gauges update after each completed Spam folder pass while learning runs. Contributions are counted when committed, including background retries. No series carries an account, mailbox or UID label. See [Anti-spam](antispam.md).
+All series are prefixed `csm_antispam_learning_`. See [Anti-spam](antispam.md).
+
+- Pass totals and state gauges update after each completed Spam folder pass while learning runs.
+- Contributions are counted when committed, including background retries.
+- No series carries an account, mailbox or UID label.
+
+The series:
 
 - `csm_antispam_learning_reports_admitted_total` (counter): Spam folder reports the learner accepted.
 - `csm_antispam_learning_contributions_committed_total` (counter): cluster contributions committed from those reports.
-- `csm_antispam_learning_skips_total{reason}` (counter): entries and reports skipped. `reason` is a fixed code such as `tagged`, `malformed`, `opted_out`, `oversize` or `account_capacity`. On Postfix hosts it also counts Dovecot mailboxes not watched, such as `driver` or `no_junk`, and `cancel_unconfirmed` when a pass could not confirm that a domain or mailbox was removed and so dropped no reports.
-- `csm_antispam_learning_pending_reports` (gauge): reports waiting after the last pass. When discovery was incomplete, including unreadable folders or discovery limits, this is a lower bound.
+- `csm_antispam_learning_skips_total{reason}` (counter): entries and reports skipped.
+  - `reason` is a fixed code such as `tagged`, `malformed`, `opted_out`, `oversize` or `account_capacity`.
+  - On Postfix hosts it also counts Dovecot mailboxes not watched, such as `driver` or `no_junk`, and `cancel_unconfirmed` when a pass could not confirm that a domain or mailbox was removed and so dropped no reports.
+- `csm_antispam_learning_pending_reports` (gauge): reports waiting after the last pass.
+  - When discovery was incomplete, including unreadable folders or discovery limits, this is a lower bound.
 - `csm_antispam_learning_backlog_age_seconds` (gauge): age of the oldest waiting report at the last pass.
 - `csm_antispam_learning_last_pass_timestamp_seconds` (gauge): when the last pass completed.
 - `csm_antispam_learning_live_clusters`, `csm_antispam_learning_zero_target_records`, `csm_antispam_learning_body_bytes` (gauges): learned clusters, zero-target guards and stored anchor message bytes.
 - `csm_antispam_learning_uncertain_intents` (gauge): anchor writes whose outcome is still being reconciled.
 - `csm_antispam_learning_oldest_unchecked_timestamp_seconds`, `csm_antispam_learning_audit_completed_timestamp_seconds` (gauges): anchor audit progress.
-- `csm_antispam_learning_reconstructed_clusters` (gauge): missing live anchors newly scheduled for reconstruction since the learner started. Retries, ordinary value corrections and removal of retired anchors do not increase it.
+- `csm_antispam_learning_reconstructed_clusters` (gauge): missing live anchors newly scheduled for reconstruction since the learner started.
+  - Retries, ordinary value corrections and removal of retired anchors do not increase it.
 
-If the learning ledger cannot be read after a pass, the engine-state gauges
-(`live_clusters`, `zero_target_records`, `body_bytes`, `uncertain_intents`,
-`oldest_unchecked_timestamp_seconds`, `audit_completed_timestamp_seconds`
-and `reconstructed_clusters`) report `NaN` until a successful read.
+If the learning ledger cannot be read after a pass, the engine-state gauges (`live_clusters`, `zero_target_records`, `body_bytes`, `uncertain_intents`, `oldest_unchecked_timestamp_seconds`, `audit_completed_timestamp_seconds` and `reconstructed_clusters`) report `NaN` until a successful read.
 
 ### Signature retroactive rescans
 
-- `csm_signature_rescans_total` (counter): rescans queued by a change
-  to a tracked signature file's content that completed. A rescan
-  completes when the rolling deep YARA scan has scanned every file
-  since the change. Re-installing identical rules, as a package upgrade
-  or a repeated download does, does not count. Multiple updates before
-  a rescan completes coalesce into one.
+- `csm_signature_rescans_total` (counter): rescans queued by a change to a tracked signature file's content that completed.
+  - A rescan completes when the rolling deep YARA scan has scanned every file since the change.
+  - Re-installing identical rules, as a package upgrade or a repeated download does, does not count.
+  - Multiple updates before a rescan completes coalesce into one.
 
-The watcher compares content hashes when a file's mtime or size changes;
-symbolic links use the target file's metadata. Failed reads and files
-replaced during hashing are retried without discarding the last verified
-state. First observations and file removals do not queue a rescan.
+The rest of this section explains when a rescan is queued and when it completes.
 
-The rolling deep YARA scan reads files in path order and resumes each
-deep run where the previous one stopped, so one pass spans many deep runs.
-A rules update does not restart the pass: restarting on every update would
-never reach the files that sort last when updates come faster than a pass.
-The scan records where it stood when it took the update, and the rescan
-completes once the scan has wrapped and come back to that point. Every file
-is then scanned with the new rules within one pass. An update during a
-rescan starts a new one from where the scan then stands.
+#### What queues a rescan
 
-If the set of scan roots changes, or a root cannot be listed, the rescan
-starts a new lap from where the scan stands; the scan itself keeps going
-and still covers every root it can read. On a host whose accounts change
-faster than one pass, the rescan can stay pending; scanning is unaffected.
+The watcher compares content hashes when a file's mtime or size changes. Symbolic links use the target file's metadata.
 
-The rolling scan uses the YARA rules. YAML rule updates reach existing
-files only when those files change, as before.
+- Failed reads and files replaced during hashing are retried without discarding the last verified state.
+- First observations and file removals do not queue a rescan.
 
-A queued rescan is stored with the rule state that caused it, and the scan
-stores its progress with its cursor, so daemon restarts keep both. The
-saved queue is restored even if the state store becomes available after
-the first watcher tick. Invalid queue records log a warning and are
-repaired by queuing a fresh rescan; the scan neither tracks nor clears a
-queue it cannot read. A deep run cancelled by shutdown or by the check
-timeout saves no progress. Coverage gaps, reported by `yara_scan_incomplete`, do
-not keep the queue pending.
+The rolling scan uses the YARA rules. YAML rule updates reach existing files only when those files change.
 
-Setting `detection.rescan_on_signature_update` to `false` stops the
-watcher and pauses the queue: the scan keeps running but neither starts
-nor completes a rescan. Re-enabling it resumes the saved work.
+#### How a rescan completes
 
-`csm check-deep` advances the same rolling scan, so it can complete a
-queued rescan and increment this counter. Its findings are returned and
-kept in scan history but not alerted or acted on, and the live scan does
-not revisit those files until its next pass. Use `csm run-deep` when
-findings should alert.
+The rolling deep YARA scan reads files in path order and resumes each deep run where the previous one stopped, so one pass spans many deep runs.
 
-State from older builds contains only mtimes. The first successful read
-adds a hash without queuing a rescan if the recorded mtime still matches.
-A moved mtime without a recorded hash conservatively queues one rescan.
+A rules update does not restart the pass. Restarting on every update would never reach the files that sort last when updates come faster than a pass. Instead:
+
+1. The scan records where it stood when it took the update.
+2. The rescan completes once the scan has wrapped and come back to that point.
+
+This way every file is scanned with the new rules within one pass.
+
+An update during a rescan starts a new one from where the scan then stands.
+
+If the set of scan roots changes, or a root cannot be listed, the rescan starts a new lap from where the scan stands. The scan itself keeps going and still covers every root it can read. On a host whose accounts change faster than one pass, the rescan can stay pending; scanning is unaffected.
+
+Coverage gaps, reported by `yara_scan_incomplete`, do not keep the queue pending.
+
+#### Restarts and saved state
+
+A queued rescan is stored with the rule state that caused it, and the scan stores its progress with its cursor, so daemon restarts keep both.
+
+- The saved queue is restored even if the state store becomes available after the first watcher tick.
+- Invalid queue records log a warning and are repaired by queuing a fresh rescan. The scan neither tracks nor clears a queue it cannot read.
+- A deep run cancelled by shutdown or by the check timeout saves no progress.
+
+State from older builds contains only mtimes. The first successful read adds a hash without queuing a rescan if the recorded mtime still matches. A moved mtime without a recorded hash conservatively queues one rescan.
+
+#### Turning rescans off
+
+Setting `detection.rescan_on_signature_update` to `false` stops the watcher and pauses the queue: the scan keeps running but neither starts nor completes a rescan. Re-enabling it resumes the saved work.
+
+#### Manual deep checks
+
+`csm check-deep` advances the same rolling scan, so it can complete a queued rescan and increment this counter. Its findings are returned and kept in scan history but not alerted or acted on, and the live scan does not revisit those files until its next pass. Use `csm run-deep` when findings should alert.
 
 ## Counter reset semantics
 
-Prometheus counters in CSM live in process memory. They reset to zero
-whenever the daemon restarts (config change, binary upgrade, crash
-recovery). This is the standard behaviour for every
-Prometheus-instrumented daemon; Prometheus's scrape pipeline detects
-counter resets on its own and `rate()`, `increase()`, and
-`rate_over_time()` all handle them correctly.
+Prometheus counters in CSM live in process memory. They reset to zero whenever the daemon restarts (config change, binary upgrade, crash recovery).
 
-Operators should not alert on "counter decreased across a scrape" as
-a failure condition. Alert on `rate()` or `increase()` of a counter
-over a window long enough to absorb expected restarts.
+This is the standard behavior for every Prometheus-instrumented daemon. Prometheus's scrape pipeline detects counter resets on its own, and `rate()`, `increase()`, and `rate_over_time()` all handle them correctly.
 
-Persisting counters across restarts would require writing to bbolt on
-every increment, which would not pay for itself. If a specific metric
-needs restart-stable behaviour later, a gauge-over-the-bbolt-counter
-pattern can be added for that one case without affecting the rest.
+Do not alert on "counter decreased across a scrape" as a failure condition. Alert on `rate()` or `increase()` of a counter over a window long enough to absorb expected restarts.
+
+Persisting counters across restarts would require writing to bbolt on every increment, which would not pay for itself. If a specific metric needs restart-stable behavior later, a gauge-over-the-bbolt-counter pattern can be added for that one case without affecting the rest.
 
 ## Caveats
 
 - Scrape the web UI's HTTPS port, not a separate listener.
-- `curl -k` / `insecure_skip_verify` is appropriate only when the
-  cert is self-signed and the network path is trusted. Pin a CA for
-  anything else.
-- Prometheus label cardinality: per-account and per-IP labels are
-  deliberately not exposed. Shared-hosting deployments with 1000+
-  cPanel users would otherwise overwhelm a Prometheus server.
-- Metric vectors cap label-value combinations at 1000 children per
-  metric, including the overflow bucket. Once a vector reaches that
-  cap, new combinations are aggregated under `_overflow_`.
+- `curl -k` / `insecure_skip_verify` is appropriate only when the cert is self-signed and the network path is trusted. Pin a CA for anything else.
+- Per-account and per-IP labels are deliberately not exposed, to limit Prometheus label cardinality. Shared-hosting deployments with 1000+ cPanel users would otherwise overwhelm a Prometheus server.
+- Metric vectors cap label-value combinations at 1000 children per metric, including the overflow bucket. Once a vector reaches that cap, new combinations are aggregated under `_overflow_`.
 
 ## Not instrumented (yet)
 
-- Per-account labels on any metric. Deliberately off: shared-hosting
-  deployments with 1000+ cPanel users would blow out Prometheus
-  cardinality.
-- Fanotify inline auto-response actions (the quarantine-while-
-  seeing-the-write path in `fanotify.go`). The periodic
-  `csm_auto_response_actions_total` does not count those; a follow-
-  up may split the metric or add a `source` label.
-- bbolt per-bucket size breakdown, `csm_store_used_bytes`, and
-  `csm_store_last_compact_ts`. Deferred to the online-compaction
-  follow-up of the retention work (see `ROADMAP.md`).
+- Per-account labels on any metric. Deliberately off: shared-hosting deployments with 1000+ cPanel users would blow out Prometheus cardinality.
+- Fanotify inline auto-response actions (the quarantine-while-seeing-the-write path in `fanotify.go`). The periodic `csm_auto_response_actions_total` does not count those. A follow-up may split the metric or add a `source` label.
+- bbolt per-bucket size breakdown, `csm_store_used_bytes`, and `csm_store_last_compact_ts`. Deferred to the online-compaction follow-up of the retention work (see `ROADMAP.md`).

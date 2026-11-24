@@ -1,5 +1,15 @@
 # Installation
 
+Install CSM from the signed APT or DNF repository. That is the recommended method, and it delivers updates through the package manager. Three other methods are described below for hosts that need them. After any install, set the configuration, start the daemon and run a baseline scan; see [Post-install (all methods)](#post-install-all-methods).
+
+| Method | When to use it |
+|--------|----------------|
+| [APT repository](#apt-repository-debian--ubuntu-recommended) | Debian and Ubuntu. Recommended. |
+| [DNF repository](#dnf-repository-almalinux--rocky--rhel--cloudlinux--cpanel-recommended) | AlmaLinux, Rocky, RHEL, CloudLinux and cPanel hosts. Recommended. |
+| [Online standalone installer](#online-standalone-installer) | The host has Internet access but cannot use the APT or DNF repository. |
+| [Manual package download](#manual-rpm--deb-download) | You need a specific version, or want to install without adding the repository. |
+| [deploy.sh](#manual-deploysh) | A manual install with the deploy script. |
+
 ## Supported Platforms
 
 | Platform | Web server | Package | Notes |
@@ -8,17 +18,13 @@
 | Ubuntu 20.04+ / Debian 11+ | Apache (`apache2`), Nginx, LiteSpeed, or none | .deb | Same, with `debsums`/`dpkg --verify` in place of `rpm -V`. |
 | cPanel/WHM on CloudLinux / AlmaLinux / Rocky / Ubuntu | Apache (EA4) or LiteSpeed, with or without ea-nginx | .rpm or .deb | Adds cPanel account, WordPress, Exim, and WHM plugin coverage. |
 
-Postfix hosts with Dovecot also get mail login detection and optional [rspamd spam filtering](antispam.md#postfix-hosts). On hosts without cPanel, set `account_roots` for real-time document-root rules, scheduled YARA sweeps and web-root performance checks. Other account and CMS scans still depend on account layouts; see [deep check platform support](detection-deep.md#platform-support).
+Postfix hosts with Dovecot also get mail login detection and optional [rspamd spam filtering](antispam.md#postfix-hosts).
 
-The daemon auto-detects the OS, control panel (cPanel/Plesk/DirectAdmin/none), and web server (Apache/Nginx/LiteSpeed) at startup. The detected platform is logged at startup as:
+On hosts without cPanel, set `account_roots` for real-time document-root rules, scheduled YARA sweeps and web-root performance checks. Other account and CMS scans still depend on account layouts; see [deep check platform support](detection-deep.md#platform-support).
 
-```
-[2026-04-10 08:13:37] platform: os=ubuntu/24.04 panel=none webserver=nginx
-```
+The daemon auto-detects the OS, the control panel (cPanel/Plesk/DirectAdmin/none) and the web server (Apache/Nginx/LiteSpeed) at startup. See [Verifying platform auto-detection](#verifying-platform-auto-detection).
 
-Check it with `journalctl -u csm.service | grep platform:` after starting the daemon.
-
-## APT repository (Debian / Ubuntu) -- recommended
+## APT repository (Debian / Ubuntu), recommended
 
 The package repository at `mirrors.pidginhost.com/csm/` is the preferred install method for Debian and Ubuntu. Updates are available through `apt upgrade`, and APT verifies the repository's signed metadata before installing packages.
 
@@ -36,11 +42,13 @@ sudo apt update
 sudo apt install csm
 ```
 
-Works on Ubuntu 20.04+, Debian 11+, and compatible derivatives. The single `stable` suite serves every supported release. Production binaries dynamically link glibc with a build floor of 2.28, which is available on all supported distributions; YARA-X itself is linked into the executable.
+This works on Ubuntu 20.04+, Debian 11+, and compatible derivatives. The single `stable` suite serves every supported release.
+
+Production binaries dynamically link glibc with a build floor of 2.28, which is available on all supported distributions. YARA-X itself is linked into the executable.
 
 To upgrade later: `sudo apt update && sudo apt upgrade csm`.
 
-## DNF repository (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel) -- recommended
+## DNF repository (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel), recommended
 
 ```bash
 # 1. Import the signing key into the RPM keyring
@@ -61,11 +69,18 @@ EOF
 sudo dnf install csm
 ```
 
-`rpm --import` populates the RPM keyring, which covers `gpgcheck` -- the
-signature on the package. It does not populate the separate keyring dnf keeps
-for `repo_gpgcheck`, the signature on the repository *metadata*. So the first
-transaction against a new repository still prompts, even after a successful
-import:
+The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. This works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
+
+To upgrade later: `sudo dnf upgrade csm`.
+
+### The key prompt on first install
+
+The first transaction against a new repository still prompts for the key, even after a successful `rpm --import`. The reason is that dnf uses two keyrings:
+
+- `rpm --import` populates the RPM keyring, which covers `gpgcheck`, the signature on the package.
+- It does not populate the separate keyring dnf keeps for `repo_gpgcheck`, the signature on the repository metadata.
+
+The prompt looks like this:
 
 ```
 Importing GPG key 0x81CD59B1:
@@ -74,17 +89,14 @@ Importing GPG key 0x81CD59B1:
 Is this ok [y/N]:
 ```
 
-Without `-y`, an unanswered key prompt defaults to no. A rejected key can
-produce an error such as:
+Without `-y`, an unanswered key prompt defaults to no. A rejected key can produce an error such as:
 
 ```
 Error: Failed to download metadata for repo 'csm':
 repomd.xml GPG signature verification error: Bad GPG signature
 ```
 
-The error alone does not distinguish an untrusted key from damaged or
-incorrectly signed metadata. Check the fingerprint against the value above,
-then verify the metadata signature:
+The error alone does not distinguish an untrusted key from damaged or incorrectly signed metadata. Check the fingerprint against the value above, then verify the metadata signature:
 
 ```bash
 base=https://mirrors.pidginhost.com/csm/rpm/el9/x86_64/repodata
@@ -95,19 +107,20 @@ gpg --verify repomd.xml.asc repomd.xml
 # gpg: Good signature from "CSM Package Signing ... <security@pidginhost.com>"
 ```
 
-For unattended installs, approve the repository key in provisioning first,
-then use `sudo dnf -y install csm`. DNF's
-[`assumeyes` option](https://dnf.readthedocs.io/en/stable/conf_ref.html#main-options)
-accepts key-import prompts as well as package prompts. Keep both signature
-checks enabled; `-y` is not a substitute for verifying the expected key.
+### Unattended installs
 
-The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. Works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
+For unattended installs, approve the repository key in provisioning first, then use `sudo dnf -y install csm`. DNF's [`assumeyes` option](https://dnf.readthedocs.io/en/stable/conf_ref.html#main-options) accepts key-import prompts as well as package prompts.
 
-To upgrade later: `sudo dnf upgrade csm`.
+Keep both signature checks enabled. `-y` is not a substitute for verifying the expected key.
 
 ## Online standalone installer
 
-Use the standalone installer when the host has Internet access but cannot use the APT or DNF repository. It downloads the binary and supporting assets from the latest GitHub release, verifies their checksums, requires successful Ed25519 signature verification, and installs outside the package manager.
+Use the standalone installer when the host has Internet access but cannot use the APT or DNF repository. The installer does this:
+
+1. It downloads the binary and supporting assets from the latest GitHub release.
+2. It verifies their checksums.
+3. It requires successful Ed25519 signature verification.
+4. It installs outside the package manager.
 
 ```bash
 curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh
@@ -115,9 +128,7 @@ less /tmp/csm-install.sh
 sudo bash /tmp/csm-install.sh
 ```
 
-Standalone verification uses OpenSSL 3.0 or newer, an already installed CSM build providing `csm verify-release`, or `python3-cryptography` -- in that order. EL8 and CloudLinux 8 have the last of these, so the standalone path works there even though their OpenSSL 1.1.1 cannot verify Ed25519. A missing key, missing current-release signature, absent verifier, or failed verification stops the install before executing the binary. See [Release signing](release-signing.md) for the narrowly scoped historical-release exception.
-
-It auto-detects the hostname and alert email, generates a Web UI token, and prompts before applying. Non-interactive mode:
+The installer auto-detects the hostname and alert email, generates a Web UI token, and prompts before applying. For non-interactive mode:
 
 ```bash
 sudo bash /tmp/csm-install.sh --email admin@example.com --non-interactive
@@ -125,9 +136,23 @@ sudo bash /tmp/csm-install.sh --email admin@example.com --non-interactive
 
 This is not an offline or air-gapped installation path. Mirror the signed packages and repository metadata for disconnected environments.
 
+### How the standalone installer verifies the release
+
+Standalone verification uses one of these, in this order:
+
+1. OpenSSL 3.0 or newer.
+2. An already installed CSM build providing `csm verify-release`.
+3. `python3-cryptography`.
+
+EL8 and CloudLinux 8 have the last of these, so the standalone path works there even though their OpenSSL 1.1.1 cannot verify Ed25519.
+
+A missing key, a missing current-release signature, an absent verifier, or a failed verification stops the install before executing the binary. See [Release signing](release-signing.md) for the narrowly scoped historical-release exception.
+
 ## Manual `.rpm` / `.deb` download
 
-If you need a specific version or want to install without adding the repository, verify its detached signature before invoking the package manager. Save the trusted public key from [Release signing](release-signing.md#public-key) as `csm-signing.pub`. These commands require OpenSSL 3.0 or newer; older hosts should use the signed repository above. Installing a local package does not by itself establish the repository signature chain:
+Use this method if you need a specific version or want to install without adding the repository. Verify the package's detached signature before invoking the package manager.
+
+Save the trusted public key from [Release signing](release-signing.md#public-key) as `csm-signing.pub`. These commands require OpenSSL 3.0 or newer. Older hosts should use the signed repository above. Installing a local package does not by itself establish the repository signature chain.
 
 ```bash
 # RHEL family
@@ -147,34 +172,19 @@ openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
 
 Replace `VERSION` with a published version. Both files are also available from the package mirror if you need to pin a release without adding the repository.
 
-## Filesystem layout
+## Manual (deploy.sh)
 
-The package uses FHS paths for config, state, drop-ins, and shipped profiles. Upgrades keep `/opt/csm/csm.yaml` as a compatibility link for older scripts:
-
-| Concern | Current path |
-|---|---|
-| Main config | `/etc/csm/csm.yaml` |
-| Legacy config link | `/opt/csm/csm.yaml` |
-| Drop-in fragments | `/etc/csm/conf.d/*.yaml` |
-| State directory | `/var/lib/csm/state/` |
-| Shipped profiles | `/usr/lib/csm/profiles/` |
-| Shipped config template | `/usr/lib/csm/csm.yaml.default` |
-| Audit log | `/var/log/csm/audit.jsonl` |
-| Binary | `/opt/csm/csm` |
-| Quarantine | `/opt/csm/quarantine/` |
-| YARA / signature rules | `/opt/csm/rules/` |
-
-On Debian and Ubuntu, removing the package keeps the main config. Purging the package removes the main config and its package-created compatibility link. If the main config is a symlink, purge leaves its target in place.
-
-The systemd unit declares `StateDirectory=csm` so systemd manages permissions for the state directory, and the package creates `/etc/csm` with mode 0750; the daemon itself cannot write `/etc/csm` (see [Service configuration writes](service-confinement.md)). `/var/lib/csm` is mode 0711, searchable but not listable, so Exim can reach the email forward guard files below it; `/var/lib/csm/state/` stays 0700. On upgrade, the package copies a real legacy main config into `/etc/csm/csm.yaml` when needed and points `/opt/csm/csm.yaml` at it. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS state path. See [Upgrading - FHS migration](upgrading.md#fhs-migration-state-config-drop-ins-and-profiles) for the manual-binary-swap case.
-
-The binary installer and package scripts also keep the shared state root searchable, including on systemd 239, which does not reset an existing state directory's mode. Applying the forward guard repairs legacy parent permissions without making private directories listable and rejects symlinks in those parents. Install and `csm rehash` likewise refuse a symlinked `/var/lib/csm`; relocate state with `state_path` instead. Lookup refreshes maintain search access to the lookup directory inside the daemon sandbox; full guard application runs outside it.
-
-When refreshing the service unit, install and `csm rehash` create any missing directory the unit requires before replacing it, preserving existing modes except for the shared state root's required search bits. Optional paths and systemd-managed directories are left alone unless needed as parents of a required path. If a required directory cannot be created, the refresh fails and the previous unit stays in place.
+```bash
+/opt/csm/deploy.sh install
+vi /etc/csm/csm.yaml   # set hostname, alert email, infra IPs
+csm validate
+systemctl enable --now csm.service
+csm baseline
+```
 
 ## Post-install (all methods)
 
-RPM/DEB packages are the maintained installation path and include package-manager ownership, integration profiles, UI assets, rules, and the prebuilt PAM module. The standalone installer supplies the runtime assets but does not register them with a package manager. In either case, set infrastructure IPs and confirm the alert address before starting the daemon.
+Set infrastructure IPs and confirm the alert address before starting the daemon, whichever method you used.
 
 ```bash
 sudo vi /etc/csm/csm.yaml              # Set hostname, alert email, infra IPs
@@ -185,21 +195,45 @@ sudo csm baseline                      # Record current state as known-good via 
 
 Then open the Web UI at `https://<server>:9443/login`. The baseline is detailed under [Baseline Scan](#baseline-scan).
 
-## Rollback to an older version
+RPM/DEB packages are the maintained installation path. They include package-manager ownership, integration profiles, UI assets, rules, and the prebuilt PAM module. The standalone installer supplies the runtime assets but does not register them with a package manager.
 
-Both the APT and DNF repositories retain the **last 5 tagged releases** at any time. To downgrade:
+## Baseline Scan
 
-```bash
-# Debian/Ubuntu
-sudo apt-cache policy csm              # Show available versions
-sudo apt install csm=<version>-1
+The `csm baseline` command scans the entire server and records the current state for change tracking. It is required on first install so CSM knows what is normal for your server.
 
-# RHEL family
-sudo dnf --showduplicates list csm     # Show available versions
-sudo dnf downgrade csm
-```
+Start `csm.service` before running `csm baseline`. The daemon must be running because the baseline is coordinated through the control socket.
+
+If existing history would be cleared, rerun with `csm baseline --confirm` only after verifying that reset is intended.
+
+### What it does
+
+- It scans all cPanel accounts for malware, permissions, and configuration issues.
+- It records file hashes, email forwarder hashes, and plugin versions.
+- It stores everything in the bbolt database (`/var/lib/csm/state/csm.db`).
+
+Findings that should never be silently trusted, such as non-standard MySQL superusers or WHM root API tokens, can still be reported on this first scan.
+
+### How long it takes
+
+The time depends on server size. A server with 100+ cPanel accounts and thousands of WordPress sites can take 5-10 minutes.
+
+### When to re-run
+
+Run the baseline again:
+
+- after a fresh install,
+- after restoring from backup,
+- after an intentional state reset approved by the operator.
+
+You do not need to re-run it for normal deploys or upgrades. The daemon handles incremental state.
 
 ## Verifying platform auto-detection
+
+The daemon logs the detected platform at startup. Check it with `journalctl -u csm.service | grep platform:` after starting the daemon. The line looks like this:
+
+```
+[2026-04-10 08:13:37] platform: os=ubuntu/24.04 panel=none webserver=nginx
+```
 
 After `systemctl start csm.service`, the first line after "CSM daemon starting" reports what CSM detected:
 
@@ -213,9 +247,23 @@ After `systemctl start csm.service`, the first line after "CSM daemon starting" 
 
 If any field shows `none` or `unknown` when you expect something, the auto-detect missed it. File a bug with the output of `cat /etc/os-release`, `systemctl is-active nginx apache2 httpd`, and `which nginx apache2 httpd`.
 
+## Rollback to an older version
+
+Both the APT and DNF repositories retain the last 5 tagged releases at any time. To downgrade:
+
+```bash
+# Debian/Ubuntu
+sudo apt-cache policy csm              # Show available versions
+sudo apt install csm=<version>-1
+
+# RHEL family
+sudo dnf --showduplicates list csm     # Show available versions
+sudo dnf downgrade csm
+```
+
 ## Optional system dependencies
 
-The daemon runs as one executable plus packaged UI, rule, profile, and PAM assets. Release binaries require glibc 2.28 or newer and the package depends on systemd. A few host packages enable additional checks:
+The daemon runs as one executable plus packaged UI, rule, profile, and PAM assets. Release binaries require glibc 2.28 or newer, and the package depends on systemd. A few host packages enable additional checks:
 
 | Package | Platforms | Enables |
 |---------|-----------|---------|
@@ -227,7 +275,7 @@ The daemon runs as one executable plus packaged UI, rule, profile, and PAM asset
 
 ### Installing ModSecurity
 
-CSM detects ModSecurity but doesn't install it for you. Platform-specific commands:
+CSM detects ModSecurity but does not install it for you. Use the commands for your platform:
 
 ```bash
 # Ubuntu/Debian + Nginx
@@ -247,33 +295,64 @@ sudo dnf install -y nginx-mod-http-modsecurity
 sudo systemctl restart nginx
 ```
 
-After installing ModSecurity, run `csm check` and the `waf_status` finding should disappear.
+After installing ModSecurity, run `csm check`. The `waf_status` finding should disappear.
 
-## Manual (deploy.sh)
+## Filesystem layout
 
-```bash
-/opt/csm/deploy.sh install
-vi /etc/csm/csm.yaml   # set hostname, alert email, infra IPs
-csm validate
-systemctl enable --now csm.service
-csm baseline
-```
+The package uses FHS paths for config, state, drop-ins, and shipped profiles. Upgrades keep `/opt/csm/csm.yaml` as a compatibility link for older scripts.
 
-## Baseline Scan
+| Concern | Current path |
+|---|---|
+| Main config | `/etc/csm/csm.yaml` |
+| Legacy config link | `/opt/csm/csm.yaml` |
+| Drop-in fragments | `/etc/csm/conf.d/*.yaml` |
+| State directory | `/var/lib/csm/state/` |
+| Shipped profiles | `/usr/lib/csm/profiles/` |
+| Shipped config template | `/usr/lib/csm/csm.yaml.default` |
+| Audit log | `/var/log/csm/audit.jsonl` |
+| Binary | `/opt/csm/csm` |
+| Quarantine | `/opt/csm/quarantine/` |
+| YARA / signature rules | `/opt/csm/rules/` |
 
-The `csm baseline` command scans the entire server and records the current state for change tracking. This is required on first install so CSM knows what's "normal" for your server. Findings that should never be silently trusted, such as non-standard MySQL superusers or WHM root API tokens, can still be reported on this first scan.
+### Removing the package on Debian and Ubuntu
 
-**What it does:**
-- Scans all cPanel accounts for malware, permissions, and configuration issues
-- Records file hashes, email forwarder hashes, and plugin versions
-- Stores everything in the bbolt database (`/var/lib/csm/state/csm.db`)
+- Removing the package keeps the main config.
+- Purging the package removes the main config and its package-created compatibility link.
+- If the main config is a symlink, purge leaves its target in place.
 
-**How long it takes:** Depends on server size. A server with 100+ cPanel accounts and thousands of WordPress sites can take **5-10 minutes**. The daemon must be running because the baseline is coordinated through the control socket.
+## Details
 
-**When to re-run:**
-- After a fresh install
-- After restoring from backup
-- After an intentional state reset approved by the operator
-- You do NOT need to re-run for normal deploys/upgrades -- the daemon handles incremental state
+The sections below are reference material on directory permissions and on upgrades from the legacy layout.
 
-**Important:** Start `csm.service` before running `csm baseline`. If existing history would be cleared, rerun with `csm baseline --confirm` only after verifying that reset is intended.
+### Directory permissions
+
+| Path | Mode | Reason |
+|---|---|---|
+| `/etc/csm` | 0750 | The package creates it. The daemon itself cannot write it; see [Service configuration writes](service-confinement.md). |
+| `/var/lib/csm` | 0711 | Searchable but not listable, so Exim can reach the email forward guard files below it. |
+| `/var/lib/csm/state/` | 0700 | Stays private. |
+
+The systemd unit declares `StateDirectory=csm`, so systemd manages permissions for the state directory.
+
+The binary installer and package scripts also keep the shared state root searchable. This includes systemd 239, which does not reset an existing state directory's mode.
+
+### The forward guard and the state root
+
+- Applying the forward guard repairs legacy parent permissions without making private directories listable. It rejects symlinks in those parents.
+- Install and `csm rehash` likewise refuse a symlinked `/var/lib/csm`. Relocate state with `state_path` instead.
+- Lookup refreshes maintain search access to the lookup directory inside the daemon sandbox. Full guard application runs outside it.
+
+### Migration from the legacy layout
+
+- On upgrade, the package copies a real legacy main config into `/etc/csm/csm.yaml` when needed and points `/opt/csm/csm.yaml` at it.
+- On first start, the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/`, only when the new directory is empty. It then continues using the FHS state path.
+
+See [Upgrading - FHS migration](upgrading.md#fhs-migration-state-config-drop-ins-and-profiles) for the manual-binary-swap case.
+
+### Refreshing the service unit
+
+When install or `csm rehash` refreshes the service unit, it creates any missing directory the unit requires before replacing the unit.
+
+- Existing modes are preserved, except for the shared state root's required search bits.
+- Optional paths and systemd-managed directories are left alone unless needed as parents of a required path.
+- If a required directory cannot be created, the refresh fails and the previous unit stays in place.

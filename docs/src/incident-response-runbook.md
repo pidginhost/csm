@@ -1,22 +1,17 @@
 # Incident Response Runbook
 
-Use this flow when CSM flags account compromise, mailbox takeover,
-malicious database triggers, or outbound spam on a production cPanel
-host.
+Use this flow when CSM flags account compromise, mailbox takeover, malicious database triggers, or outbound spam on a production cPanel host. Work through the steps in order.
 
 ## Safety rules
 
 - Do not delete customer files during first response.
-- Do not thaw, release, or purge queued mail until affected credentials
-  are rotated or an operator approves the specific queue action.
-- Do not close incidents until the account was reviewed, credentials
-  were rotated or explicitly deferred, and a fresh scan is clean.
+- Do not thaw, release, or purge queued mail until affected credentials are rotated or an operator approves the specific queue action.
+- Do not close incidents until the account was reviewed, credentials were rotated or explicitly deferred, and a fresh scan is clean.
 - Take a CSM backup before upgrading CSM or changing incident state.
 
 ## 1. Verify the deployed binary
 
-Deploy only after the required GitLab pipeline passed and the package was
-published.
+Deploy only after the required GitLab pipeline passed and the package was published.
 
 ```bash
 /root/deploy-csm.sh check
@@ -36,9 +31,9 @@ systemctl start csm.service
 sha256sum /root/csm-backups/csm-pre-response-*.tar.gz
 ```
 
-Backup refuses a live or starting daemon and verifies the state lock before
-reading data. Restart the service immediately after the archive is created.
-If backup fails, start the service before investigating the failure.
+Backup refuses a live or starting daemon, and it verifies the state lock before reading data. That is why the commands stop the service first.
+
+Restart the service immediately after the archive is created. If backup fails, start the service before you investigate the failure.
 
 Confirm the archive is readable:
 
@@ -56,13 +51,16 @@ sha256sum -c /root/csm-forensics/<account>-*.sha256
 tar -xOzf /root/csm-forensics/<account>-*.tar.gz manifest.txt
 ```
 
-Check the manifest for private-path exclusions, schema count, capture
-errors, and `recent_mtimes_status=ok`.
+Check the manifest for these:
+
+- Private-path exclusions.
+- The schema count.
+- Capture errors.
+- `recent_mtimes_status=ok`.
 
 ## 4. Map affected accounts
 
-Map incident domains and queued local senders to cPanel users before
-rotating credentials or changing mail queue state.
+Map incident domains and queued local senders to cPanel users before you rotate credentials or change mail queue state.
 
 ```bash
 /opt/csm/csm incidents list --status open --all
@@ -82,13 +80,18 @@ uapi --user=<account> Mysql list_users --output=json
 
 ## 5. Rotate credentials
 
-Rotate the cPanel account password, FTP accounts, affected mailboxes,
-WordPress administrator users, database users, and application secrets
-for the affected account. Prefer WHM and UAPI calls or the control panel
-over direct file edits.
+Rotate all of these for the affected account:
 
-Do this before releasing mail or marking incidents resolved unless the
-operator explicitly defers rotation for a documented reason.
+- The cPanel account password.
+- FTP accounts.
+- Affected mailboxes.
+- WordPress administrator users.
+- Database users.
+- Application secrets.
+
+Prefer WHM and UAPI calls or the control panel over direct file edits.
+
+Do this before releasing mail or marking incidents resolved, unless the operator explicitly defers rotation for a documented reason.
 
 ## 6. Review queued mail
 
@@ -108,12 +111,11 @@ exim -Mvh <message-id>
 
 Group messages into:
 
-- safe to remove: frozen bounces, obvious backscatter, duplicate failed
-  delivery notices with no customer value
-- do not touch: current customer conversations, invoices, form leads, or
-  any message where the business value is unclear
-- needs review: suspicious local sender messages, mixed external bulk
-  mail, or messages tied to an account whose credentials are not rotated
+| Group | Messages |
+|-------|----------|
+| Safe to remove | Frozen bounces, obvious backscatter, duplicate failed delivery notices with no customer value. |
+| Do not touch | Current customer conversations, invoices, form leads, or any message where the business value is unclear. |
+| Needs review | Suspicious local sender messages, mixed external bulk mail, or messages tied to an account whose credentials are not rotated. |
 
 Only remove or thaw message IDs that were reviewed:
 
@@ -137,8 +139,7 @@ Apply in bounded batches only after review:
 /opt/csm/csm incidents bulk-status --older-than 72h --status active --kind web_account_compromise --limit 100 --apply --confirm --details "operator cleanup after review"
 ```
 
-For mailbox incidents, confirm mailbox rotation or explicit operator
-deferral before applying status changes.
+For mailbox incidents, confirm mailbox rotation or explicit operator deferral before applying status changes.
 
 ## 8. Confirm recovery
 
@@ -148,5 +149,4 @@ deferral before applying status changes.
 exim -bpc
 ```
 
-Keep the forensic archives, CSM backup, command notes, and queue
-decisions with the incident record.
+Keep the forensic archives, CSM backup, command notes, and queue decisions with the incident record.

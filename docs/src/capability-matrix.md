@@ -1,104 +1,117 @@
 # Capability matrix
 
-Every operation CSM performs that needs privilege beyond reading its own files,
-or that writes outside its own directories, with the privilege it needs and the
-setting that stops it.
+This page lists every operation CSM performs that needs privilege beyond reading its own files, or that writes outside its own directories. For each operation it gives the privilege it needs and the setting that stops it.
 
-Print it on any host, before or after install:
+Print the list on any host, before or after install:
 
 ```bash
 csm privileges              # table
 csm privileges --json       # machine-readable
 ```
 
-The command prints a static inventory. It does not load CSM configuration or
-probe host privileges, so it can be used before installing the service. Output
-failures produce a nonzero exit status in text, JSON and Markdown formats.
+The command prints a static inventory. It does not load CSM configuration or probe host privileges, so you can use it before you install the service. If the output cannot be written, the command exits with a nonzero status in the text, JSON and Markdown formats.
 
 ## How to read it
 
-**Needs** is what the operation requires from the kernel. `root` means uid 0
-rather than one capability: the operation reads or writes files owned by many
-different accounts, or drives a panel tool that assumes root. Today the daemon
-runs as a single root process; splitting it into a small privileged helper plus
-a reduced-privilege main process is planned, and this inventory is its first
-stage. Capability names describe the privileged kernel interfaces as well as
-the root filesystem access. For BPF, tracing and LSM programs need
-`CAP_BPF` plus `CAP_PERFMON`; cgroup socket programs need `CAP_BPF` plus
-`CAP_NET_ADMIN`. `CAP_SYS_ADMIN` is the broader fallback on older kernels.
-These requirements follow the [kernel program-load checks](https://github.com/torvalds/linux/blob/v6.6/kernel/bpf/syscall.c).
+Each row of the matrix is one operation. The columns are explained below in the order they appear.
 
-**Trigger** is `automatic` when the daemon may start the operation on its own,
-and `operator` when it runs only in response to a command or a button. Not
-running the command is how an operator operation is turned off.
+### Needs
 
-**Writes** lists what the operation writes while it runs, including writes made
-by a tool it invokes. Paths starting with `/` are filesystem paths; everything
-else is a resource named `<kind>:<name>`. "nothing (read-only)" means the
-operation only reads. Paths describe default locations; configured account roots,
-state, rule, log, spool and policy paths replace those defaults and may require
-service drop-ins. Shared CSM state and audit-log writes are grouped in the state
-rows. This is not a list of every possible path written by an external panel tool.
+The Needs column is what the operation requires from the kernel. `root` means uid 0 rather than one capability: the operation reads or writes files owned by many different accounts, or drives a panel tool that assumes root.
 
-**Turn it off** is the config key and YAML value that stops the named operation.
-Dotted keys describe nested YAML mappings; they are not literal top-level keys.
-Apply changes before restarting the daemon: several controls are read only at
-startup. A row saying "not configurable" has no single config switch that stops
-all its callers. `disabled_checks` takes a list and only affects scheduled checks.
-Stopping new work does not undo installed rules, hooks, quarantines or blocks;
-use the subsystem removal commands for that. Disabling the forward guard or
-antispam removes its existing Exim and rspamd configuration, which is itself a
-host write, so both rows name `mode: observe`.
+The daemon runs as a single root process. A split into a small privileged helper and a reduced-privilege main process is planned, and this inventory is its first stage.
 
-**Action record** says whether the operation writes to the
-[action log](action-log.md). "no" does not mean the operation is silent; it
-means it is not on that stream yet and the daemon log is where it appears.
+Capability names describe the privileged kernel interfaces as well as the root filesystem access. For BPF the requirements follow the [kernel program-load checks](https://github.com/torvalds/linux/blob/v6.6/kernel/bpf/syscall.c):
 
-**Without the privilege** is what an operator loses by withholding it, so the
-row reads as a decision rather than a demand.
+- Tracing and LSM programs need `CAP_BPF` plus `CAP_PERFMON`.
+- Cgroup socket programs need `CAP_BPF` plus `CAP_NET_ADMIN`.
+- `CAP_SYS_ADMIN` is the broader fallback on older kernels.
+
+### Trigger
+
+The Trigger column is `automatic` when the daemon may start the operation on its own. It is `operator` when the operation runs only in response to a command or a button. To turn off an operator operation, do not run the command.
+
+### Risk tier
+
+The risk tier says what can go wrong if an operation acts on the wrong target.
+
+| Tier | Effect on a wrong target |
+| --- | --- |
+| 0 | Changes nothing outside CSM's own directories. |
+| 1 | Records a recommendation or a dry-run decision. |
+| 2 | Makes a low-risk change such as a probe, challenge gate or mail hold. |
+| 3 | Quarantines, blocks or denies a target. |
+| 4 | Signals processes, reloads services, or rewrites content or configuration. |
+
+The tier is the operation's maximum live effect. It is not the severity of the finding that triggered the operation. Because rows describe the maximum live effect, the preview-only tier 1 has no row of its own.
+
+A tier does not promise automatic rollback. See [Risk tiers and recovery coverage](#risk-tiers-and-recovery-coverage) and the current contracts in the JSON inventory.
+
+### Writes
+
+The Writes column lists what the operation writes while it runs, including writes made by a tool it invokes.
+
+- A value starting with `/` is a filesystem path.
+- Everything else is a resource named `<kind>:<name>`.
+- "nothing (read-only)" means the operation only reads.
+
+Paths describe default locations. Configured account roots, state, rule, log, spool and policy paths replace those defaults and may require service drop-ins.
+
+Writes to shared CSM state and to the audit log are grouped in the rows whose operation name starts with `state.`, instead of being repeated in every row that makes them. The column is not a list of every possible path written by an external panel tool.
+
+### Turn it off
+
+The "Turn it off" column gives the config key and YAML value that stops the named operation. Dotted keys describe nested YAML mappings; they are not literal top-level keys.
+
+- Apply a change before you restart the daemon. Several controls are read only at startup.
+- A row saying "not configurable" has no single config switch that stops all its callers.
+- `disabled_checks` takes a list and only affects scheduled checks.
+- Stopping new work does not undo installed rules, hooks, quarantines or blocks. Use the subsystem removal commands for that.
+- Disabling the forward guard or antispam removes its existing Exim and rspamd configuration. That removal is itself a host write, so both rows name `mode: observe`.
+
+### Action record
+
+The "Action record" column says whether the operation writes to the [action log](action-log.md). "no" does not mean the operation is silent. It means the operation is not on that stream yet, and the daemon log is where it appears.
+
+### Without the privilege
+
+The "Without the privilege" column says what you lose if you withhold the privilege, so you can treat each row as a decision.
 
 ## Relationship to the systemd sandbox
 
-The daemon runs under `ProtectSystem=strict` with an explicit writable-path
-allow-list; see [service confinement](service-confinement.md). The two lists are
-compared by tests: every declared in-daemon filesystem write must fit a packaged
-grant, and every grant must have an in-daemon writer. Empty inventories and grant
-lists fail. Paths are compared on directory boundaries, and an operation outside
-the sandbox cannot justify a daemon grant. The unit parser rejects invalid paths
-and unsupported syntax, including continuations, specifiers and directory flags,
-instead of guessing which locations are writable. Tests cannot discover omitted operations
-or prove the privilege and disable claims; those require tracing the runtime code.
+The daemon runs under `ProtectSystem=strict` with an explicit writable-path allow-list; see [service confinement](service-confinement.md). Tests compare that allow-list with this inventory:
 
-Operations marked "outside the systemd sandbox" run as standalone operator
-commands or transient services forked by PID 1. The latter use direct execution
-only where their helper permits it; the archive parse worker has no direct
-fallback when systemd is unavailable. Mixed operations have
-separate rows for their in-daemon writes, such as the AF_ALG marker repair and
-forward-guard lookup refresh. The service sandbox does not bound external tools.
-Archive worker memory limits are also written inside the daemon sandbox.
-Their `cgroup:` resources are kernel controls, writable because the packaged
-unit keeps `ProtectControlGroups=no`, rather than ordinary directory grants.
+- Every filesystem path the inventory says the daemon writes must fall under a writable path in the packaged unit.
+- Every writable path in the unit must be written by an operation that runs inside the daemon.
+- An empty inventory or an empty list of writable paths fails.
+- Paths are compared on directory boundaries.
+- An operation that runs outside the sandbox does not count as a reason for a writable path in the unit.
+
+The unit parser rejects invalid paths and unsupported syntax, including continuations, specifiers and directory flags. It does not guess which locations are writable.
+
+Tests cannot discover omitted operations, and they cannot prove the privilege and disable claims. Those require tracing the runtime code.
+
+### Operations outside the sandbox
+
+Operations marked "outside the systemd sandbox" run as standalone operator commands or as transient services forked by PID 1. When systemd cannot start a transient service, the helper runs directly, without systemd, only if that helper permits it. The archive parse worker does not: it has no fallback when systemd is unavailable.
+
+An operation that writes both inside the daemon and outside the sandbox has a separate row for its in-daemon writes, such as the AF_ALG marker repair and the forward-guard lookup refresh. The service sandbox does not bound external tools.
+
+Archive worker memory limits are also written inside the daemon sandbox. Their `cgroup:` resources are kernel controls, not ordinary writable directories in the unit's allow-list. They are writable because the packaged unit keeps `ProtectControlGroups=no`.
 
 ## Turning most of it off at once
 
-`mode: observe` stops automatic remediation and integration deployment, and
-refuses configurations that enable those subsystems. It still maintains CSM state,
-loads temporary BPF capability probes in BPF builds, and invokes the KernelCare
-probe, which can update its own cache. Archive worker startup cleanup and
-on-demand unit launches also remain active. It is not a guarantee of zero host writes. See
-[observe mode](observe-mode.md).
+`mode: observe` stops automatic remediation and integration deployment, and refuses configurations that enable those subsystems. It is not a guarantee of zero host writes. In observe mode CSM still does the following:
+
+- It maintains CSM state.
+- It loads temporary BPF capability probes in BPF builds.
+- It invokes the KernelCare probe, which can update its own cache.
+- It runs the archive worker startup cleanup.
+- It launches archive worker units on demand. These are transient systemd units; see the `detect.parse_worker_units` row in the matrix.
+
+See [observe mode](observe-mode.md).
 
 ## The matrix
-
-The risk tier says what can go wrong if an operation acts on the wrong
-target: 0 changes nothing outside CSM's own directories, 1 records a
-recommendation or dry-run decision, 2 is a low-risk change such as a probe,
-challenge gate or mail hold, 3 quarantines, blocks or denies a target, and 4
-signals processes, reloads services, or rewrites content or configuration.
-Rows describe maximum live effect, so preview-only tier 1 has no separate
-row today. A tier does not promise automatic rollback; see recovery gaps
-below and the current contracts in the JSON inventory. The TIER column of
-`csm privileges` and the JSON inventory use the same 0 to 4 numbers.
 
 <!-- BEGIN GENERATED MATRIX -->
 | Operation | Needs | Trigger | Risk tier | Writes | Turn it off | Action record | Without the privilege |
@@ -185,26 +198,22 @@ below and the current contracts in the JSON inventory. The TIER column of
 | `respond.virtual_patch`<br>write a reversible deny rule into an account access file to close an exposed file | root | automatic | 3 | /home, /opt/csm/quarantine | `auto_response.virtual_patch_exposed_files: off` | no | exposed backups, dumps and configs stay reachable until the account owner fixes them |
 <!-- END GENERATED MATRIX -->
 
-Regenerate the table with `go run ./cmd/csm privileges --markdown`. A gate in
-`internal/ci` fails when the page and the inventory disagree.
+Regenerate the table with `go run ./cmd/csm privileges --markdown`. A gate in `internal/ci` fails when the page and the inventory disagree.
 
 ## Risk tiers and recovery coverage
 
-`csm privileges --json` reports each operation's risk tier as a number from 0
-to 4. A row with no tier would report -1; the test suite refuses such an
-inventory, so a release never ships one. The tier is the operation's maximum
-live effect on a wrong target. It is not the severity of the finding that
-triggered the operation.
+`csm privileges --json` reports each operation's risk tier as a number from 0 to 4. The TIER column of `csm privileges` uses the same numbers. A row with no tier would report -1. The test suite refuses such an inventory, so a release never ships one.
 
-Nine operations carry a safety contract in the JSON inventory:
-`respond.block_ip`, `operate.manual_firewall`, `integrate.firewall_ruleset`,
-`integrate.challenge_port_gate`, `integrate.challenge_snippet`,
-`integrate.web_peer_log`, `integrate.antispam_ip_map`,
-`respond.quarantine_file` and `respond.clean_file`. Each states the authority it
-needs, how the target is revalidated before the change, how the change is
-reversed, and the limit that bounds it. The contracts describe current
-behaviour, including what it does not cover. Every other operation that changes
-the host states the recovery this inventory does not yet cover:
+Nine operations carry a safety contract in the JSON inventory: `respond.block_ip`, `operate.manual_firewall`, `integrate.firewall_ruleset`, `integrate.challenge_port_gate`, `integrate.challenge_snippet`, `integrate.web_peer_log`, `integrate.antispam_ip_map`, `respond.quarantine_file` and `respond.clean_file`. Each states four things:
+
+- The authority it needs.
+- How the target is checked again before the change.
+- How the change is reversed.
+- The limit that bounds it.
+
+The contracts describe current behavior, including what it does not cover.
+
+Every other operation that changes the host states the recovery this inventory does not yet cover:
 
 | Operations | Recovery gap |
 | --- | --- |

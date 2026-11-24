@@ -1,49 +1,57 @@
 # Auto-response safety model
 
-How automatic actions are tiered, budgeted and paused so that one bad
-detector cannot damage a protected server.
+This note describes how automatic actions are tiered, budgeted and paused so that one bad detector cannot damage a protected server.
+
+Two terms recur. Admission is the check an automatic action must pass before it runs: guards, budgets and policy. A breaker is a rule that pauses an automatic action, for example after repeated failures.
 
 ## What exists
 
-`auto_response.dry_run` defaults to on. The scan block path uses the
-configurable `max_blocks_per_hour` budget and service restarts use
-`max_restarts_per_hour`. The virtual-patch mode has a safe default. The
-verdict callback lets a panel downgrade a block. Process signalling goes
-through pidfd. Quarantine and virtual patching resolve paths with `openat2`
-and `RESOLVE_BENEATH`. The incident correlator has safety caps and a dry-run
-mode. Firewall changes record a rollback point. `mode: observe` refuses to run
-any of it. See [auto-response](../auto-response.md) and
-[observe mode](../observe-mode.md).
+These safeguards are in place:
 
-Automatic file responses share one admission model: realtime and scheduled
-quarantine, PHP cleaning and access-file cleaning draw on persistent host and
-account budgets over a rolling hour. Reservations survive reloads, restarts
-and interrupted actions. Repeated failures pause these responses, and
-unavailable safety state refuses changes. Pause warnings are deduplicated
-while the original detections stay visible. Account identity comes from
-account-home paths; unknown paths share a budget. Failed cleaning leaves the
-source and recovery evidence for review. Whole-directory and special-file
-quarantine require manual review. Actions revalidate the target after budget
-persistence, and the cleaners receive the same file identity captured before
-admission. The file-response failure pause is host-wide across automatic
-quarantine and cleaning paths.
+- `auto_response.dry_run` defaults to on.
+- The scan block path uses the configurable `max_blocks_per_hour` budget. Service restarts use `max_restarts_per_hour`.
+- The virtual-patch mode has a safe default.
+- The verdict callback lets a panel downgrade a block.
+- Process signaling goes through pidfd.
+- Quarantine and virtual patching resolve paths with `openat2` and `RESOLVE_BENEATH`.
+- The incident correlator has safety caps and a dry-run mode.
+- Firewall changes record a rollback point.
+- `mode: observe` refuses to run any of it.
 
-Automatic per-address blocks use the firewall engine's infrastructure,
-local-address, operator-allow and verified-crawler guards. Block candidates
-are admitted through reserved lanes and fair scope shares in
-`internal/admission`, so independently supported findings keep bounded
-capacity when one scope floods.
+See [auto-response](../auto-response.md) and [observe mode](../observe-mode.md).
 
-The firewall's admission snapshot also estimates how long imported and
-unclaimed temporary occupants have left. Kernel estimates age through later
-set reads and member checks using elapsed time. Subnet estimates follow the
-wall clock. A missing kernel expiry leaves the drain estimate unknown. These
-estimates are observation only; no host enforces admission from them.
+### File responses
+
+Automatic file responses share one admission model. Realtime and scheduled quarantine, PHP cleaning and access-file cleaning draw on persistent host and account budgets over a rolling hour.
+
+- Reservations survive reloads, restarts and interrupted actions.
+- Repeated failures pause these responses. The failure pause is host-wide across automatic quarantine and cleaning paths.
+- Unavailable safety state refuses changes.
+- Pause warnings are deduplicated while the original detections stay visible.
+- Account identity comes from account-home paths. Unknown paths share a budget.
+- Failed cleaning leaves the source and recovery evidence for review.
+- Whole-directory and special-file quarantine require manual review.
+- Actions check the target again after the budget is persisted. The cleaners receive the same file identity captured before admission.
+
+### Address blocks
+
+Automatic per-address blocks use the firewall engine's infrastructure, local-address, operator-allow and verified-crawler guards.
+
+Block candidates are admitted through reserved lanes and fair scope shares in `internal/admission`. Independently supported findings therefore keep bounded capacity when one scope floods.
+
+### Drain estimates
+
+The firewall's admission snapshot also estimates how much time is left on the temporary blocks that no admission action wrote: imported and unclaimed entries.
+
+- An estimate read from the kernel is reduced by the time that elapses during later set reads and member checks.
+- Subnet estimates follow the wall clock.
+- A missing kernel expiry leaves the drain estimate unknown.
+
+These estimates are observation only. No host enforces admission from them.
 
 ## Risk tiers
 
-Every operation in `internal/privops` carries a risk tier, and a test fails
-when one is missing or disagrees with the reviewed inventory:
+Every operation in `internal/privops` carries a risk tier. A test fails when a tier is missing or disagrees with the reviewed inventory.
 
 | Tier | Meaning | Examples |
 | --- | --- | --- |
@@ -53,81 +61,86 @@ when one is missing or disagrees with the reviewed inventory:
 | 3 | quarantine or block | file quarantine, nftables block, virtual patch |
 | 4 | destructive or process-affecting | process kill, service restart, config rewrite |
 
-Each tier gets a confidence floor, a per-action circuit breaker that follows
-the rules below, mandatory identity revalidation immediately before tiers 3
-and 4 (inode and device for files, pidfd for processes, rule handle for
-firewall entries), and enough recorded metadata to reverse the action. The
-[durable action lifecycle](durable-action-lifecycle.md) carries that
-metadata; there is no parallel policy switch or second set of limits.
+Each tier gets:
+
+- A confidence floor.
+- A per-action circuit breaker that follows the rules below.
+- Enough recorded metadata to reverse the action.
+
+For tiers 3 and 4 it is mandatory to check the target's identity again immediately before the action: inode and device for files, pidfd for processes, rule handle for firewall entries.
+
+The [durable action lifecycle](durable-action-lifecycle.md) carries the reversal metadata. There is no parallel policy switch or second set of limits.
 
 ## Adversarial workloads
 
-Safeguards are designed for attacker-triggered load as well as operational
-faults. Limits bound both resource use and harm to hosted sites while keeping
-detection and response health visible. Finite action, queue and storage
-budgets sit alongside evidence-based failure breakers. Budgets are calibrated
-against representative response demand, including bursts, and measured host
-capacity; behaviour under overload is validated and withheld responses are
-visible.
+Safeguards are designed for attacker-triggered load as well as operational faults. Limits bound both resource use and harm to hosted sites while keeping detection and response health visible. Finite action, queue and storage budgets sit alongside evidence-based failure breakers.
 
-- A breaker pauses automatic action only. Detection, findings and alerts
-  continue at their own severity.
-- Budgets and pauses are scoped by verified account and action ownership,
-  with shared bounds for common resources and unknown ownership. A source
-  address or check name alone does not establish an independent actor.
-  Admission is deterministic and fair, with bounded reserved capacity for
-  independently supported findings.
+Budgets are calibrated against representative response demand, including bursts, and measured host capacity. Behavior under overload is validated, and withheld responses are visible.
+
+### What a breaker pauses
+
+A breaker pauses automatic action only. Detection, findings and alerts continue at their own severity.
+
+### Scope of budgets and pauses
+
+- Budgets and pauses are scoped by verified account and action ownership, with shared bounds for common resources and unknown ownership.
+- A source address or check name alone does not establish an independent actor.
+- Admission is deterministic and fair, with bounded reserved capacity for independently supported findings.
 - Only the affected action scopes pause unless a shared mechanism is unsafe.
-  Verified shared storage or execution failures can require a wider pause at
-  once; failures in several accounts alone do not prove that condition.
-  Unavailable intent or budget persistence still refuses new mutations.
-- Target refusals are recorded separately from execution and storage
-  failures. Admitted attempts stay charged, and uncertain outcomes are
-  reconciled before a retry. Every pause has bounded recovery and
-  revalidation; reloads, restarts and policy changes do not silently reset it.
-- Alternative containment must be supported for the affected protocol, honor
-  existing mode and action opt-ins, and pass admission and identity checks.
-  Resource pressure alone never authorizes broader targets or stronger
-  actions. If no safe action is available, the finding is retained with the
-  deferred or refused outcome and the required operator review.
-- A pause that leaves a Critical finding without its automatic action raises
-  a deduplicated Critical alert and is reported by status and `csm doctor`.
-  Every deferred, refused or dropped candidate is accounted for without an
-  unbounded alert queue. A dispatched request is not proof of containment.
+- Verified shared storage or execution failures can require a wider pause at once. Failures in several accounts alone do not prove that condition.
+- Unavailable intent or budget persistence still refuses new mutations.
+
+### Failures, charges and recovery
+
+- Target refusals are recorded separately from execution and storage failures.
+- Admitted attempts stay charged.
+- Uncertain outcomes are reconciled before a retry.
+- Every pause has bounded recovery and revalidation. Reloads, restarts and policy changes do not silently reset it.
+
+### Alternative containment
+
+- Alternative containment must be supported for the affected protocol, honor existing mode and action opt-ins, and pass admission and identity checks.
+- Resource pressure alone never authorizes broader targets or stronger actions.
+- If no safe action is available, the finding is retained with the deferred or refused outcome and the required operator review.
+
+### Reporting a pause
+
+- A pause that leaves a Critical finding without its automatic action raises a deduplicated Critical alert. Status and `csm doctor` report it.
+- Every deferred, refused or dropped candidate is accounted for without an unbounded alert queue.
+- A dispatched request is not proof of containment.
 
 ## Firewall feedback
 
-For firewall blocks, correctness feedback supplements resource limits:
+For firewall blocks, correctness feedback supplements resource limits.
 
-- Hard address exclusions and automatic allow protections stay at the
-  authoritative action boundary, including range overlap checks and the
-  existing explicit operator-command semantics. Source attribution is
-  verified against the connecting peer or an explicitly trusted proxy chain.
-  Any operator-session safeguard needs authenticated provenance, expiry and
-  service scope.
-- A detector-specific breaker needs reviewed correctness evidence linked to
-  the original finding and action. Authentication or an operator unblock
-  alone is not proof of a false positive. Independent attack evidence and
-  other healthy response paths are preserved; corrective feedback does not
-  demote findings.
-- Temporary-block expiry and renewal are specified together with the
-  escalation lifecycle. Escalation evidence is validated with corroboration
-  grading; response records and repeated reports are not new corroboration.
-  Operator exclusions and undo are preserved.
-- Firewall sets and admission stay bounded. Range or ASN-based containment
-  requires separate corroboration, protected-range checks and an explicit
-  policy limiting collateral impact; it is not a substitute for capacity.
+### Exclusions and attribution
+
+- Hard address exclusions and automatic allow protections stay at the authoritative action boundary. That includes range overlap checks and the existing explicit operator-command semantics.
+- Source attribution is verified against the connecting peer or an explicitly trusted proxy chain.
+- Any operator-session safeguard needs authenticated provenance, expiry and service scope.
+
+### Detector-specific breakers
+
+- A detector-specific breaker needs reviewed correctness evidence linked to the original finding and action.
+- Authentication or an operator unblock alone is not proof of a false positive.
+- Independent attack evidence and other healthy response paths are preserved.
+- Corrective feedback does not demote findings.
+
+### Expiry, renewal and escalation
+
+- Temporary-block expiry and renewal are specified together with the escalation lifecycle.
+- Escalation evidence is validated with corroboration grading. Response records and repeated reports are not new corroboration.
+- Operator exclusions and undo are preserved.
+
+### Capacity and ranges
+
+- Firewall sets and admission stay bounded.
+- Range or ASN-based containment requires separate corroboration, protected-range checks and an explicit policy limiting collateral impact. It is not a substitute for capacity.
 
 ## One admission authority
 
-The same admission authority covers automatic entry points, retries and
-recovery. Under [privilege separation](privilege-separation.md) the executor
-verifies policy and admission independently of caller-supplied findings or
-state, while a single owner holds the live database.
+The same admission authority covers automatic entry points, retries and recovery. Under [privilege separation](privilege-separation.md) the executor verifies policy and admission independently of caller-supplied findings or state, while a single owner holds the live database.
 
 ## Calibration
 
-Budgets are calibrated with recorded finding streams joined to action
-outcomes and reviewed operator decisions. Raw recordings and operational
-tuning stay private; only sanitized fixtures and aggregate validation results
-are published.
+Budgets are calibrated with recorded finding streams joined to action outcomes and reviewed operator decisions. Raw recordings and operational tuning stay private. Only sanitized fixtures and aggregate validation results are published.
