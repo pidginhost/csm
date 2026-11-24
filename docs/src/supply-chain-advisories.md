@@ -1,15 +1,10 @@
 # Supply-chain Advisory Database
 
-CSM's supply-chain check (`supply_chain_vuln`) parses customer
-dependency lockfiles -- `composer.lock` and `package-lock.json` -- and
-matches the resolved versions against a local advisory database. The
-scanner ships in the binary; the advisory data does not. With no
-advisory file present the check is a silent no-op.
+CSM's supply-chain check (`supply_chain_vuln`) parses customer dependency lockfiles, `composer.lock` and `package-lock.json`. It matches the resolved versions against a local advisory database.
 
-This mirrors the YARA-forge mirror posture (see ROADMAP item 1): CSM
-carries the matching machinery, and the data is delivered out of band by
-an operator or a sync job. Shipping a stale CVE snapshot inside the
-binary would give false confidence and rot between releases.
+The scanner ships in the binary; the advisory data does not. With no advisory file present the check is a silent no-op. You supply the file and keep it current.
+
+This mirrors the YARA-forge mirror posture (see ROADMAP item 1): CSM carries the matching machinery, and an operator or a sync job delivers the data out of band. Shipping a stale CVE snapshot inside the binary would give false confidence and rot between releases.
 
 ## Location
 
@@ -17,15 +12,20 @@ binary would give false confidence and rot between releases.
 <state_path>/advisories/supply-chain.json
 ```
 
-`state_path` is the daemon's configured state directory. The file is
-read on each scan; updating it requires no daemon restart and no
-recompile.
+`state_path` is the daemon's configured state directory. CSM reads the file on each scan, so updating it requires no daemon restart and no recompile.
+
+## Populating it
+
+Generate the file from a public feed and write it to the path above on a schedule. Two common sources:
+
+- OSV (`https://osv.dev`) covers the npm/Packagist ecosystems. Export the relevant ecosystem ranges into the subset format described in [Format](#format).
+- WPScan / wpvulndb style feeds cover WordPress plugin advisories. This is a future ecosystem; the current lockfile scanner does not parse it.
+
+A signed mirror job analogous to the YARA-forge mirror is the intended long-term delivery mechanism. Until then an operator cron that fetches and transforms a feed is sufficient.
 
 ## Format
 
-OSV-subset JSON. A dependency version is flagged when it falls inside
-any range: `version >= introduced AND (fixed == "" OR version < fixed)`.
-`introduced: "0"` means "from the first release".
+The file is OSV-subset JSON:
 
 ```json
 {
@@ -50,30 +50,26 @@ any range: `version >= introduced AND (fixed == "" OR version < fixed)`.
 }
 ```
 
-- `ecosystem`: `composer` (Packagist `vendor/name`) or `npm` (package
-  name as it appears under `node_modules/`).
-- `severity`: `critical` -> Critical finding, `high` -> High, anything
-  else (`medium`/`low`/empty) -> Warning.
-- Version comparison is numeric per dotted segment; a leading `v` and
-  any pre-release/build suffix (`-rc1`, `+build`) are ignored.
+CSM flags a dependency version when it falls inside any range: `version >= introduced AND (fixed == "" OR version < fixed)`. `introduced: "0"` means "from the first release".
 
-## Populating it
+Version comparison is numeric per dotted segment. A leading `v` and any pre-release/build suffix (`-rc1`, `+build`) are ignored.
 
-Generate the file from a public feed and write it to the path above on a
-schedule. Two common sources:
+`ecosystem` takes one of two values:
 
-- **OSV** (`https://osv.dev`) for the npm/Packagist ecosystems. Export
-  the relevant ecosystem ranges into the subset format above.
-- **WPScan / wpvulndb** style feeds for WordPress plugin advisories
-  (future ecosystem; not parsed by the current lockfile scanner).
+| `ecosystem` | Package name |
+|-------------|--------------|
+| `composer` | Packagist `vendor/name`. |
+| `npm` | Package name as it appears under `node_modules/`. |
 
-A signed mirror job analogous to the YARA-forge mirror is the intended
-long-term delivery mechanism; until then an operator cron that fetches
-and transforms a feed is sufficient.
+`severity` sets the severity of the finding:
+
+| `severity` | Finding |
+|------------|---------|
+| `critical` | Critical |
+| `high` | High |
+| Anything else (`medium`/`low`/empty) | Warning |
 
 ## Scope (current)
 
 - Parsed: `composer.lock`, `package-lock.json` (npm lockfile v1, v2, v3).
-- Not yet parsed: `requirements.txt` / `Pipfile.lock` (Python),
-  `Gemfile.lock` (Ruby), WordPress plugin manifests. These are follow-on
-  ecosystems for the same matcher.
+- Not yet parsed: `requirements.txt` / `Pipfile.lock` (Python), `Gemfile.lock` (Ruby), WordPress plugin manifests. These are follow-on ecosystems for the same matcher.

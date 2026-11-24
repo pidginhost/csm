@@ -1,31 +1,33 @@
 # Configuration
 
-CSM is configured via `/etc/csm/csm.yaml`, with `--config <path>` to override. Legacy installs that only have `/opt/csm/csm.yaml` keep working; packaged upgrades migrate that file into `/etc/csm/csm.yaml` and leave the old path as a compatibility link. Optional drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged on top of the main file at startup; see [conf.d drop-ins](#confd-drop-ins) below.
+CSM reads its settings from `/etc/csm/csm.yaml`. Pass `--config <path>` to use another file. Optional drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged on top of the main file at startup; see [conf.d drop-ins](#confd-drop-ins) below.
 
-Environment-backed tokens and signing secrets use the environment inherited
-at daemon startup. After changing an environment file, restart the daemon;
-configuration reload alone does not import those changes. See
-[credential rotation](credential-rotation.md) for the systemd procedure.
+Legacy installs that only have `/opt/csm/csm.yaml` keep working. A packaged upgrade migrates that file into `/etc/csm/csm.yaml` and leaves the old path as a compatibility link.
+
+Tokens and signing secrets that come from environment variables use the environment the daemon inherits at startup. After you change an environment file, restart the daemon. A configuration reload alone does not import those changes. See [credential rotation](credential-rotation.md) for the systemd procedure.
+
+The first sections cover installation defaults, the operating mode and platform detection. Then come a [minimal config](#minimal-config) and the [full key reference](#full-reference). The sections after the reference explain alert classes, the daily summary, Web UI exposure, TLS certificates, validation, [how to edit the file](#editing-csmyaml-by-hand), [conf.d drop-ins](#confd-drop-ins) and a few detection, BPF enforcement and firewall keys.
 
 ## Installation defaults
 
-Packages and `csm install` write the same commented configuration, so a new
-host starts with the same settings whichever way it was installed. A key left
-out of the file takes the built-in default, which can differ from the value
-the shipped file sets. Left out or left blank, `backdoor_ports` and
-`firewall.smtp_allow_users` take the shipped lists; write `[]` for none.
-Users missing from the host are skipped.
+Packages and `csm install` write the same commented configuration. A new host starts with the same settings whichever way you installed it.
 
-The CLI generates a fresh Web UI admin token and issue time, validates the
-result, and writes the new configuration with mode `0600`. Invalid templates
-stop installation without replacing the destination configuration.
+A key you leave out of the file takes the built-in default. That default can differ from the value the shipped file sets.
+
+Two lists are an exception. When `backdoor_ports` or `firewall.smtp_allow_users` is left out or left blank, it takes the shipped list. Write `[]` for none. A user named in `firewall.smtp_allow_users` that does not exist on the host is skipped.
+
+The CLI generates a fresh Web UI admin token and its issue time, validates the result, and writes the new configuration with mode `0600`. An invalid template stops the installation, and the destination configuration is not replaced.
 
 ## Operating mode
 
-`mode` declares what CSM may do to the host. `enforce` (default) leaves every
-subsystem under its own switch; `observe` runs detection and alerting without
-automatic host remediation or integration updates. Full reference, including
-required switch settings: [Observe mode](observe-mode.md).
+`mode` declares what CSM may do to the host.
+
+| Value | What CSM may do |
+|-------|-----------------|
+| `enforce` (default) | Each subsystem acts or stays off according to its own on/off switch in this file. |
+| `observe` | Detection and alerting run. CSM does no automatic host remediation and no integration updates. |
+
+[Observe mode](observe-mode.md) has the full reference, including the switch settings it requires.
 
 ```yaml
 mode: enforce
@@ -33,13 +35,19 @@ mode: enforce
 
 ## Platform & Web Server
 
-CSM auto-detects the host OS (Ubuntu, Debian, AlmaLinux, Rocky, RHEL, CloudLinux), control panel (cPanel, Plesk, DirectAdmin, or none), and web server (Apache, Nginx, LiteSpeed, or none) at daemon startup. The detected platform is logged as:
+At daemon startup CSM detects three things about the host:
+
+- the OS: Ubuntu, Debian, AlmaLinux, Rocky, RHEL or CloudLinux
+- the control panel: cPanel, Plesk, DirectAdmin, or none
+- the web server: Apache, Nginx, LiteSpeed, or none
+
+It logs the detected platform as:
 
 ```
 [2026-04-10 08:13:37] platform: os=ubuntu/24.04 panel=none webserver=nginx
 ```
 
-The daemon then chooses the correct log paths, config candidates, and check set without any configuration from you. Verify with:
+The daemon then chooses the correct log paths, config candidates and check set. You do not configure any of this. To see what CSM detected:
 
 ```bash
 journalctl -u csm.service | grep platform:
@@ -47,7 +55,7 @@ journalctl -u csm.service | grep platform:
 
 ### Web server overrides
 
-For hosts with a custom layout (reverse proxy, non-standard package locations, chroot), add a `web_server:` section to `csm.yaml`. Every field is optional -- anything left blank falls back to auto-detection.
+For a host with a custom layout (reverse proxy, non-standard package locations, chroot), add a `web_server:` section to `csm.yaml`. Every field is optional. A field you leave blank falls back to auto-detection.
 
 ```yaml
 web_server:
@@ -62,7 +70,7 @@ web_server:
     - "/var/log/nginx/modsec_audit.log"
 ```
 
-`modsec_error_log` (legacy single-path override) is still honored and takes precedence over `web_server.error_logs` for the ModSecurity watcher only:
+`modsec_error_log` is a legacy single-path override. CSM still honors it. For the ModSecurity watcher only, it takes precedence over `web_server.error_logs`:
 
 ```yaml
 modsec_error_log: "/opt/myapp/logs/modsec_audit.log"
@@ -70,7 +78,7 @@ modsec_error_log: "/opt/myapp/logs/modsec_audit.log"
 
 ### Account roots (plain Linux web-scan coverage)
 
-By default, web-root performance checks iterate `/home/*/public_html`, which is the cPanel layout. The WP-Cron check and remediation also use cPanel's domain map for validated addon and subdomain document roots. On a plain Linux host, point CSM at the actual web roots:
+By default, the web-root performance checks walk `/home/*/public_html`, which is the cPanel layout. The WP-Cron check and its remediation also use cPanel's domain map to find validated addon and subdomain document roots. On a plain Linux host, point CSM at the actual web roots:
 
 ```yaml
 account_roots:
@@ -79,9 +87,17 @@ account_roots:
   - "/home/*/public_html"          # add if you also have cPanel-style accounts
 ```
 
-Each entry is an absolute, normalized glob pattern expanded at scan time. Configured directories also define remediation and restore scope. Custom locations need service write access; see [Custom account roots](custom-account-roots.md). Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
+Each entry is an absolute, normalized glob pattern that CSM expands at scan time. Non-existent matches are silently dropped. The configured directories also define the scope of remediation and restore. A custom location needs service write access; see [Custom account roots](custom-account-roots.md).
 
-The setting covers `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, real-time `php.ini` monitoring, and WP-Cron remediation roots. CMS integrity, phishing, `.htaccess`, and file-index scans use the platform's account layout: every directory under `/home` on cPanel, DirectAdmin and plain hosts, under `/var/www/vhosts` on Plesk.
+If `account_roots` is empty and the host is not a cPanel host, the account-scan checks run and return no findings. That is the correct behavior for a plain Linux host with no configured web roots.
+
+The setting covers:
+
+- the checks `perf_error_logs`, `perf_wp_config`, `perf_wp_transients` and `perf_wp_cron`
+- real-time `php.ini` monitoring
+- the WP-Cron remediation roots
+
+CMS integrity, phishing, `.htaccess` and file-index scans do not use this setting. They use the platform's account layout: every directory under `/home` on cPanel, DirectAdmin and plain hosts, and under `/var/www/vhosts` on Plesk.
 
 ## Minimal Config
 
@@ -1068,137 +1084,158 @@ sentry:
 
 ## Alert classes
 
-Every finding CSM reports is immediate or summary class. Summary class covers
-what CSM already handled on its own:
+Every finding CSM reports is immediate or summary class. Summary class covers what CSM already handled on its own. CSM leaves those findings out of alert email and counts them for the [daily summary](#daily-summary) instead.
 
-- an attack from an address CSM blocked, before or in the same batch, including by a subnet block or netblock;
-- an attack a challenge answers, while the address is on the challenge list or was routed there in the same batch. A challenge does not answer FTP or mail authentication failures, critical reputation sightings, or checks configured to require a hard block;
-- applied block and challenge notices, including permanent, subnet and netblock blocks, dry-run block verdicts, and the periodic count of applied automatic responses;
-- mail login advisories that never block, such as spray observe mode;
+There is no setting for this policy. The same classes decide what `csm scan --alert` sends.
+
+The retired `suppressions.suppress_blocked_alerts` key is ignored. A config that still sets it loads, and `csm validate` warns so you can delete the key.
+
+### What is summary class
+
+These findings are summary class:
+
+- An attack from an address CSM blocked, before or in the same batch. A subnet block or netblock counts.
+- An attack a challenge answers, while the address is on the challenge list or was routed there in the same batch.
+- Applied block and challenge notices. This includes permanent, subnet and netblock blocks, dry-run block verdicts, and the periodic count of applied automatic responses.
+- Mail login advisories that never block, such as spray observe mode.
 - PHP relay freeze dry runs and rate-limit deferrals that need no follow-up.
 
-Summary-class findings are left out of alert email and the generic alert
-webhook and are counted for the daily summary instead. They never spend the
-hourly alert budget. The findings page, history, incidents, the audit log, the
-event stream and the phpanel webhook still receive them. Only findings that
-would otherwise notify are counted: a suppression rule, or a check that never
-notifies, keeps its findings out of the summary too. Such a finding can still
-show that CSM blocked or challenged an address. If the summary fails to take
-its findings, the alert run reports an error and immediate alerts still go out.
+A challenge does not answer FTP or mail authentication failures, critical reputation sightings, or checks configured to require a hard block.
 
-Everything else is immediate. That includes attacks whose source CSM did not
-block: auto-response off or in dry run, a block that failed, was refused or is
-still queued, and checks that never block. Compromise evidence, successful
-logins, unauthenticated WHM script requests, suspicious mail content and
-findings that summarize several sources stay immediate even when the address
-is blocked, because blocking one address does not resolve them. A block of an
-address inside a Cloudflare allow range leaves ports 80 and 443 open, so its
-notice and the web attacks from that address stay immediate. Failed, paused or
-skipped automatic actions and auto-block queue and accounting notices are
-immediate too.
+### Where summary-class findings go
 
-The generic webhook follows the same classes as email. `alerts.email.disabled_checks`
-mutes email only: a muted immediate finding still goes to the webhook, and a
-muted summary finding is still counted in the summary.
+| Destination | Receives summary-class findings |
+|-------------|---------------------------------|
+| Alert email and the generic alert webhook | No. CSM counts them for the daily summary instead. |
+| Findings page, history, incidents, audit log, event stream, phpanel webhook | Yes. |
 
-There is no setting for this policy, and the same classes decide what
-`csm scan --alert` sends. The former `suppressions.suppress_blocked_alerts` key
-is ignored; a config that still sets it loads, and `csm validate` warns so the
-key can be deleted.
+Summary-class findings never spend the hourly alert budget.
+
+Only findings that would otherwise notify are counted. A suppression rule, or a check that never notifies, keeps its findings out of the summary too. Such a finding still counts as proof that CSM blocked or challenged an address, so attacks from that address are still summary class.
+
+If CSM cannot record these findings for the daily summary, the alert run reports an error. Immediate alerts still go out.
+
+### What is immediate
+
+Everything else is immediate. That includes attacks whose source CSM did not block:
+
+- Auto-response is off or in dry run.
+- The block failed, was refused or is still queued.
+- The check never blocks.
+
+Some findings stay immediate even when the address is blocked, because blocking one address does not resolve them:
+
+- compromise evidence
+- successful logins
+- unauthenticated WHM script requests
+- suspicious mail content
+- findings that summarize several sources
+
+A block of an address inside a Cloudflare allow range leaves ports 80 and 443 open. Its notice and the web attacks from that address stay immediate.
+
+Failed, paused or skipped automatic actions are immediate too, and so are auto-block queue and accounting notices.
+
+### Webhook and muted checks
+
+The generic webhook follows the same classes as email. `alerts.email.disabled_checks` mutes email only: a muted immediate finding still goes to the webhook, and a muted summary finding is still counted in the summary.
 
 ## Daily summary
 
-CSM sends one summary of the findings it handled each day at 08:00 server
-local time. It goes by alert email when email alerts are on, and to the
-generic alert webhook when that is on, as event `daily_summary` with the
-counts under `csm.summary` (see the
-[API reference](api.md#summary-and-customer-block-webhooks)). A phpanel
-webhook does not receive it.
-`alerts.block_digest.channel` selects live block alerts only; the daily
-summary uses every enabled alert channel. It goes out even with nothing to
-report.
+Each day at 08:00 server local time CSM sends one summary of the findings it handled. It goes out even with nothing to report.
 
-It covers the window since the previous summary:
+### Where it goes
 
-- summary-class findings by check and severity, and how many of them come from checks muted by `alerts.email.disabled_checks`;
-- blocks applied, by kind, including netblocks and promotions to a permanent block;
-- challenges, and mail login advisories that never block, such as spray observe mode;
-- the 10 addresses with the most summary findings, with their country when GeoIP knows it;
-- automatic blocks that hit a known customer, as their immediate alert named them, so a failed alert still reaches you: up to 50 a day, then a count of further blocks;
-- dry-run block verdicts and spray observe-mode verdicts that would have blocked a known customer, listed alongside their finding counts: up to 50 blocked addresses or networks a day, each listed once, then a count of further verdicts;
-- with `alerts.block_digest.enabled`, watched-country blocks by country and category, once they reach `min_block`.
+| Channel | Receives the daily summary |
+|---------|----------------------------|
+| Alert email | Yes, when email alerts are on. |
+| Generic alert webhook | Yes, when that webhook is on. The event is `daily_summary`, with the counts under `csm.summary`. See the [API reference](api.md#summary-and-customer-block-webhooks). |
+| phpanel webhook | No. |
 
-CSM tracks up to 1,000 source addresses a day. Past that, a new address takes
-the place of the one with the fewest findings, so heavy sources stay listed
-and a count can be overstated, never understated.
+`alerts.block_digest.channel` selects live block alerts only. The daily summary uses every enabled alert channel.
 
-Counts are saved at each `block_digest.interval` (one hour by default), after
-the final shutdown drain and before delivery. A crash can lose counts since
-the last save. If the host was down at 08:00, the missed summary goes out at
-the next start. A failed destination is retried after one minute, then with
-the wait doubling up to one hour; a restart retries it at once. CSM logs its
-first failure and again when the wait reaches an hour, and destinations
-already saved as successful are not retried. While a delivery is pending, new
-findings accumulate in the next window. When the next summary is due and a
-destination still has not taken the previous one, CSM drops the previous one
-for that destination, logs it once and counts it as one lost notification,
-then sends the new summary to every destination. A summary whose state cannot
-be saved is still sent; the save warning backs off the same way as a failing
-destination.
+### What it covers
 
-A crash after a destination accepts a summary but before CSM saves that
-success can repeat it. Clock corrections are checked every minute. Moving
-back across one or more morning sends does not resend dates already covered,
-including after a restart. Sending resumes on the first unsent local date. A
-send recorded more than two days ahead of the clock comes from a clock fault:
-CSM logs it once, ignores it and sends the next morning.
+The summary covers the window since the previous summary:
 
-Only the daemon counts findings. A one-off `csm scan --alert` prints every
-finding; its summary-class findings are neither emailed nor counted in the
-daily summary. The hourly block digest email no longer exists.
+- Summary-class findings by check and severity, and how many of them come from checks muted by `alerts.email.disabled_checks`.
+- Blocks applied, by kind, including netblocks and promotions to a permanent block.
+- Challenges, and mail login advisories that never block, such as spray observe mode.
+- The 10 addresses with the most summary findings, with their country when GeoIP knows it.
+- Automatic blocks that hit a known customer. CSM alerts you about each one at once, and the summary lists it again in case that alert failed to send. The summary lists up to 50 a day, then a count of further blocks.
+- Dry-run block verdicts and spray observe-mode verdicts that would have blocked a known customer, listed alongside their finding counts. The summary lists up to 50 blocked addresses or networks a day, each once, then a count of further verdicts.
+- With `alerts.block_digest.enabled`, watched-country blocks by country and category, once they reach `min_block`.
 
-Customer login history records the source addresses of authenticated
-cPanel, webmail, SMTP, IMAP, POP and FTP logins for 30 days. Buffered logs
-keep their original login time, so reading old logs does not renew expired
-history. FTP logins retain their authenticated account even when the displayed
-log record is shortened. FTP command text and failed login names do not count
-as successful logins. An applied automatic block of a known customer is
-alerted at once;
-see [the known-customer block alert](auto-response.md#known-customer-block-alert).
+CSM tracks up to 1,000 source addresses a day. Past that, a new address takes the place of the one with the fewest findings. Heavy sources stay listed, and a count can be overstated, never understated.
 
-An IPv6 customer is recorded by its /64, so a host that changes privacy
-addresses stays known. Each account holds a bounded number of addresses per
-log source; logins without an account name share one budget, and an FTP
-login counts against the hosting account that owns the FTP account.
+Only the daemon counts findings. A one-off `csm scan --alert` prints every finding; its summary-class findings are neither emailed nor counted in the daily summary. CSM sends no hourly block digest email.
 
-History has two fixed halves: logins read from syslog (FTP, IMAP, POP and
-Postfix SMTP) and logins read from cPanel's session log and the Exim mainlog.
-Any local user can write to syslog, so each half trims only itself, and a
-syslog login never replaces a session log or Exim login for the same
-address. When a half is full, the accounts holding the most addresses lose
-their oldest logins first, so a flood of logins evicts only its own accounts.
-History is saved every minute and after log readers stop during a clean
-shutdown.
+### Saving and delivery
+
+CSM saves the counts at each `block_digest.interval` (one hour by default), after the final shutdown drain, and before delivery. A crash can lose the counts since the last save.
+
+| Case | What CSM does |
+|------|---------------|
+| The host was down at 08:00 | Sends the missed summary at the next start. |
+| A destination fails | Retries after one minute, then with the wait doubling up to one hour. A restart retries at once. |
+| A destination keeps failing | Logs the first failure, and logs again when the wait reaches an hour. |
+| A destination is already saved as successful | Does not retry it. |
+| A delivery is pending | New findings accumulate in the next window. |
+| The next summary is due and a destination still has not taken the previous one | Drops the previous one for that destination, logs it once and counts it as one lost notification. Then sends the new summary to every destination. |
+| The summary state cannot be saved | Still sends the summary. The save warning backs off the same way as a failing destination. |
+| CSM crashes after a destination accepts a summary but before CSM saves that success | Can send that summary again. |
+
+### Clock changes
+
+CSM checks for clock corrections every minute.
+
+- When the clock moves back across one or more morning sends, CSM does not resend dates it already covered, including after a restart. Sending resumes on the first unsent local date.
+- A send recorded more than two days ahead of the clock comes from a clock fault. CSM logs it once, ignores it and sends the next morning.
+
+### Customer login history
+
+Customer login history records the source addresses of authenticated cPanel, webmail, SMTP, IMAP, POP and FTP logins for 30 days. An address in this history is a known customer. An applied automatic block of a known customer is alerted at once; see [the known-customer block alert](auto-response.md#known-customer-block-alert).
+
+What CSM records:
+
+- Buffered logs keep their original login time, so reading old logs does not renew expired history.
+- An FTP login keeps its authenticated account even when the displayed log record is shortened.
+- FTP command text and failed login names do not count as successful logins.
+- An IPv6 customer is recorded by its /64, so a host that changes privacy addresses stays known.
+
+Each account holds a bounded number of addresses per log source. Logins without an account name share one budget. An FTP login counts against the hosting account that owns the FTP account.
+
+History has two fixed halves:
+
+- logins read from syslog: FTP, IMAP, POP and Postfix SMTP
+- logins read from cPanel's session log and the Exim mainlog
+
+Any local user can write to syslog, so each half trims only itself. A syslog login never replaces a session log or Exim login for the same address. When a half is full, the accounts holding the most addresses lose their oldest logins first, so a flood of logins evicts only its own accounts.
+
+CSM saves the history every minute, and after the log readers stop during a clean shutdown.
 
 ## Web UI Exposure
 
-An admin token can change firewall rules, files under account homes and most
-settings, so treat the Web UI as privileged access. The shipped
-`listen: "0.0.0.0:9443"` answers on every interface, which the WHM addon needs.
-`csm validate` and `csm doctor` warn when the UI listens on a non-loopback
-address, an admin token has no `allowed_ips` or allows an entire address family,
-and the CSM firewall policy does not restrict that family. These warnings do
-not make either command fail.
+An admin token can change firewall rules, files under account homes and most settings, so treat the Web UI as privileged access. The shipped `listen: "0.0.0.0:9443"` answers on every interface, which the WHM addon needs.
 
-Enabling the firewall alone does not clear the warning. Keep the UI port out
-of public `tcp_in` and `tcp6_in` entries, or add it to `restricted_tcp` (which
-includes 9443 by default). Keep it outside the passive FTP range. Wildcard
-listeners can accept both address families, so also enable `firewall.ipv6`.
-Except for `localhost`, hostnames are checked against both families without
-resolving DNS.
-Alternatively, limit admin tokens with `allowed_ips`, or listen on
-`127.0.0.1:9443` and reach the UI through an SSH tunnel. An external firewall
-may already restrict access, but configuration validation cannot verify it.
+`csm validate` and `csm doctor` warn when all of these are true:
+
+- The UI listens on a non-loopback address.
+- An admin token has no `allowed_ips`, or allows an entire address family.
+- The CSM firewall policy does not restrict that family.
+
+These warnings do not make either command fail.
+
+### Clearing the warning
+
+Enabling the firewall alone does not clear the warning. Do one of these:
+
+- Restrict the port in the CSM firewall. Keep the UI port out of public `tcp_in` and `tcp6_in` entries, or add it to `restricted_tcp` (which includes 9443 by default). Keep it outside the passive FTP range. Wildcard listeners can accept both address families, so also enable `firewall.ipv6`.
+- Limit admin tokens with `allowed_ips`.
+- Listen on `127.0.0.1:9443` and reach the UI through an SSH tunnel.
+
+Except for `localhost`, hostnames are checked against both families without resolving DNS.
+
+An external firewall may already restrict access, but configuration validation cannot verify it.
 
 ## TLS Certificates
 
@@ -1210,11 +1247,20 @@ webui:
   tls_key: "/var/cpanel/ssl/cpanel/mycpanel.pem"     # private key PEM file
 ```
 
-On cPanel servers, you can reuse the cPanel self-signed certificate (both cert and key are in the same PEM file). For production, use a proper certificate from Let's Encrypt or your CA.
+| Paths set | What CSM does |
+|-----------|---------------|
+| Both empty | Generates an ECDSA self-signed certificate and key under `state_path`. |
+| Both set | Uses your certificate. |
+| Only one | Invalid configuration. |
 
-The private key may appear before or after the certificates. The first certificate must be the leaf served by the Web UI, followed by any chain certificates. Renewal only replaces an expiring CSM-generated leaf; it preserves the private key and all other contents of a combined file. Certificates issued outside CSM are left unchanged.
+On cPanel servers, you can reuse the cPanel self-signed certificate; both the certificate and the key are in the same PEM file. For production, use a proper certificate from Let's Encrypt or your CA.
 
-If both paths are empty, CSM generates an ECDSA self-signed certificate and key under `state_path`. Set both paths to use an operator-managed certificate. Configuring only one of the pair is invalid.
+Rules for the files:
+
+- The private key may appear before or after the certificates.
+- The first certificate must be the leaf the Web UI serves, followed by any chain certificates.
+
+Renewal only replaces an expiring CSM-generated leaf. It preserves the private key and all other contents of a combined file. Certificates issued outside CSM are left unchanged.
 
 ## Validation
 
@@ -1226,20 +1272,20 @@ csm config show        # display config with secrets redacted
 
 ## Editing csm.yaml by hand
 
-CSM stores a sha256 of the main config in `integrity.config_hash` and
-a separate digest of loaded drop-ins in `integrity.confd_hash`. It
-refuses to start if the on-disk files disagree with those values. This
-is a tamper-detection feature. It catches edits that were never
-recorded, but it does not stop anyone who can write `/etc/csm`,
-because they can record new hashes too. There are two supported edit
-workflows depending on which fields you touch.
+CSM stores a sha256 of the main config in `integrity.config_hash` and a separate digest of the loaded drop-ins in `integrity.confd_hash`. It refuses to start if the files on disk disagree with those values.
+
+This is a tamper-detection feature. It catches edits that were never recorded. It does not stop anyone who can write `/etc/csm`, because they can record new hashes too.
+
+There are two supported ways to edit the file. Which one you use depends on the fields you touch:
+
+| You changed | What to do |
+|-------------|------------|
+| Only fields that are safe to reload | Run `systemctl reload csm`. See [Fast path](#fast-path-sighup-reload-safe-fields-only). |
+| Any other field | Run `csm rehash`, then restart. See [Restart path](#restart-path-unsafe-fields). |
 
 ### Fast path: SIGHUP reload (safe fields only)
 
-For fields tagged as hot-reload-safe (`alerts`, `thresholds`,
-`detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, `disabled_checks`, `confd`, `backup`), the
-daemon can accept the change without a restart:
+The daemon accepts a change to a field tagged as hot-reload-safe without a restart. The safe top-level fields are `alerts`, `thresholds`, `detection`, `suppressions`, `auto_response`, `bpf_enforcement`, `reputation`, `email_protection`, `disabled_checks`, `confd` and `backup`. A few of their sub-keys behave differently; see [Sub-keys with their own reload rules](#sub-keys-with-their-own-reload-rules).
 
 ```bash
 sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
@@ -1250,121 +1296,25 @@ sudo systemctl reload csm
 sudo journalctl -u csm -n 20 --no-pager
 ```
 
-Every save CSM makes itself (the Settings page, `csm rehash`, the installer)
-first copies the current file to `csm.yaml.bak` next to it, so the previous
-version is one `cp` away. For a symlinked config, the backup sits beside the
-resolved target. A first write creates no backup; an unchanged save keeps
-the previous backup. Backups have mode `0600`.
+`systemctl reload` sends SIGHUP (wired via `ExecReload=` in the unit file). The daemon then does this:
 
-Retired settings are ignored with validation warnings, including settings
-in YAML merges and conf.d fragments. Removing them does not require a restart.
+1. It re-reads the file and validates it.
+2. It compares the file with the running config.
+3. If every change is on a field tagged `hotreload:"safe"`, it swaps the new values into the live config and records the new integrity hashes on disk.
 
-A reload after a comment edit or retired-setting removal updates the live
-integrity hashes even when no setting changes. This includes edits to conf.d
-fragments. If `csm rehash` already signed the edit, reload adopts the verified
-hashes without rewriting the main config. A reload with no edits neither
-rewrites the config nor republishes it, so it leaves dry-run history alone.
-Signing failures emit a Critical `config_reload_error` finding and count as
-reload errors.
-
-`systemctl reload` sends SIGHUP (wired via `ExecReload=` in the unit
-file). The daemon re-reads the file, validates it, diffs it against
-the running config, and if every change is on a field tagged
-`hotreload:"safe"` it swaps the new values into
-the live config and re-records the integrity hashes on disk. The
-next check tick sees the new thresholds; fanotify marks are not
-dropped.
-
-Reloads and Web UI saves share one config-write lock. If a reload signs the
-config but cannot open the phpanel delivery queue, it reports a reload error
-and keeps the previous settings and mail account parser active. The live
-integrity hashes still follow the signed config, so scheduled checks continue.
-
-The tagged-safe top-level fields are `alerts`, `thresholds`,
-`detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, `disabled_checks`, `confd`, and `backup`. The Settings
-API derives its restart hints from the same manifest that drives
-`config.Diff`, so UI hints and SIGHUP behavior cannot drift silently. A
-save from the Settings page runs the same apply steps as a SIGHUP, so a
-changed threshold, reputation whitelist, verified-bot list, forward-guard
-setting or response ceiling reaches the live daemon at once.
-Changes to their sub-keys are picked up on the next tick by the
-periodic scanners, the auto-response helpers
-(block/kill/quarantine/challenge/permission-fix), alert dispatch, and
-the heartbeat.
-
-`reputation.verified_bots` is reconciled on reload and the bot-verifier
-cache is restamped when the list changes.
-
-`reputation.bot_ranges` controls a long-lived updater goroutine and is
-tagged restart-required. A reload that changes it emits
-`config_reload_restart_required`; restart the daemon to change the
-auto-update switch or interval.
-
-Two sub-keys are runtime-state exceptions. They live under a safe-tagged
-parent and SIGHUP accepts edits to them, but they seed long-lived
-in-memory state at daemon startup. Restart the daemon if you need the
-running process to use the new value:
-
-- `reputation.whitelist` -- seeded into the threat database at
-  startup and replaced on every successful reload, so editing the
-  list in csm.yaml and sending SIGHUP takes effect at once. The
-  threat database also exposes its own runtime API for adding and
-  removing whitelist entries (via the Threat Intelligence page in
-  the Web UI or the `/api/v1/threat/*` endpoints); those entries
-  are persisted to disk and are kept separate from the configured
-  list, so a reload never drops them.
-- `email_protection.known_forwarders` -- captured by the forwarder
-  watcher at startup and read by scheduled forwarder and mail-filter
-  checks. No runtime API yet; send a restart if you edit this list.
-
-`auto_response.mail_auth_recovery` is a restart-required sub-key under
-the otherwise safe `auto_response` section. It is captured by the cPanel
-mail auth backend probe at startup, so a reload that changes it emits
-`config_reload_restart_required` and leaves the live config unchanged.
-
-`alerts.block_digest` is restart-required under the otherwise safe
-`alerts` section. The collector and ticker are built at startup, so a
-reload that changes these settings emits
-`config_reload_restart_required` and leaves the live config unchanged.
-When `countries` is empty, the fallback to `suppressions.trusted_countries`
-still follows safe reloads. Delivery uses the current email and webhook
-settings. The daily summary section gives by-country and by-category
-counts, and live alerts add by-reason counts; WAF categories group
-ModSecurity escalations and high-volume WAF attacker blocks together.
-
-If you turn off `alerts.block_digest.enabled` in Settings, restart before
-turning off the last alert channel. Until the restart the watched-country
-section and live alerts stay on, and Settings rejects a channel change that
-would leave them with no channel. Once the running configuration has the
-watch off, email and webhook may both be off, and then no daily summary is
-sent.
-
-The rest of the sub-keys in every safe-tagged section are read per-call
-(inside check functions, auto-response helpers, alert dispatchers) and
-hot-reload cleanly on the next tick.
+The next check tick sees the new thresholds. Fanotify marks are not dropped.
 
 Look for one of three log shapes in the journal:
 
-- `SIGHUP: config reloaded; safe fields updated: [thresholds]` --
-  success. The new values are live.
-- `config_reload_restart_required: SIGHUP reload: restart-required
-  fields changed: [hostname ...]; live config unchanged` -- the
-  edit touched a field that cannot be hot-swapped. A Warning
-  `config_reload_restart_required` finding is also emitted. Fall
-  back to the restart path below.
-- `config_reload_error: SIGHUP reload: parse failed ...` or
-  `... validation error ...` -- the file on disk is not loadable
-  or fails `csm validate`. A Critical `config_reload_error`
-  finding is emitted. The live config is unchanged; fix the file
-  and repeat.
+| Journal line | Meaning |
+|--------------|---------|
+| `SIGHUP: config reloaded; safe fields updated: [thresholds]` | Success. The new values are live. |
+| `config_reload_restart_required: SIGHUP reload: restart-required fields changed: [hostname ...]; live config unchanged` | The edit touched a field that cannot be hot-swapped. CSM also emits a Warning `config_reload_restart_required` finding. Fall back to the restart path below. |
+| `config_reload_error: SIGHUP reload: parse failed ...` or `... validation error ...` | The file on disk is not loadable or fails `csm validate`. CSM emits a Critical `config_reload_error` finding. The live config is unchanged; fix the file and repeat. |
 
 ### Restart path: unsafe fields
 
-Fields not tagged `hotreload:"safe"` (the majority, including
-`hostname`, `state_path`, `webui.listen`, `firewall.*`, `email_av.*`
-and anything that survives only one re-init per daemon lifetime)
-require a full restart. The integrity hashes must be re-recorded first:
+Most fields are not tagged `hotreload:"safe"` and need a full restart. Examples are `hostname`, `state_path`, `webui.listen`, `firewall.*`, `email_av.*`, and anything the daemon sets up only once in its lifetime. Record the integrity hashes again before you restart:
 
 ```bash
 sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
@@ -1377,43 +1327,102 @@ sudo systemctl restart csm
 sudo systemctl status csm    # confirm active, no crash-loop
 ```
 
-If the restart fails (most commonly because `rehash` was skipped),
-roll back with
-`sudo cp <backup> /etc/csm/csm.yaml && sudo systemctl restart csm`.
-The backup carries its own matching hash so no second rehash is
-needed.
+If the restart fails, most commonly because `rehash` was skipped, roll back with `sudo cp <backup> /etc/csm/csm.yaml && sudo systemctl restart csm`. The backup carries its own matching hash, so no second rehash is needed.
 
 ### Config-management tools
 
-Config-management workflows (Ansible, Puppet, Chef) should:
+Config-management workflows (Ansible, Puppet, Chef) should work like this:
 
-- For safe changes, notify `systemctl reload csm` instead of
-  `restart`. The daemon re-records the hash itself; no separate
-  `csm rehash` step is required.
-- For any change that may touch a restart-required field, run
-  `csm rehash` before the restart notify fires. Or always send
-  `reload` first, read the journal, and promote to `restart` only
-  when the reload logs `restart-required`.
+- For safe changes, notify `systemctl reload csm`, not `restart`. The daemon records the new hash itself, so no separate `csm rehash` step is required.
+- For any change that may touch a restart-required field, run `csm rehash` before the restart notify fires.
+- As an alternative, always send `reload` first and read the journal. Promote to `restart` only when the reload logs `restart-required`.
+
+### When a reloaded value takes effect
+
+The periodic scanners, the auto-response helpers (block, kill, quarantine, challenge, permission fix), alert dispatch and the heartbeat read the safe sections each time they run. They pick up a changed sub-key on the next tick.
+
+A save from the Settings page runs the same apply steps as a SIGHUP. A changed threshold, reputation whitelist, verified-bot list, forward-guard setting or response ceiling reaches the live daemon at once.
+
+The Settings API derives its restart hints from the same manifest that drives `config.Diff`, the comparison a reload runs. UI hints and SIGHUP behavior therefore cannot drift apart silently.
+
+### Sub-keys with their own reload rules
+
+These sub-keys sit under a safe section but do not simply apply on the next tick:
+
+| Sub-key | On reload |
+|---------|-----------|
+| `reputation.verified_bots` | Applied on reload. When the list changes, CSM drops its cached bot verdicts, so each address is checked again against the new list. |
+| `reputation.whitelist` | Replaced on every successful reload, so an edit takes effect at once. |
+| `email_protection.known_forwarders` | SIGHUP accepts the edit, but the forwarder watcher keeps the list it read at startup. Restart after you edit it. |
+| `reputation.bot_ranges` | Restart-required. |
+| `auto_response.mail_auth_recovery` | Restart-required. |
+| `alerts.block_digest` | Restart-required. |
+
+A reload that changes a restart-required sub-key emits `config_reload_restart_required` and leaves the live config unchanged.
+
+#### reputation.whitelist
+
+CSM seeds this list into the threat database at startup and replaces it on every successful reload. Editing the list in `csm.yaml` and sending SIGHUP takes effect at once.
+
+The threat database also has its own runtime API for adding and removing whitelist entries: the Threat Intelligence page in the Web UI, or the `/api/v1/threat/*` endpoints. Those entries are saved to disk and kept separate from the configured list, so a reload never drops them.
+
+#### email_protection.known_forwarders
+
+The forwarder watcher captures this list at startup. The scheduled forwarder and mail-filter checks read it too. There is no runtime API for it yet, so restart the daemon if you edit this list.
+
+#### reputation.bot_ranges
+
+This key controls a long-lived updater. Restart the daemon to change the auto-update switch or the interval.
+
+#### auto_response.mail_auth_recovery
+
+The cPanel mail auth backend probe captures this key at startup, so it needs a restart even though the rest of `auto_response` is safe.
+
+#### alerts.block_digest
+
+CSM sets up the block digest at startup, so these settings need a restart even though the rest of `alerts` is safe. Two things still follow the live config:
+
+- When `countries` is empty, the fallback to `suppressions.trusted_countries` follows safe reloads.
+- Delivery uses the current email and webhook settings.
+
+The daily summary section gives by-country and by-category counts, and live alerts add by-reason counts. WAF categories group ModSecurity escalations and high-volume WAF attacker blocks together.
+
+If you turn off `alerts.block_digest.enabled` in Settings, restart before you turn off the last alert channel. Until the restart, the watched-country section and live alerts stay on, and Settings rejects a channel change that would leave them with no channel. Once the running configuration has the watch off, email and webhook may both be off, and then no daily summary is sent.
+
+### Reload edge cases
+
+| Case | What the reload does |
+|------|----------------------|
+| You only edited a comment or removed a retired setting, in the main file or a conf.d fragment | Updates the live integrity hashes even though no setting changed. |
+| `csm rehash` already signed the edit | Adopts the verified hashes without rewriting the main config. |
+| Nothing was edited | Does not rewrite the config file and does not apply the running config again, so the recorded dry-run blocks are kept. |
+| Signing fails | Emits a Critical `config_reload_error` finding and counts as a reload error. |
+| The reload signs the config but cannot open the phpanel delivery queue | Reports a reload error and keeps the previous settings and mail account parser active. The live integrity hashes still follow the signed config, so scheduled checks continue. |
+
+A reload and a Web UI save never write the config at the same time.
+
+### Retired settings
+
+CSM ignores retired settings and warns about them at validation. This includes settings in YAML merges and conf.d fragments. Removing them does not require a restart.
+
+### The automatic csm.yaml.bak backup
+
+Every save CSM makes itself (the Settings page, `csm rehash`, the installer) first copies the current file to `csm.yaml.bak` next to it. The previous version is one `cp` away.
+
+- For a symlinked config, the backup sits beside the resolved target.
+- A first write creates no backup.
+- An unchanged save keeps the previous backup.
+- Backups have mode `0600`.
 
 ## conf.d drop-ins
 
-Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`; the flag wins when both are set.
+CSM loads files matching `/etc/csm/conf.d/*.yaml` after the main config and **deep-merges** them on top of it. To use another directory, pass `--config-dir <path>` or set `CSM_CONFIG_DIR`. The flag wins when both are set. A directory you name this way must already exist.
 
-Explicit operator overrides require an existing directory.
+Typical uses:
 
-- **Order:** lexicographic by filename. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`. Use a numeric prefix.
-- **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order. All-scalar lists drop duplicate entries while keeping the first occurrence; structured lists such as `webui.tokens` keep every entry.
-- **Trust:** override directories must be absolute, must exist, and must be owned by root or the running process. The directory and every loaded fragment must not be group- or world-writable. Safe symlinked fragments are allowed, so packaged profiles can still be linked into `/etc/csm/conf.d/`.
-- **Integrity ownership:** drop-ins cannot set the `integrity` block. Integrity metadata is stored only in the main config.
-- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-hash after validating the merged config. Rehash re-hashes the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-hashed. A mismatch is refused at the next daemon start with an error that names `csm rehash`. Until then the running daemon keeps its old hashes, but its periodic integrity check raises a tamper finding and skips the scheduled checks on every cycle; `csm doctor` reports the same mismatch, so it can be fixed before a restart turns it into an outage.
-- **Integration-owned fragments:** a fragment its owning package rewrites on its own schedule (phpanel-server-agent rewrites `10-phpanel-runtime.yaml` on every bootstrap) cannot be pinned by a static hash without making every one of those rewrites a failed restart. List such fragments by bare filename under `confd.integrity_exempt` in the main config, then run `csm rehash` once. Their content is left out of `confd_hash`; every other fragment stays covered. The list lives in the main config, outside the `integrity` block, so it is itself covered by `config_hash`, and a fragment cannot set `confd` to exempt itself.
-- **Scoped re-hash:** an integration that rewrites a covered fragment of its own runs `csm rehash --fragment <file>` (repeat the flag for several files) instead of a full `csm rehash`. It re-records hashes only when the named files are the only change since the last recorded state. If the binary, the main config or any other fragment changed, it records nothing and names what changed. A named file may be new, edited or deleted; a deleted one must have been part of the recorded state. Fragments under `confd.integrity_exempt` stay outside the recorded state either way. CSM keeps a per-fragment record in `csm.yaml.confd-fragments.json` beside the main config. Every hash update writes it, and each daemon start that verifies conf.d writes one when it is missing or out of date, so upgraded hosts need no extra step. Exit codes:
-  - `0`: re-hashed, or nothing had changed.
-  - `4`: refused because something besides the named files changed; stderr lists it.
-  - `5`: no per-fragment record for the current recorded state yet. A full `csm rehash` re-hashes everything and writes one.
-  - Any other non-zero code: an error, including a corrupt record, an incomplete option, an invalid fragment name or a file that never existed. Do not fall back to a full `csm rehash` on these errors.
-- **Record privacy:** the per-fragment record retains covered fragment contents to validate them against the recorded digest. It is written with owner-only access beside the resolved main config and must be protected like the config itself. A corrupt record never authorizes a fallback to a full rehash; a successful startup verification can rebuild it from verified fragments.
-- **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
+- packaged integration profiles, for example `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`
+- per-host automation that should not touch the operator's `csm.yaml`
+- secret material rendered from a vault
 
 ```bash
 ls /etc/csm/conf.d/
@@ -1424,19 +1433,86 @@ csm config show             # prints the merged, redacted config
 csm config schema           # JSON Schema for editor / CI validation
 ```
 
-`csm validate` and `csm config show` always operate on the **merged** config so you can audit the effective state without grepping fragments.
+`csm validate` and `csm config show` always operate on the **merged** config, so you can audit the effective state without grepping fragments.
+
+### Load order and merge rules
+
+Fragments load in lexicographic order by filename, so use a numeric prefix. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`.
+
+| Value | How it merges |
+|-------|---------------|
+| Map | Merges recursively. |
+| Scalar | Replaces the value from the main file. |
+| List | Appends in fragment order. An all-scalar list drops duplicate entries and keeps the first occurrence. A structured list such as `webui.tokens` keeps every entry. |
+
+### Ownership and permissions
+
+- An override directory must be absolute, must exist, and must be owned by root or the running process.
+- The directory and every loaded fragment must not be group- or world-writable.
+- Safe symlinked fragments are allowed, so packaged profiles can still be linked into `/etc/csm/conf.d/`.
+- Drop-ins cannot set the `integrity` block. Integrity metadata is stored only in the main config.
+
+### Hashes after editing a drop-in
+
+`integrity.config_hash` covers the main file and `integrity.confd_hash` covers the loaded drop-ins. After you edit a drop-in by hand, do one of these:
+
+- Run `csm rehash` before restarting.
+- Run `systemctl reload csm`, so the daemon can re-hash after it validates the merged config.
+
+A save from the Web UI Settings page is refused while a drop-in has a change that was not re-hashed.
+
+A drop-in change that is never re-hashed leaves a mismatch:
+
+| Where | What happens |
+|-------|--------------|
+| Next daemon start | CSM refuses to start, with an error that names `csm rehash`. |
+| Running daemon, until then | It keeps its old hashes. Its periodic integrity check raises a tamper finding and skips the scheduled checks on every cycle. |
+| `csm doctor` | Reports the same mismatch, so you can fix it before a restart turns it into an outage. |
+
+Rehash re-hashes the resolved main file only. When a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift.
+
+### Integration-owned fragments
+
+Some fragments are rewritten by their owning package on its own schedule. For example, phpanel-server-agent rewrites `10-phpanel-runtime.yaml` on every bootstrap. A static hash cannot pin such a fragment without making every one of those rewrites a failed restart.
+
+List such fragments by bare filename under `confd.integrity_exempt` in the main config, then run `csm rehash` once. Their content is left out of `confd_hash`. Every other fragment stays covered.
+
+The list lives in the main config, outside the `integrity` block. `config_hash` therefore covers the list itself, and a fragment cannot set `confd` to exempt itself.
+
+### Scoped re-hash
+
+An integration that rewrites a covered fragment of its own runs `csm rehash --fragment <file>` instead of a full `csm rehash`. Repeat the flag for several files.
+
+The command re-records hashes only when the named files are the only change since the last recorded state:
+
+- If the binary, the main config or any other fragment changed, it records nothing and names what changed.
+- A named file may be new, edited or deleted. A deleted one must have been part of the recorded state.
+- Fragments under `confd.integrity_exempt` stay outside the recorded state either way.
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Re-hashed, or nothing had changed. |
+| `4` | Refused because something besides the named files changed; stderr lists it. |
+| `5` | No per-fragment record for the current recorded state yet. A full `csm rehash` re-hashes everything and writes one. |
+| Any other non-zero code | An error, including a corrupt record, an incomplete option, an invalid fragment name or a file that never existed. Do not fall back to a full `csm rehash` on these errors. |
+
+### The per-fragment record
+
+CSM keeps a per-fragment record in `csm.yaml.confd-fragments.json` beside the main config. Every hash update writes it. Each daemon start that verifies conf.d writes one when it is missing or out of date, so upgraded hosts need no extra step.
+
+The record retains the contents of covered fragments, to validate them against the recorded digest. CSM writes it with owner-only access beside the resolved main config. Protect it like the config itself.
+
+A corrupt record never authorizes a fallback to a full rehash. A successful startup verification can rebuild it from verified fragments.
 
 ## detection.direct_smtp_egress
 
-The direct SMTP detector's `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
-`ports` must contain TCP ports in the 1-65535 range. See
-[Direct SMTP egress](direct-smtp-egress.md).
+The direct SMTP detector's `backend` accepts `auto`, `bpf`, `legacy` or `none`. `ports` must contain TCP ports in the 1-65535 range. See [Direct SMTP egress](direct-smtp-egress.md).
 
 ## bpf_enforcement
 
-BPF enforcement requires a BPF-capable connection tracker at
-runtime; `auto` falls back to legacy detection on older servers. See
-[BPF enforcement](bpf-enforcement.md).
+BPF enforcement requires a BPF-capable connection tracker at runtime. On older servers, `auto` falls back to legacy detection. See [BPF enforcement](bpf-enforcement.md).
 
 ## firewall.tcp_in_allow
 
@@ -1454,15 +1530,36 @@ firewall:
 
 Use it for a database, replication or monitoring port that a few known hosts need and nobody else should reach. The port does not need to be in `tcp_in`, and it may be in `restricted_tcp`. `infra_ips` is the wrong tool for this: it opens every port to the address.
 
-`port` is a single TCP port. `sources` is required and takes IPv4 and IPv6 addresses or CIDRs; a bare address means that one host, the same as `/32` or `/128`. A port out of range, an empty list, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors; open a port to everyone in `tcp_in` instead. IPv6 sources need `firewall.ipv6: true`; with it off, IPv6 is not filtered at all and validation warns.
+Rules for an entry:
 
-The Web UI and sshd lockout warnings treat a port with at least one usable source here as deliberate and stay quiet for it, in both IP families. An entry whose sources render no rule, such as IPv6 sources while `firewall.ipv6` is off, does not count. A usable source also keeps a port in `restricted_tcp` reachable without `infra_ips`.
+- `port` is a single TCP port.
+- `sources` is required and takes IPv4 and IPv6 addresses or CIDRs. A bare address means that one host, the same as `/32` or `/128`.
+- IPv6 sources need `firewall.ipv6: true`. With it off, IPv6 is not filtered at all and validation warns.
+- A port out of range, an empty list, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors. Open a port to everyone in `tcp_in` instead.
 
-The accepts come right after `infra_ips` and before the blocked address, blocked subnet and country rules, and before the rate limits. A listed source therefore keeps reaching its port while it is blocked, and only that port: every other port still follows the blocklists. `csm firewall deny` on a listed source does not close the port for it. Remove the source from the entry and run `csm firewall restart` instead.
+### A listed source stays allowed while it is blocked
 
-Entries from `conf.d` fragments are added to the ones in `csm.yaml`. A change takes effect on `csm firewall restart`. `csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback, and the Web UI firewall page shows and counts the entries with its port exceptions. That page reads the config the daemon loaded, so after a firewall restart or rollback it can differ from the applied policy until the daemon reloads; the CLI shows what is applied. Hosts that support the key report the `firewall.tcp_in_allow.v1` capability.
+The accepts come right after `infra_ips`. They come before the blocked address, blocked subnet and country rules, and before the rate limits. A listed source therefore keeps reaching its port while it is blocked, and only that port: every other port still follows the blocklists.
+
+`csm firewall deny` on a listed source does not close the port for it. Remove the source from the entry and run `csm firewall restart` instead.
 
 For a single address on one host without a config change, `csm firewall allow-port` still works. That allow is a soft one: it sits after the blocklists, so an operator block overrides it.
+
+### Lockout warnings and restricted ports
+
+The Web UI and sshd lockout warnings treat a port with at least one usable source here as deliberate and stay quiet for it, in both IP families. An entry whose sources render no rule does not count. IPv6 sources while `firewall.ipv6` is off are one example.
+
+A usable source also keeps a port in `restricted_tcp` reachable without `infra_ips`.
+
+### Applying and checking tcp_in_allow
+
+Entries from `conf.d` fragments are added to the ones in `csm.yaml`. A change takes effect on `csm firewall restart`.
+
+`csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback. The Web UI firewall page shows and counts the entries with its port exceptions.
+
+The Web UI page reads the config the daemon loaded. After a firewall restart or rollback it can differ from the applied policy until the daemon reloads. The CLI shows what is applied.
+
+Hosts that support the key report the `firewall.tcp_in_allow.v1` capability.
 
 ## firewall.protocol_allow
 
@@ -1477,20 +1574,49 @@ firewall:
         - 2001:db8::11
 ```
 
-The only protocol today is `vrrp` (IP protocol 112), for keepalived and other VRRP speakers on database or load-balancer pairs. `tcp`, `udp`, `icmp` and `icmpv6` have their own keys and are refused here. `peers` is required and takes IPv4 and IPv6 addresses or CIDRs. An empty list, an unknown protocol, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors.
+The only protocol today is `vrrp` (IP protocol 112), for keepalived and other VRRP speakers on database or load-balancer pairs.
 
-For each peer the input chain accepts the protocol from that address and the output chain accepts it to that address. For `vrrp` the output chain also accepts advertisements to the VRRP multicast group of each family that has a peer (`224.0.0.18`, `ff02::12`). Advertisements a peer sends to the group match its input rule. IPv6 peers need `firewall.ipv6: true`; with it off, IPv6 is not filtered at all.
+Rules for an entry:
+
+- `tcp`, `udp`, `icmp` and `icmpv6` have their own keys and are refused here.
+- `peers` is required and takes IPv4 and IPv6 addresses or CIDRs.
+- IPv6 peers need `firewall.ipv6: true`. With it off, IPv6 is not filtered at all.
+- An empty list, an unknown protocol, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors.
+
+### What protocol_allow accepts
+
+For each peer, the input chain accepts the protocol from that address and the output chain accepts it to that address.
+
+For `vrrp`, the output chain also accepts advertisements to the VRRP multicast group of each family that has a peer (`224.0.0.18`, `ff02::12`). Advertisements a peer sends to the group match its input rule.
+
+### A blocked peer keeps its VRRP session
 
 The input accepts come right after `infra_ips` and before the blocked address, blocked subnet and country rules. A blocked peer therefore still exchanges VRRP with this host, and only VRRP. Without this, a block on a peer makes both members claim the shared address. Blocks of other addresses do not affect these rules.
+
+### Checking protocol_allow
 
 `csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback. Hosts that support the key report the `firewall.protocol_allow.v1` capability.
 
 ## firewall.dos_exempt_ranges
 
-`dos_exempt_ranges` is a list of CIDRs or single IPs (/32 for IPv4, /128 for IPv6) declared by the operator. Entries are validated at startup; /0 default routes, bare hostnames, and malformed CIDRs are rejected before the daemon starts. Default: empty (no declared ranges).
+`dos_exempt_ranges` is a list of CIDRs or single IPs (/32 for IPv4, /128 for IPv6) that you declare. The default is empty: no declared ranges. CSM validates the entries at startup. It rejects /0 default routes, bare hostnames and malformed CIDRs before the daemon starts.
 
-`dos_exempt_known_mail_providers` (bool, default true) adds Google and Microsoft outbound mail IP ranges to the effective exempt set automatically. The ranges are sourced dynamically and cached on disk; a built-in snapshot covers startup before the first live refresh. The cache is refreshed every 12 hours.
+`dos_exempt_known_mail_providers` (bool, default true) adds Google and Microsoft outbound mail IP ranges to the effective exempt set automatically. CSM fetches the ranges dynamically, caches them on disk and refreshes the cache every 12 hours. A built-in snapshot covers startup before the first live refresh.
 
-Sources in the effective exempt set bypass the new-connection rate-limit for their IP family, the IPv4 concurrent connection-limit, and the TCP port 25/465/587 flood meters for their IP family. Subnet auto-block (spray, ASN-crawl, and netblock escalation) skips CIDRs that intersect an exempt range, and exempt IPs do not count toward the netblock threshold.
+Sources in the effective exempt set bypass:
 
-Exempt sources do not bypass: manual blocks (`csm firewall deny` or `csm firewall deny-subnet`), SYN flood protection, UDP flood protection, country blocking, and port policy. A manual block placed inside an exempt range still takes effect because blocked sets are evaluated before the DoS meters. See [Firewall - DoS-exempt ranges](firewall.md#dos-exempt-ranges).
+- the new-connection rate-limit for their IP family
+- the IPv4 concurrent connection-limit
+- the TCP port 25/465/587 flood meters for their IP family
+
+Subnet auto-block (spray, ASN-crawl and netblock escalation) skips CIDRs that intersect an exempt range. Exempt IPs do not count toward the netblock threshold.
+
+Exempt sources do not bypass:
+
+- manual blocks (`csm firewall deny` or `csm firewall deny-subnet`)
+- SYN flood protection
+- UDP flood protection
+- country blocking
+- port policy
+
+A manual block placed inside an exempt range still takes effect, because blocked sets are evaluated before the DoS meters. See [Firewall - DoS-exempt ranges](firewall.md#dos-exempt-ranges).

@@ -1,36 +1,6 @@
 # Direct SMTP egress
 
-CSM watches the local mail stack via spool + log scanning. Non-MTA
-processes that open outbound SMTP connections directly bypass that
-path. The direct SMTP egress detector catches that at connect time
-and feeds the incident correlator.
-
-## What fires
-
-A finding with `check: "direct_smtp_egress"` is emitted when:
-
-- A non-root process opens an outbound TCP connection.
-- Destination port is one of the configured SMTP ports (default 25,
-  465, 587).
-- Destination IP is not loopback, infra, or in the operator's
-  `infra_ips` list.
-- The process user is NOT a known MTA user (mail, mailnull, postfix,
-  dovecot, dovenull, mailman, plus exim on cPanel). On non-cPanel hosts,
-  Stalwart's stalwart and stalwart-mail users are also recognized when
-  their UID is below 1000. Hosted UIDs do not receive this automatic
-  exemption, even when they use a Stalwart username.
-- The process user is NOT listed under `firewall.smtp_allow_users`.
-  Those users may send through `firewall.smtp_block`, so their
-  connections are expected. List any other mail server's service user
-  there.
-
-Process names are never a standalone allow condition. A hosted account
-renaming malware to `smtp` or `smtpd` still emits a finding.
-
-The detector always emits findings when enabled. The dry_run knob does
-not suppress findings; it participates in the BPF enforcement
-gate, where any dry_run=true layer keeps kernel denial in observe-only
-mode.
+CSM watches the local mail stack via spool + log scanning. A non-MTA process that opens an outbound SMTP connection directly bypasses that path. The direct SMTP egress detector catches such a connection at connect time and feeds the incident correlator.
 
 ## Configuration
 
@@ -46,41 +16,55 @@ detection:
       - 587
 ```
 
+`2525` is intentionally NOT in the default port list, because many operators run unrelated services on it. Add it to `ports` if your infra uses it for submission.
+
+## What fires
+
+CSM emits a finding with `check: "direct_smtp_egress"` when all of these hold:
+
+- A non-root process opens an outbound TCP connection.
+- The destination port is one of the configured SMTP ports (default 25, 465, 587).
+- The destination IP is not loopback and is not in the operator's `infra_ips` list.
+- The process user is NOT a known MTA user. See [Known MTA users](#known-mta-users).
+- The process user is NOT listed under `firewall.smtp_allow_users`. See [Allowed users](#allowed-users).
+
+Process names are never a standalone allow condition. A hosted account renaming malware to `smtp` or `smtpd` still emits a finding.
+
+### Known MTA users
+
+The known MTA users are mail, mailnull, postfix, dovecot, dovenull and mailman, plus exim on cPanel.
+
+On non-cPanel hosts, Stalwart's stalwart and stalwart-mail users are also recognized when their UID is below 1000. Hosted UIDs do not receive this automatic exemption, even when they use a Stalwart username.
+
+### Allowed users
+
+`firewall.smtp_block` blocks outgoing mail except for allowed users. Users listed under `firewall.smtp_allow_users` pass that block, so their connections are expected. List any other mail server's service user there.
+
+### Findings and dry run
+
+The detector always emits findings when enabled. The dry_run knob does not suppress findings.
+
+The knob takes part in the BPF enforcement gate, where any dry_run=true layer keeps kernel denial in observe-only mode. Kernel denial requires `auto_response.dry_run`, this dry_run key, and `bpf_enforcement.dry_run` to all be explicitly false. See [BPF cgroup-deny enforcement](bpf-enforcement.md).
+
 ## Backends
 
-- `auto` -- allow both BPF and legacy scan paths. Live backend choice
-  still follows `detection.connection_tracker_backend`.
-- `bpf` -- emit only from the cgroup/connect4,6 consumer.
-- `legacy` -- emit only from the `/proc/net/tcp[6]` polling path
-  (live poller or scheduled critical scan). This path lacks PID/comm;
-  MTA matching uses the username and UID.
-- `none` -- detector disabled even when `enabled: true` is set
-  elsewhere; useful for staged rollout.
+| `backend` | What it does |
+|-----------|--------------|
+| `auto` | Allows both the BPF and the legacy scan paths. Live backend choice still follows `detection.connection_tracker_backend`. |
+| `bpf` | Emits only from the cgroup/connect4,6 consumer. |
+| `legacy` | Emits only from the `/proc/net/tcp[6]` polling path (live poller or scheduled critical scan). This path lacks PID/comm; MTA matching uses the username and UID. |
+| `none` | Disables the detector even when `enabled: true` is set elsewhere. Useful for staged rollout. |
 
-The generic outbound connection tracker is still governed by
-`detection.connection_tracker_backend`; this setting only gates
-`direct_smtp_egress` findings.
+`detection.connection_tracker_backend` still governs the generic outbound connection tracker. The `backend` setting only gates `direct_smtp_egress` findings.
 
 ## Metric
 
-`csm_direct_smtp_egress_findings_total` -- monotonic counter,
-incremented per finding emitted by the BPF connection consumer. The
-legacy poller does not bump this counter today; operators who run
-backend=legacy should track findings via the audit log.
+`csm_direct_smtp_egress_findings_total` is a monotonic counter. It is incremented per finding emitted by the BPF connection consumer.
+
+The legacy poller does not bump this counter today. If you run backend=legacy, track findings via the audit log.
 
 ## rDNS enrichment
 
-When the BPF backend is active, finding details include a Domain
-field populated from a TTL-cached reverse lookup (30 min TTL, 1
-second per-lookup deadline). The lookup runs only after the cheap
-direct-SMTP filters match. On resolver miss or timeout the field is
-omitted; the finding still fires.
+When the BPF backend is active, finding details include a Domain field. CSM fills it from a TTL-cached reverse lookup, with a 30 min TTL and a 1 second per-lookup deadline.
 
-## Caveats
-
-- `2525` is intentionally NOT in the default port list. Many operators
-  run unrelated services on it. Add it to `ports` if your infra uses
-  it for submission.
-- The detector emits regardless of the dry_run knob. Kernel denial
-  requires `auto_response.dry_run`, this dry_run key, and
-  `bpf_enforcement.dry_run` to all be explicitly false.
+The lookup runs only after the cheap direct-SMTP filters match. On a resolver miss or timeout the field is omitted; the finding still fires.
