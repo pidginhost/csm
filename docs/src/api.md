@@ -1728,6 +1728,11 @@ reply holds the root worker's `result` (status `undone`, `refused` or
 apply, or CSM cannot put it back and the message says what to do instead. The
 reply then carries the saved report, and the audit is not re-run.
 
+If the undo worker finishes but saving the recheck fails, HTTP 500 carries
+`error`, the fresh audit in `report`, and the worker outcome in `result`.
+The page displays both the outcome and the save error. Older refresh replies
+cannot replace the audit returned by undo.
+
 ## Scan Jobs
 
 `csm scan --full` enqueues full-scan jobs that run inside the daemon and persist to the store. Jobs are report-only unless an account-scope request sets `quarantine: true`; server-wide jobs reject quarantine.

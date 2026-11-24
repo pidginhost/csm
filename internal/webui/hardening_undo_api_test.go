@@ -481,3 +481,83 @@ func TestHardeningUndoAPIAllowsTimeForWorkerAndRecheck(t *testing.T) {
 		t.Fatalf("status %d, worker ctx err %v, worker deadline %v, HTTP deadlines %v", w.status, workerErr, workerDeadline, deadlines)
 	}
 }
+
+// A save failure must not hide whether the root worker restored the setting
+// or failed part-way through. Both outcomes still carry the fresh audit.
+func TestHardeningUndoSaveFailureKeepsWorkerResult(t *testing.T) {
+	for _, status := range []string{"undone", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			s := newTestServer(t, "tok")
+			db, saved := saveUndoTestReport(t)
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			want := checks.HardeningFixResult{Name: "ssh_use_dns", Title: "ssh_use_dns", Status: status, Message: "Worker outcome."}
+			s.hardeningUndo = func(context.Context, *config.Config, string) (checks.HardeningFixResult, error) {
+				return want, nil
+			}
+			withHardeningUndoNames(t, func() ([]string, error) { return []string{"os_tmp_permissions"}, nil })
+			rec := postHardeningUndo(t, s, `{"name":"ssh_use_dns"}`)
+			var got struct {
+				Error  string                     `json:"error"`
+				Result *checks.HardeningFixResult `json:"result"`
+				Report *store.AuditReport         `json:"report"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusInternalServerError || !strings.Contains(got.Error, "failed to save the recheck") {
+				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+			}
+			if got.Result == nil || *got.Result != want {
+				t.Errorf("worker outcome lost: %s", rec.Body.String())
+			}
+			if got.Report == nil || len(got.Report.Results) == 0 || !got.Report.Timestamp.After(saved.Timestamp) {
+				t.Fatalf("fresh audit lost: %s", rec.Body.String())
+			}
+			checkUndoMarks(t, got.Report.Results, []string{"os_tmp_permissions"})
+			if !s.acquireScan() {
+				t.Fatal("save failure left the scan lock held")
+			}
+			s.releaseScan()
+		})
+	}
+}
+
+func TestHardeningUndoRouteRequiresAdmin(t *testing.T) {
+	s, readToken := newTestServerWithReadToken(t)
+	calls := 0
+	s.hardeningUndo = func(_ context.Context, _ *config.Config, name string) (checks.HardeningFixResult, error) {
+		calls++
+		return checks.HardeningFixResult{Name: name, Status: "refused", Message: "No record."}, nil
+	}
+	for _, tc := range []struct {
+		name, method, token string
+		want                int
+	}{
+		{"anonymous", http.MethodPost, "", http.StatusUnauthorized},
+		{"read token", http.MethodPost, readToken, http.StatusUnauthorized},
+		{"admin GET", http.MethodGet, "admin-tok", http.StatusMethodNotAllowed},
+		{"admin POST", http.MethodPost, "admin-tok", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/api/v1/hardening/undo", strings.NewReader(`{"name":"ssh_use_dns"}`))
+			req.Header.Set("Content-Type", "application/json")
+			if tc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			rec := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+			if !s.acquireScan() {
+				t.Fatal("handler left the scan lock held")
+			}
+			s.releaseScan()
+		})
+	}
+	if calls != 1 {
+		t.Fatalf("worker called %d times, want only the admin POST", calls)
+	}
+}

@@ -18,8 +18,11 @@
     // shown above that section's checks after the recheck re-renders the page.
     var lastApply = {};
     var applying = false;
+    var reportVersion = 0;
 
     function renderReport(report) {
+        // A completed action supersedes any earlier report fetch.
+        reportVersion++;
         if (!report || !report.results || report.results.length === 0) {
             document.getElementById('empty-state').classList.remove('d-none');
             document.getElementById('score-card').classList.add('d-none');
@@ -261,6 +264,7 @@
 
     function setApplyBusy(busy) {
         applying = busy;
+        if (busy) reportVersion++;
         document.querySelectorAll('[data-apply-cat], [data-undo-name]').forEach(function(b) { b.disabled = busy; });
         document.getElementById('btn-run-audit').disabled = busy;
     }
@@ -316,9 +320,10 @@
 
     // A failed worker may have changed some files; the server re-ran the
     // audit, so show that report.
-    function showRecheck(err) {
+    function showRecheck(err, item) {
         if (!err || err.status !== 500) return;
         lastApply = {};
+        if (item && err.body && err.body.result) setUndoOutcome(item, err.body.result);
         if (err.body && err.body.report) {
             renderReport(err.body.report);
         } else {
@@ -349,14 +354,8 @@
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Undoing...';
             CSM.post('/api/v1/hardening/undo', { name: item.name }, { timeoutMs: 0 })
                 .then(function(resp) {
-                    // The worker knows the fix by its name; the page shows its title.
-                    var res = Object.assign({}, resp.result, { title: item.title });
-                    lastApply = {};
-                    // A refused undo changed nothing, so the server kept the saved audit.
-                    lastApply[item.category] = {
-                        heading: res.status === 'refused' ? 'Last undo' : 'Last undo (audit re-run afterwards)',
-                        results: [res]
-                    };
+                    var res = resp.result;
+                    setUndoOutcome(item, res);
                     applying = false;
                     renderReport(resp);
                     setApplyBusy(false);
@@ -366,18 +365,33 @@
                     setApplyBusy(false);
                     btn.textContent = 'Undo';
                     CSM.toast((err && err.message) || 'Undoing the fix failed', 'error');
-                    showRecheck(err);
+                    showRecheck(err, item);
                 });
         }, function() {});
     }
 
+    function setUndoOutcome(item, result) {
+        // The worker knows the fix by its name; the page shows its title.
+        var res = Object.assign({}, result, { title: item.title });
+        lastApply = {};
+        // A refused undo changed nothing, so the server kept the saved audit.
+        lastApply[item.category] = {
+            heading: res.status === 'refused' ? 'Last undo' : 'Last undo (audit re-run afterwards)',
+            results: [res]
+        };
+    }
+
     function loadReport() {
+        var version = ++reportVersion;
         // silent:true so CSM.request does not toast; the failure shows in
         // place of the report. The "no audit results" message is hidden with
         // it, or a failed load would read as "nothing has run".
         return CSM.get('/api/v1/hardening', { silent: true })
-            .then(renderReport)
+            .then(function(report) {
+                if (version === reportVersion) renderReport(report);
+            })
             .catch(function(err) {
+                if (version !== reportVersion) return;
                 document.getElementById('empty-state').classList.add('d-none');
                 CSM.loadError(document.getElementById('categories-container'), loadReport, { title: 'Failed to load hardening report', error: err });
             });
@@ -437,5 +451,7 @@
 
     loadReport();
     // Refresh re-reads the stored report; it does not run a new audit.
-    if (CSM.refresh) CSM.refresh.onRefresh(loadReport);
+    if (CSM.refresh) CSM.refresh.onRefresh(function() {
+        if (!applying) return loadReport();
+    });
 })();

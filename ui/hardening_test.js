@@ -252,3 +252,72 @@ test('a worker error during undo shows the rechecked report', async () => {
     assert.equal(page.pending('/api/v1/hardening').length, 0);
     assert.deepEqual(page.toasts.at(-1), ['Hardening undo: hardening worker: signal: killed. The audit was re-run.', 'error']);
 });
+
+for (const status of ['undone', 'failed']) {
+    test('undo keeps the worker outcome when saving the recheck fails: ' + status, async () => {
+        const page = await hardeningPage(APPLIED);
+        undoButtons(page)[0].click();
+        await settle();
+        const after = APPLIED.map(r => r.name === 'ssh_use_dns' ? Object.assign({}, r, { undo_available: status !== 'undone' }) : r);
+        page.respond('/api/v1/hardening/undo', 500, {
+            error: 'Hardening undo: failed to save the recheck. The audit was re-run.',
+            result: { name: 'ssh_use_dns', status, message: 'Worker outcome <b>must stay text</b>.' },
+            report: report(after)
+        });
+        await settle();
+        const outcome = page.document.querySelector('[role="status"]');
+        assert.ok(outcome, 'the save failure hid the worker outcome');
+        assert.ok(outcome.textContent.includes(status + ' UseDNS: Worker outcome <b>must stay text</b>.'));
+        assert.equal(outcome.querySelectorAll('b').length, 0);
+        assert.ok(outcome.classList.contains(status === 'undone' ? 'alert-success' : 'alert-warning'));
+        assert.equal(page.toasts.at(-1)[1], 'error', 'the storage error must also remain visible');
+        assert.equal(page.pending('/api/v1/hardening').length, 0);
+    });
+}
+
+for (const failure of [false, true]) {
+    test('an older report refresh cannot replace the undo recheck: ' + (failure ? 'error' : 'report'), async () => {
+        const page = await hardeningPage(APPLIED);
+        page.window.CSM.refresh.manual();
+        await settle();
+        assert.equal(page.pending('/api/v1/hardening').length, 1);
+        undoButtons(page)[0].click();
+        await settle();
+        const after = APPLIED.map(r => r.name === 'ssh_use_dns' ? Object.assign({}, r, { undo_available: false, message: 'UseDNS restored' }) : r);
+        page.respond('/api/v1/hardening/undo', 200, Object.assign({ ok: true, result: { name: 'ssh_use_dns', status: 'undone', message: 'Restored.' } }, report(after)));
+        await settle();
+        page.respond('/api/v1/hardening', failure ? 500 : 200, failure ? { error: 'Old load failed' } : report(APPLIED));
+        await settle();
+        assert.deepEqual(undoButtons(page).map(b => b.getAttribute('data-undo-name')), ['cp_max_emails_hour']);
+        assert.equal(page.document.querySelector('.csm-load-error'), null, 'an obsolete load error hid the fresh report');
+        assert.match(page.document.getElementById('categories-container').textContent, /UseDNS restored/);
+        assert.match(page.document.querySelector('[role="status"]').textContent, /undone UseDNS: Restored\./);
+    });
+}
+
+test('manual refresh does not load saved state while undo is pending', async () => {
+    const page = await hardeningPage(APPLIED);
+    undoButtons(page)[0].click();
+    await settle();
+    page.window.CSM.refresh.manual();
+    await settle();
+    assert.equal(page.pending('/api/v1/hardening').filter(r => r.method === 'GET').length, 0);
+    assert.deepEqual(undoButtons(page).map(b => b.disabled), [true, true]);
+});
+
+test('undo renders fix names, titles and worker messages as text', async () => {
+    const name = '\"><img src=x onerror=alert(1)>';
+    const title = '<b>Fix title</b>';
+    const results = [{ category: 'ssh', name, title, status: 'pass', undo_available: true }];
+    const page = await hardeningPage(results);
+    const btn = undoButtons(page)[0];
+    assert.equal(btn.getAttribute('data-undo-name'), name);
+    assert.equal(btn.getAttribute('aria-label'), 'Undo ' + title);
+    btn.click();
+    await settle();
+    page.respond('/api/v1/hardening/undo', 200, Object.assign({ result: { name, status: 'refused', message: '<script>bad()</script>' } }, report(results)));
+    await settle();
+    const container = page.document.getElementById('categories-container');
+    assert.equal(container.querySelectorAll('img, b, script').length, 0);
+    assert.ok(container.querySelector('[role="status"]').textContent.includes('refused ' + title + ': <script>bad()</script>'));
+});

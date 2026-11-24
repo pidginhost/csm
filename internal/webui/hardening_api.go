@@ -136,7 +136,7 @@ func (s *Server) apiHardeningApply(w http.ResponseWriter, r *http.Request) {
 	// A failed worker may have changed some files, so it rechecks too.
 	report, err := recheckHardening(cfg, err)
 	if err != nil {
-		writeHardeningRecheckError(w, "Hardening apply", err, report)
+		writeHardeningRecheckError(w, "Hardening apply", err, report, nil)
 		return
 	}
 	if fixes == nil {
@@ -185,6 +185,11 @@ func (s *Server) apiHardeningUndo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordHardeningUndo(r, req.Name, res, err)
+	// A later save failure must not hide what the worker actually changed.
+	var result *checks.HardeningFixResult
+	if err == nil {
+		result = &res
+	}
 
 	var report *store.AuditReport
 	if err == nil && res.Status == "refused" {
@@ -193,7 +198,7 @@ func (s *Server) apiHardeningUndo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if report, err = recheckHardening(cfg, err); err != nil {
-		writeHardeningRecheckError(w, "Hardening undo", err, report)
+		writeHardeningRecheckError(w, "Hardening undo", err, report, result)
 		return
 	}
 	writeJSON(w, struct {
@@ -252,11 +257,12 @@ func recheckHardening(cfg *config.Config, err error) (*store.AuditReport, error)
 
 // writeHardeningRecheckError answers a worker or save failure with the
 // rechecked report, which the page shows in place of the old one.
-func writeHardeningRecheckError(w http.ResponseWriter, what string, err error, report *store.AuditReport) {
+func writeHardeningRecheckError(w http.ResponseWriter, what string, err error, report *store.AuditReport, result *checks.HardeningFixResult) {
 	writeJSONStatus(w, http.StatusInternalServerError, struct {
-		Error  string             `json:"error"`
-		Report *store.AuditReport `json:"report"`
-	}{what + ": " + err.Error() + ". The audit was re-run.", report})
+		Error  string                     `json:"error"`
+		Report *store.AuditReport         `json:"report"`
+		Result *checks.HardeningFixResult `json:"result,omitempty"`
+	}{what + ": " + err.Error() + ". The audit was re-run.", report, result})
 }
 
 // hardeningApplyDetails is the audit log line for one apply.
