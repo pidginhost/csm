@@ -17,7 +17,7 @@ require (
 	github.com/mdlayher/netlink v1.11.2
 	github.com/oschwald/maxminddb-golang/v2 v2.9.1
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/tdewolff/parse/v2 v2.8.20
+	github.com/tdewolff/parse/v2 v2.25.0
 	go.etcd.io/bbolt v1.5.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sync v0.24.0
