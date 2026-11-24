@@ -52,6 +52,9 @@ var (
 // win over anything earlier in the directory.
 const hardeningPHPIniName = "zz-csm-hardening.ini"
 
+// The cp_updates fix sets this key in hardeningCPUpdateConf.
+const cpUpdatesKey, cpUpdatesValue = "UPDATES", "daily"
+
 // hardeningApplyTimeout bounds each command a fixer runs.
 const hardeningApplyTimeout = 60 * time.Second
 
@@ -525,8 +528,12 @@ func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 			return failed(r, err)
 		}
 		undo := tweakUndoState{Key: kv.key, Previous: prev, HadValue: had, Applied: kv.value}
-		return applied(r, fmt.Sprintf("Tweak setting %s set to %s.", kv.key, kv.value)+
-			recordHardeningUndo(r, HardeningUndoRecord{Kind: "tweak", Tweak: &undo}, prior, readErr))
+		note := recordHardeningUndo(r, HardeningUndoRecord{Kind: "tweak", Tweak: &undo}, prior, readErr)
+		// No value and an empty one cannot be sent back, so say so now.
+		if note == "" && prev == "" {
+			note = " Undo will need WHM Tweak Settings: whmapi1 cannot clear " + kv.key + "."
+		}
+		return applied(r, fmt.Sprintf("Tweak setting %s set to %s.", kv.key, kv.value)+note)
 	}
 	if dir, ok := hardeningTmpDirs[r.Name]; ok {
 		undo, err := fixTmpDir(dir)
@@ -550,7 +557,7 @@ func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 		}
 		return applied(r, msg+recordHardeningUndo(r, HardeningUndoRecord{Kind: "compilers", Compilers: &undo}, prior, nil))
 	case "cp_updates":
-		undo, err := setKeyValueFile(hardeningCPUpdateConf, "UPDATES", "daily")
+		undo, err := setKeyValueFile(hardeningCPUpdateConf, cpUpdatesKey, cpUpdatesValue)
 		if err != nil {
 			return failed(r, err)
 		}
@@ -597,6 +604,10 @@ func getWHMTweak(key string) (string, bool, error) {
 	return *reply.Data.Tweaksetting.Value, true, nil
 }
 
+// errWHMRefused marks a whmapi1 reply that refused the call, as cPanel's
+// validation does for a value the setting does not accept.
+var errWHMRefused = errors.New("whmapi1 refused")
+
 func setWHMTweak(key, value string) error {
 	out, err := hardeningRunStdout("whmapi1", "--output=json", "set_tweaksetting", "key="+key, "value="+value)
 	if err != nil {
@@ -612,7 +623,7 @@ func setWHMTweak(key, value string) error {
 		return fmt.Errorf("unreadable whmapi1 reply: %w", err)
 	}
 	if reply.Metadata.Result != 1 {
-		return fmt.Errorf("whmapi1 refused %s=%s: %s", key, value, reply.Metadata.Reason)
+		return fmt.Errorf("%w %s=%s: %s", errWHMRefused, key, value, reply.Metadata.Reason)
 	}
 	return nil
 }
@@ -655,12 +666,7 @@ func setKeyValueFile(path, key, value string) (fileUndoState, error) {
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	done := false
 	for i, line := range lines {
-		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "#") {
-			continue
-		}
-		k, _, ok := strings.Cut(t, "=")
-		if ok && strings.EqualFold(strings.TrimSpace(k), key) {
+		if _, ok := keyValueLine(line, key); ok {
 			if done {
 				lines[i] = "# " + line
 				continue
@@ -677,6 +683,17 @@ func setKeyValueFile(path, key, value string) (fileUndoState, error) {
 		return fileUndoState{}, err
 	}
 	return fileUndoState{Path: path, Previous: string(data), Applied: updated}, nil
+}
+
+// keyValueLine returns the value an active line of a shell-style config
+// file sets for key, which matches in any case.
+func keyValueLine(line, key string) (string, bool) {
+	t := strings.TrimSpace(line)
+	k, v, ok := strings.Cut(t, "=")
+	if !ok || strings.HasPrefix(t, "#") || !strings.EqualFold(strings.TrimSpace(k), key) {
+		return "", false
+	}
+	return strings.TrimSpace(v), true
 }
 
 // --- OS ---
@@ -1280,23 +1297,15 @@ func restartPHPFPM() (string, error) {
 // mod_php directory was written, and LiteSpeed's detached lsphp processes.
 // It reports what it did; a failure names what to restart by hand.
 func reloadPHP(dirs []string) string {
-	msg, _ := reloadPHPResult(dirs)
-	return msg
-}
-
-func reloadPHPResult(dirs []string) (string, error) {
 	var notes []string
-	var errs []error
 	if msg, err := restartPHPFPM(); err != nil {
 		notes = append(notes, "Restart PHP-FPM manually ("+err.Error()+").")
-		errs = append(errs, fmt.Errorf("restarting PHP-FPM: %w", err))
 	} else {
 		notes = append(notes, msg)
 	}
 	if slices.ContainsFunc(dirs, func(d string) bool { return filepath.Base(filepath.Dir(d)) == "apache2" }) {
 		if _, err := hardeningRun("systemctl", "try-reload-or-restart", "apache2.service"); err != nil {
 			notes = append(notes, "Reload Apache manually ("+err.Error()+").")
-			errs = append(errs, fmt.Errorf("reloading Apache: %w", err))
 		} else {
 			notes = append(notes, "Apache reloaded.")
 		}
@@ -1304,12 +1313,11 @@ func reloadPHPResult(dirs []string) (string, error) {
 	if info, err := os.Stat(hardeningLSWSCtrl); err == nil && info.Mode().IsRegular() {
 		if err := touchNoFollow(hardeningLSPHPRestartMarker); err != nil {
 			notes = append(notes, "Restart LiteSpeed PHP manually ("+err.Error()+").")
-			errs = append(errs, fmt.Errorf("restarting LiteSpeed PHP: %w", err))
 		} else {
 			notes = append(notes, "LiteSpeed PHP restart requested.")
 		}
 	}
-	return strings.Join(notes, " "), errors.Join(errs...)
+	return strings.Join(notes, " ")
 }
 
 // touchNoFollow creates path if needed without following a symlink in its

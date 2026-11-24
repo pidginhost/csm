@@ -97,11 +97,13 @@ func withPHPRestartLogged(t *testing.T) *[]string {
 }
 
 // fakeWHMTweak stands in for whmapi1 holding one tweak setting; a nil value
-// is unset. It logs the value of each set.
+// is unset. It logs the value of each set, and refuses the values in
+// rejects the way cPanel's validation does, changing nothing.
 type fakeWHMTweak struct {
-	key   string
-	value *string
-	sets  []string
+	key     string
+	value   *string
+	sets    []string
+	rejects []string
 }
 
 func (f *fakeWHMTweak) run(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -113,6 +115,9 @@ func (f *fakeWHMTweak) run(_ context.Context, _ string, args ...string) ([]byte,
 	}
 	set := strings.TrimPrefix(args[len(args)-1], "value=")
 	f.sets = append(f.sets, set)
+	if slices.Contains(f.rejects, set) {
+		return []byte(`{"metadata":{"result":0,"reason":"The value is not valid."}}`), nil
+	}
 	f.value = &set
 	return []byte(`{"metadata":{"result":1,"reason":"OK"}}`), nil
 }
@@ -216,18 +221,51 @@ func TestHardeningUndoRestoresSysctl(t *testing.T) {
 	}
 }
 
+// cPanel takes skipboxtrapper=0 back; maxemailsperhour accepts no 0.
 func TestHardeningUndoRestoresTweak(t *testing.T) {
 	withHardeningUndoDir(t)
 	before := "0"
-	whm := withFakeWHMTweak(t, "maxemailsperhour", &before)
-	if res := applyHardeningSingle(store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"}); res.Status != "applied" {
+	whm := withFakeWHMTweak(t, "skipboxtrapper", &before)
+	if res := applyHardeningSingle(store.AuditResult{Name: "cp_boxtrapper", Category: "cpanel"}); res.Status != "applied" {
 		t.Fatalf("apply = %+v", res)
 	}
-	wantUndoResult(t, UndoHardening("cp_max_emails_hour"), "cp_max_emails_hour", "undone", "")
-	if whm.value == nil || *whm.value != "0" || !slices.Equal(whm.sets, []string{"200", "0"}) {
+	wantUndoResult(t, UndoHardening("cp_boxtrapper"), "cp_boxtrapper", "undone", "")
+	if whm.value == nil || *whm.value != "0" || !slices.Equal(whm.sets, []string{"1", "0"}) {
 		t.Fatalf("tweak = %v, sets = %q", whm.value, whm.sets)
 	}
-	wantNoUndoRecord(t, "cp_max_emails_hour")
+	wantNoUndoRecord(t, "cp_boxtrapper")
+}
+
+// An earlier value whmapi1 cannot set back, empty or one cPanel's validation
+// refuses, leaves the applied value and the record, and the refusal says to
+// use WHM Tweak Settings instead of failing the same way on every retry.
+func TestHardeningUndoTweakWHMWillNotTakeBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, before string
+		sets         []string
+	}{
+		// cPanel saves a setting only when given a value, so it is not sent.
+		{"empty", "", []string{"200"}},
+		{"refused by cPanel", "0", []string{"200", "0"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHardeningUndoDir(t)
+			before := tc.before
+			whm := withFakeWHMTweak(t, "maxemailsperhour", &before)
+			whm.rejects = []string{"", "0"}
+			if res := applyHardeningSingle(store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"}); res.Status != "applied" {
+				t.Fatalf("apply = %+v", res)
+			}
+			rec := storedUndoRecord(t, "cp_max_emails_hour")
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "refused", "WHM Tweak Settings")
+			if *whm.value != "200" || !slices.Equal(whm.sets, tc.sets) {
+				t.Fatalf("tweak = %q, sets = %q, want 200 and %q", *whm.value, whm.sets, tc.sets)
+			}
+			if got := storedUndoRecord(t, rec.Name); !reflect.DeepEqual(got, rec) {
+				t.Fatalf("record = %+v, want it kept as %+v", got, rec)
+			}
+		})
+	}
 }
 
 // whmapi1 set_tweaksetting saves only settings given a value, so it cannot
@@ -431,6 +469,54 @@ func TestHardeningUndoRestoresFile(t *testing.T) {
 	wantNoUndoRecord(t, "cp_updates")
 }
 
+// cPanel rewrites cpupdate.conf when its update preferences are saved. Undo
+// puts back only the UPDATES lines the apply changed, the duplicates it
+// commented out included, and keeps every other line as it is now.
+func TestHardeningUndoFileRestoresOnlyUpdatesLines(t *testing.T) {
+	for _, tc := range []struct {
+		name, before string
+		// now replaces the applied file before the undo, unless empty.
+		now, want string
+	}{
+		// Sorted keys, no comments, RPMUP changed: how a WHM save writes it.
+		{"other lines rewritten", "CPANEL=release\n# local note\nUPDATES=manual\nRPMUP=daily\n",
+			"CPANEL=release\nRPMUP=manual\nSARULESUP=daily\nUPDATES=daily\n",
+			"CPANEL=release\nRPMUP=manual\nSARULESUP=daily\nUPDATES=manual\n"},
+		{"duplicates uncommented in place", "UPDATES=manual\nRPMUP=daily\nupdates = never\n",
+			"UPDATES=daily\nRPMUP=manual\n# updates = never\n",
+			"UPDATES=manual\nRPMUP=manual\nupdates = never\n"},
+		{"duplicates after the comments were dropped", "UPDATES=manual\nRPMUP=daily\nupdates = never\n",
+			"RPMUP=manual\nUPDATES=daily\n",
+			"RPMUP=manual\nUPDATES=manual\nupdates = never\n"},
+		{"line the apply added", "CPANEL=release\n",
+			"CPANEL=edge\nUPDATES=daily\n",
+			"CPANEL=edge\n"},
+		// The comment before the first line was there already and stays.
+		{"same comment before the apply", "# UPDATES=never\nUPDATES=manual\nUPDATES=never\n",
+			"",
+			"# UPDATES=never\nUPDATES=manual\nUPDATES=never\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHardeningUndoDir(t)
+			path := withTempCPUpdateConf(t)
+			if err := os.WriteFile(path, []byte(tc.before), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_updates", Category: "cpanel"})})
+			if tc.now != "" {
+				if err := os.WriteFile(path, []byte(tc.now), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantUndoResult(t, UndoHardening("cp_updates"), "cp_updates", "undone", "UPDATES restored in "+path)
+			if got := fileText(t, path); got != tc.want {
+				t.Fatalf("file = %q, want %q", got, tc.want)
+			}
+			wantNoUndoRecord(t, "cp_updates")
+		})
+	}
+}
+
 // Undo refuses, keeping the record and the host as they are, when the
 // setting no longer holds what the apply wrote.
 func TestHardeningUndoRefusesChangedSetting(t *testing.T) {
@@ -486,6 +572,16 @@ func TestHardeningUndoRefusesChangedSetting(t *testing.T) {
 			withMockCmd(t, &mockCmd{run: kernelSysctl})
 			applyOK(t, applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}))
 			if _, err := kernelSysctl("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"); err != nil {
+				t.Fatal(err)
+			}
+			return func() string { return fileText(t, conf) + runtimeValue(t, "net.ipv4.conf.all.rp_filter") }
+		}},
+		// The runtime value is back, but the drop-in would set it again at boot.
+		{"sysctl runtime set back by hand", "os_sysctl_rp_filter", func(t *testing.T) func() string {
+			conf := withTempSysctl(t, "", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
+			withMockCmd(t, &mockCmd{run: kernelSysctl})
+			applyOK(t, applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}))
+			if _, err := kernelSysctl("sysctl", "-w", "net.ipv4.conf.all.rp_filter=2"); err != nil {
 				t.Fatal(err)
 			}
 			return func() string { return fileText(t, conf) + runtimeValue(t, "net.ipv4.conf.all.rp_filter") }
@@ -574,28 +670,6 @@ func TestHardeningUndoRefusesChangedSetting(t *testing.T) {
 			}
 			return func() string { return fileModeOwner(t, gcc) }
 		}},
-		{"compilers script", "cp_compilers", func(t *testing.T) func() string {
-			dir := t.TempDir()
-			script := filepath.Join(dir, "compilers")
-			if err := os.WriteFile(script, nil, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			cc := filepath.Join(dir, "cc")
-			if err := os.WriteFile(cc, nil, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			withCompilerPaths(t, cc, script)
-			calls := compilersScript(t, cc)
-			if res := applyHardeningSingle(store.AuditResult{Name: "cp_compilers", Category: "cpanel"}); res.Status != "applied" {
-				t.Fatalf("apply = %+v", res)
-			}
-			// Compilers opened again by hand, as "compilers on" does.
-			if err := os.Chmod(cc, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			*calls = nil
-			return func() string { return fileModeOwner(t, cc) + strings.Join(*calls, ";") }
-		}},
 		{"file", "cp_updates", func(t *testing.T) func() string {
 			path := withTempCPUpdateConf(t)
 			if err := os.WriteFile(path, []byte("UPDATES=manual\n"), 0o640); err != nil {
@@ -608,6 +682,17 @@ func TestHardeningUndoRefusesChangedSetting(t *testing.T) {
 				t.Fatal(err)
 			}
 			return func() string { return fileText(t, path) + fileModeOwner(t, path) }
+		}},
+		{"file line removed", "cp_updates", func(t *testing.T) func() string {
+			path := withTempCPUpdateConf(t)
+			if err := os.WriteFile(path, []byte("CPANEL=release\nUPDATES=manual\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_updates", Category: "cpanel"})})
+			if err := os.WriteFile(path, []byte("CPANEL=release\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return func() string { return fileText(t, path) }
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -622,6 +707,184 @@ func TestHardeningUndoRefusesChangedSetting(t *testing.T) {
 			if got := storedUndoRecord(t, tc.fix); !reflect.DeepEqual(got, rec) {
 				t.Errorf("record = %+v, want it kept as %+v", got, rec)
 			}
+		})
+	}
+}
+
+// A setting put back by hand, as the refusal for a WHM value asks, holds the
+// state from before the apply: undo removes the record and reports it done,
+// changing nothing, so the page stops offering an Undo that would refuse.
+func TestHardeningUndoAlreadyBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, fix string
+		// setup applies the fix, puts its setting back by hand, and returns
+		// the state undo must leave alone.
+		setup func(t *testing.T) func() string
+	}{
+		{"ssh", "ssh_max_auth_tries", func(t *testing.T) func() string {
+			const original = "MaxAuthTries 6\nUseDNS yes\n"
+			path := withTempSSHDConfig(t, original)
+			calls := recordCommands(t)
+			applyOK(t, applySSHFixes([]store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}, {Name: "ssh_use_dns", Category: "ssh"}}))
+			editFile(t, path, "MaxAuthTries 4\n", "")
+			editFile(t, path, sshdDisabledBy+"MaxAuthTries 6\n", "MaxAuthTries 6\n")
+			*calls = nil
+			return func() string { return fileText(t, path) + strings.Join(*calls, ";") }
+		}},
+		{"ssh block value", "ssh_max_auth_tries", func(t *testing.T) func() string {
+			path := withTempSSHDConfig(t, strings.Join([]string{sshdBlockBegin, "MaxAuthTries 6", sshdBlockEnd, "Port 2222", ""}, "\n"))
+			calls := recordCommands(t)
+			applyOK(t, applySSHFixes([]store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}}))
+			editFile(t, path, "MaxAuthTries 4", "MaxAuthTries 6")
+			*calls = nil
+			return func() string { return fileText(t, path) + strings.Join(*calls, ";") }
+		}},
+		{"sysctl", "os_sysctl_rp_filter", func(t *testing.T) func() string {
+			conf := withTempSysctl(t, "fs.protected_hardlinks = 1\nnet.ipv4.conf.all.rp_filter=2\n", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
+			withMockCmd(t, &mockCmd{run: kernelSysctl})
+			applyOK(t, applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}))
+			editFile(t, conf, "net.ipv4.conf.all.rp_filter = 1", "net.ipv4.conf.all.rp_filter = 2")
+			if _, err := kernelSysctl("sysctl", "-w", "net.ipv4.conf.all.rp_filter=2"); err != nil {
+				t.Fatal(err)
+			}
+			var calls []string
+			withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+				calls = append(calls, name+" "+strings.Join(args, " "))
+				return nil, nil
+			}})
+			return func() string {
+				return fileText(t, conf) + runtimeValue(t, "net.ipv4.conf.all.rp_filter") + strings.Join(calls, ";")
+			}
+		}},
+		{"sysctl runtime only", "os_sysctl_rp_filter", func(t *testing.T) func() string {
+			conf := withTempSysctl(t, "", map[string]string{"net.ipv4.conf.all.rp_filter": "2"})
+			if err := os.Mkdir(conf, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			withMockCmd(t, &mockCmd{run: kernelSysctl})
+			if out := applySysctlFixes([]store.AuditResult{{Name: "os_sysctl_rp_filter", Category: "os"}}); out[0].Status != "failed" {
+				t.Fatalf("apply = %+v", out)
+			}
+			if _, err := kernelSysctl("sysctl", "-w", "net.ipv4.conf.all.rp_filter=2"); err != nil {
+				t.Fatal(err)
+			}
+			return func() string { return runtimeValue(t, "net.ipv4.conf.all.rp_filter") }
+		}},
+		// WHM's own reset leaves the tweak with no value, as before the apply.
+		{"tweak had no value", "cp_max_emails_hour", func(t *testing.T) func() string {
+			whm := withFakeWHMTweak(t, "maxemailsperhour", nil)
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"})})
+			whm.value, whm.sets = nil, nil
+			return func() string { return fmt.Sprint(whm.value, whm.sets) }
+		}},
+		{"tweak empty", "cp_max_emails_hour", func(t *testing.T) func() string {
+			empty := ""
+			whm := withFakeWHMTweak(t, "maxemailsperhour", &empty)
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"})})
+			whm.value, whm.sets = nil, nil
+			return func() string { return fmt.Sprint(whm.value, whm.sets) }
+		}},
+		{"tweak value", "cp_boxtrapper", func(t *testing.T) func() string {
+			before := "0"
+			whm := withFakeWHMTweak(t, "skipboxtrapper", &before)
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_boxtrapper", Category: "cpanel"})})
+			again := "0"
+			whm.value, whm.sets = &again, nil
+			return func() string { return *whm.value + strings.Join(whm.sets, ";") }
+		}},
+		{"php", "php_expose_82", func(t *testing.T) func() string {
+			calls := withPHPRestartLogged(t)
+			ver, _ := debianPHPTree(t, "cli", "fpm")
+			ini := func(sapi string) string { return filepath.Join(ver, sapi, "conf.d", hardeningPHPIniName) }
+			if err := os.WriteFile(ini("fpm"), []byte(phpDropInHeader+"\nexpose_php = On\nenable_dl = Off\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			installs := []phpInstall{{shortID: "82", scanDir: filepath.Join(ver, "cli", "conf.d")}}
+			withPHPInstalls(t, installs)
+			applyOK(t, applyPHPFixes([]store.AuditResult{{Name: "php_expose_82", Category: "php"}}, installs))
+			editFile(t, ini("fpm"), "expose_php = Off", "expose_php=On")
+			if err := os.Remove(ini("cli")); err != nil {
+				t.Fatal(err)
+			}
+			*calls = nil
+			return func() string { return fileText(t, ini("fpm")) + fileText(t, ini("cli")) + strings.Join(*calls, ";") }
+		}},
+		{"shadow mode", "os_shadow_permissions", func(t *testing.T) func() string {
+			path := filepath.Join(t.TempDir(), "shadow")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			old := hardeningShadowPath
+			hardeningShadowPath = path
+			t.Cleanup(func() { hardeningShadowPath = old })
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "os_shadow_permissions", Category: "os"})})
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return func() string { return fileModeOwner(t, path) }
+		}},
+		{"compilers chmod", "cp_compilers", func(t *testing.T) func() string {
+			dir := t.TempDir()
+			gcc := filepath.Join(dir, "gcc")
+			if err := os.WriteFile(gcc, nil, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(gcc, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			withCompilerPaths(t, gcc, filepath.Join(dir, "missing-compilers-script"))
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_compilers", Category: "cpanel"})})
+			if err := os.Chmod(gcc, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return func() string { return fileModeOwner(t, gcc) }
+		}},
+		{"compilers script", "cp_compilers", func(t *testing.T) func() string {
+			dir := t.TempDir()
+			script := filepath.Join(dir, "compilers")
+			if err := os.WriteFile(script, nil, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cc := filepath.Join(dir, "cc")
+			if err := os.WriteFile(cc, nil, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			withCompilerPaths(t, cc, script)
+			calls := compilersScript(t, cc)
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_compilers", Category: "cpanel"})})
+			// Compilers opened again by hand, as "compilers on" does.
+			if err := os.Chmod(cc, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			*calls = nil
+			return func() string { return fileModeOwner(t, cc) + strings.Join(*calls, ";") }
+		}},
+		// cPanel's Update Preferences rewrote the file, other keys changed.
+		{"file", "cp_updates", func(t *testing.T) func() string {
+			path := withTempCPUpdateConf(t)
+			if err := os.WriteFile(path, []byte("CPANEL=release\nUPDATES=manual\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_updates", Category: "cpanel"})})
+			if err := os.WriteFile(path, []byte("CPANEL=release\nRPMUP=daily\nUPDATES=manual\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return func() string { return fileText(t, path) + fileModeOwner(t, path) }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withHardeningUndoDir(t)
+			state := tc.setup(t)
+			storedUndoRecord(t, tc.fix)
+			before := state()
+			wantUndoResult(t, UndoHardening(tc.fix), tc.fix, "undone", "already back to its earlier state")
+			if after := state(); after != before {
+				t.Errorf("undo changed the host:\n%s\nwant\n%s", after, before)
+			}
+			wantNoUndoRecord(t, tc.fix)
 		})
 	}
 }
@@ -752,6 +1015,43 @@ func TestHardeningUndoRefusesMismatchedRecord(t *testing.T) {
 			calls := compilersScript(t, cc)
 			return HardeningUndoRecord{Name: "cp_compilers", Kind: "compilers", Compilers: &compilersUndoState{Method: "make"}},
 				func() string { return fileModeOwner(t, cc) + strings.Join(*calls, ";") }
+		}},
+		// The apply changes UPDATES lines only; a record changing another key
+		// would have undo rewrite it.
+		{"file content", func(t *testing.T) (HardeningUndoRecord, func() string) {
+			path := withTempCPUpdateConf(t)
+			if err := os.WriteFile(path, []byte("RPMUP=daily\nUPDATES=daily\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return HardeningUndoRecord{Name: "cp_updates", Kind: "file", File: &fileUndoState{
+				Path: path, Previous: "RPMUP=never\nUPDATES=manual\n", Applied: "RPMUP=daily\nUPDATES=daily\n",
+			}}, func() string {
+				return fileText(t, path)
+			}
+		}},
+		// The apply always sets or adds the line; undo would drop it here.
+		{"file without the line the apply sets", func(t *testing.T) (HardeningUndoRecord, func() string) {
+			path := withTempCPUpdateConf(t)
+			if err := os.WriteFile(path, []byte("UPDATES=daily\n# UPDATES=never\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return HardeningUndoRecord{Name: "cp_updates", Kind: "file", File: &fileUndoState{
+				Path: path, Previous: "UPDATES=daily\nUPDATES=never\n", Applied: "UPDATES=daily\n# UPDATES=never\n",
+			}}, func() string {
+				return fileText(t, path)
+			}
+		}},
+		// Undo would put RPMUP=never in place of the UPDATES line.
+		{"file line taken over", func(t *testing.T) (HardeningUndoRecord, func() string) {
+			path := withTempCPUpdateConf(t)
+			if err := os.WriteFile(path, []byte("RPMUP=daily\nUPDATES=daily\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			return HardeningUndoRecord{Name: "cp_updates", Kind: "file", File: &fileUndoState{
+				Path: path, Previous: "RPMUP=daily\nRPMUP=never\n", Applied: "RPMUP=daily\nUPDATES=daily\n",
+			}}, func() string {
+				return fileText(t, path)
+			}
 		}},
 		{"file path", func(t *testing.T) (HardeningUndoRecord, func() string) {
 			withTempCPUpdateConf(t)
@@ -975,33 +1275,29 @@ func TestHardeningUndoSSHDCheckFailureRestores(t *testing.T) {
 	}
 }
 
-// A reload failure must keep the applied file and record retryable.
+// A failed reload keeps the checked, restored file, as on apply: undo is
+// done, says to reload sshd by hand, and the record goes. On a host where
+// the reload always fails, undo works wherever apply works.
 func TestHardeningUndoSSHReloadFailure(t *testing.T) {
 	withHardeningUndoDir(t)
 	path := withTempSSHDConfig(t, "MaxAuthTries 6\n")
 	recordCommands(t)
 	applyOK(t, applySSHFixes([]store.AuditResult{{Name: "ssh_max_auth_tries", Category: "ssh"}}))
-	applied := fileText(t, path)
-	rec := storedUndoRecord(t, "ssh_max_auth_tries")
 	withMockCmd(t, &mockCmd{run: func(name string, _ ...string) ([]byte, error) {
 		if name == "systemctl" {
 			return []byte("Unit not found."), errors.New("exit status 5")
 		}
 		return nil, nil
 	}})
-	wantUndoResult(t, UndoHardening("ssh_max_auth_tries"), "ssh_max_auth_tries", "failed", "reloading sshd failed")
-	if got := fileText(t, path); got != applied {
-		t.Fatalf("config = %q", got)
+	res := UndoHardening("ssh_max_auth_tries")
+	wantUndoResult(t, res, "ssh_max_auth_tries", "undone", ", but reloading sshd failed (")
+	if !strings.HasSuffix(res.Message, "; reload it manually.") {
+		t.Errorf("message = %q, want the apply's manual reload note", res.Message)
 	}
-	if got := storedUndoRecord(t, rec.Name); !reflect.DeepEqual(got, rec) {
-		t.Fatalf("record changed: %+v", got)
-	}
-	recordCommands(t)
-	wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
 	if got := fileText(t, path); got != "MaxAuthTries 6\n" {
-		t.Fatalf("config after retry = %q", got)
+		t.Fatalf("config = %q, want the restored file", got)
 	}
-	wantNoUndoRecord(t, rec.Name)
+	wantNoUndoRecord(t, "ssh_max_auth_tries")
 }
 
 func TestHardeningUndoNoRecord(t *testing.T) {
@@ -1034,8 +1330,13 @@ func TestHardeningUndoNoRecord(t *testing.T) {
 	}
 }
 
-func TestHardeningUndoPHPReloadFailureIsRetryable(t *testing.T) {
-	for _, failingUnit := range []string{"php*-fpm.service", "apache2.service"} {
+// A failed PHP reload keeps the restored drop-ins, as on apply: undo is done
+// and names what to restart by hand, in the apply's words.
+func TestHardeningUndoPHPReloadFailure(t *testing.T) {
+	for failingUnit, note := range map[string]string{
+		"php*-fpm.service": "Restart PHP-FPM manually (systemctl: reload failed).",
+		"apache2.service":  "Reload Apache manually (systemctl: reload failed).",
+	} {
 		t.Run(failingUnit, func(t *testing.T) {
 			withHardeningUndoDir(t)
 			withPHPRestartLogged(t)
@@ -1044,30 +1345,16 @@ func TestHardeningUndoPHPReloadFailureIsRetryable(t *testing.T) {
 			withPHPInstalls(t, installs)
 			applyOK(t, applyPHPFixes([]store.AuditResult{{Name: "php_expose_82", Category: "php"}, {Name: "php_enable_dl_82", Category: "php"}}, installs))
 			rec := storedUndoRecord(t, "php_expose_82")
-			before := map[string]string{}
-			for _, p := range rec.PHP {
-				before[p.Path] = fileText(t, p.Path)
-			}
 			withMockCmd(t, &mockCmd{run: func(_ string, args ...string) ([]byte, error) {
 				if slices.Contains(args, failingUnit) {
 					return nil, errors.New("reload failed")
 				}
 				return nil, nil
 			}})
-			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "failed", "reload failed")
-			for path, want := range before {
-				if got := fileText(t, path); got != want {
-					t.Errorf("%s = %q, want applied state %q", path, got, want)
-				}
-			}
-			if got := storedUndoRecord(t, rec.Name); !reflect.DeepEqual(got, rec) {
-				t.Fatalf("record changed: %+v", got)
-			}
-			recordCommands(t)
-			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", "")
-			for path := range before {
-				if got, want := fileText(t, path), phpDropInHeader+"\nenable_dl = Off\n"; got != want {
-					t.Errorf("%s after retry = %q, want %q", path, got, want)
+			wantUndoResult(t, UndoHardening(rec.Name), rec.Name, "undone", note)
+			for _, p := range rec.PHP {
+				if got, want := fileText(t, p.Path), phpDropInHeader+"\nenable_dl = Off\n"; got != want {
+					t.Errorf("%s = %q, want the restored %q", p.Path, got, want)
 				}
 			}
 			wantNoUndoRecord(t, rec.Name)
@@ -1318,9 +1605,9 @@ func TestHardeningUndoLateConfigWriteFailureIsRetryable(t *testing.T) {
 func TestHardeningUndoTweakLateFailureIsRetryable(t *testing.T) {
 	withHardeningUndoDir(t)
 	previous := "0"
-	whm := withFakeWHMTweak(t, "maxemailsperhour", &previous)
-	applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"})})
-	rec := storedUndoRecord(t, "cp_max_emails_hour")
+	whm := withFakeWHMTweak(t, "skipboxtrapper", &previous)
+	applyOK(t, []HardeningFixResult{applyHardeningSingle(store.AuditResult{Name: "cp_boxtrapper", Category: "cpanel"})})
+	rec := storedUndoRecord(t, "cp_boxtrapper")
 	withMockCmd(t, &mockCmd{runContextStdout: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		out, err := whm.run(ctx, name, args...)
 		if slices.Contains(args, "value=0") {

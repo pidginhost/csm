@@ -1804,15 +1804,41 @@ log record, since the worker has no action log. It runs under the apply
 worker's unit name, so systemd never runs the two at once.
 
 A failed sysctl runtime restore puts the applied runtime value and drop-in
-back. A failed PHP write or service reload puts the applied drop-ins back; a
-failed SSH reload puts the applied SSH configuration back. Failed cPanel
-commands and owner or mode restores also roll back completed steps.
-Configuration writes that fail after rename restore the applied content.
-Reload failures retain the record and report failure, so the operator can
-retry once the service problem is resolved. If rollback also fails, the error
-names the recovery failure and the record stays. An undo that would rewrite a
-symlinked sysctl drop-in fails before anything changes. Undo refuses SSH
-managed blocks that were nested, duplicated, or moved into a Match section.
+back. A failed PHP drop-in write puts the applied drop-ins back. Failed
+cPanel commands and owner or mode restores also roll back completed steps.
+Configuration writes that fail after rename restore the applied content. If
+rollback also fails, the error names the recovery failure and the record
+stays. An undo that would rewrite a symlinked sysctl drop-in fails before
+anything changes. Undo refuses SSH managed blocks that were nested,
+duplicated, or moved into a Match section. A failed service reload is
+handled as on apply: once `sshd -t` passed, the restored files stay, the
+undo reports `undone` with the apply's manual reload note, and the record
+goes, so a host where a reload always fails can still undo.
+
+Before checking that the host still holds the applied state, undo checks
+whether every element of the record already holds its earlier state: the SSH
+block value or its absence and the disabled global lines enabled again, the
+sysctl runtime and drop-in values, the tweak value, each PHP drop-in's key,
+the owner and mode, open compiler access for the script method, and the
+`UPDATES` values. Then it changes nothing, removes the record and reports
+`undone`, so an operator who reset a setting by hand is not left with an Undo
+button that only refuses. For tweaks, no value and an empty one count as the
+same, since WHM's own reset leaves no value.
+
+`whmapi1 set_tweaksetting` saves a setting only when given a value, and
+cPanel validates the value. An earlier tweak value that is missing or empty,
+or one the call refuses with `metadata.result` 0, makes undo refuse, keeping
+the record and the applied value, and point to WHM Tweak Settings; a failed
+command or unreadable reply is still a failure. The apply result says undo
+will need WHM Tweak Settings when the tweak had no value or an empty one.
+
+The `cp_updates` record holds the whole file before and after the apply.
+Undo reads the apply's edits from the two: the first active `UPDATES` line
+set, or one added, and later active ones commented out. A record with any
+other edit is refused as not matching the fix. Undo checks only the current
+active `UPDATES` lines against the applied value and restores only those
+lines, enabling commented duplicates in place, or after the restored line
+when a cPanel save dropped the comments. Every other line stays as it is.
 
 Each successful sysctl runtime change is recorded before the next command,
 then its record is updated after the drop-in is saved. PHP records grow after

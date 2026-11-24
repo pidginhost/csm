@@ -37,9 +37,28 @@ func changedSince(what string) error {
 	return undoRefusal(what + " changed since the apply.")
 }
 
+// alreadyBack is the message for an undo whose setting already holds its
+// state from before the apply, as after a reset by hand: nothing is left to
+// undo, so the record goes and the page stops offering Undo.
+func alreadyBack(what string) string {
+	return what + " is already back to its earlier state."
+}
+
+// settingValues returns the values of the lines value picks out.
+func settingValues(lines []string, value func(string) (string, bool)) []string {
+	var values []string
+	for _, line := range lines {
+		if v, ok := value(line); ok {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
 // UndoHardening undoes the last apply of the fix called name. The status is
-// undone; refused when nothing was changed, keeping the record; or failed,
-// also keeping it.
+// undone, also when the setting was already back, and the record goes;
+// refused when nothing was changed, keeping the record; or failed, also
+// keeping it.
 func UndoHardening(name string) HardeningFixResult {
 	res := HardeningFixResult{Name: name, Title: name, Status: "undone"}
 	msg, err := undoHardening(name)
@@ -124,6 +143,9 @@ func undoSSH(rec HardeningUndoRecord, keyword string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if sshAlreadyBack(string(orig), *rec.SSH) {
+		return alreadyBack(keyword + " in " + sshdConfigPath), nil
+	}
 	updated, err := undoSSHDConfig(string(orig), *rec.SSH)
 	if err != nil {
 		return "", err
@@ -132,16 +154,10 @@ func undoSSH(rec HardeningUndoRecord, keyword string) (string, error) {
 		return "", err
 	}
 	msg := keyword + " restored in " + sshdConfigPath + " and sshd reloaded."
+	// As on apply, sshd -t passed the file, so a failed reload leaves it for
+	// a manual reload; a host where the reload always fails can still undo.
 	if err := reloadSSHD(); err != nil {
-		failure := fmt.Errorf("reloading sshd failed: %w", err)
-		if rerr := atomicio.AtomicWrite(sshdConfigPath, info.Mode().Perm(), orig); rerr != nil {
-			return "", errors.Join(failure, fmt.Errorf("restoring the applied SSH config failed: %w; recover it from %s.csm-bak", rerr, sshdConfigPath))
-		}
-		// A failed reload may have reached the daemon before its caller failed.
-		if rerr := reloadSSHD(); rerr != nil {
-			failure = errors.Join(failure, fmt.Errorf("applied SSH config restored, but reload it manually: %w", rerr))
-		}
-		return "", failure
+		msg = keyword + " restored in " + sshdConfigPath + ", but reloading sshd failed (" + err.Error() + "); reload it manually."
 	}
 	return msg, nil
 }
@@ -220,6 +236,50 @@ func undoSSHDConfig(content string, s sshUndoState) (string, error) {
 	return strings.Join(out, "\n"), nil
 }
 
+// sshAlreadyBack reports whether content holds the keyword as it was before
+// the apply: the block's earlier value or none, and each global line the
+// apply disabled enabled again before any Match block. A block structure
+// undo would refuse never counts as back.
+func sshAlreadyBack(content string, s sshUndoState) bool {
+	kw := strings.ToLower(s.Keyword)
+	var value string
+	found, inBlock, inMatch, seenBlock := false, false, false, false
+	active := map[string]int{}
+	for _, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		k, v, ok := splitSSHDKeyword(t)
+		switch {
+		case t == sshdBlockBegin:
+			if inBlock || inMatch || seenBlock {
+				return false
+			}
+			inBlock, seenBlock = true, true
+		case inBlock && t == sshdBlockEnd:
+			inBlock = false
+		case inBlock && k == "match":
+			return false
+		case inBlock:
+			if ok && k == kw && !found {
+				value, found = v, true
+			}
+		case k == "match":
+			inMatch = true
+		case !inMatch:
+			active[line]++
+		}
+	}
+	if inBlock || found != s.HadValue || value != s.PrevValue {
+		return false
+	}
+	for _, line := range s.DisabledLines {
+		if active[line] == 0 {
+			return false
+		}
+		active[line]--
+	}
+	return true
+}
+
 // --- sysctl ---
 
 // undoSysctl puts back the drop-in lines the apply replaced for the key
@@ -234,21 +294,26 @@ func undoSysctl(rec HardeningUndoRecord, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if value != s.AppliedValue {
-		return "", changedSince(key)
-	}
-	msg := key + " set back to " + s.PrevRuntime + "."
 	var original appliedDropIn
 	if !s.RuntimeOnly {
 		// The drop-in can change apart from the runtime value, and a record
 		// can carry an earlier apply's drop-in change, so check it as well.
-		snapshot, err := readUndoDropIn(hardeningSysctlConfPath)
+		original, err = readUndoDropIn(hardeningSysctlConfPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
-		original = snapshot
-		lines, err := restoreKeyLines(string(snapshot.data), key+" in "+hardeningSysctlConfPath, s.AppliedValue, s.PrevLines,
-			func(line string) (string, bool) { return sysctlLineValue(line, key) })
+	}
+	lineValue := func(line string) (string, bool) { return sysctlLineValue(line, key) }
+	if value == s.PrevRuntime && (s.RuntimeOnly ||
+		slices.Equal(settingValues(strings.Split(string(original.data), "\n"), lineValue), settingValues(s.PrevLines, lineValue))) {
+		return alreadyBack(key), nil
+	}
+	if value != s.AppliedValue {
+		return "", changedSince(key)
+	}
+	msg := key + " set back to " + s.PrevRuntime + "."
+	if !s.RuntimeOnly {
+		lines, err := restoreKeyLines(string(original.data), key+" in "+hardeningSysctlConfPath, s.AppliedValue, s.PrevLines, lineValue)
 		if err != nil {
 			return "", err
 		}
@@ -329,6 +394,7 @@ func writeDropIn(path, header string, lines []string) error {
 // --- cPanel ---
 
 // undoTweak sets a WHM tweak setting back to its value before the apply.
+// An earlier value whmapi1 cannot set is left to WHM Tweak Settings.
 func undoTweak(rec HardeningUndoRecord, key string) (string, error) {
 	tw := rec.Tweak
 	if tw == nil || tw.Key != key {
@@ -338,16 +404,26 @@ func undoTweak(rec HardeningUndoRecord, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// No value reads as "", like an empty one: WHM treats both as none, and
+	// its own reset leaves none.
+	if value == tw.Previous {
+		return alreadyBack("The WHM tweak setting " + key), nil
+	}
 	if !had || value != tw.Applied {
 		return "", changedSince("The WHM tweak setting " + key)
 	}
-	if !tw.HadValue {
+	if tw.Previous == "" {
 		// set_tweaksetting saves a setting only when given a value, and
 		// cPanel refuses an empty one, so whmapi1 cannot remove a value.
 		return "", undoRefusal(key + " had no value before the apply, and whmapi1 cannot remove one. Set it back to its default in WHM Tweak Settings.")
 	}
 	if err := setWHMTweak(key, tw.Previous); err != nil {
-		return "", errors.Join(err, restoreAppliedTweak(*tw))
+		rerr := restoreAppliedTweak(*tw)
+		// cPanel validates the value and may refuse one it held before.
+		if errors.Is(err, errWHMRefused) && rerr == nil {
+			return "", undoRefusal(strings.TrimSuffix(err.Error(), ".") + ". Set " + key + " back in WHM Tweak Settings.")
+		}
+		return "", errors.Join(err, rerr)
 	}
 	return "Tweak setting " + key + " set back to " + tw.Previous + ".", nil
 }
@@ -384,9 +460,10 @@ func undoCompilers(rec HardeningUndoRecord) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		// The script's own test: compilers are open when cc's mode is above 0750.
+		// The script's own test: compilers are open when cc's mode is above
+		// 0750, as they were before the apply.
 		if info.Mode().Perm() > 0o750 {
-			return "", changedSince("Compiler access")
+			return alreadyBack("Compiler access"), nil
 		}
 		if _, err := hardeningRun(hardeningCompilersScript, "on"); err != nil {
 			if _, rerr := hardeningRun(hardeningCompilersScript, "off"); rerr != nil {
@@ -409,10 +486,17 @@ func undoCompilers(rec HardeningUndoRecord) (string, error) {
 	return "", errUndoMismatch
 }
 
-// undoFile writes back the whole file as it was before the apply.
+// undoFile puts back the UPDATES lines the apply changed in path and keeps
+// every other line as it is now: cPanel rewrites the whole file when its
+// update preferences are saved.
 func undoFile(rec HardeningUndoRecord, path string) (string, error) {
 	file := rec.File
 	if file == nil || file.Path != path {
+		return "", errUndoMismatch
+	}
+	prev := configLines(file.Previous)
+	edits, ok := updatesEdits(prev, configLines(file.Applied))
+	if !ok {
 		return "", errUndoMismatch
 	}
 	info, err := os.Lstat(path)
@@ -427,16 +511,129 @@ func undoFile(rec HardeningUndoRecord, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if string(data) != file.Applied {
-		return "", changedSince(path)
+	what := cpUpdatesKey + " in " + path
+	lines := configLines(string(data))
+	if slices.Equal(settingValues(lines, updatesValue), settingValues(prev, updatesValue)) {
+		return alreadyBack(what), nil
 	}
-	if err := hardeningConfigWrite(path, info.Mode().Perm(), []byte(file.Previous)); err != nil {
+	restored, err := restoreUpdatesLines(lines, edits, what)
+	if err != nil {
+		return "", err
+	}
+	if err := hardeningConfigWrite(path, info.Mode().Perm(), []byte(strings.Join(restored, "\n")+"\n")); err != nil {
 		if rerr := atomicio.AtomicWrite(path, info.Mode().Perm(), data); rerr != nil {
 			return "", errors.Join(err, fmt.Errorf("restoring applied configuration in %s failed: %w", path, rerr))
 		}
 		return "", err
 	}
-	return path + " restored.", nil
+	return cpUpdatesKey + " restored in " + path + ".", nil
+}
+
+// configLines splits a config file into lines as setKeyValueFile does.
+func configLines(content string) []string {
+	return strings.Split(strings.TrimRight(content, "\n"), "\n")
+}
+
+func updatesValue(line string) (string, bool) { return keyValueLine(line, cpUpdatesKey) }
+
+// updatesEdit is one line the cp_updates apply changed: the line it wrote,
+// which of the identical lines in the applied file that is, from 0, and the
+// line before, empty for a line it added.
+type updatesEdit struct {
+	wrote string
+	nth   int
+	was   string
+}
+
+// updatesEdits reads from the record the lines the apply changed, and false
+// unless it changed them as the apply does: it sets the first active
+// UPDATES line or adds one, and comments out any later ones.
+func updatesEdits(prev, applied []string) ([]updatesEdit, bool) {
+	set := cpUpdatesKey + "=" + cpUpdatesValue
+	if len(applied) != len(prev) && len(applied) != len(prev)+1 {
+		return nil, false
+	}
+	var edits []updatesEdit
+	sets := 0
+	seen := map[string]int{}
+	for i, wrote := range applied {
+		seen[wrote]++
+		was := ""
+		if i < len(prev) {
+			if was = prev[i]; was == wrote {
+				continue
+			}
+			if _, ok := updatesValue(was); !ok {
+				return nil, false
+			}
+		} else if wrote != set {
+			return nil, false
+		}
+		switch wrote {
+		case set:
+			sets++
+		case "# " + was:
+		default:
+			return nil, false
+		}
+		edits = append(edits, updatesEdit{wrote, seen[wrote] - 1, was})
+	}
+	return edits, sets == 1
+}
+
+// restoreUpdatesLines returns lines, the file now, with the edits undone,
+// once every active UPDATES line still holds the applied value. A line the
+// apply commented out is enabled in place, or follows the restored line when
+// a cPanel save dropped the comment.
+func restoreUpdatesLines(lines []string, edits []updatesEdit, what string) ([]string, error) {
+	var put []string
+	enable := map[int]string{}
+	for _, e := range edits {
+		i := -1
+		if e.wrote == "# "+e.was {
+			i = nthIndex(lines, e.wrote, e.nth)
+		}
+		switch {
+		case i >= 0:
+			enable[i] = e.was
+		case e.was != "":
+			put = append(put, e.was)
+		}
+	}
+	out := make([]string, 0, len(lines)+len(put))
+	placed := false
+	for i, line := range lines {
+		if was, ok := enable[i]; ok {
+			out = append(out, was)
+			continue
+		}
+		v, ok := updatesValue(line)
+		switch {
+		case !ok:
+			out = append(out, line)
+		case v != cpUpdatesValue:
+			return nil, changedSince(what)
+		case !placed:
+			out, placed = append(out, put...), true
+		}
+	}
+	if !placed {
+		return nil, changedSince(what)
+	}
+	return out, nil
+}
+
+// nthIndex returns the index of the nth line equal to s, from 0, or -1.
+func nthIndex(lines []string, s string, n int) int {
+	for i, line := range lines {
+		if line == s {
+			if n == 0 {
+				return i
+			}
+			n--
+		}
+	}
+	return -1
 }
 
 // --- OS ---
@@ -471,6 +668,9 @@ func restoreModeByFD(st modeUndoState, wantDir bool) (string, error) {
 	cur, err := modeState(st.Path, info)
 	if err != nil {
 		return "", err
+	}
+	if cur.Mode == st.Mode && cur.UID == st.UID && cur.GID == st.GID {
+		return alreadyBack("The owner and mode of " + st.Path), nil
 	}
 	if cur.Mode != st.AppliedMode || cur.UID != st.AppliedUID || cur.GID != st.AppliedGID {
 		return "", changedSince("The owner or mode of " + st.Path)
@@ -509,15 +709,24 @@ func undoPHP(rec HardeningUndoRecord, key, suffix string) (string, error) {
 	if slices.ContainsFunc(rec.PHP, func(p phpUndoState) bool { return p.Key != key || !slices.Contains(derived, p.Path) }) {
 		return "", errUndoMismatch
 	}
-	restored := make([][]string, len(rec.PHP))
 	original := make([]appliedDropIn, len(rec.PHP))
+	paths := make([]string, len(rec.PHP))
+	back := true
 	for i, p := range rec.PHP {
 		snapshot, err := readUndoDropIn(p.Path)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
-		original[i] = snapshot
-		lines, err := restorePHPDropIn(p, string(snapshot.data))
+		original[i], paths[i] = snapshot, p.Path
+		value := phpKeyValue(p.Key)
+		back = back && slices.Equal(settingValues(strings.Split(string(snapshot.data), "\n"), value), settingValues(p.prevLines(), value))
+	}
+	if back {
+		return alreadyBack(key + " in " + strings.Join(paths, ", ")), nil
+	}
+	restored := make([][]string, len(rec.PHP))
+	for i, p := range rec.PHP {
+		lines, err := restorePHPDropIn(p, string(original[i].data))
 		if err != nil {
 			return "", err
 		}
@@ -532,27 +741,31 @@ func undoPHP(rec HardeningUndoRecord, key, suffix string) (string, error) {
 		}
 		dirs = append(dirs, filepath.Dir(p.Path))
 	}
-	msg, err := reloadPHPResult(dirs)
-	if err != nil {
-		rerr := restoreAppliedDropIns(original)
-		// Some services may have reloaded before another service failed.
-		_, reloadErr := reloadPHPResult(dirs)
-		return "", errors.Join(err, rerr, reloadErr)
-	}
-	return key + " restored in " + strings.Join(phpDropInPaths(dirs), ", ") + ". " + msg, nil
+	// As on apply, a failed reload leaves the drop-ins and names what to
+	// restart by hand.
+	return key + " restored in " + strings.Join(phpDropInPaths(dirs), ", ") + ". " + reloadPHP(dirs), nil
 }
 
 // restorePHPDropIn returns the drop-in's lines with the key's earlier line
 // back in place of the applied one.
 func restorePHPDropIn(p phpUndoState, content string) ([]string, error) {
-	var prev []string
+	return restoreKeyLines(content, p.Key+" in "+p.Path, p.Applied, p.prevLines(), phpKeyValue(p.Key))
+}
+
+// prevLines is the key's line in the drop-in before the apply, if any.
+func (p phpUndoState) prevLines() []string {
 	if p.HadKey {
-		prev = []string{p.PrevLine}
+		return []string{p.PrevLine}
 	}
-	return restoreKeyLines(content, p.Key+" in "+p.Path, p.Applied, prev, func(line string) (string, bool) {
+	return nil
+}
+
+// phpKeyValue picks out the drop-in lines that set key.
+func phpKeyValue(key string) func(string) (string, bool) {
+	return func(line string) (string, bool) {
 		k, v, ok := phpIniSetting(line)
-		return v, ok && k == p.Key
-	})
+		return v, ok && k == key
+	}
 }
 
 // Snapshots are taken only after deriving paths from the fix name. Rolling

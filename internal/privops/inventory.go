@@ -958,7 +958,7 @@ var operations = []Op{
 	{
 		ID:               "operate.apply_hardening",
 		Risk:             RiskDestructive,
-		RecoveryGap:      "sshd_config keeps a .csm-bak copy and is restored when sshd -t rejects the change. The Server Hardening page undoes a fix while its setting still holds the applied value; a WHM tweak that had no value and a fix applied without an undo record are reverted by hand, and undoing through cPanel's compilers script sets cPanel's modes, not the earlier ones.",
+		RecoveryGap:      "sshd_config keeps a .csm-bak copy and is restored when sshd -t rejects the change. The Server Hardening page can undo a fix while its setting still holds the applied value. A WHM tweak whose earlier value whmapi1 cannot set back (none, empty, or one cPanel refuses) and a fix applied without an undo record are reverted by hand, and undoing through cPanel's compilers script sets cPanel's modes, not the earlier ones.",
 		Subsystem:        "operator commands",
 		Summary:          "apply the hardening audit's mechanical fixes for one section on an admin's web UI request, in a root worker started outside the sandbox, record each fix's previous state for undo, then reload the services that read them",
 		Privileges:       []Privilege{Root},

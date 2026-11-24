@@ -1726,8 +1726,12 @@ reply holds the root worker's `result` (status `undone`, `refused` or
 `failed`, with a message) next to the report fields, as the apply reply holds
 `applied`. A refused undo changed nothing: there is no record for the fix,
 the setting changed since the apply, or CSM cannot put it back and the
-message says what to do instead. The reply then carries the saved report, and
-the audit is not re-run.
+message says what to do instead, such as a WHM tweak value only WHM Tweak
+Settings can set. The reply then carries the saved report, and the audit is
+not re-run. An undo whose setting was already back to its earlier state
+changed nothing either, but removed the record and reports `undone`. A failed
+service reload after the restore also reports `undone`, with the reload left
+to do by hand.
 
 If the undo worker finishes but saving the recheck fails, HTTP 500 carries
 `error`, the fresh audit in `report`, and the worker outcome in `result`.

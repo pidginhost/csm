@@ -350,12 +350,16 @@ func TestHardeningUndoCaptureTweak(t *testing.T) {
 	for _, tc := range []struct {
 		name, reply string
 		want        tweakUndoState
+		// whmapi1 cannot clear a value, so the result says undo needs WHM.
+		whmNote bool
 	}{
 		{"set", `{"data":{"tweaksetting":{"key":"maxemailsperhour","value":"0"}},"metadata":{"result":1,"reason":"OK"}}`,
-			tweakUndoState{Key: kv.key, Previous: "0", HadValue: true, Applied: kv.value}},
+			tweakUndoState{Key: kv.key, Previous: "0", HadValue: true, Applied: kv.value}, false},
 		// cPanel leaves the value out for a tweak that has none.
 		{"unset", `{"data":{"tweaksetting":{"key":"maxemailsperhour"}},"metadata":{"result":1,"reason":"OK"}}`,
-			tweakUndoState{Key: kv.key, Applied: kv.value}},
+			tweakUndoState{Key: kv.key, Applied: kv.value}, true},
+		{"empty", `{"data":{"tweaksetting":{"key":"maxemailsperhour","value":""}},"metadata":{"result":1,"reason":"OK"}}`,
+			tweakUndoState{Key: kv.key, HadValue: true, Applied: kv.value}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			withHardeningUndoDir(t)
@@ -375,8 +379,9 @@ func TestHardeningUndoCaptureTweak(t *testing.T) {
 			})
 			since := time.Now()
 			res := applyHardeningSingle(store.AuditResult{Name: "cp_max_emails_hour", Category: "cpanel"})
-			if res.Status != "applied" || strings.Contains(res.Message, "Undo") {
-				t.Fatalf("result = %+v", res)
+			if res.Status != "applied" || strings.Contains(res.Message, "Undo is unavailable") ||
+				strings.Contains(res.Message, "Undo") != tc.whmNote || strings.Contains(res.Message, "WHM Tweak Settings") != tc.whmNote {
+				t.Fatalf("result = %+v, want a WHM Tweak Settings note %v", res, tc.whmNote)
 			}
 			// The previous value is read before the change.
 			want := []string{
