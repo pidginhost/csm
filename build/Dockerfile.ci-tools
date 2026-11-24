@@ -4,9 +4,9 @@
 # instead of fetching a newer one), the Go analysers, node for the Web UI
 # JavaScript tests, and the apt packages the test and integration jobs use.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.4-r2
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.4-r3
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.4-r2 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.4-r3 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
