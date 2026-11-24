@@ -583,3 +583,69 @@ func TestAdmissionLedgerNoticeNamesTheActionFamily(t *testing.T) {
 		t.Fatalf("records = %+v", f.notices())
 	}
 }
+
+// A refused block of a protected address keeps its withheld record, but
+// blocking that address is never wanted, so it is no gap: the Critical
+// summary and the doctor's gap row stay as they were.
+func TestAdmissionLedgerProtectedRefusalIsNoGap(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.criticalQueued()
+	if _, err := f.l.Terminate(id, admission.ReasonProtected); err != nil {
+		t.Fatal(err)
+	}
+	got := f.notices()
+	if r := got[sshKey(admission.NoticeWithheld, admission.ReasonProtected)]; r.Count != 1 || len(r.Examples) != 1 || r.Examples[0].Candidate != id {
+		t.Fatalf("protected record = %+v", r)
+	}
+	if got[criticalSummary].Count != 0 {
+		t.Fatalf("a protected refusal counted as a Critical gap: %+v", got[criticalSummary])
+	}
+	s := f.l.Status()
+	if s.Notices.Error != "" || !s.Notices.LastCriticalGap.IsZero() {
+		t.Fatalf("notice status = %+v", s.Notices)
+	}
+	for _, row := range admission.DoctorChecks(&s, nil, f.wall, true) {
+		if row.Name == admission.ResponseGapsRow {
+			if row.Status != admission.DoctorOK {
+				t.Fatalf("doctor gap row = %+v", row)
+			}
+			return
+		}
+	}
+	t.Fatal("missing doctor gap row")
+}
+
+func TestAdmissionLedgerProtectedCheckpointKeepsLastGap(t *testing.T) {
+	f := newLedgerFixture(t)
+	generation := f.begin().Generation
+	gap := f.criticalQueued()
+	if _, err := f.l.Terminate(gap, admission.ReasonCollateral); err != nil {
+		t.Fatal(err)
+	}
+	before := f.notices()[criticalSummary]
+	if before.Count != 1 || !before.Last.Equal(f.wall) {
+		t.Fatalf("initial gap = %+v", before)
+	}
+	f.tickAt(f.wall.Add(time.Minute))
+	var counts admission.QueueCounters
+	key := admission.CountKey{Event: admission.EventRefused, Reason: admission.ReasonProtected, Class: admission.ClassC2, Severity: admission.SeverityCritical}
+	if err := counts.AddCount(key, 3); err != nil {
+		t.Fatal(err)
+	}
+	data, err := counts.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := admission.IngressCheckpoint{Generation: generation, Sequence: 3, Counters: data}
+	if _, _, err := f.l.EnqueueGroup(nil, &cp); err != nil {
+		t.Fatal(err)
+	}
+	records := f.notices()
+	r := records[admission.NoticeKey{Kind: admission.NoticeWithheld, Reason: admission.ReasonProtected}]
+	if r.Count != 3 || len(r.Examples) != 0 || !r.Last.Equal(f.wall) {
+		t.Fatalf("protected arrivals = %+v", r)
+	}
+	if !reflect.DeepEqual(records[criticalSummary], before) {
+		t.Fatalf("protected arrivals changed the previous gap: %+v", records[criticalSummary])
+	}
+}

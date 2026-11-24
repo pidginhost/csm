@@ -515,20 +515,16 @@ func attemptAndCandidate(tx *bolt.Tx, id admission.ActionID) (admission.AttemptR
 	return a, c, nil
 }
 
-// attemptStep runs one attempt transition and reports whether it changed
-// anything. now is l.clock for a step that dispatches work and
-// l.recordedClock for one that only records an outcome.
-func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func() (time.Time, error), fn func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error)) (admission.Candidate, admission.AttemptRecord, bool, error) {
+func (l *AdmissionLedger) finish(id admission.ActionID, d admission.Disposition, refusalReason admission.Reason, v admission.VictimOutcome, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	at, err := now()
+	at, err := l.recordedClock()
 	if err != nil {
-		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+		return admission.Candidate{}, admission.AttemptRecord{}, err
 	}
 	var outC admission.Candidate
 	var outA admission.AttemptRecord
-	var changed bool
-	err = l.update(op, func(tx *bolt.Tx) error {
+	err = l.update("finish", func(tx *bolt.Tx) error {
 		a, c, loadErr := attemptAndCandidate(tx, id)
 		if loadErr != nil {
 			return loadErr
@@ -538,7 +534,7 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 			return loadErr
 		}
 		from := c.State
-		stepChanged, stepErr := fn(q, &a, &c)
+		stepChanged, stepErr := q.finishAttempt(&a, &c, d, refusalReason, v, lead, l.elapsed)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -550,7 +546,7 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 			return admission.ErrTransitionConflict
 		}
 		c.Transitions++
-		outC, changed = c, true
+		outC = c
 		if putErr := putAttempt(tx, a); putErr != nil {
 			return putErr
 		}
@@ -560,12 +556,12 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 		return q.flush()
 	})
 	if err != nil {
-		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+		return admission.Candidate{}, admission.AttemptRecord{}, err
 	}
 	if outA.State != admission.StateExecuting {
 		delete(l.executed, id)
 	}
-	return outC, outA, changed, nil
+	return outC, outA, nil
 }
 
 // Finish records the outcome of the candidate's current attempt. Applied and
@@ -608,10 +604,14 @@ func (l *AdmissionLedger) FinishEviction(id admission.ActionID, d admission.Disp
 	default:
 		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "no victim outcome")
 	}
-	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
-		return q.finishAttempt(a, c, d, v, lead, l.elapsed)
-	})
-	return cand, att, err
+	return l.finish(id, d, 0, v, lead)
+}
+
+// FinishProtected records a failed attempt whose firewall recheck refused
+// a protected address. It follows normal retry and charge accounting. If
+// attempts are exhausted, its notice names the refusal that ended the work.
+func (l *AdmissionLedger) FinishProtected(id admission.ActionID) (admission.Candidate, admission.AttemptRecord, error) {
+	return l.finish(id, admission.DispositionFailed, admission.ReasonProtected, admission.VictimSpared, 0)
 }
 
 // FinishExisting records that the current attempt found its effect already
@@ -652,7 +652,7 @@ func (l *AdmissionLedger) FinishExisting(id admission.ActionID, link admission.E
 			return loadErr
 		}
 		from := c.State
-		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed, admission.VictimSpared, 0, l.elapsed)
+		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed, 0, admission.VictimSpared, 0, l.elapsed)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -739,7 +739,7 @@ func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 			} else {
 				failed++
 			}
-			if _, txErr = q.finishAttempt(&a, &c, d, admission.VictimSpared, 0, l.elapsed); txErr != nil {
+			if _, txErr = q.finishAttempt(&a, &c, d, 0, admission.VictimSpared, 0, l.elapsed); txErr != nil {
 				return txErr
 			}
 			c.Transitions++
@@ -794,7 +794,7 @@ func (l *AdmissionLedger) ObserveVictim(id admission.CandidateID, lane admission
 			return txErr
 		}
 		from := c.State
-		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve, admission.VictimSpared, 0, l.elapsed); txErr != nil {
+		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve, 0, admission.VictimSpared, 0, l.elapsed); txErr != nil {
 			return txErr
 		}
 		if !admission.CanTransition(from, c.State) {
@@ -817,7 +817,7 @@ func (l *AdmissionLedger) ObserveVictim(id admission.CandidateID, lane admission
 // finishAttempt records outcome d of the candidate's current attempt a and
 // reports whether it changed anything. The caller counts the transition
 // and stores both records.
-func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition, v admission.VictimOutcome, lead, elapsed time.Duration) (bool, error) {
+func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition, refusalReason admission.Reason, v admission.VictimOutcome, lead, elapsed time.Duration) (bool, error) {
 	var state admission.State
 	switch d {
 	case admission.DispositionApplied, admission.DispositionNarrowed:
@@ -915,7 +915,8 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	if err = q.ended(a.Attempt.Candidate, *c); err != nil {
 		return false, err
 	}
-	if c.State == admission.StateVerified {
+	switch {
+	case c.State == admission.StateVerified:
 		// The block ran at its Execute reading. Without one, finishing
 		// uses the last committed reading, even if the ceiling is now
 		// unreadable and new work has stopped.
@@ -930,7 +931,9 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 		if err == nil {
 			err = q.partial(d, *c, a.Attempt.Candidate, c.Transitions+1)
 		}
-	} else {
+	case refusalReason != 0:
+		err = q.gap(admission.GapEnded, refusalReason, 0, e, a.Attempt.Candidate, *c, c.Transitions+1)
+	default:
 		// A preview is intentional non-enforcement: it raises no gap.
 		err = q.gap(admission.GapOutcome, 0, d, e, a.Attempt.Candidate, *c, c.Transitions+1)
 	}

@@ -554,9 +554,11 @@ this build and do not describe live replacements or rotations. Rows warn when
 the ledger owner is not running, its clock reading
 is refused, an owner turn fails (`admission turns`), retiring an uncertain
 block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical
-finding would not have received its response in the last hour; a
-partial-containment notice, whose block ran, does not count. They also
-show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
+finding would not have received its response in the last hour.
+Partial containment and protected or allowlisted addresses keep their
+individual notices without counting toward this gap. Doctor can still
+show a gap recorded before an upgrade until its one-hour window ends.
+The rows also show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
 lane runs), a legacy hourly count that could not be read, a failed
 inventory read and automatic blocks with an unproven outcome, which hold
 their addresses until they expire and the firewall shows nothing of them.

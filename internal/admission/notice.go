@@ -50,8 +50,9 @@ const (
 	// NoticeCapacity: Critical work waits on capacity, or Critical or
 	// reserved work was lost to it.
 	NoticeCapacity
-	// NoticeCriticalSummary counts every Critical notice event, so a flood
-	// of other keys cannot delay the first Critical gap.
+	// NoticeCriticalSummary counts every Critical notice event but a partial
+	// containment or a protected refusal, so a flood of other keys cannot
+	// delay the first Critical gap.
 	NoticeCriticalSummary
 	// NoticeAppliedSummary counts verified responses.
 	NoticeAppliedSummary

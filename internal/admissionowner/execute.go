@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // BlockEngine runs batches of timed full-address blocks. The firewall
@@ -58,11 +59,8 @@ type pendingFinish struct {
 	id          admission.ActionID
 	disposition admission.Disposition
 	rejected    bool
-	// existing is a failure because a proven block already holds the
-	// address: after a fresh proof of member, the pick ends linked to that
-	// block instead of retrying against it.
-	existing bool
-	member   firewall.BlockMember
+	refusal     firewall.BlockRefusal
+	member      firewall.BlockMember
 	// victim is what the batch did to the member's victim.
 	victim admission.VictimOutcome
 	// lead is how far the engine's lease clock ran ahead of admission
@@ -259,10 +257,14 @@ func (o *Owner) execute(picks []execPick) error {
 		} else if r.Err != nil && !errors.Is(r.Err, firewall.ErrBlockBatchRejected) {
 			applyErr = r.Err
 		}
+		var refusal firewall.BlockRefusal
+		if r.Effect == firewall.BlockFailed {
+			refusal = r.Refusal
+		}
 		o.finishes = append(o.finishes, pendingFinish{
 			id: ids[k], disposition: effectDisposition(r.Effect),
 			rejected: r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected),
-			existing: r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting,
+			refusal:  refusal,
 			member:   batch[k], victim: victimOutcome(r), lead: lead,
 		})
 	}
@@ -752,6 +754,18 @@ func (o *Owner) finishAll(members []firewall.BlockMember, d admission.Dispositio
 	return o.finishPending()
 }
 
+// finish writes the same result on each retry, including the reason the
+// firewall refused a protected member after reservation.
+func (p pendingFinish) finish(l *store.AdmissionLedger) (admission.Candidate, admission.AttemptRecord, error) {
+	if refusalReasons[p.refusal] == admission.ReasonProtected {
+		return l.FinishProtected(p.id)
+	}
+	if p.member.Victim != (firewall.BlockVictim{}) {
+		return finishEvictionLedger(l, p.id, p.disposition, p.victim, p.lead)
+	}
+	return finishLedger(l, p.id, p.disposition, p.lead)
+}
+
 // finishPending attempts every outstanding write even if another fails.
 // Only writes retry; the engine is never called again for these attempts.
 func (o *Owner) finishPending() error {
@@ -765,9 +779,9 @@ func (o *Owner) finishPending() error {
 		evicting := outcome.member.Victim != (firewall.BlockVictim{})
 		if evicting {
 			// A link must not substitute for the intent's victim outcome.
-			c, a, finishErr = finishEvictionLedger(o.ledger, outcome.id, outcome.disposition, outcome.victim, outcome.lead)
+			c, a, finishErr = outcome.finish(o.ledger)
 		}
-		if finishErr == nil && outcome.existing {
+		if finishErr == nil && outcome.refusal == firewall.BlockRefusedExisting {
 			// Finishing can retry long after the apply-time proof expires.
 			// Only a fresh proof may end the pick as already covered. A
 			// failed link leaves the eviction outcome intact; a member
@@ -790,7 +804,7 @@ func (o *Owner) finishPending() error {
 			}
 		}
 		if !evicting && !linked {
-			c, a, finishErr = finishLedger(o.ledger, outcome.id, outcome.disposition, outcome.lead)
+			c, a, finishErr = outcome.finish(o.ledger)
 		}
 		if finishErr != nil {
 			err = errors.Join(err, fmt.Errorf("finishing %s: %w", outcome.id, finishErr))
