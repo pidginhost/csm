@@ -1,6 +1,6 @@
 # Action log
 
-The [audit log](audit-log.md) records what CSM found. The action log records what CSM did. Every action gets one record, in one file with one schema, whether it came from the daemon, an operator command or the Web UI.
+The [audit log](audit-log.md) records what CSM found. The action log records what CSM did. The daemon, operator commands and Web UI use the same log format. The capability matrix shows which operations write records. An automatic block can have several records as it moves through admission.
 
 ```
 /var/log/csm/actions.jsonl

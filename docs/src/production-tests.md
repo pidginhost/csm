@@ -48,7 +48,7 @@ It must have no unrelated workloads or host credentials.
 
 ### Provisioning the runner
 
-Provision it from the cloud catalogue's `alma9` image (AlmaLinux 9, x86_64), the closest available match to the EL production family. `alma10`, `ubuntu26` and `debian13` also satisfy the contract.
+Provision it from the cloud catalog's `alma9` image (AlmaLinux 9, x86_64), the closest available match to the EL production family. `alma10`, `ubuntu26` and `debian13` also satisfy the contract.
 
 BPF LSM is not in the default boot-time LSM list, so enable it before registering the runner:
 
@@ -63,7 +63,7 @@ Register with `gitlab-runner register --executor shell --tag-list csm-kernel`, l
 
 ### What a pass does not prove
 
-This runner does **not** reproduce the production kernel. Supported hosts run CloudLinux 8 and EL8 on 4.18, and no catalogue image offers that kernel. Treat a passing `test:kernel` as evidence for a 5.14-or-newer kernel only.
+This runner does **not** reproduce the production kernel. Supported hosts run CloudLinux 8 and EL8 on 4.18, and no catalog image offers that kernel. Treat a passing `test:kernel` as evidence for a 5.14-or-newer kernel only.
 
 Some capabilities differ across those kernels. For example, `pidfd_open` is present on the runner and absent on 4.18. The kernel job cannot cover those differences. CSM probes these capabilities at runtime, and `csm doctor` and the health status report the result.
 

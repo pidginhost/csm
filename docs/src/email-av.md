@@ -5,7 +5,7 @@ CSM scans email attachments in real time using ClamAV and YARA-X on the Exim mai
 ## Turning it on
 
 1. Set `email_av.enabled: true`. The other `email_av` keys are listed in [Configuration](configuration.md).
-2. Set `quarantine_infected: true` if infected messages should be quarantined. Without it they raise the finding and are still delivered.
+2. Set `quarantine_infected: true` if infected messages should be quarantined. Without it, CSM reports the infection and leaves the message in the queue.
 3. Open the Email page in the Web UI and check the AV watcher status.
 
 ## How It Works
@@ -13,7 +13,7 @@ CSM scans email attachments in real time using ClamAV and YARA-X on the Exim mai
 1. fanotify watches the Exim spool directory for new messages.
 2. CSM extracts the attachments. ClamAV (socket) and YARA-X (if available) scan them.
 3. Zip and tar.gz attachments are unpacked within configured size and file limits.
-4. Infected messages raise a Critical finding. With `quarantine_infected: true` they are also quarantined with full metadata instead of delivered.
+4. Infected messages raise a Critical finding. With `quarantine_infected: true`, CSM attempts to quarantine the queue files with their metadata. If the delivery hold expires first, a recipient may already have a copy.
 5. Sender, recipient, and message ID are logged.
 
 ### Spool watching

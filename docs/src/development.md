@@ -27,14 +27,14 @@ Two of these tests skip when their dependency is missing, and CI turns that skip
 
 ### Where the versions are pinned
 
-`go.mod` sets the Go release. The Makefile pins the Go analysers. CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a stale image fails instead of downloading another toolchain in every job.
+`go.mod` sets the Go release. The Makefile pins the Go analyzers. CI images ship the module toolchain and run with `GOTOOLCHAIN=local`, so a stale image fails instead of downloading another toolchain in every job.
 
 A pipeline test checks the image definitions and the versions on this page. When the CI tools image tag changes, update the full tag in its build examples too.
 
 CI jobs print the versions they ran with:
 
 - Jobs on the shared Go runner print the Go version.
-- Analyser jobs also print the scanner version.
+- Analyzer jobs also print the scanner version.
 - The kernel job prints the Go version recorded by the test service when its `production-results/kernel/engines.txt` report is available.
 
 ## Build
@@ -255,9 +255,9 @@ Lint and test jobs use the shared Go cache runner. Compiled and analysis caches 
 
 ### Retries and cancellation
 
-| Jobs | Retry | Cancelled by a newer push to the same ref |
+| Jobs | Retry | Canceled by a newer push to the same ref |
 |------|-------|-------------------------------------------|
-| Preflight, lint, test, build and package | Up to twice when the runner, registry, scheduler or API fails. A failing script is not retried. | Lint and test jobs of the older pipeline are cancelled. |
+| Preflight, lint, test, build and package | Up to twice when the runner, registry, scheduler or API fails. A failing script is not retried. | Lint and test jobs of the older pipeline are canceled. |
 | Integration, kernel tests and publishing | Never | Never |
 
 Inside the integration job, the Ubuntu package index update is retried while the mirror syncs. The image repair and the CSM install run once.
@@ -310,7 +310,7 @@ The same run can scan every tracked and unignored file for private names:
 - Reports name the file and line, never the matched text.
 - Filenames are checked too. A matching filename is reported with its path redacted.
 
-The [fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md) describe the additional manual privacy review.
+The [fixture sanitization rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md) describe the additional manual privacy review.
 
 Attack replay payloads are checked this way:
 
@@ -705,7 +705,7 @@ Undo checks only the current active `UPDATES` lines against the applied value, a
 A fix can be applied again, as a retry after a partial apply or over a setting that still holds what CSM set. The apply reads the fix's record before changing anything.
 
 - Each setting that still holds the earlier apply's value keeps the state from before that apply.
-- A setting changed by hand since keeps the state found now.
+- Undo preserves any setting an operator has edited since the change.
 - PHP drop-ins this apply did not write keep their earlier entries.
 - Permissions, owner and group are compared independently, so editing one does not lose the original state of the others.
 
@@ -1344,17 +1344,17 @@ If the startup clock fails, these rules apply:
 
 #### Acknowledgements
 
-Acknowledgements carry the count and first-event time of the record read, so a repeated acknowledgement cannot consume a later record under a reused key.
+Acknowledgments carry the count and first-event time of the record read, so a repeated acknowledgment cannot consume a later record under a reused key.
 
-An audit row's acknowledgement carries the row's time as well. An acknowledgement held past the row's retirement then cannot remove the row a re-minted attempt writes later.
+An audit row's acknowledgment carries the row's time as well. An acknowledgment held past the row's retirement then cannot remove the row a re-minted attempt writes later.
 
 #### Handing applied blocks to consumers
 
-After the action log write and before the acknowledgement, the owner hands the applied `block_ip` rows of each batch to `Options.Applied`. No other row reaches it.
+After the action log write and before the acknowledgment, the owner hands the applied `block_ip` rows of each batch to `Options.Applied`. No other row reaches it.
 
 - A failed call acknowledges nothing, so its consumers see the same row again. Consumers must be idempotent by action and transition.
-- A row this process already wrote to the action log is not written again while its consumer or acknowledgement fails, even if new rows sort ahead of it into another batch.
-- Each row's successful acknowledgement clears only that row's write receipt. A restart writes pending rows once more.
+- A row this process already wrote to the action log is not written again while its consumer or acknowledgment fails, even if new rows sort ahead of it into another batch.
+- Each row's successful acknowledgment clears only that row's write receipt. A restart writes pending rows once more.
 - Delivery errors remain visible in `admission.owner.audit_error` until a pass succeeds. The independent audit queue reports a stall if a pending batch cannot advance.
 
 #### The threat and attack databases
@@ -1647,7 +1647,7 @@ Before the live start, challenge picks share that live allowance within a select
 
 #### `PreviewWake` and `CeilingSnapshot`
 
-`PreviewWake` is the matching wake. It is now while selectable work waits. Otherwise it is the earliest of these:
+`PreviewWake` is the matching wake. It wakes immediately when selectable work is waiting. Otherwise it is the earliest of these:
 
 - a backoff end;
 - a queued deadline;
@@ -2122,7 +2122,7 @@ It resets notices:
 - It clears the notice records raised while admission previewed, so none goes out as a live alert or delays a key's first live notice.
 - The sender discards the preview delivery retry delay once it sees that committed start. Later live delivery failures keep their own backoff.
 - Until the live start runs, an executing owner delivers no ledger notice.
-- With execution enabled the sender reads the mode and the due notices together. An acknowledgement taken before the live start never covers a record raised after it.
+- With execution enabled the sender reads the mode and the due notices together. An acknowledgment taken before the live start never covers a record raised after it.
 
 #### Schema 11 and rollback
 
@@ -2258,14 +2258,14 @@ Picks that need no capacity decision:
 
 Neither kind of forecast block is renewed. A challenge keeps its comparison preview.
 
-Other picks are checked against the modelled temporary capacity, the bound on forecast blocks and the modelled ceiling:
+Other picks are checked against the modeled temporary capacity, the bound on forecast blocks and the modeled ceiling:
 
 | Case | Prediction |
 |------|------------|
-| The pick passes the modelled ceiling and temporary-capacity checks | `capacity_admit` |
+| The pick passes the modeled ceiling and temporary-capacity checks | `capacity_admit` |
 | No slot is free, and the pick takes the first strictly lower-tier forecast block or listed import in eviction order | `capacity_evict` |
 | A fresh pick rotates out a forecast block of exactly its tier | `capacity_rotate` |
-| The pick is otherwise funded, but the modelling bound is full | `forecast_limited` |
+| The pick is otherwise funded, but the modeling bound is full | `forecast_limited` |
 | There is no room, and a lane's partition holds a scoped block of exactly the pick's tier at another address | `equal_tier_wait` |
 | Any other full set | `set_full` |
 
@@ -2295,15 +2295,15 @@ A fresh pick may then rotate out a forecast block of exactly its tier, by the sa
 - The ledger's episode row says so (`AdmissionLedger.Fresh`, which needs no live start).
 - No forecast block of the address left the model before that block's expiry.
 
-A replaced or rotated forecast block leaves the model and answers its address until its expiry (spec 5.2). Active forecast blocks and retained answers share the existing modelling bound. Answers expire only at their recorded boundary, never to free space for new predictions.
+A replaced or rotated forecast block leaves the model and answers its address until its expiry (spec 5.2). Active forecast blocks and retained answers share the existing modeling bound. Answers expire only at their recorded boundary, never to free space for new predictions.
 
 #### The verdict callback in a forecast
 
 With the verdict callback on, a pick the model would judge is asked about first. It waits for its answer with no forecast change.
 
-- A usable allow ends the pick as `verdict_allow` before any modelled capacity is judged.
+- A usable allow ends the pick as `verdict_allow` before any modeled capacity is judged.
 - A covering forecast block ends the pick without a call.
-- A full modelled set with nothing lower to replace and nothing to rotate also ends the pick without a call.
+- A full modeled set with nothing lower to replace and nothing to rotate also ends the pick without a call.
 
 #### Forecast examples
 
@@ -2354,7 +2354,7 @@ One summary is pending at a time:
 - A failed delivery goes back in front of them as one summary. It is retried with the notice backoff and counted in the notice queue while it waits.
 - A mode change never flushes or relabels a pending summary.
 - On Stop, a pending summary that is already due is sent. One that is not yet due is counted as lost: Stop never sends a summary early.
-- Failed or cancelled summaries remain counted until delivered or reported lost.
+- Failed or canceled summaries remain counted until delivered or reported lost.
 
 Executable owners supply a cancellation-aware, history-only summary sink, separately from legacy notice delivery. An error must mean the summary was not committed. Stop cancels an active delivery, settles its receipt, and bounds the final attempt outside the owner goroutine.
 
@@ -2379,7 +2379,7 @@ Any other pick is asked about, as `CSM auto-block: <check>` for its canonical ad
 
 - Each answer is keyed by candidate, attempt and policy epoch. It expires from completion, including time awaiting receipt.
 - Local checks run again before an answer is used.
-- A pick that stops being eligible has its call cancelled.
+- A pick that stops being eligible has its call canceled.
 - A cancellation is never an answer.
 - Admission uses the configured signature and replay validation, including explicit signing exceptions, through the same client as legacy blocking.
 

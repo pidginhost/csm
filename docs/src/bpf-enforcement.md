@@ -1,14 +1,14 @@
 # BPF cgroup-deny enforcement
 
-CSM can deny, in the kernel, outbound connections that match an enabled userspace detector. The feature is optional and off by default. Direct SMTP egress is currently the only enforcement gate.
+CSM can deny outbound TCP connections to protected SMTP ports for users outside the configured exemptions. The feature is optional and off by default. Direct SMTP egress is currently the only enforcement gate.
 
 Every layer starts in dry run, so you can review telemetry before you allow live denial.
 
 ## Rollout recipe
 
-1. Enable the direct SMTP detector without BPF enforcement. Watch `csm_direct_smtp_egress_findings_total` for a week.
-2. Enable BPF enforcement with `dry_run: true`. Watch `csm_bpf_enforcement_decisions_total{decision="dry_run"}` and confirm dry-run denials track expected hosted-account egress.
-3. Set BPF `dry_run: false` on a single canary host. Audit incidents for false positives.
+1. Enable the direct SMTP detector and confirm the connection tracker uses BPF. Leave enforcement off. Watch `csm_direct_smtp_egress_findings_total` for a week.
+2. Enable `bpf_enforcement.enabled` and `bpf_enforcement.direct_smtp_egress` with `bpf_enforcement.dry_run: true`. Apply the restart-required changes. Watch `csm_bpf_enforcement_decisions_total{decision="dry_run"}` and confirm dry-run denials track expected hosted-account egress.
+3. On one canary host, review the automatic responses that share `auto_response.dry_run`. Set all three [dry-run settings](#dry-run-precedence) to false, rehash the edited config and restart CSM. Check the deny counter and review incidents.
 4. Roll out to fleet.
 
 ## Configuration
@@ -50,8 +50,8 @@ Live denial runs when all of these hold:
 In that state:
 
 1. The cgroup/connect4 + cgroup/connect6 BPF program inspects each outbound TCP connect.
-2. If the destination port is in the protected set AND the source UID is not in the safe-UID map AND the detector that gates enforcement matches (today the direct SMTP egress detector), the program returns 0. The kernel denies the connect.
-3. Userspace observes the decision via the `decision` field on the ringbuf event and emits an audit-log entry.
+2. For a protected port and a nonexempt UID, the kernel denies the connection if it can record the event. The userspace detector evaluates findings separately.
+3. Userspace counts the decision from the event.
 
 When any dry-run layer is true (the default), the program emits the decision but always returns 1 (allow). You can stay in dry run for as long as you need to gather telemetry before you switch to live denial.
 
@@ -65,7 +65,7 @@ The safe-UID map lists the accounts the program never denies. It includes:
 
 Stalwart usernames are exempt only as system UIDs. A hosted account cannot gain an exemption by choosing a Stalwart name.
 
-CSM rereads `/etc/passwd` every 5 minutes and drops the exemption of hosted accounts that were deleted or renamed. A new account that reuses such a UID is therefore exempt for at most one refresh.
+CSM rereads `/etc/passwd` every 5 minutes and drops the exemption of hosted accounts that were deleted or renamed. If a new account reuses an exempt UID, its exemption lasts until the next successful refresh.
 
 ## What it does NOT do
 
@@ -75,12 +75,12 @@ CSM rereads `/etc/passwd` every 5 minutes and drops the exemption of hosted acco
 
 ## Kernel requirements
 
-- Linux >= 4.10 with `CONFIG_CGROUP_BPF=y`.
+- A cgroup v2 mount, cgroup BPF support and BPF ring buffer support. CSM probes the running kernel for these features.
 - `cgroup/connect4` and `cgroup/connect6` BPF program types.
 
 ### Checking feature presence and runtime state
 
-`bpf_enforcement.available.v1` in the capabilities list means the binary supports the feature. `bpf_enforcement_active` on the health snapshot reports the runtime state. Together they tell you whether the feature is present and whether it is active.
+CSM advertises `bpf_enforcement.available.v1` even in builds without BPF. In the health snapshot, `bpf_enforcement_active` means the enforcement switches are on and the connection tracker uses BPF. It can be true in dry run. Check the decision counters for observed denials.
 
 ### Without BPF
 

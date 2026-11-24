@@ -39,7 +39,7 @@ A file renamed or hard-linked into a watched tree, or a directory moved into one
 
 - Alerts are deduplicated per path, with a 30s cooldown.
 - Each alert is enriched with process information: PID, command and UID.
-- CSM quarantines a file automatically on a high-confidence realtime signature match. The match is validated by category, size, entropy and hex/execution checks.
+- With automatic quarantine enabled, CSM can quarantine a file on a high-confidence realtime signature match. The match is validated by category, size, entropy and hex/execution checks.
 - CSM also quarantines automatically on confirmed PHP request-to-execution flows and executable packed payloads. It uses the stable file version that was inspected.
 
 A Critical `obfuscated_php_realtime`, `webshell_content_realtime` or `php_dropper_realtime` alert also queues the scheduled content analysis of that file, unless the file already had a file response. See [Follow-up analysis after a Critical alert](#follow-up-analysis-after-a-critical-alert).
@@ -349,10 +349,10 @@ Infrastructure IPs (from `infra_ips`) are never counted or blocked. Tune the tra
 
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
-| `smtp_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window, or, with spray detection in enforce mode, fails on several untrusted mailboxes or on a missing mailbox many networks tried | IP blocked via nftables |
-| `smtp_probe_abuse` | A single attacker IP exceeds the raw SMTP connect-rate threshold before AUTH. Reads Exim lines only | IP blocked via nftables |
-| `smtp_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
-| `smtp_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
+| `smtp_bruteforce` | A single attacker IP reaches the per-IP failed-auth threshold within the configured window, or, with spray detection in enforce mode, fails on several untrusted mailboxes or on a missing mailbox many networks tried | IP blocked via nftables |
+| `smtp_probe_abuse` | A single attacker IP reaches the raw SMTP connect-rate threshold before AUTH. Reads Exim lines only | IP blocked via nftables |
+| `smtp_subnet_spray` | The number of distinct attacker IPs in one IPv4 /24 reaches the subnet threshold | Entire /24 subnet blocked via nftables |
+| `smtp_account_spray` | The number of distinct attacker IPs targeting one mailbox reaches the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
 | `mail_bruteforce_suspected` | Spray detection in observe mode: the spray rules matched an SMTP source, or an address failed only on mailboxes it has [login standing](#login-standing) on. The message names SMTP | Visibility finding only |
 | `mail_account_compromised` | A successful SMTP login after failures on two or more mailboxes including another one, or on a missing one, or after repeated failures on the same mailbox, the first at least an hour before the login | See the table below |
 
@@ -419,7 +419,7 @@ What trust does and does not do:
 
 ### Long-memory spray detection
 
-Long-memory spray detection remembers each address's failed SMTP logins for days. A botnet that tries each address only now and then is still caught. It flags an address in two cases:
+Long-memory spray detection remembers each address's failed SMTP logins for days. It can detect infrequent attempts that fall in different short windows. It flags an address in two cases:
 
 - The address fails on several mailboxes it holds no trust for (the several-mailboxes rule).
 - The address fails on a missing mailbox after enough networks have tried the same name.
@@ -482,7 +482,7 @@ Login trust and spray failures treat a valid mailbox domain with or without its 
 
 Limits of the lookup:
 
-- CSM holds these lists for a short time, so a mailbox created or deleted just now can get its old answer.
+- CSM holds these lists for a short time, so a recent mailbox creation or deletion can take time to appear.
 - When the lists cannot be read, every name stays unknown. The daemon log gets one warning, and one line when they can be read again.
 - Only the default `thresholds.mail_brute_account_key` reads the whole login name. With any other key, IMAP and POP failures skip this check and stay unknown.
 - Each login keeps that setting through the check, even if configuration reloads while it is being handled.
@@ -549,7 +549,7 @@ Daily history covers the recent baseline period and expires even for inactive ma
 
 ## Mailbox Compromise Evidence
 
-A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, each of which an honest owner also produces now and then. CSM keeps a ledger of these signs per mailbox. Each sign is reported once in the audit log, history and the daily summary, and is not mailed on its own.
+A stolen mailbox rarely trips a single loud alarm. It shows a few weak signs, each of which can also come from the mailbox owner. CSM keeps a ledger of these signs per mailbox. Each sign is reported once in the audit log, history and the daily summary, and is not mailed on its own.
 
 When the evidence adds up, CSM suspends the mailbox and raises one Critical `email_mailbox_compromise` finding.
 
@@ -643,10 +643,10 @@ Tune the tracker with the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. It 
 
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
-| `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window without matching successful mailbox activity, or, with spray detection in enforce mode, fails on several mailboxes it holds no trust for or, on cPanel hosts, on a missing mailbox many networks tried | IP blocked via nftables |
+| `mail_bruteforce` | A single attacker IP reaches the per-IP failed-auth threshold within the configured window without matching successful mailbox activity, or, with spray detection in enforce mode, fails on several mailboxes it holds no trust for or, on cPanel hosts, on a missing mailbox many networks tried | IP blocked via nftables |
 | `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern, an address fails only on mailboxes it has [login standing](#login-standing) on, or spray detection in observe mode matched an IMAP/POP source. The spray message names IMAP/POP and the rule | Visibility finding only. No auto-block |
-| `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
-| `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
+| `mail_subnet_spray` | The number of distinct attacker IPs in one IPv4 /24 reaches the subnet threshold | Entire /24 subnet blocked via nftables |
+| `mail_account_spray` | The number of distinct attacker IPs targeting one mailbox reaches the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
 | `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox, or follows failures on two or more mailboxes including another one, or on a missing one, or repeated failures on the same mailbox, the first at least an hour before the login | See [Response to a compromised login](#response-to-a-compromised-login) |
 
 The `mail_bruteforce` and `mail_bruteforce_suspected` alerts name the mailboxes the source was hitting. They give per-mailbox failure counts and a count of attempts that named no mailbox. That makes a real attack on a live mailbox easy to tell apart from dictionary noise.
@@ -655,7 +655,7 @@ The `mail_bruteforce` and `mail_bruteforce_suspected` alerts name the mailboxes 
 
 | Case | What CSM does |
 |------|---------------|
-| A Critical `mail_account_compromised` | Blocks immediately and adds one mailbox compromise sign. Under auto-response on cPanel or on Stalwart with its API key, suspension requires another sign. A bare account login only alerts about the account |
+| A Critical `mail_account_compromised` | Can trigger an IP block. A guessed password can trigger mailbox suspension on its own or an outgoing mail hold for a bare cPanel account login. Weaker login evidence needs corroboration. See [Mailbox compromise evidence](#mailbox-compromise-evidence) |
 | The source has established history on at least two other mailboxes from before its current untrusted failures | High advisory. The source is not auto-blocked and the mailbox is not suspended |
 | The source has [login standing](#login-standing) on the mailbox from before the failures | High advisory. The source is not auto-blocked and the mailbox is not suspended |
 | A login after failures on other mailboxes | Critical only in enforce mode when one of them was a missing mailbox many networks tried. Every other spray case is a High advisory |
@@ -1027,7 +1027,7 @@ The covered endpoints are a tight set, to avoid false positives on shared hostin
 - phpMyAdmin: `/phpmyadmin/index.php`, `/pma/index.php`, `/phpMyAdmin/index.php`
 - Joomla: `/administrator/index.php`
 
-When an IP crosses the POST-rate threshold, `admin_panel_bruteforce` fires and the attacker IP is auto-blocked.
+When an IP reaches the POST-rate threshold, `admin_panel_bruteforce` fires and the attacker IP is auto-blocked.
 
 Drupal `/user/login` and Tomcat Manager `/manager/html` are intentionally out of scope here. Drupal's path is too generic on shared hosting. Tomcat Manager uses HTTP Basic auth (repeated GET requests with 401 responses), not POST form submissions. Both need different detectors and are tracked as follow-up work.
 
@@ -1055,7 +1055,7 @@ How CSM reads the source address and the script label from `X-PHP-Script` is in 
 
 #### Path 1: header score
 
-Path 1 fires when the `From` domain is not in the account's authorised domains and there is an additional signal: PHPMailer, a suspicious Reply-To or a suspicious User-Agent. CSM evaluates it over a rolling 5-min window once the script has emitted at least `header_score_volume_min` messages.
+Path 1 fires when the `From` domain is not in the account's authorized domains and there is an additional signal: PHPMailer, a suspicious Reply-To or a suspicious User-Agent. CSM evaluates it over a rolling 5-min window once the script has emitted at least `header_score_volume_min` messages.
 
 This is the spoofed-sender, contact-form shape. `FromMismatch` is a hard precondition: the score never accumulates without it.
 
@@ -1224,7 +1224,7 @@ The PAM listener monitors authentication in real time through the PAM module. It
 |---------|------------------|
 | `pam_bruteforce` | SSH failures (`service=sshd`) |
 | `credential_stuffing` | Credential stuffing or password spray breadth: one source IP failing SSH logins against many distinct accounts inside `thresholds.multi_ip_login_window_min`. Tune the account floor with `thresholds.cred_stuffing_distinct_accounts` (default 5) |
-| `pam_auth_failures` | Failures from other PAM services (FTP, mail, webmin and similar), once per window above `thresholds.pam_bruteforce_threshold`. It never blocks |
+| `pam_auth_failures` | Failures from other PAM services (FTP, mail, webmin and similar), once per window when failures reach `thresholds.pam_bruteforce_threshold`. It never blocks |
 
 Only successful sshd logins clear SSH failure counts.
 
@@ -1459,7 +1459,7 @@ A file whose exact bytes WordPress moved or copied into place before removing th
 |------|------|
 | Language-pack and version-probe copies | They also require a complete, stable data-only snapshot with no suspicious content or earlier unsafe write |
 | A core update that stops after reading its version file | The old release stays installed, so no installed copy matches. The version file is not reported when its bytes equal the wordpress.org checksum for the release and locale it declares |
-| A staged core file that the update deletes without installing | Not reported when its bytes equal the wordpress.org checksum for that path in the release now installed |
+| A staged core file that the update deletes without installing | Not reported when its bytes equal the wordpress.org checksum for that path in the installed release |
 | Other files removed from staging without an identical installed copy | Still reported |
 
 The third case exists because a core update unpacks the whole release but installs only what changed, and never overwrites the bundled themes and plugins. The checksum must describe the same complete, stable snapshot as the retained content.

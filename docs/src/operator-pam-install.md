@@ -2,7 +2,7 @@
 
 CSM learns about logins from a PAM module, `pam_csm.so`. The module emits authentication events, and the CSM daemon listens for them on `/var/run/csm/pam.sock`.
 
-The package ships the module at `/usr/lib/csm/pam/pam_csm.so`. Until you install it into PAM, the daemon's PAM listener stays attached but never hears anything, and the dashboard reports the watcher as `deaf`.
+The package ships the module at `/usr/lib/csm/pam/pam_csm.so`. Until you install it into PAM, the daemon's PAM listener stays attached but never hears anything, and the dashboard reports the watcher as `deaf` after the startup grace period.
 
 ## Quick install
 
@@ -17,7 +17,7 @@ Test from a second SSH session before you close the one that ran the install. [S
 
 ## Safety rails
 
-- The `optional` control flag is mandatory: a CSM outage **must not** block authentication. `csm pam install` writes nothing else.
+- The `optional` control flag is mandatory: a CSM outage **must not** block authentication. The installer marks each CSM hook `optional`.
 - Test from a second SSH session before closing the one that installed. If SSH or sudo breaks, rename the `.csm-backup-` file back over the broken target and run `csm pam uninstall --keep-module` on the live session.
 - The PAM module never reads or modifies passwords, never decides whether to permit auth, and never writes to disk. It opens a Unix socket, writes one line, closes.
 
@@ -89,7 +89,7 @@ Uninstall is idempotent. It does the following:
 - It creates one fresh `.csm-backup-` per file it edits.
 - It leaves files with no managed hooks alone.
 
-The PAM listener's dashboard verdict returns to `deaf` the next time the dashboard polls.
+Uninstalling the hook stops new events. The dashboard can still show activity from the last 24 hours.
 
 Uninstall stops on a file it cannot edit safely. See [When uninstall stops](#when-uninstall-stops).
 

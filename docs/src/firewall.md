@@ -19,7 +19,7 @@ Automatic IP blocks from [auto-response](auto-response.md) need the firewall on.
 | **Named IP sets** | Keeps blocked, allowed, infra and country addresses in named sets with per-element timeouts. |
 | **IPv4 options drop** | Drops inbound IPv4 TCP packets that carry IP options. See [IPv4 options drop](#ipv4-options-drop). |
 | **Rate limiting** | Meters SYN floods, UDP floods, connection rate and concurrent connections. See [Rate limits](#rate-limits). |
-| **Country blocking** | Blocks countries by MaxMind GeoIP CIDR ranges. |
+| **Country blocking** | Blocks country CIDR ranges downloaded by `csm firewall update-geoip`. |
 | **Outbound SMTP restriction** | Restricts outbound SMTP by UID, to prevent spam from compromised accounts. |
 | **Local port locks** | Lets only listed users and root open new connections to a port on this host. See [Local port locks](#local-port-locks). |
 | **Subnet/CIDR blocking** | Blocks whole ranges, with automatic escalation from individual IPs and safety guards for infra, local and allowed addresses. |
@@ -51,7 +51,7 @@ CSM drops inbound IPv4 TCP packets with IP options before conntrack, NAT to cont
 
 You can edit the firewall settings in two places:
 
-- In the Web UI, under Settings -> Firewall. Port lists, rate limits, flood protection, deny caps, country block and outbound SMTP restriction are all editable there. Changes are restart-class: they take effect after a restart. The save endpoint warns if the WebUI listen port is missing from `tcp_in`. The `port_flood` per-port rule list is YAML-only.
+- In the Web UI, under Firewall in Settings. Port lists, rate limits, flood protection, deny caps, country block and outbound SMTP restriction are all editable there. Changes are restart-class: they take effect after a restart. The save endpoint warns if the WebUI listen port is missing from `tcp_in`. The `port_flood` per-port rule list is YAML-only.
 - In YAML, by editing `/etc/csm/csm.yaml` directly. Then run `csm rehash` and `systemctl restart csm`.
 
 ```yaml
@@ -132,7 +132,7 @@ csm firewall update-geoip                        # Download country IP blocks
 csm firewall cf-status                           # Show Cloudflare IP whitelist status
 ```
 
-Port-specific allow additions and removals (`allow-port`, `remove-port`) update saved state only. Run `csm firewall restart` to apply them to the kernel. The command acknowledgement states that a reload is required.
+Port-specific allow additions and removals (`allow-port`, `remove-port`) update saved state only. Run `csm firewall restart` to apply them to the kernel. The command acknowledgment states that a reload is required.
 
 ## Applying changes with a rollback timer
 
@@ -269,11 +269,11 @@ The wire contract is in [verdict callback contract](verdict-callback-contract.md
 
 ### Dry run
 
-When `auto_response.dry_run` is true or absent (the safety default), the automatic block call, `BlockIP()`, skips the automatic IP mutation. Manual `csm firewall ...` operator commands bypass dry run through `BlockIPForce` and always apply.
+When `auto_response.dry_run` is true or absent (the safety default), the automatic block call, `BlockIP()`, skips the automatic IP mutation. Manual firewall block commands bypass dry run. Target protections still apply.
 
 When admission forecasts blocks in dry run, it keeps a limited number of them as examples of what it would have blocked. A forecast becomes an example only if it was saved and passed the capacity checks. A dry-run outcome from the older blocking path alone does not guarantee an example.
 
-Verify with `csm firewall status` after policy changes. "Recently Blocked" timestamps newer than the last restart confirm live mode. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
+After a policy change, check `automation.auto_response_dry_run` in `csm status --json` while the daemon is running. Manual blocks also appear in firewall history. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
 
 ## Incident auto-block escalation
 
@@ -439,7 +439,7 @@ The status page and `csm doctor` read the locked ports from the running daemon a
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes. Their current addresses feed the guard that keeps infrastructure addresses out of automatic blocks.
 
-If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). A transient DNS outage therefore does not deprotect the management plane. The finding auto-clears when resolution recovers.
+If a hostname stops resolving, the daemon keeps the last known addresses protected. It emits an `infra_ips_unresolvable` Warning after the grace period (default 10 min). A new address receives protection once DNS returns it. The finding auto-clears when resolution recovers.
 
 ## DoS-exempt ranges
 
@@ -575,6 +575,8 @@ If the file cannot be renamed or synced, startup fails without retrying, even if
 - The failed engine does not adopt replacement state or resume management when storage becomes readable. Correct the storage problem before restarting CSM.
 
 A running engine behaves differently from a starting one. It keeps its known state across an unreadable rewrite, including failed saves, and writes that state back when storage accepts a later save.
+
+<a id="mutation-failures"></a>
 
 ## When a firewall change fails
 

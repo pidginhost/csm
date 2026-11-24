@@ -19,11 +19,11 @@ geoip:
 
 ## Features
 
-- The City database gives country, city and latitude/longitude.
+- CSM reads the country and city from the City database.
 - The ASN database gives ISP, organization and autonomous system number.
 - CSM downloads the databases on first use.
 - CSM updates them every 24 hours. The interval is configurable.
-- CSM falls back to RDAP for detailed ISP and organization info, and caches each answer for 24 hours.
+- For detailed ISP and organization information, CSM queries RDAP. It caches successful lookups for 24 hours and failures for 10 minutes.
 
 ## Where it's used
 
@@ -31,7 +31,7 @@ geoip:
 - The firewall audit log shows country flags.
 - Login alerts carry geographic context.
 - Country-based login suppression (`trusted_countries`) uses the country.
-- Country blocking uses firewall CIDR ranges for each country.
+- Country blocking uses separate firewall CIDR lists. Update them with `csm firewall update-geoip`.
 
 ## CLI
 

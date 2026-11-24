@@ -5,7 +5,7 @@ CSM has two separate signing paths:
 - Package repository signing covers the normal APT/DNF install path.
 - Detached Ed25519 artifact signatures cover raw binaries, tarballs, and package files downloaded outside the package manager.
 
-Do not reuse keys between these paths. The package repositories use GPG because APT and DNF verify repository metadata that way. Detached release signatures use Ed25519 because the standalone install and deploy scripts verify raw artifact bytes with OpenSSL.
+Do not reuse keys between these paths. The package repositories use GPG because APT and DNF verify repository metadata that way. Detached release signatures use Ed25519 to authenticate the artifact bytes. The standalone scripts use OpenSSL or a supported fallback verifier.
 
 ## Status
 

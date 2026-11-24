@@ -1,6 +1,6 @@
 # API Reference
 
-CSM has a machine-readable HTTPS API. Every endpoint requires token authentication. Browser cookie sessions also need CSRF protection on state-changing POST, PUT, PATCH and DELETE requests.
+CSM has a machine-readable HTTPS API. API requests require an authorized credential. Browser cookie sessions also need CSRF protection on state-changing POST, PUT, PATCH and DELETE requests.
 
 ## Authentication
 
@@ -12,7 +12,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" https://server:9443/api/v1/status
 curl -b "csm_auth=SESSION_COOKIE_FROM_LOGIN" https://server:9443/api/v1/status
 ```
 
-A cookie-authenticated request that changes state must send the `X-CSRF-Token` header. Take the token from the meta tag of the authenticated page.
+A cookie-authenticated request that changes state must supply a CSRF token, usually in the `X-CSRF-Token` header. Take the token from the meta tag of the authenticated page.
 
 - The token belongs to the browser session that loaded the page. CSM refuses another session's token.
 - The token can also be sent as a form field. CSM reads that field from the request body only, never from the URL.
@@ -66,7 +66,7 @@ Replace the placeholders above with fresh random tokens and real times.
 
 | Scope | Access |
 | --- | --- |
-| `admin` | Everything. Write routes need it, and so do sensitive reads: quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines and audit history. |
+| `admin` | All routes. Most writes and sensitive reads require admin scope, including quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines and audit history. |
 | `read` | Status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities and SSE events. Meant for orchestrators and dashboards. |
 | `unban` | `GET /api/v1/firewall/check` and `POST /api/v1/firewall/unban` only. Meant for hosting panels that let customers lift their own blocks. |
 
@@ -470,7 +470,7 @@ Blocks that the firewall engine reports as written by admission are not counted 
 | `active` | True while the owner forecasts instead of blocking. |
 | `session_id`, `since`, `reset_reason` | The forecast session. `reset_reason` is `startup`, `mode_change` or `model_error`. |
 | `modelled_kinds`, `prediction_scope` | What the model covers: `block_ip` against the hourly ceiling and the temporary block capacity. |
-| `occupancy` | The modelled temporary block set. Null while no snapshot is available. |
+| `occupancy` | The modeled temporary block set. Null while no snapshot is available. |
 | `ceiling` | The forecast's own copy of the hourly ceiling. Null while no forecast runs. |
 | `picks`, `last_hour` | Counts of the session's predictions. |
 | `examples_lost`, `summaries_lost`, `record_errors` | This process's losses and failed writes. |
@@ -494,8 +494,8 @@ A session starts at startup, on entry into dry run, or after its model failed. T
 | `predicted` | The sum of `actual` and `shadow_only`, minus `replaced`. |
 | `limit` | The configured limit of the set. |
 | `unlimited` | Whether the set is unlimited. |
-| `limited` | Whether retained forecast state fills its modelling bound. |
-| `capacity` | The finite capacity that automatic admission is modelled within: a positive limit, or 10000 for an unlimited set. |
+| `limited` | Whether retained forecast state fills its modeling bound. |
+| `capacity` | The finite capacity that automatic admission is modeled within: a positive limit, or 10000 for an unlimited set. |
 | `unclaimed` | The real timed entries that automatic admission never evicts. |
 | `imported` | The real, verified, stamped legacy automatic blocks. |
 | `drain_seconds` | An estimate of how long the last unclaimed or imported entry has left at the snapshot. |
@@ -2108,7 +2108,7 @@ A dismissal accepts at most 500 keys per request and deduplicates repeated keys.
 
 `contents` maps a key to the `content_sha256` its row showed. The value is an empty string for a finding without one, or a string of 64 lowercase hex characters. All other values, including `null`, answer 400 before any finding is dismissed.
 
-A key whose listed finding now carries different content is not dismissed:
+CSM skips a key if the stored content digest differs from the one in the request:
 
 | Request | Answer |
 | --- | --- |
@@ -2154,11 +2154,11 @@ JSONL and syslog audit events include `cidrs` for new findings, and for parked f
 
 - It accepts `status=active|all|open|contained|resolved|dismissed`, `kind`, `limit` and `offset`.
 - `total` counts the groups, and `scanned_incidents` the incidents they came from.
-- `truncated` is true when the scan cap left incidents out.
+- `truncated` is true if more groups follow the page or the scan cap leaves incidents out. Only the scan cap sets `scan_truncated`.
 
 ### `GET /api/v1/incidents`
 
-Returns one page of incidents sorted by `updated_at` descending, with `items`, `total`, `offset`, `limit`, `status` and `truncated`.
+Requires admin scope. Returns one page of incidents sorted by `updated_at` descending, with `items`, `total`, `offset`, `limit`, `status` and `truncated`.
 
 - `limit` defaults to 50 and is at most 500.
 - `status` filters by `open`, `contained`, `resolved`, `dismissed`, or `active` for open and contained. Empty means all.

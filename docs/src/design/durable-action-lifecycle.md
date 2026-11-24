@@ -1,6 +1,6 @@
 # Durable action lifecycle
 
-This note explains why every host mutation records its intent before acting, and how recovery and undo are meant to work. A host mutation is any change CSM makes to the server, such as a firewall rule, a file or a process.
+This design calls for recording intent before each host mutation. The firewall section describes the first implementation and its recovery rules. A host mutation is any change CSM makes to the server, such as a firewall rule, a file or a process.
 
 ## What exists: the action log
 
@@ -23,7 +23,7 @@ A JSONL outcome is evidence, not durable intent. It cannot alone distinguish a r
 
 ## Decision
 
-Every host mutation goes through a shared lifecycle at its operation boundary. Execution stays in the responsible domain. The lifecycle owns identity, admission, persistence, recovery and audit linkage. Admission is the check that decides whether an action may go ahead.
+The design requires a shared lifecycle at the boundary of each operation that changes the host. Execution stays in the responsible domain. The lifecycle owns identity, admission, persistence, recovery and audit linkage. Admission is the check that decides whether an action may go ahead.
 
 The lifecycle reuses `mode: observe`, `auto_response.dry_run`, the existing action-specific switches and the file-response budget and breaker settings. There is no second policy switch and no parallel set of response limits.
 
@@ -158,7 +158,7 @@ These cases stop retirement:
 | A kernel read is slow | Retirement is refused. Kernel timeouts are checked against the clock sample taken before each read. |
 | The unknown outcome lacks its recorded audit acknowledgment | The action does not retire. An empty outbox alone does not prove delivery. |
 
-IPv6 proof uses saved evidence even if IPv6 is now disabled.
+IPv6 proof uses saved evidence even if IPv6 is disabled.
 
 ### Audit delivery
 

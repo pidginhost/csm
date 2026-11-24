@@ -11,7 +11,7 @@ The gate works like this:
 
 ## Releasing without cPanel coverage
 
-CSM has no licensed cPanel image while no cPanel licence is available for disposable CI clones. To release anyway, set the protected variable `CSM_RELEASE_WITHOUT_CPANEL` to a sentence stating why, for example `no licensed cPanel image available`.
+CSM has no licensed cPanel image while no cPanel license is available for disposable CI clones. To release anyway, set the protected variable `CSM_RELEASE_WITHOUT_CPANEL` to a sentence stating why, for example `no licensed cPanel image available`.
 
 The reason must:
 
@@ -27,7 +27,7 @@ Do not read such a release as cPanel-tested. That pipeline does not validate:
 - mail integration,
 - cPanel platform paths,
 - service confinement under a real cPanel layout,
-- upgrade behaviour.
+- upgrade behavior.
 
 The findings that depend on them (F19, F22, F25) stay open. Clear the variable as soon as an image exists.
 

@@ -16,11 +16,11 @@ CSM sends `Authorization: Bearer <token>` when `reputation.upstream.token` (or i
 
 Before each HTTP request, CSM reads `reputation.upstream.token_env` from its process environment. A non-empty value overrides the static `token` field.
 
-Editing an environment file, or exporting a value in another shell, takes effect only after a daemon restart. A configuration reload does not replace the process environment. See [credential rotation](credential-rotation.md).
+Restart the daemon after editing its environment file. An export in another shell applies only to processes that inherit that shell's environment. A configuration reload does not replace the process environment. See [credential rotation](credential-rotation.md).
 
 ## Request
 
-The `ip` query parameter is an IPv4 dotted-quad (e.g. `1.2.3.4`) or an IPv6 address in any RFC 5952 form. The server SHOULD normalize before lookup.
+The `ip` query parameter is an IPv4 dotted-quad (e.g. `192.0.2.1`) or an IPv6 address in any RFC 5952 form. The server SHOULD normalize before lookup.
 
 ## Response
 
@@ -39,8 +39,8 @@ The `ip` query parameter is an IPv4 dotted-quad (e.g. `1.2.3.4`) or an IPv6 addr
 |---|---|---|
 | `ip` | Yes | Echoes the input. |
 | `score` | Yes | Integer 0..100. Higher means worse. `0` is "no signal" and the aggregator excludes it from averaging. |
-| `source` | No | Free-form identifier the server may set for audit-log surfacing. |
-| `ttl_sec` | No | Number of seconds CSM should cache this answer. Overrides `reputation.upstream.cache_ttl_min`. |
+| `source` | No | Optional provider label. CSM does not use it to score or cache the address. |
+| `ttl_sec` | No | A positive value can shorten the configured cache lifetime. CSM never extends `reputation.upstream.cache_ttl_min` on the server's advice. |
 
 The server SHOULD return in `ttl_sec` the smaller of its own cache lifetime and a sane default.
 

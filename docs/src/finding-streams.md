@@ -1,6 +1,6 @@
 # Recorded finding streams
 
-A recorded stream is a copy of a host's finding audit files with every identity removed. CSM already writes the stream: every dispatched finding lands in `/var/log/csm/audit.jsonl`, and rotated copies are gzip files beside it. `scripts/finding-stream` turns those raw files into an anonymized stream.
+A recorded stream is a copy of a host's finding audit files with recognized identities replaced by pseudonyms. CSM already writes the stream: every dispatched finding lands in `/var/log/csm/audit.jsonl`, and rotated copies are gzip files beside it. `scripts/finding-stream` turns those raw files into an anonymized stream.
 
 Recordings exist for calibrating correlation: the coordinated-attack threshold, corroboration grading and sequence rules. That work needs what a real host produced over days. It needs every finding with its check, severity, timestamp, owner and text, including the false-positive floods and the long-lived rows that never clear.
 

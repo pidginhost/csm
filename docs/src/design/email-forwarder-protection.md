@@ -1,3 +1,6 @@
+<a id="email-forwarder-protection-and-visibility--design-and-roadmap"></a>
+<a id="email-forwarder-protection-and-visibility----design-and-roadmap"></a>
+
 # Email Forwarder Protection and Visibility: Design and Roadmap
 
 Status: shipped. This page is the design that the forward guard, the held-copy quarantine and its retention prune were built from. The forward guard holds spam and bounces before a forwarder relays them to an external mail provider. The configuration keys below are documented in [configuration](../configuration.md).
@@ -34,6 +37,8 @@ The design leaves these out:
 - It is not a general inbound spam filter. SpamAssassin owns local-delivery scoring.
 - It is not an MTA replacement. CSM observes, supplies data, and manages the quarantine and the UI.
 - It does not auto-delete or auto-disable forwarders without operator action.
+
+<a id="approved-decisions-from-brainstorming"></a>
 
 ## Approved decisions
 
@@ -192,13 +197,15 @@ Every CSM change to the Exim configuration takes one lock, the Exim lock. CSM wa
 - Cancellation does not wait for another Exim transaction to finish.
 - A worker that has already checked its request under the Exim lock finishes its transaction. Later workers cannot apply canceled requests.
 
+<a id="webui-surfaces-email-page"></a>
+
 ## Web UI surfaces (email page)
 
 ### Forwarder table
 
 Each row shows:
 
-- Source -> destination(s).
+- Source and destinations.
 - A provider badge (yahoo/gmail/outlook/external/local).
 - The owner (cPanel user).
 - Keep-local vs forward-only.
@@ -238,6 +245,8 @@ The row actions are: disable forwarder, add to skip-list, view held.
 
 No live-mail tests run on production. Cross-compile and vet locally, then verify on scratch hosts (fresh Ubuntu + AlmaLinux).
 
+<a id="roadmap-each-item--its-own-spec-slice--plan--tdd--c&#111;dex-review--mr"></a>
+
 ## Roadmap
 
 Each item is its own spec slice, plan, TDD cycle, review and MR.
@@ -253,9 +262,9 @@ Each item is its own spec slice, plan, TDD cycle, review and MR.
 ### Phase 2: enforcement (opt-in)
 
 6. Config schema + settings-page toggles + validation/defaults (three-places).
-7. `policy` -> exim `adapter`: router + transport + bad-IP lookup; idempotent apply/remove; cPanel-rebuild survival.
+7. Connect `policy` to the Exim `adapter`. Apply and remove the router, transport and bad-IP lookup safely on repeated runs and across cPanel rebuilds.
 8. `mailfwd/quarantine` for held forwards + release/delete + per-forwarder held counts.
-9. Live enforcement wiring (dry-run -> enforce), audit log, findings, capability flag.
+9. Switching from dry run to enforcement, audit log, findings, capability flag.
 
 ### Phase 3: breadth
 
@@ -274,6 +283,8 @@ Each item is its own spec slice, plan, TDD cycle, review and MR.
 | `internal/emailav` | The quarantine model + spool watcher (ClamAV/YARA). |
 | `internal/platform` | The OS/panel/path/MTA abstraction. |
 | `internal/health/capabilities.go` | Capability flags. |
+
+<a id="conventions-from-agentsmd"></a>
 
 ## Conventions
 

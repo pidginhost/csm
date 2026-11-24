@@ -81,7 +81,7 @@ csm export --since 24h > recent.jsonl
 csm export --since 2026-04-01T00:00:00Z > q2.jsonl
 ```
 
-`<when>` is either an RFC 3339 timestamp or a duration relative to now (`24h`, `7d`).
+`<when>` is either an RFC 3339 timestamp or a duration relative to the current time (`24h`, `7d`).
 
 The output is one JSON event per line on stdout, identical in shape to what the live sinks emit. You can pipe it straight into the same ingest pipeline.
 
@@ -109,7 +109,7 @@ Failures and recovery are logged to journald. Two metrics on `/metrics` report s
 | `csm_audit_sink_degraded{sink="jsonl"}` and `csm_audit_sink_degraded{sink="syslog"}` | One means a configured destination failed. Zero means it is healthy or disabled. |
 | `csm_audit_events_dropped_total{sink}` | Counts events whose destination was unavailable or whose write failed. |
 
-The degraded values are initialized when the audit pipeline first runs. Syslog health reflects local connection/write results, not an acknowledgement from the receiving SIEM.
+The degraded values are initialized when the audit pipeline first runs. Syslog health reflects local connection/write results, not an acknowledgment from the receiving SIEM.
 
 ### Schema
 

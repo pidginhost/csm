@@ -1,6 +1,6 @@
 # Direct SMTP egress
 
-CSM watches the local mail stack via spool + log scanning. A non-MTA process that opens an outbound SMTP connection directly bypasses that path. The direct SMTP egress detector catches such a connection at connect time and feeds the incident correlator.
+CSM watches the local mail stack via spool + log scanning. A non-MTA process that opens an outbound SMTP connection directly bypasses that path. The BPF backend sees the connection attempt. The legacy backend can find a connection while it is open. Both report findings to the incident correlator.
 
 ## Configuration
 
@@ -40,9 +40,11 @@ On non-cPanel hosts, Stalwart's stalwart and stalwart-mail users are also recogn
 
 `firewall.smtp_block` blocks outgoing mail except for allowed users. Users listed under `firewall.smtp_allow_users` pass that block, so their connections are expected. List any other mail server's service user there.
 
+<a id="caveats"></a>
+
 ### Findings and dry run
 
-The detector always emits findings when enabled. The dry_run knob does not suppress findings.
+A matching connection can raise a finding in dry run. The selected backend must be active.
 
 The knob takes part in the BPF enforcement gate, where any dry_run=true layer keeps kernel denial in observe-only mode. Kernel denial requires `auto_response.dry_run`, this dry_run key, and `bpf_enforcement.dry_run` to all be explicitly false. See [BPF cgroup-deny enforcement](bpf-enforcement.md).
 

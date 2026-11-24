@@ -1304,12 +1304,12 @@ sudo journalctl -u csm -n 20 --no-pager
 
 The next check tick sees the new thresholds. Fanotify marks are not dropped.
 
-Look for one of three log shapes in the journal:
+Check the journal for the reload result:
 
 | Journal line | Meaning |
 |--------------|---------|
 | `SIGHUP: config reloaded; safe fields updated: [thresholds]` | Success. The new values are live. |
-| `config_reload_restart_required: SIGHUP reload: restart-required fields changed: [hostname ...]; live config unchanged` | The edit touched a field that cannot be hot-swapped. CSM also emits a Warning `config_reload_restart_required` finding. Fall back to the restart path below. |
+| `config_reload_restart_required: SIGHUP reload: restart-required fields changed: [hostname ...]; live config unchanged` | The running settings stay in effect. CSM attempts to record the validated config for the next restart and emits a Warning finding. If the journal reports a rehash failure, run `csm rehash` before restarting. |
 | `config_reload_error: SIGHUP reload: parse failed ...` or `... validation error ...` | The file on disk is not loadable or fails `csm validate`. CSM emits a Critical `config_reload_error` finding. The live config is unchanged; fix the file and repeat. |
 
 ### Restart path: unsafe fields

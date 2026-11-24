@@ -5,7 +5,7 @@ Install CSM from the signed APT or DNF repository. That is the recommended metho
 | Method | When to use it |
 |--------|----------------|
 | [APT repository](#apt-repository-debian--ubuntu-recommended) | Debian and Ubuntu. Recommended. |
-| [DNF repository](#dnf-repository-almalinux--rocky--rhel--cloudlinux--cpanel-recommended) | AlmaLinux, Rocky, RHEL, CloudLinux and cPanel hosts. Recommended. |
+| [DNF repository](#dnf-repository-almalinux--rocky--rhel--cloudlinux--cpanel-recommended) | AlmaLinux, Rocky, RHEL and CloudLinux, including cPanel on those systems. Recommended. |
 | [Online standalone installer](#online-standalone-installer) | The host has Internet access but cannot use the APT or DNF repository. |
 | [Manual package download](#manual-rpm--deb-download) | You need a specific version, or want to install without adding the repository. |
 | [deploy.sh](#manual-deploysh) | A manual install with the deploy script. |
@@ -23,6 +23,9 @@ Postfix hosts with Dovecot also get mail login detection and optional [rspamd sp
 On hosts without cPanel, set `account_roots` for real-time document-root rules, scheduled YARA sweeps and web-root performance checks. Other account and CMS scans still depend on account layouts; see [deep check platform support](detection-deep.md#platform-support).
 
 The daemon auto-detects the OS, the control panel (cPanel/Plesk/DirectAdmin/none) and the web server (Apache/Nginx/LiteSpeed) at startup. See [Verifying platform auto-detection](#verifying-platform-auto-detection).
+
+<a id="apt-repository-debian--ubuntu--recommended"></a>
+<a id="apt-repository-debian--ubuntu----recommended"></a>
 
 ## APT repository (Debian / Ubuntu), recommended
 
@@ -48,6 +51,9 @@ Production binaries dynamically link glibc with a build floor of 2.28, which is 
 
 To upgrade later: `sudo apt update && sudo apt upgrade csm`.
 
+<a id="dnf-repository-almalinux--rocky--rhel--cloudlinux--cpanel--recommended"></a>
+<a id="dnf-repository-almalinux--rocky--rhel--cloudlinux--cpanel----recommended"></a>
+
 ## DNF repository (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel), recommended
 
 ```bash
@@ -69,7 +75,7 @@ EOF
 sudo dnf install csm
 ```
 
-The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. This works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
+The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. This works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel hosts on those distributions.
 
 To upgrade later: `sudo dnf upgrade csm`.
 
@@ -203,13 +209,13 @@ The `csm baseline` command scans the entire server and records the current state
 
 Start `csm.service` before running `csm baseline`. The daemon must be running because the baseline is coordinated through the control socket.
 
-If existing history would be cleared, rerun with `csm baseline --confirm` only after verifying that reset is intended.
+If the store contains history, the command asks for confirmation. Use `csm baseline --confirm` only if you intend to replace the baseline.
 
 ### What it does
 
 - It scans all cPanel accounts for malware, permissions, and configuration issues.
 - It records file hashes, email forwarder hashes, and plugin versions.
-- It stores everything in the bbolt database (`/var/lib/csm/state/csm.db`).
+- It writes baseline findings to `state.json` under the state directory. It records integrity hashes in the main config.
 
 Findings that should never be silently trusted, such as non-standard MySQL superusers or WHM root API tokens, can still be reported on this first scan.
 
@@ -222,7 +228,7 @@ The time depends on server size. A server with 100+ cPanel accounts and thousand
 Run the baseline again:
 
 - after a fresh install,
-- after restoring from backup,
+- after restoring from backup if you intend to replace the restored baseline,
 - after an intentional state reset approved by the operator.
 
 You do not need to re-run it for normal deploys or upgrades. The daemon handles incremental state.
@@ -332,7 +338,7 @@ The sections below are reference material on directory permissions and on upgrad
 | `/var/lib/csm` | 0711 | Searchable but not listable, so Exim can reach the email forward guard files below it. |
 | `/var/lib/csm/state/` | 0700 | Stays private. |
 
-The systemd unit declares `StateDirectory=csm`, so systemd manages permissions for the state directory.
+The systemd unit declares `StateDirectory=csm`, so systemd manages the shared parent at `/var/lib/csm`. The private state directory is below it.
 
 The binary installer and package scripts also keep the shared state root searchable. This includes systemd 239, which does not reset an existing state directory's mode.
 

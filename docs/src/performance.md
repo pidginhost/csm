@@ -47,7 +47,7 @@ The finding keeps the same identity while the log grows. This has three effects:
 
 Once a log has been seen for at least an hour, the finding also shows how fast it grows per day. A log that shrinks or is replaced by a new file, as on truncation or rotation, starts a new baseline.
 
-A cancelled scan changes nothing. A scan that could not read part of the tree keeps the logs it did not reach and updates the ones it did.
+A canceled scan changes nothing. A scan that could not read part of the tree keeps the logs it did not reach and updates the ones it did.
 
 ### WordPress loopback requests
 
@@ -62,7 +62,7 @@ A WordPress site runs background work by sending a request to itself, a loopback
 
 There are two usual causes:
 
-- A plugin schedules its job for "now" and fires it from every page view. The job then runs about as often as the site is visited, crawlers included.
+- A plugin schedules its job to run immediately and fires it from every page view. The job then runs about as often as the site is visited, crawlers included.
 - A background queue such as Action Scheduler keeps re-dispatching itself because its backlog never drains.
 
 This Warning is advisory. Other tenants can also make requests from the server's addresses, so it does not establish which site initiated a request. It does not send alerts or trigger a response action.
@@ -75,7 +75,7 @@ A site that reaches itself through a proxy such as Cloudflare is missed when its
 
 MyISAM locks a whole table for every write. While one request writes, every other request that reads or writes that table waits. On a busy site a burst of uncached requests queues behind those locks until it holds every database connection the account may open, and new visitors get database errors. InnoDB locks single rows, so the same traffic keeps flowing.
 
-`perf_wp_myisam` reads MySQL's table catalogue once per run, as root and without site credentials. It matches the MyISAM tables against the WordPress installs found by the shared discovery. Each database and prefix gets one Warning on the Performance page, listing the tables largest first with their total size.
+`perf_wp_myisam` reads MySQL's table catalog once per run, as root and without site credentials. It matches the MyISAM tables against the WordPress installs found by the shared discovery. Each database and prefix gets one Warning on the Performance page, listing the tables largest first with their total size.
 
 #### Converting a site to InnoDB
 
@@ -91,8 +91,8 @@ Keep the server's strict SQL mode for the conversion. A table holding values Inn
 #### What is not reported
 
 - Installs whose `DB_HOST` is another server. Accepted hosts are `localhost`, loopback addresses and IP addresses bound to this server's interfaces.
-- TCP connections whose port differs from the catalogue server's port.
-- Explicit local sockets whose path differs from the catalogue server's socket path.
+- TCP connections whose port differs from the catalog server's port.
+- Explicit local sockets whose path differs from the catalog server's socket path.
 - Hostname aliases other than `localhost`. CSM does not use DNS to infer ownership.
 - Document roots the panel does not serve any more, and suspended accounts.
 
@@ -144,7 +144,7 @@ Disabling WP-Cron alone would stop scheduled WordPress tasks. The fix therefore 
 
 ### WP-Cron fix settings
 
-Tune the WP-Cron remediation under **Settings -> Performance**:
+Tune the WP-Cron remediation under **Performance** in **Settings**:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -208,7 +208,7 @@ Request timestamps record when requests started, but log lines are written when 
 - Each install's database and table prefix come from explicit string literals in its `wp-config.php`, including an explicitly empty prefix. PHP expressions are not evaluated.
 - A table belongs to the install whose prefix matches it most closely, so two sites sharing one database are reported separately.
 - Dormant and suspended installs still reserve their prefixes.
-- An unreadable or unresolved configuration, or a failed catalogue query, keeps prior findings until a later run succeeds.
+- An unreadable or unresolved configuration, or a failed catalog query, keeps prior findings until a later run succeeds.
 - If a sibling's database or prefix cannot be established, affected scopes are withheld rather than assigning its tables to a shorter prefix.
 - Configurations using dynamic or conditional database settings need explicit literals for this check to resolve their scope.
 

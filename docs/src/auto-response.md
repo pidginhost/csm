@@ -1,6 +1,6 @@
 # Auto-Response
 
-CSM can act on what it detects: block an attacking address, quarantine a malicious file, stop a malicious process, or suspend a compromised mailbox. Auto-response is off until you enable it, and automatic IP blocks then start in dry run. Every action is recorded in the audit trail and the [action log](action-log.md).
+CSM can act on what it detects: block an attacking address, quarantine a malicious file, stop a malicious process, or suspend a compromised mailbox. Auto-response is off until you enable it, and automatic IP blocks then start in dry run. Use the [action log](action-log.md) to inspect recorded responses.
 
 ## Turning it on
 
@@ -9,7 +9,7 @@ CSM can act on what it detects: block an attacking address, quarantine a malicio
 3. Leave `dry_run: true` at first and watch what CSM would block. See [Dry-run safety default](#dry-run-safety-default).
 4. Set `dry_run: false` and run `systemctl reload csm`.
 
-Dry run covers automatic IP blocks, exposed-file virtual patches and mailbox suspension. File quarantine, cleaning and process termination act as soon as their switch is on, so leave those switches off while you evaluate the block policy. [Observe mode](observe-mode.md) forbids every automatic change.
+Dry run covers automatic IP blocks, automatic exposed-file virtual patches, mailbox suspensions and account mail holds. File quarantine, cleaning and process termination act as soon as their switch is on, so leave those switches off while you evaluate the block policy. [Observe mode](observe-mode.md) disables automatic host remediation and integration updates.
 
 ## Actions
 
@@ -24,7 +24,7 @@ Dry run covers automatic IP blocks, exposed-file virtual patches and mailbox sus
 | **PAM blocking** | Blocks an address at once after too many failed SSH logins. See [PAM blocking](#pam-blocking). |
 | **Subnet blocking** | Blocks an IPv4 /24 or IPv6 /64 after several of its addresses were blocked. See [Subnet blocking](#subnet-blocking). |
 | **Permblock escalation** | Makes a temporary block permanent after `permblock_count` repeated offenses within `permblock_interval`. |
-| **Suspend mailbox** | After confirmed credential abuse, suspends the mailbox's logins and outgoing mail through cPanel. See [Mailbox suspension](#mailbox-suspension). |
+| **Suspend mailbox** | After confirmed credential abuse, restricts logins and outgoing mail on cPanel or disables sign-in on Stalwart. See [Mailbox suspension](#mailbox-suspension). |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
 ## Configuration
@@ -102,17 +102,19 @@ Dry run is not a simulation mode for everything:
 | Exposed-file virtual patches in `auto` mode | Permission fixes |
 | Mailbox suspensions and account mail holds | Process termination |
 
-The actions in the right column follow their own `auto_response` switches. Manual commands such as `csm firewall ...` always apply.
+The actions in the right column follow their own `auto_response` switches. Manual firewall block commands bypass dry run. The firewall still checks their targets.
 
 IP blocking needs `firewall.enabled: true`. With the firewall off nothing can apply a block, so `csm validate` warns when `auto_response.enabled` and `block_ips` are both on.
 
 ### What you see in dry run
 
-With the firewall on and outside observe mode, CSM forecasts each automatic block: would it fit the hourly ceiling and the temporary block set, given the blocks and forecasts before it? Status, `csm doctor` and the findings history show the forecast, with at most one summary a minute. `csm status --json` and `/api/v1/status` report how many forecast examples are stored. Whether each forecast block would have fitted is shown separately, in the forecast section of the status output.
+With the firewall on and outside observe mode, CSM forecasts eligible automatic IP blocks against the hourly ceiling and temporary block capacity. Status, `csm doctor` and the findings history show the forecast, with at most one summary a minute. `csm status --json` and `/api/v1/status` report how many forecast examples are stored. Whether each forecast block would have fitted is shown separately, in the forecast section of the status output.
 
 A forecast is not a block. [Dry-run forecasts](#dry-run-forecasts) explains how the forecast models capacity.
 
 ### Checking the state
+
+Read `automation.auto_response_dry_run` in the running daemon's `csm status --json` output. Manual blocks can appear in the firewall history even during dry run.
 
 ```bash
 csm status --json | jq '.severities, .blocklist_size'
@@ -131,17 +133,17 @@ CSM has two ways to apply an automatic block. Admission is the current one: it d
 
 ### Findings that always trigger IP block
 
-With `auto_response.block_ips: true` and the firewall on, the findings below block their source address. Some rows block only at Critical severity or send the address to the challenge first; the row says so. In dry run the block is forecast, not applied.
+With auto-response, `block_ips` and the firewall enabled, these findings can request a block. Safety checks still apply. Some findings require Critical severity or route to a challenge first. In dry run the block is forecast, not applied.
 
 | Finding | Description |
 |---------|-------------|
-| `wp_login_bruteforce` | WordPress login flood via wp-login.php |
-| `xmlrpc_abuse` | XML-RPC endpoint flood |
+| `wp_login_bruteforce` | WordPress login flood via wp-login.php. Eligible for a challenge first. |
+| `xmlrpc_abuse` | XML-RPC endpoint flood. Eligible for a challenge first. |
 | `email_php_form_relay` | A client that made hosted sites mail many outside addresses through their forms. Responses, retries included, need `email_protection.php_relay.ip_recipient_mode: enforce`. Goes to the PoW challenge first when challenge is enabled. |
-| `http_request_flood` | Per-IP HTTP request volume over the threshold. Off by default; set `thresholds.http_flood_threshold` above 0 to enable. |
+| `http_request_flood` | Per-IP HTTP request volume reaches the threshold. Off by default; set `thresholds.http_flood_threshold` above 0 to enable. |
 | `http_scanner_profile` | Random-URL probe pattern from one source IP. Off by default; set `thresholds.http_scanner_min_requests` above 0 to enable. Goes to the PoW challenge first unless `auto_response.http_scanner_action: "block"`. |
 | `http_claimed_bot_unverified` | High-volume traffic claiming to be a crawler while reverse-DNS verification is pending. Goes to the PoW challenge first when challenge is enabled. |
-| `http_ua_spoof` | IP over the UA anomaly threshold, including confirmed search-engine bot UA spoofing. Periodic; see [Configuration](configuration.md) for the opt-in flags. |
+| `http_ua_spoof` | IP reaches the UA anomaly threshold, including confirmed search-engine bot UA spoofing. Periodic; see [Configuration](configuration.md) for the opt-in flags. |
 | `ftp_bruteforce` | FTP authentication flood |
 | `smtp_bruteforce` | SMTP authentication flood. An address that fails only on mailboxes it has login standing on gets an advisory instead. |
 | `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
@@ -150,7 +152,7 @@ With `auto_response.block_ips: true` and the firewall on, the findings below blo
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
-| `ip_reputation` | IP flagged by AbuseIPDB, rspamd or upstream threat intel |
+| `ip_reputation` | IP flagged by AbuseIPDB, rspamd or upstream threat intel. Eligible for a challenge first. |
 | `modsec_block_escalation` | ModSecurity deny escalation |
 | `modsec_csm_block_escalation` | CSM-internal ModSecurity deny escalation |
 | `waf_attack_blocked` | WAF high-volume attacker |
@@ -161,6 +163,7 @@ With `auto_response.block_ips: true` and the firewall on, the findings below blo
 
 - Successful cPanel, FTP, webmail and PAM login audit events and authenticated File Manager writes never block or challenge directly. An incident made only of these events cannot request a block, even if it kept a higher severity from an older version. Independent attack evidence can still justify a response.
 - `block_cpanel_logins` gates cPanel multi-IP logins, API authentication failures, webmail brute force and realtime FTP authentication failures. It also gates webmail challenge routing, because an unanswered challenge can become a block.
+- `mail_account_spray` and `smtp_account_spray` report attacks on a mailbox without requesting an IP block. The corresponding subnet findings, `mail_subnet_spray` and `smtp_subnet_spray`, can request a block of the affected IPv4 /24.
 - A distributed HTTP flood rollup does not block. It describes one targeted vhost, not one source IP. The per-IP findings behind it still block normally.
 - `http_asn_crawl` is handled separately, because one finding can carry several CIDRs. Only Critical findings with confirmed PHP worker saturation can tempban those CIDRs, using `auto_response.http_asn_crawl_tempban`. Dry run and the subnet safety guards still apply.
 - `mail_bruteforce_suspected` and the High forms of `mail_account_compromised` are visibility only. They feed no direct, incident or spray blocking. A separate blockable finding can still block the same source. `mail_bruteforce_suspected` also reports SMTP, IMAP and POP password sprays while spray detection runs in observe mode.
@@ -248,7 +251,7 @@ CSM reads the spray classification from the firewall state, so a missing or stal
 
 Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed or port-specific allowed addresses.
 
-The subnet history is pruned hourly. If its file cannot be read, CSM leaves it untouched and counts only the addresses blocked right now until the file is repaired or removed. Status and `csm doctor` report the failure. Clear, whitelist and flush actions report a failed history cleanup so you can retry.
+The subnet history is pruned hourly. If its file cannot be read, CSM leaves it untouched and counts only active blocks until the file is repaired or removed. Status and `csm doctor` report the failure. Clear, whitelist and flush actions report a failed history cleanup so you can retry.
 
 ### Mail login spray blocks
 
@@ -323,10 +326,10 @@ Either reply can carry metadata (`tenant_id`, `note`). The full schema is in the
 
 Signing:
 
-- CSM refuses to start without `hmac_secret` or a non-empty `hmac_secret_env` value, unless `allow_unsigned: true` is set for a staged unsigned rollout. Without that opt-in, an unsigned `allow` reply is rejected and the block continues.
-- With a secret configured, the panel must sign the reply body, unless `require_response_signature: false` is set for a staged rollout. With that opt-out CSM still checks any echoed `nonce` or `timestamp`. A legacy reply that omits both keeps working.
+- CSM refuses to start without `hmac_secret` or a non-empty `hmac_secret_env` value, unless `allow_unsigned: true` is set for a staged unsigned rollout. Without a secret, CSM accepts an `allow` reply only with that opt-in.
+- With a secret configured, the panel must sign the reply body, unless `require_response_signature: false` is set for a staged rollout. With that opt-out CSM still checks any echoed `nonce` or `timestamp`. An `allow` reply must include at least one valid replay field. A `block` reply can omit both.
 
-Errors: CSM fails open. On a timeout, a non-2xx status or a malformed body, local admission continues, still subject to dry run and capacity. An error proves neither a block nor a forecast example. The failure is written to the daemon log.
+On a timeout, an HTTP status other than 200 or a malformed reply, local admission continues. Dry run and capacity limits still apply. An error proves neither a block nor a forecast example. The failure is written to the daemon log.
 
 The callback runs after local validation and the infrastructure-IP checks, and before the dry-run gate, so the panel sees dry-run decisions too. In dry run:
 
@@ -341,7 +344,7 @@ Do not expect exactly two requests per block. Until admission decides blocks, a 
 
 Addresses in top-level `infra_ips` and `firewall.infra_ips` are never blocked automatically. Hostnames in those lists are resolved every 5 minutes.
 
-If a hostname stops resolving, CSM raises an `infra_ips_unresolvable` Warning and keeps the last known addresses protected for the grace period (10 minutes by default). The finding clears by itself when resolution recovers.
+If DNS fails, CSM keeps the last known addresses protected. After the grace period (10 minutes by default), it raises an `infra_ips_unresolvable` Warning. A new address receives protection once DNS returns it. The finding clears by itself when resolution recovers.
 
 ## Process termination
 
@@ -363,17 +366,19 @@ On a kernel without `pidfd_send_signal`, or when service restrictions deny the c
 
 - An automatic failure is logged. The original detection remains.
 - Manual kill-and-quarantine reports a termination failure even if the file was quarantined. Inspect both the process and the recovery entry before retrying.
-- A cancelled manual request is honored before any signal is sent.
+- A canceled manual request is honored before any signal is sent.
 
 ### Shells left running by a web request
 
-A shell a web request left running (`detached_web_process`) is stopped every time it is seen. Only shells are stopped. Any other process a web request left running, including a non-shell parent of a shell, stays a Warning for review.
+With automatic process termination enabled, CSM attempts to stop each eligible shell a web request leaves running (`detached_web_process`). Only shells are stopped. Any other process a web request left running, including a non-shell parent of a shell, stays a Warning for review.
 
 When CSM stops such a shell a second time within 24 hours for the same account, or the same user outside an account, it raises `detached_web_process_respawn` once a day. Something keeps starting it, most likely a PHP file that requests still run. For a hosting account CSM also queues a malware scan of the account. That scan quarantines and cleans only what automatic quarantine would at that moment, within the same safety limits. Its report shows what it quarantined, cleaned or refused.
 
-Stopping never backs off: a shell that keeps coming back is stopped every time. CSM tracks up to 4096 owners and forgets them when it restarts. Past that number, a new owner's shells are still stopped but not escalated until a tracked owner has gone a day without a stop.
+The daily alert limit does not limit termination attempts. CSM tracks up to 4096 owners and forgets them when it restarts. Past that number, a new owner's shells are still stopped but not escalated until a tracked owner has gone a day without a stop.
 
 ## File quarantine and cleaning
+
+<a id="automatic-file-response-limits"></a>
 
 ### Limits
 
@@ -490,7 +495,7 @@ What does not:
 - A restore from the Web UI quarantine page. To keep a file, restore it from there.
 - CSM's own writes and official WordPress release files.
 - A file cleaned with `csm clean` from the command line. It is not remembered.
-- A file that no longer holds the removed bytes. CSM checks before repeating the response, so a later replacement is never removed.
+- A file whose current content differs from the removed bytes. CSM checks before repeating the response, so a later replacement is never removed.
 
 The finding says how the bytes came back: an SSH, cPanel, cron or FTP session, a web request, a terminal, or a process detached under init. Sessions take precedence over PHP workers in the ancestry, so running PHP from cron or a terminal does not make it a web request. Incomplete ancestry is reported as untraceable.
 
@@ -557,7 +562,7 @@ All-in-One WP Migration rewrites the access file inside `wp-content/ai1wm-backup
 
 ## Mailbox suspension
 
-After confirmed credential abuse, CSM suspends the mailbox's logins and outgoing mail through cPanel. Suspension follows `auto_response.enabled` and dry run.
+After confirmed credential abuse, CSM can suspend a mailbox through cPanel or disable sign-in through the [Stalwart API](detection-realtime.md#suspending-stalwart-mailboxes). Suspension follows `auto_response.enabled` and dry run.
 
 Set `auto_response.suspend_mailboxes: false` to keep every finding and incident without suspending mailboxes. Account holds for a domain are unaffected.
 
@@ -567,14 +572,14 @@ Set `auto_response.suspend_mailboxes: false` to keep every finding and incident 
 |----------|----------|
 | A login after brute force (Critical `mail_account_compromised`) | One sign of compromise. After a few failures it suspends the mailbox only together with another sign. After at least `mail_bruteforce_threshold` failures on that mailbox the password was guessed, and this sign alone suspends the mailbox. |
 | Several signs for one mailbox | Suspended with a single Critical `email_mailbox_compromise` finding. See [Mailbox Compromise Evidence](detection-realtime.md#mailbox-compromise-evidence). |
-| The mailbox is caught sending abuse | Always suspended. |
+| The mailbox is caught sending abuse | Sending evidence bypasses the hourly suspension limit. |
 | A login by the cPanel account's own username | Names no mailbox. After `mail_bruteforce_threshold` failures CSM holds the account's outgoing mail, since that password also opens cPanel and every mailbox. A Critical `email_mailbox_response` finding says what was done. After fewer failures it only alerts. |
 
 Account logins older than the mailbox evidence retention period do not trigger holds.
 
 ### What CSM does
 
-CSM tries to suspend both the mailbox's logins and its outgoing mail. Either success stops the escalation. A partial suspension names the restriction that succeeded and does not claim both.
+On cPanel, CSM tries to suspend both the mailbox's logins and its outgoing mail. Either success stops the escalation. A partial suspension names the restriction that succeeded and does not claim both.
 
 The account-wide outgoing mail hold is the fallback when both fail, when no account owns the domain, or when the target is a bare domain. Evidence that includes no sending never falls back to the account hold.
 
@@ -589,7 +594,7 @@ CSM runs `/usr/local/cpanel/bin/uapi` as a transient systemd service outside the
 
 On login evidence, CSM suspends at most three mailboxes of one hosting account in any rolling hour. Mailboxes no hosting account owns share their domain's allowance.
 
-- A mailbox caught sending abuse is always suspended. It still counts toward the hour, including during concurrent login responses.
+- The hourly limit does not prevent suspension for sending abuse. It still counts toward the hour, including during concurrent login responses.
 - New sending evidence triggers a response even if an earlier login-only incident was held back.
 - Past the limit CSM leaves the mailbox open, reports that it would have suspended it, and raises one Critical `email_mailbox_suspension_paused` finding for the account in that hour. The notice includes mailboxes held back by redirect evidence in the same batch.
 - A released suspension still counts during that hour. Suspending the same mailbox again uses no extra slot.
@@ -598,7 +603,7 @@ On login evidence, CSM suspends at most three mailboxes of one hosting account i
 
 ### Releasing a mailbox or account
 
-After you resolve the credential abuse, release the mailbox or account on the Email page, Suspended tab. The tab lists every suspension and hold CSM made, with its live state in cPanel.
+After you resolve the credential abuse, release the mailbox or account on the Email page, Suspended tab. The tab lists every suspension and hold CSM made, with its state on the mail server.
 
 - A suspension lifted directly in cPanel shows as released outside CSM.
 - An incomplete or unreadable status stays unknown. A delayed status reply cannot release a newer suspension.
@@ -622,7 +627,7 @@ CSM opens the `cpdoveauthd` socket on a short interval. During a `cpdoveauthd` o
 
 When the socket is unreachable, CSM raises `mail_auth_backend_degraded` and pauses automatic blocking for both mail and SMTP brute force, so customers are not blocked for the outage.
 
-With `auto_response.mail_auth_recovery.restart_enabled`, CSM restarts the mail service once the backend has been down without a break for `down_grace` (10 minutes by default). Restarts are rate-limited, and a short interruption during maintenance does not trigger one. Changes to the mail auth recovery settings need a daemon restart.
+With `auto_response.mail_auth_recovery.restart_enabled`, CSM can restart the mail service even with auto-response disabled or in dry run. It attempts recovery after the backend has been down without a break for `down_grace` (10 minutes by default). Restarts are rate-limited, and a short interruption during maintenance does not trigger one. Changes to the mail auth recovery settings need a daemon restart.
 
 The log-based outage signals are described in [Real-time detection](detection-realtime.md#mail-auth-brute-force-tracker).
 
@@ -636,7 +641,7 @@ Three settings combine for direct-SMTP BPF enforcement. If any of them is true, 
 | Detector | `detection.direct_smtp_egress.dry_run` | true | Suppresses the detector's own action |
 | Kernel | `bpf_enforcement.dry_run` | true | The BPF program reports its decision and allows the traffic |
 
-The BPF program reads the kernel key itself. The other two gate actions in the daemon. All three default to true on a first install, so a configuration mistake cannot start blocking traffic.
+The daemon combines the three settings when it loads the kernel policy. All three default to true on a first install, so a configuration mistake cannot start blocking traffic.
 
 ## Safety guards
 
@@ -663,6 +668,8 @@ Alerts:
 - Critical alerts and threat-intel reputation sightings always bypass the operator email and webhook rate limit (30 an hour by default). Lower-severity findings batched with them still count against it.
 - Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary, not to alert email and the generic webhook. An attack is alerted immediately when its block failed, is still queued or ran in dry run. So are a block of a Cloudflare-covered address and the web attacks from it.
 - Trusted countries (`trusted_countries`) suppress login alerts from expected locations.
+
+<a id="what-csm-detects-in-real-time"></a>
 
 The detections behind these actions are described in [Real-time detection](detection-realtime.md).
 
@@ -873,7 +880,7 @@ LiteSpeed:
 nginx:
 
 - HTTP and stream format namespaces are checked separately. Stream byte counts, session duration and transport protocol remain server values in the stream namespace.
-- A log selects the first previously declared format with the same name, ignoring ASCII case. Later case variants do not count as used formats.
+- A log selects the first earlier declaration of a format with the same name, ignoring ASCII case. Later case variants do not count as used formats.
 - Unresolved names and malformed log declarations leave the state unknown.
 - Entries inside maps are values, including entries read from included files.
 - With `escape=none`, any request variable can start another log record, even after the normal client field or a quote.
@@ -890,16 +897,16 @@ What the example count means:
 
 - CSM stores a bounded number of examples of successful capacity predictions, not every attempted block.
 - The count includes older examples until they are pruned or purged.
-- It is not a count of unique addresses, and not the number of blocks that would be active now.
+- It is not a count of unique addresses, and not the number of blocks that would still be active.
 - Lost examples and incomplete comparisons appear in status.
 
 How the forecast models capacity:
 
-- It fills the temporary block set as live admission will. Of the slots that operator, unknown and subnet blocks leave, a fifth is kept for direct or corroborated attacks. A set without a size limit is modelled as 10000 entries.
+- It fills the temporary block set as live admission will. Of the slots that operator, unknown and subnet blocks leave, a fifth is kept for direct or corroborated attacks. A set without a size limit is modeled as 10000 entries.
 - In forecasts and previews, each new automatic lifetime, challenges included, is capped at `auto_response.block_expiry`. Longer requests are cut and shorter ones stay short.
 - A retry keeps its first absolute expiry, even after you configure a lower cap. Blocking on the older path keeps its own lifetimes.
 
-When the modelled set is full:
+When the modeled set is full:
 
 - A forecast block may take the place of a lower-priority one, as live admission would. That is an earlier forecast block of a lower class or severity, or an automatic block from the older path that recorded its origin.
 - A new attack may rotate out an earlier forecast block of the same class and severity once that block has held its slot for 30 minutes, as long as it stays within the part of the set its kind of block may use.

@@ -257,6 +257,8 @@ The page has 24 hour and permanent block actions and whitelist actions, for a si
 
 The page also shows top attackers, attack type charts and trends.
 
+<a id="threat-intelligence-spam-evidence"></a>
+
 ### Spam evidence
 
 The Spam column shows spam and ham verdict counts and the current spam score. Click its heading to sort by score.
@@ -594,7 +596,7 @@ This section is reference material for edge cases.
 
 Static assets use content-versioned URLs.
 
-- Only a URL whose version matches the file now being served is cached as immutable. Older or unversioned URLs must revalidate.
+- Only a URL whose version matches the file being served is cached as immutable. Older or unversioned URLs must revalidate.
 - Replacing a file changes its version even when its size and modification time are preserved.
 - Text assets use gzip when accepted by the client, except for byte-range requests.
 

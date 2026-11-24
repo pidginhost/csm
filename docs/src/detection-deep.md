@@ -1,6 +1,6 @@
 # Deep Checks
 
-Deep checks run every 60 minutes. They are the thorough scans of the filesystem, CMS installs, email and databases.
+Deep checks run every 60 minutes by default. Set `thresholds.deep_scan_interval_min` to change the interval. They are the thorough scans of the filesystem, CMS installs, email and databases.
 
 The tables on this page list every check by family. Where a check needs more than one line, a section under its table gives the rules. Most deep checks need cPanel: [Platform Support](#platform-support) lists which ones run elsewhere. [Details](#details) at the end collects edge cases.
 
@@ -10,7 +10,7 @@ Scheduled checks and account scan checks share one budget inside the daemon. CSM
 
 - Web UI scans and CLI jobs submitted with `csm scan --full` share this budget.
 - Standalone CLI scans run in a separate process.
-- A cancelled or timed-out check keeps its slot until it actually exits, while its caller can return promptly.
+- A canceled or timed-out check keeps its slot until it actually exits, while its caller can return promptly.
 - A check that waits for a slot held by another scan is not reported as a stalled queue in the queue health status.
 
 The real-time scanner has a separate pool of two to sixteen workers, also sized from the core count. With at least two workers, other events progress while one content scan is slow.
@@ -431,7 +431,7 @@ CSM covers direct WordPress installs in three places:
 - every addon-domain directory in an account home
 - one directory below a document root
 
-So a root the panel has stopped serving is still examined. Every finding states whether it came from a served or an unserved root. Served roots are reachable now. Unserved roots hold a live database that publishes again as soon as a domain is pointed at them. When the panel's domain map could not be read, CSM omits the statement entirely and does not guess.
+CSM also checks roots the panel has stopped serving. When the domain map is available, each finding states whether the panel serves the root. Unserved roots hold a live database that publishes again as soon as a domain is pointed at them. When the panel's domain map could not be read, CSM omits the statement entirely and does not guess.
 
 CSM does not cover account backup, cache, staging and metadata directories. Discovery is not recursive: installs deeper than one directory below a document root are not discovered.
 
@@ -462,7 +462,7 @@ Those rows hold plugin state and never site content. So neither host reputation 
 
 #### Publishing floods, spam terms and phantom authors
 
-`db_post_volume_burst` fires only on sites older than 400 days, with at least 50 recent posts and more than 5x everything published before. A genuine content migration looks the same, so the finding is alert-only.
+`db_post_volume_burst` fires when the oldest published post is at least 400 days old. The site must have published at least 50 posts in the past year and at least five times as many as in its entire earlier history. A genuine content migration looks the same, so the finding is alert-only.
 
 For `db_spam_taxonomy`, a term named after a URL is High. Spam vocabulary alone is Warning.
 
@@ -511,7 +511,7 @@ Invalid-address findings are alert-only. Only explicit code injection enters dat
 
 Serving a site under a domain hosted elsewhere is ordinary and is not reported on its own. `db_siteurl_foreign_host` (High) is reported once per site when both of these hold:
 
-- The panel is serving the root right now.
+- The panel serves the root.
 - The site address names a domain absent from that account's panel domains.
 
 Ownership follows the panel's most-specific exact or wildcard domain mapping. A delegated subdomain therefore belongs to its own account, not to the account holding its parent.
