@@ -346,7 +346,7 @@
 
     function undoFix(item, btn) {
         var msg = 'Undo "' + item.title + '"?\n\nCSM puts back what its last apply of this fix changed, ' +
-            'unless the setting was changed since, then re-runs the audit.';
+            'unless the setting was changed since. The audit runs again unless the undo is refused.';
         // Undo turns a protection off.
         CSM.confirm(msg, { okLabel: 'Undo', danger: true }).then(function() {
             setApplyBusy(true);

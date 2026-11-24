@@ -635,6 +635,14 @@ func TestLiteSpeedMarkerRefusesHardLink(t *testing.T) {
 	}
 }
 
+// sshd_config(5): MaxAuthTries is the number of attempts allowed per
+// connection, so with 4 the right key must come among the first four.
+func TestMaxAuthTriesCautionCountsKeys(t *testing.T) {
+	if sshFixDirectives["ssh_max_auth_tries"].value != "4" || !strings.Contains(autoFixCautions["ssh_max_auth_tries"], "more than three keys before the right one") {
+		t.Fatalf("MaxAuthTries %s caution = %q", sshFixDirectives["ssh_max_auth_tries"].value, autoFixCautions["ssh_max_auth_tries"])
+	}
+}
+
 // Five fixes can disrupt a working host; each carries what it can break, and
 // the Hardening page leaves those unticked.
 func TestAnnotateAutoFixesCautions(t *testing.T) {

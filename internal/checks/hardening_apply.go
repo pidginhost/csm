@@ -244,7 +244,7 @@ var autoFixCautions = map[string]string{
 	"cp_max_emails_hour":   "Caps every domain at 200 messages an hour, which stops newsletters and other legitimate bulk mail.",
 	"cp_nobodyspam":        "Stops mail sent as the nobody user, which breaks PHP mail() where sites send as nobody.",
 	"cp_cookie_validation": "Logs cPanel, WHM and webmail users out when their IP address changes, as on mobile networks.",
-	"ssh_max_auth_tries":   "Refuses SSH clients that offer more than four keys before the right one.",
+	"ssh_max_auth_tries":   "Refuses SSH clients that offer more than three keys before the right one.",
 }
 
 // annotateAutoFixes fills AutoFix on every failing check CSM can apply, and

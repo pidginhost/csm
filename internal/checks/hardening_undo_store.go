@@ -21,8 +21,11 @@ import (
 // requests carry only a fix name, so a daemon bug or compromise cannot make
 // root write values of its choosing.
 
-// hardeningUndoDir holds one <fix name>.json record per applied fix.
-var hardeningUndoDir = "/var/lib/csm-hardening-undo"
+// HardeningUndoDir holds one <fix name>.json record per applied fix.
+const HardeningUndoDir = "/var/lib/csm-hardening-undo"
+
+// hardeningUndoDir is HardeningUndoDir; tests point it elsewhere.
+var hardeningUndoDir = HardeningUndoDir
 
 // hardeningUndoOwner is the uid that must own hardeningUndoDir. Tests use
 // their own uid.

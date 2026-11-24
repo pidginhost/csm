@@ -191,6 +191,8 @@ test('undo sends the fix name after asking, holds every action while it runs, th
     await settle();
     assert.equal(page.asked.length, 1);
     assert.match(page.asked[0].message, /UseDNS/);
+    // A refused undo returns the saved report; only other outcomes re-run the audit.
+    assert.match(page.asked[0].message, /The audit runs again unless the undo is refused\./);
     // Undo turns a protection off, so the dialog marks it as dangerous.
     assert.deepEqual({ ...page.asked[0].opts }, { okLabel: 'Undo', danger: true });
     const post = page.pending('/api/v1/hardening/undo')[0];

@@ -174,11 +174,11 @@ Fixes CSM applied show an **Undo** button. Undo puts back what the last apply of
 
 A CSM drop-in left with only its header is removed.
 
-Undo refuses when the setting no longer holds what the apply set, because it was changed since. A refused undo changes nothing and keeps the record, so the page keeps offering Undo until the fix is applied again. When the setting is already back to its state before the apply, for example after you reset a tweak that had no value in WHM Tweak Settings, undo changes nothing, removes the record and reports the fix undone. A failed undo puts back what it had changed and keeps the record, so it can be retried; if that also fails, the message says what is left to fix. A failed sshd or PHP reload does not fail the undo: as on apply, the restored settings stay and the result says what to reload by hand.
+Undo refuses when the setting no longer holds what the apply set, because it was changed since. A refused undo changes nothing and keeps the record, so the page keeps offering Undo until the next apply replaces the record. When the setting is already back to its state before the apply, for example after you reset a tweak that had no value in WHM Tweak Settings, undo changes nothing, removes the record and reports the fix undone. A failed undo puts back what it had changed and keeps the record, so it can be retried; if that also fails, the message says what is left to fix. A failed sshd or PHP reload does not fail the undo: as on apply, the restored settings stay and the result says what to reload by hand.
 
 Applying a fix again keeps the state from before the first apply for each setting that still holds CSM's change, so undo goes back to the state before CSM changed it. If CSM cannot record the earlier state, the fix still applies, its result says "Undo is unavailable", and it shows no Undo button. Fixes applied by an older CSM have no record either.
 
-The records live in `/var/lib/csm-hardening-undo`, which only root can read or write. Each fix has at most one record: its next apply replaces it and a successful undo removes it. The root worker writes and removes them; the daemon only lists their names to show the Undo button, and an undo request carries only the fix name.
+The records live in `/var/lib/csm-hardening-undo`, which only root can read or write, and `csm uninstall --purge` removes them. Each fix has at most one record: its next apply replaces it and a successful undo removes it. The root worker writes and removes them; the daemon only lists their names to show the Undo button, and an undo request carries only the fix name.
 
 ## Remediation
 
