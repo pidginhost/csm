@@ -53,6 +53,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - FTP logins no longer count as known customers in block alerts.
 - Hosts that leave `auto_response.max_blocks_per_hour` unset now allow at most 1000 automatic blocks an hour instead of 2000; `csm doctor` warns only below 1000.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
+- Go dependencies are updated to their current releases.
+- JavaScript scans now detect keystroke leaks in modules with import attributes, destructured arrow defaults, and statements with semicolons after newlines.
 
 ### Fixed
 

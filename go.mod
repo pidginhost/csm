@@ -10,20 +10,20 @@ require (
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/go-crypt/crypt v0.14.15
-	github.com/go-sql-driver/mysql v1.10.1
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.20.4
 	github.com/mdlayher/netlink v1.11.2
 	github.com/oschwald/maxminddb-golang/v2 v2.9.1
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/tdewolff/parse/v2 v2.8.20
+	github.com/tdewolff/parse/v2 v2.25.0
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/net v0.62.0
-	golang.org/x/sync v0.24.0
+	golang.org/x/net v0.63.0
+	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
-	golang.org/x/term v0.47.0
-	golang.org/x/text v0.43.0
+	golang.org/x/term v0.48.0
+	golang.org/x/text v0.44.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
