@@ -468,7 +468,7 @@ Content outside CSM's markers, including forward-guard blocks, is preserved. CSM
 
 These are off:
 
-- Graylisting.
+- Greylisting.
 - The emails module.
 - Sender-IP lookups to rspamd.com.
 - Phishtank URL lookups to rspamd.com.
@@ -638,7 +638,7 @@ A dry run on Postfix already changes how rspamd scores mail. rspamd is in the ma
 
 #### What changes from the first dry run
 
-- Graylisting, the emails module and public fuzzy storage are off.
+- Greylisting, the emails module and public fuzzy storage are off.
 - rspamd's own DNS block lists are off, unless you name DNS feeds in `feeds.enabled`.
 - Sender-IP and phishtank lookups to rspamd.com are off.
 - Without the `rspamd_maps` feed, the rspamd.com maps CSM manages are read from local copies. The freemail and disposable-address lists stay empty until you fill them, see [Maps without any feed](#maps-without-any-feed).
@@ -834,10 +834,10 @@ Changing the mode, or `exempt`, restarts the Junk folder watcher:
 
 ### Rolling it out on Postfix
 
-1. Meet the [requirements](#requirements). Choose `feeds.enabled` first, because the dry run already turns off rspamd's own DNS block lists and graylisting.
+1. Meet the [requirements](#requirements). Choose `feeds.enabled` first, because the dry run already turns off rspamd's own DNS block lists and greylisting.
 2. Enable with `dry_run: true`. Leave `exempt` empty unless a recipient must never be filtered.
 3. Check that rspamd's loaded actions are still the host's (`rspamadm configdump actions`) and that no `dry_run_rejects` or `milter_rejects` warning appears.
-4. Review each `antispam_file_replaced` copy, and check that graylisting and DNS block lists are as you intend.
+4. Review each `antispam_file_replaced` copy, and check that greylisting and DNS block lists are as you intend.
 5. Check that `CSM-ANTISPAM` lines appear in rspamd's log and that mail at the host's add header threshold still carries `X-Spam: Yes`.
 6. Leave dry run on for at least 7 days. Review each would-reject decision in rspamd's log (`CSM-ANTISPAM event=scan ... decision=reject`) and watch for scan-error findings.
 7. Set `dry_run: false`. Check every reject for a week. On a confirmed false positive, return to dry run: CSM puts your own `actions.conf` back.

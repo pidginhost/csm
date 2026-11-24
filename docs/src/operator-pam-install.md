@@ -89,7 +89,7 @@ Uninstall is idempotent. It does the following:
 - It creates one fresh `.csm-backup-` per file it edits.
 - It leaves files with no managed hooks alone.
 
-Uninstalling the hook stops new events. The dashboard can still show activity from the last 24 hours.
+Uninstalling the hook stops new events. The dashboard still shows the earlier activity, and reports the watcher as `deaf` 24 hours after the last PAM connection.
 
 Uninstall stops on a file it cannot edit safely. See [When uninstall stops](#when-uninstall-stops).
 

@@ -273,7 +273,7 @@ When `auto_response.dry_run` is true or absent (the safety default), the automat
 
 When admission forecasts blocks in dry run, it keeps a limited number of them as examples of what it would have blocked. A forecast becomes an example only if it was saved and passed the capacity checks. A dry-run outcome from the older blocking path alone does not guarantee an example.
 
-After a policy change, check `automation.auto_response_dry_run` in `csm status --json` while the daemon is running. Manual blocks also appear in firewall history. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
+After a policy change, check `automation.auto_response_dry_run` in `csm status --json` while the daemon is running. Manual blocks also appear in the firewall's block list and audit log. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
 
 ## Incident auto-block escalation
 
@@ -439,7 +439,7 @@ The status page and `csm doctor` read the locked ports from the running daemon a
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes. Their current addresses feed the guard that keeps infrastructure addresses out of automatic blocks.
 
-If a hostname stops resolving, the daemon keeps the last known addresses protected. It emits an `infra_ips_unresolvable` Warning after the grace period (default 10 min). A new address receives protection once DNS returns it. The finding auto-clears when resolution recovers.
+If a hostname stops resolving, the daemon keeps the last known addresses protected. It emits an `infra_ips_unresolvable` Warning after a 10-minute grace period. A new address receives protection once DNS returns it. The finding auto-clears when resolution recovers.
 
 ## DoS-exempt ranges
 

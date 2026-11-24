@@ -245,8 +245,6 @@ The row actions are: disable forwarder, add to skip-list, view held.
 
 No live-mail tests run on production. Cross-compile and vet locally, then verify on scratch hosts (fresh Ubuntu + AlmaLinux).
 
-<a id="roadmap-each-item--its-own-spec-slice--plan--tdd--c&#111;dex-review--mr"></a>
-
 ## Roadmap
 
 Each item is its own spec slice, plan, TDD cycle, review and MR.
@@ -283,8 +281,6 @@ Each item is its own spec slice, plan, TDD cycle, review and MR.
 | `internal/emailav` | The quarantine model + spool watcher (ClamAV/YARA). |
 | `internal/platform` | The OS/panel/path/MTA abstraction. |
 | `internal/health/capabilities.go` | Capability flags. |
-
-<a id="conventions-from-agentsmd"></a>
 
 ## Conventions
 

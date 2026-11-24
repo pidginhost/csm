@@ -154,12 +154,14 @@ Then `systemctl daemon-reload && systemctl restart csm`. Verify with `systemctl 
 
 `auto_response.dry_run` defaults to `true` when the key is absent. Automatic IP blocks are not applied.
 
-If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Read the live settings with `csm status --json | jq '.automation | {auto_response_dry_run, dry_run_blocks}'`. The top-level dry-run flag in the example below returns `null`. The count shows retained examples. Firewall history can also include manual blocks.
+If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Read the live setting from the running daemon:
 
 ```bash
-csm status --json | jq '.auto_response_dry_run, .dry_run_blocks'
+csm status --json | jq '.automation | {auto_response_dry_run, dry_run_blocks}'
 csm firewall status            # check that "Recently Blocked" picks up new entries after the restart
 ```
+
+"Recently Blocked" also lists manual blocks, so it does not prove live mode by itself.
 
 With the firewall on and outside observe mode, `dry_run_blocks` counts the forecast examples CSM has retained. Older examples stay in the count until CSM prunes them. It is not the number of blocks that would still be active, and it is not a count of all attempted blocks.
 

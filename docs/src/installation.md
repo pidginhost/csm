@@ -209,7 +209,7 @@ The `csm baseline` command scans the entire server and records the current state
 
 Start `csm.service` before running `csm baseline`. The daemon must be running because the baseline is coordinated through the control socket.
 
-If the store contains history, the command asks for confirmation. Use `csm baseline --confirm` only if you intend to replace the baseline.
+If the store contains history, the command stops and tells you to rerun it with `--confirm`. Use `csm baseline --confirm` only if you intend to replace the baseline.
 
 ### What it does
 

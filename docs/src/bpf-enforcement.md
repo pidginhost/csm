@@ -7,7 +7,7 @@ Every layer starts in dry run, so you can review telemetry before you allow live
 ## Rollout recipe
 
 1. Enable the direct SMTP detector and confirm the connection tracker uses BPF. Leave enforcement off. Watch `csm_direct_smtp_egress_findings_total` for a week.
-2. Enable `bpf_enforcement.enabled` and `bpf_enforcement.direct_smtp_egress` with `bpf_enforcement.dry_run: true`. Apply the restart-required changes. Watch `csm_bpf_enforcement_decisions_total{decision="dry_run"}` and confirm dry-run denials track expected hosted-account egress.
+2. Enable `bpf_enforcement.enabled` and `bpf_enforcement.direct_smtp_egress` with `bpf_enforcement.dry_run: true`. Restart CSM: a reload does not load the new policy into the kernel. Watch `csm_bpf_enforcement_decisions_total{decision="dry_run"}` and confirm dry-run denials track expected hosted-account egress.
 3. On one canary host, review the automatic responses that share `auto_response.dry_run`. Set all three [dry-run settings](#dry-run-precedence) to false, rehash the edited config and restart CSM. Check the deny counter and review incidents.
 4. Roll out to fleet.
 

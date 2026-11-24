@@ -190,7 +190,7 @@ CSM keeps an untouched auto-resolved record for 7 days, measured from when the i
 
 Failed mailbox logins already collapse onto the attacker IP as a single `mailbox_bruteforce` incident (see [Classification](#classification)). Spray suppression extends that across protocols. It is off by default, and its own `dry_run` is on by default.
 
-For each source IP, CSM tracks the set of distinct mailboxes and accounts that the `per_check` detectors (mail and PAM) report across the merge window. In enforce mode, when the distinct target count reaches `distinct_mailboxes`, CSM opens a single `credential_spray` super-incident keyed on the IP. Its severity escalates with breadth: it becomes Critical at `severity_escalate_at` distinct mailboxes. Later qualifying findings from that IP attach to the spray incident's timeline.
+For each source IP, CSM tracks the set of distinct mailboxes and accounts that the `per_check` detectors (mail and PAM) report across the merge window. With `enabled: true` and `dry_run: false`, when the distinct target count reaches `distinct_mailboxes`, CSM opens a single `credential_spray` super-incident keyed on the IP. Its severity escalates with breadth: it becomes Critical at `severity_escalate_at` distinct mailboxes. Later qualifying findings from that IP attach to the spray incident's timeline.
 
 Defaults (configurable in `csm.yaml`):
 

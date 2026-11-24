@@ -114,7 +114,7 @@ A forecast is not a block. [Dry-run forecasts](#dry-run-forecasts) explains how 
 
 ### Checking the state
 
-Read `automation.auto_response_dry_run` in the running daemon's `csm status --json` output. Manual blocks can appear in the firewall history even during dry run.
+Read `automation.auto_response_dry_run` in the running daemon's `csm status --json` output. Manual blocks appear in the firewall's block list and audit log even during dry run.
 
 ```bash
 csm status --json | jq '.severities, .blocklist_size'
@@ -327,7 +327,7 @@ Either reply can carry metadata (`tenant_id`, `note`). The full schema is in the
 Signing:
 
 - CSM refuses to start without `hmac_secret` or a non-empty `hmac_secret_env` value, unless `allow_unsigned: true` is set for a staged unsigned rollout. Without a secret, CSM accepts an `allow` reply only with that opt-in.
-- With a secret configured, the panel must sign the reply body, unless `require_response_signature: false` is set for a staged rollout. With that opt-out CSM still checks any echoed `nonce` or `timestamp`. An `allow` reply must include at least one valid replay field. A `block` reply can omit both.
+- With a secret configured, the panel must sign the reply body, unless `require_response_signature: false` is set for a staged rollout. With that opt-out CSM still checks any echoed `nonce` or `timestamp`. An `allow` reply must then include at least one valid replay field, and a `block` reply can omit both.
 
 On a timeout, an HTTP status other than 200 or a malformed reply, local admission continues. Dry run and capacity limits still apply. An error proves neither a block nor a forecast example. The failure is written to the daemon log.
 
@@ -344,7 +344,7 @@ Do not expect exactly two requests per block. Until admission decides blocks, a 
 
 Addresses in top-level `infra_ips` and `firewall.infra_ips` are never blocked automatically. Hostnames in those lists are resolved every 5 minutes.
 
-If DNS fails, CSM keeps the last known addresses protected. After the grace period (10 minutes by default), it raises an `infra_ips_unresolvable` Warning. A new address receives protection once DNS returns it. The finding clears by itself when resolution recovers.
+If DNS fails, CSM keeps the last known addresses protected. After a 10-minute grace period, it raises an `infra_ips_unresolvable` Warning. A new address receives protection once DNS returns it. The finding clears by itself when resolution recovers.
 
 ## Process termination
 
@@ -572,7 +572,7 @@ Set `auto_response.suspend_mailboxes: false` to keep every finding and incident 
 |----------|----------|
 | A login after brute force (Critical `mail_account_compromised`) | One sign of compromise. After a few failures it suspends the mailbox only together with another sign. After at least `mail_bruteforce_threshold` failures on that mailbox the password was guessed, and this sign alone suspends the mailbox. |
 | Several signs for one mailbox | Suspended with a single Critical `email_mailbox_compromise` finding. See [Mailbox Compromise Evidence](detection-realtime.md#mailbox-compromise-evidence). |
-| The mailbox is caught sending abuse | Sending evidence bypasses the hourly suspension limit. |
+| The mailbox is caught sending abuse | Suspended on this evidence alone. The hourly limit does not hold it back. |
 | A login by the cPanel account's own username | Names no mailbox. After `mail_bruteforce_threshold` failures CSM holds the account's outgoing mail, since that password also opens cPanel and every mailbox. A Critical `email_mailbox_response` finding says what was done. After fewer failures it only alerts. |
 
 Account logins older than the mailbox evidence retention period do not trigger holds.

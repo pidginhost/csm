@@ -38,9 +38,9 @@ The daemon checks ModSecurity rule actions every five minutes using file content
 
 | Command | Description |
 |---------|-------------|
-| `csm run` | Run all checks on demand and send alerts |
-| `csm run-critical` | Run critical checks on demand and send alerts. Scheduled runs start every 10 minutes. |
-| `csm run-deep` | Run deep checks on demand and send alerts. The default interval between scheduled runs is 60 minutes. |
+| `csm run` | Run all checks on demand via the daemon and send alerts |
+| `csm run-critical` | Run critical checks on demand via the daemon and send alerts. Scheduled runs start every 10 minutes. |
+| `csm run-deep` | Run deep checks on demand via the daemon and send alerts. The default interval between scheduled runs is 60 minutes. |
 | `csm check` | Run all checks via the daemon, print findings to stdout, no alerts / auto-response |
 | `csm check-critical` | Test critical checks only (dry-run via daemon) |
 | `csm check-deep` | Test deep checks only (dry-run via daemon) |
