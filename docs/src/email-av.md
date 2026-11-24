@@ -5,7 +5,7 @@ CSM scans email attachments in real time using ClamAV and YARA-X on the Exim mai
 ## Turning it on
 
 1. Set `email_av.enabled: true`. The other `email_av` keys are listed in [Configuration](configuration.md).
-2. Set `quarantine_infected: true` if infected messages should be quarantined. Without it, CSM reports the infection and the message is delivered normally.
+2. Set `quarantine_infected: true` to quarantine infected messages. With quarantine off, CSM reports detected malware and lets Exim continue delivery after a completed scan.
 3. Open the Email page in the Web UI and check the AV watcher status.
 
 ## How It Works

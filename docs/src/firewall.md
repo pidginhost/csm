@@ -439,7 +439,7 @@ The status page and `csm doctor` read the locked ports from the running daemon a
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes. Their current addresses feed the guard that keeps infrastructure addresses out of automatic blocks.
 
-If a hostname stops resolving, the daemon keeps the last known addresses protected. It emits an `infra_ips_unresolvable` Warning after a 10-minute grace period. A new address receives protection once DNS returns it. The finding auto-clears when resolution recovers.
+If a hostname stops resolving, the daemon keeps the last known addresses protected. It raises one `infra_ips_unresolvable` Warning when a lookup fails more than 10 minutes after the last success. If no lookup has succeeded, it counts from the first failure. On recovery, the daemon protects the returned addresses and can warn again on a later outage.
 
 ## DoS-exempt ranges
 

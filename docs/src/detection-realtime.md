@@ -655,7 +655,7 @@ The `mail_bruteforce` and `mail_bruteforce_suspected` alerts name the mailboxes 
 
 | Case | What CSM does |
 |------|---------------|
-| A Critical `mail_account_compromised` | Can trigger an IP block. A guessed password can trigger mailbox suspension on its own or an outgoing mail hold for a bare cPanel account login. Weaker login evidence needs corroboration. Suspension needs auto-response on cPanel, or on Stalwart with its API key. See [Mailbox compromise evidence](#mailbox-compromise-evidence) |
+| A Critical `mail_account_compromised` | Can trigger an IP block. A guessed password can trigger mailbox suspension on its own or an outgoing mail hold for a bare cPanel account login. Weaker login evidence needs corroboration. On cPanel and Stalwart, suspension requires live auto-response and `auto_response.suspend_mailboxes` enabled. Stalwart also requires its API key. See [Mailbox compromise evidence](#mailbox-compromise-evidence) |
 | The source has established history on at least two other mailboxes from before its current untrusted failures | High advisory. The source is not auto-blocked and the mailbox is not suspended |
 | The source has [login standing](#login-standing) on the mailbox from before the failures | High advisory. The source is not auto-blocked and the mailbox is not suspended |
 | A login after failures on other mailboxes | Critical only in enforce mode when one of them was a missing mailbox many networks tried. Every other spray case is a High advisory |

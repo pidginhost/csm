@@ -114,12 +114,14 @@ A forecast is not a block. [Dry-run forecasts](#dry-run-forecasts) explains how 
 
 ### Checking the state
 
-Read `automation.auto_response_dry_run` in the running daemon's `csm status --json` output. Manual blocks appear in the firewall's block list and audit log even during dry run.
+Read `automation.auto_response_dry_run` in the running daemon's `csm status --json` output.
 
 ```bash
 csm status --json | jq '.severities, .blocklist_size'
 csm firewall status   # "Recently Blocked" entries with timestamps after the restart confirm live mode
 ```
+
+Manual blocks appear in "Recently Blocked" and the firewall audit log even during dry run. A new entry alone cannot confirm live mode.
 
 ### Going live
 
@@ -344,7 +346,7 @@ Do not expect exactly two requests per block. Until admission decides blocks, a 
 
 Addresses in top-level `infra_ips` and `firewall.infra_ips` are never blocked automatically. Hostnames in those lists are resolved every 5 minutes.
 
-If DNS fails, CSM keeps the last known addresses protected. After a 10-minute grace period, it raises an `infra_ips_unresolvable` Warning. A new address receives protection once DNS returns it. The finding clears by itself when resolution recovers.
+If DNS fails, CSM keeps the last known addresses protected. It raises one `infra_ips_unresolvable` Warning when a lookup fails more than 10 minutes after the last success. If no lookup has succeeded, it counts from the first failure. A successful lookup protects the returned addresses and resets the warning for the next outage.
 
 ## Process termination
 
@@ -572,7 +574,7 @@ Set `auto_response.suspend_mailboxes: false` to keep every finding and incident 
 |----------|----------|
 | A login after brute force (Critical `mail_account_compromised`) | One sign of compromise. After a few failures it suspends the mailbox only together with another sign. After at least `mail_bruteforce_threshold` failures on that mailbox the password was guessed, and this sign alone suspends the mailbox. |
 | Several signs for one mailbox | Suspended with a single Critical `email_mailbox_compromise` finding. See [Mailbox Compromise Evidence](detection-realtime.md#mailbox-compromise-evidence). |
-| The mailbox is caught sending abuse | Suspended on this evidence alone. The hourly limit does not hold it back. |
+| Confirmed sending abuse, such as a Critical `email_compromised_account` finding | CSM can suspend the mailbox on this finding alone, even after it reaches the hourly suspension limit. A weaker sign, such as a forged sender, needs other evidence. |
 | A login by the cPanel account's own username | Names no mailbox. After `mail_bruteforce_threshold` failures CSM holds the account's outgoing mail, since that password also opens cPanel and every mailbox. A Critical `email_mailbox_response` finding says what was done. After fewer failures it only alerts. |
 
 Account logins older than the mailbox evidence retention period do not trigger holds.

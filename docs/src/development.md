@@ -705,7 +705,7 @@ Undo checks only the current active `UPDATES` lines against the applied value, a
 A fix can be applied again, as a retry after a partial apply or over a setting that still holds what CSM set. The apply reads the fix's record before changing anything.
 
 - Each setting that still holds the earlier apply's value keeps the state from before that apply.
-- A setting changed by hand since the earlier apply keeps the value found at this apply. Undo then restores that value.
+- If you edit a setting between applies, the new undo record uses your edited value. Undo checks that the setting still matches what CSM applied before restoring your value.
 - PHP drop-ins this apply did not write keep their earlier entries.
 - Permissions, owner and group are compared independently, so editing one does not lose the original state of the others.
 
