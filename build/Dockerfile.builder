@@ -20,7 +20,7 @@
 #   docker build -f build/Dockerfile.builder -t csm/builder:glibc-2.28 .
 #   docker tag csm/builder:glibc-2.28 csm/builder:latest
 
-FROM almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b
+FROM almalinux:8@sha256:768bedc30fe0a536adb0a65d2eddb7caad364e514fbddd0ae9e026975f590342
 
 # System development tooling. PowerTools (aka CRB on newer Alma)
 # exposes dev packages that are not in the base repos.
