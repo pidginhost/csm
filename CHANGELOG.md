@@ -9,6 +9,8 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+## [4.16.0] - 2026-11-24
+
 ### Highlights
 
 - Run `csm doctor` after upgrading: SSH, mail and FTP log lines any local user could forge now only alert, and its login sources row shows how to keep blocking.
