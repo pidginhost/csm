@@ -1717,16 +1717,17 @@ cache period.
 GET  /api/v1/hardening           Load last hardening audit report (admin scope)
 POST /api/v1/hardening/run       Run hardening audit and save report (admin scope, CSRF)
 POST /api/v1/hardening/apply     Apply automatic fixes for one section, then re-run the audit (admin scope, CSRF)
-POST /api/v1/hardening/undo      Undo the last apply of one fix, then re-run the audit (admin scope, CSRF)
+POST /api/v1/hardening/undo      Undo the last apply of one fix, then re-run the audit unless refused (admin scope, CSRF)
 ```
 
 A check whose fix CSM can undo carries `undo_available: true` in every
 hardening report reply. The undo body is `{"name": "<check name>"}`. The
 reply holds the root worker's `result` (status `undone`, `refused` or
 `failed`, with a message) next to the report fields, as the apply reply holds
-`applied`. A refused undo changed nothing: the setting changed since the
-apply, or CSM cannot put it back and the message says what to do instead. The
-reply then carries the saved report, and the audit is not re-run.
+`applied`. A refused undo changed nothing: there is no record for the fix,
+the setting changed since the apply, or CSM cannot put it back and the
+message says what to do instead. The reply then carries the saved report, and
+the audit is not re-run.
 
 If the undo worker finishes but saving the recheck fails, HTTP 500 carries
 `error`, the fresh audit in `report`, and the worker outcome in `result`.

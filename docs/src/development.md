@@ -1798,8 +1798,10 @@ The root hardening worker owns `/var/lib/csm-hardening-undo` with mode
 The daemon may list record names read-only, without opening their contents.
 Applying a fix writes its record. The undo worker reads one fix's record,
 restores what it lists while the host still holds the applied state, and
-removes the record once the fix is undone; nothing calls it yet. It runs
-under the apply worker's unit name, so systemd never runs the two at once.
+removes the record once the fix is undone. The web UI starts it for
+`POST /api/v1/hardening/undo` and writes the `operate.undo_hardening` action
+log record, since the worker has no action log. It runs under the apply
+worker's unit name, so systemd never runs the two at once.
 
 A failed sysctl runtime restore puts the applied runtime value and drop-in
 back. A failed PHP write or service reload puts the applied drop-ins back; a
@@ -1808,9 +1810,9 @@ commands and owner or mode restores also roll back completed steps.
 Configuration writes that fail after rename restore the applied content.
 Reload failures retain the record and report failure, so the operator can
 retry once the service problem is resolved. If rollback also fails, the error
-names the recovery failure and the record stays. Undo refuses sysctl drop-in
-symlinks and SSH managed blocks that were nested, duplicated, or moved into a
-Match section.
+names the recovery failure and the record stays. An undo that would rewrite a
+symlinked sysctl drop-in fails before anything changes. Undo refuses SSH
+managed blocks that were nested, duplicated, or moved into a Match section.
 
 Each successful sysctl runtime change is recorded before the next command,
 then its record is updated after the drop-in is saved. PHP records grow after
@@ -1825,12 +1827,13 @@ anything. Each setting that still holds the earlier apply's value keeps the
 state from before that apply; a setting changed by hand since keeps the state
 found now, and PHP drop-ins this apply did not write keep their earlier
 entries. If that record cannot be read, the fix still applies, the record is
-removed, and the result says undo is unavailable. Permissions, owner and
-group are compared independently, so editing one does not lose the original
-state of the others. Global SSH lines that CSM still holds disabled stay in
-the record in their current file order, also when the block value was
-edited or removed by hand; removed or edited comments are not carried
-forward, and uncommenting a line does not record it twice.
+removed, and the result says undo is unavailable. The same happens when the
+state before the change cannot be read or the new record cannot be written.
+Permissions, owner and group are compared independently, so editing one does
+not lose the original state of the others. Global SSH lines that CSM still
+holds disabled stay in the record in their current file order, also when the
+block value was edited or removed by hand; removed or edited comments are not
+carried forward, and uncommenting a line does not record it twice.
 
 Store operations validate fix names before constructing record paths. They
 use directory-relative, no-follow opens and check ownership and permissions

@@ -162,6 +162,24 @@ For API callers and the root worker, an omitted or empty `names` list applies th
 
 SSH port, password and root login settings, `disable_functions`, `allow_url_fopen`, and the mail, web server and firewall checks stay manual.
 
+Fixes CSM applied show an **Undo** button. Undo puts back what the last apply of that one fix changed and leaves other fixes alone, including fixes that share its file. The audit then runs again, unless the undo was refused. Like Apply, Undo runs in the root worker and needs root and `systemd-run`.
+
+- SSH: the setting leaves CSM's block, or gets back the value the block had, and an empty block is removed. Every line CSM commented out for that setting is enabled again, including lines commented out before the last apply of this fix. As on apply, sshd checks the file before it reloads, and the file before the change is kept as `sshd_config.csm-bak`.
+- Kernel settings: the drop-in gets back the lines it had for that key, or loses the key, and `sysctl -w` sets the runtime value back. When the drop-in write failed on apply, only the runtime value is set back.
+- `/tmp`, `/var/tmp` and `/etc/shadow` get back their owner and mode.
+- WHM tweak settings are set back with `whmapi1 set_tweaksetting`. cPanel has no call that clears a value, so a tweak that had no value before the apply cannot be put back: undo refuses and asks you to set it back to its default in WHM Tweak Settings.
+- Compilers: if the apply changed the compiler's mode, undo puts back its owner and mode. If the apply ran `/scripts/compilers off`, undo runs `/scripts/compilers on`, which sets cPanel's own modes, not the earlier ones.
+- cPanel updates: `/etc/cpupdate.conf` gets back its earlier content.
+- PHP: each drop-in the apply wrote gets back the key's earlier line, or loses the key, and PHP reloads as on apply.
+
+A CSM drop-in left with only its header is removed.
+
+Undo refuses when the setting no longer holds what the apply set, because it was changed since. A refused undo changes nothing and keeps the record, so the page keeps offering Undo until the fix is applied again. A failed undo puts back what it had changed and keeps the record, so it can be retried; if that also fails, the message says what is left to fix.
+
+Applying a fix again keeps the state from before the first apply for each setting that still holds CSM's change, so undo goes back to the state before CSM changed it. If CSM cannot record the earlier state, the fix still applies, its result says "Undo is unavailable", and it shows no Undo button. Fixes applied by an older CSM have no record either.
+
+The records live in `/var/lib/csm-hardening-undo`, which only root can read or write. Each fix has at most one record: its next apply replaces it and a successful undo removes it. The root worker writes and removes them; the daemon only lists their names to show the Undo button, and an undo request carries only the fix name.
+
 ## Remediation
 
 | Command | Description |

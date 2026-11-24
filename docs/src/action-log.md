@@ -77,9 +77,12 @@ process termination, mailbox suspension, the account-wide outgoing mail
 hold, and an operator's release of either (`operate.release_mailbox`, one
 record per part undone), and lifting Stalwart's ban of an address unblocked
 in CSM (`operate.clear_stalwart_ban`, one record per ban). A hold record
-carries the quoted `whmapi1 release_outgoing_email` command that lifts it. Everything else appears in the
-daemon log only. The column is the authoritative list. Tests exercise the
-operation paths, including failures and concurrent blocks.
+carries the quoted `whmapi1 release_outgoing_email` command that lifts it.
+Each undo of a Server Hardening fix that reaches the root worker writes one
+`operate.undo_hardening` record, refused ones included; applying fixes does
+not write here. Everything else appears in the daemon log only. The column
+is the authoritative list. Tests exercise the operation paths, including
+failures and concurrent blocks.
 
 The firewall keeps its own audit file because the web UI and the API read it.
 Its entries also appear here; dry-run decisions, failed attempts and whole
