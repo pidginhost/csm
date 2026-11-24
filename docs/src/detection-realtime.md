@@ -147,7 +147,7 @@ alert stays.
 - Obfuscated PHP (encoded, packed, concatenated)
 - Fragmented base64 evasion (`$a="base"; $b="64_decode"` -- function name split across variables)
 - Concatenation payloads (hundreds of `$z .= "xxxx"` lines with eval at end)
-- Tail scanning: payloads appended to the end of large legitimate PHP files (beyond the 32KB head window)
+- Tail scanning: payloads appended to the end of large legitimate PHP files. Realtime PHP checks scan the first and last 32KB; periodic PHP content analysis scans a larger head window plus the tail.
 - CGI backdoors: Perl, Python, Bash, Ruby scripts in web directories (e.g., LEVIATHAN toolkit)
 - SEO spam: gambling/togel dofollow link injection in PHP/HTML files
 - Phishing pages and credential harvest logs

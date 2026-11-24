@@ -1,319 +1,31 @@
 # Auto-Response
 
-When enabled, CSM automatically responds to detected threats. All actions are logged in the audit trail.
+CSM can act on what it detects: block an attacking address, quarantine a malicious file, stop a malicious process, or suspend a compromised mailbox. Auto-response is off until you enable it, and automatic IP blocks then start in dry run. Every action is recorded in the audit trail and the [action log](action-log.md).
+
+## Turning it on
+
+1. Set `auto_response.enabled: true` and the switch for each action you want, such as `block_ips`, `quarantine_files` or `kill_processes`. See [Configuration](#configuration).
+2. For IP blocking, also set `firewall.enabled: true`.
+3. Leave `dry_run: true` at first and watch what CSM would block. See [Dry-run safety default](#dry-run-safety-default).
+4. Set `dry_run: false` and run `systemctl reload csm`.
+
+Dry run covers automatic IP blocks, exposed-file virtual patches and mailbox suspension. File quarantine, cleaning and process termination act as soon as their switch is on, so leave those switches off while you evaluate the block policy. [Observe mode](observe-mode.md) forbids every automatic change.
 
 ## Actions
 
-| Action | Description |
-|--------|-------------|
-| **Kill processes** | Fake kernel threads, reverse shells, GSocket, loops that write back a file CSM removed, and shell loops a web request left running in the background. Never kills root or system processes. |
-| **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
-| **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Admission uses `auto_response.max_blocks_per_hour` (default 1000/hour); legacy scan blocking defaults to 50/hour. |
-| **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
-| **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
-| **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
-| **PAM blocking** | Instant IP block when one address breaches `thresholds.pam_bruteforce_threshold` SSH failures inside `pam_bruteforce_window_min` minutes, or fails SSH logins against `cred_stuffing_distinct_accounts` distinct accounts. Only successful SSH logins clear those failures; failures from other PAM services never block. |
-| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range were blocked within `netblock_window` (7 days by default). Currently blocked addresses count regardless of age, including operator and permanent blocks. Ended blocks count while their latest observed block start is inside the window, unless an earlier subnet block already answered them. A returning operator block starts fresh history after its absence is observed. Whitelist and clear actions, including bulk whitelist, forget the address. |
-| **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
-| **Suspend mailbox** | After confirmed credential abuse, attempts to suspend that mailbox's logins and outgoing mail through cPanel. Either success stops escalation; the account-wide outgoing mail hold is the fallback when both fail, no account owns the domain, or the target is a bare domain. A Critical `mail_account_compromised` (a login after brute force) is one sign of compromise. After a few failures it suspends the mailbox only together with another sign; after at least `mail_bruteforce_threshold` failures on that mailbox it is guessing and suspends the mailbox on its own. A login by the cPanel account's own username names no mailbox: after that many failures the account's outgoing mail is held, since that password also opens cPanel and every mailbox, with a Critical `email_mailbox_response` finding saying what was done; after fewer it only alerts. Account logins older than the mailbox evidence retention period do not trigger holds. If CSM cannot save an applied hold, the response finding directs staff to the action log and manual release on the mail server. Signs of compromise that add up for one mailbox suspend it with a single Critical `email_mailbox_compromise` finding; see [Mailbox Compromise Evidence](detection-realtime.md#mailbox-compromise-evidence). Evidence that includes no sending never falls back to the account hold. Set `auto_response.suspend_mailboxes: false` to keep every finding and incident without suspending mailboxes; account holds for a domain are unaffected. On login evidence, at most three mailboxes of one hosting account are suspended in any rolling hour, and mailboxes no hosting account owns share their domain's allowance. A mailbox caught sending abuse is always suspended; its suspension still counts toward the hour, including during concurrent login responses. New sending evidence triggers a response even if an earlier login-only incident was held back. Past that, CSM leaves the mailbox open, reports it as a would-suspend, and raises one Critical `email_mailbox_suspension_paused` finding for the account in that hour. Released suspensions still count during that hour; suspending the same mailbox again does not consume another slot. Stalwart aliases use the resolved mailbox identity, while a reassigned address counts as a new mailbox. Account holds and alias changes do not reset recent mailbox counts; counts survive a daemon restart. The pause notice includes mailboxes held back by redirect evidence in the same batch. All of these follow `auto_response.enabled` and dry-run, and each attempted suspension or hold is recorded in the action log with its quoted release command. |
-| **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
-
-Of the processes a web request left running, only shells are stopped; anything else, including a non-shell parent of a shell, stays a Warning for review.
-
-Mailbox suspension runs `/usr/local/cpanel/bin/uapi` as a transient systemd service outside the daemon's filesystem sandbox; hosts without a usable systemd-run run it directly. Each call is bounded in time, the JSON result decides success, and mailbox names stay literal arguments on both paths.
-
-Partial suspensions name the restriction that succeeded; they do not claim both logins and sending stopped. Mailbox restrictions and account holds already applied outside CSM are not offered for release. If cPanel cannot report the mailbox state, CSM suspends anyway and records the suspension as its own; sending evidence can still fall back to an account hold.
-
-After resolving the credential abuse, release the mailbox or account on the Email page, Suspended tab. The tab lists every suspension and hold CSM made with its live state in cPanel; one lifted directly in cPanel shows as released outside CSM. Incomplete or unreadable status stays unknown, and a delayed status response cannot release a newer suspension.
-
-Release undoes the recorded restrictions and never changes a password. Evidence captured before the release cannot suspend the mailbox again. Cleanup failures are reported so the release can be retried.
-
-Releasing an account hold delivers the mail cPanel held, so delete spam from the Queue tab first; the confirm says so. The action log also keeps the release commands, quoted for the shell, for example `/usr/local/cpanel/bin/uapi '--user=account' Email unsuspend_login 'email=alice%40example.com'` and the matching `unsuspend_outgoing` command. The address is URI-encoded because uapi decodes its values.
-
-WHM holds and releases check the JSON API result before reporting success. Dry-run writes one planned-action record without running a command; disabled auto-response writes none.
-
-Subnet history is pruned hourly and saved only when it changes. If the file cannot be read it is left untouched and escalation counts only the addresses blocked right now until it is repaired or removed; status and doctor report the failure. Clear, whitelist and flush actions report history cleanup failures so operators can retry them.
-
-Mail login spray blocks of IPv4 addresses do not contribute to /24
-escalation. IPv6 spray blocks count toward their /64 like any other block,
-since one /64 is treated as one source. The classification comes from
-committed firewall state, so a missing or stale scan tracker does not turn
-IPv4 spray blocks into range evidence. Saved spray blocks absent from the
-kernel do not count as active blocks. If block metadata cannot be read,
-subnet escalation waits while individual block attempts continue.
-
-Blocks of an address on `c2_blocklist` never count toward subnet escalation
-or permanent promotion, whatever finding asked for them: a listed
-command-and-control server is where local processes connect, not a source
-of attacks. Other blocked addresses in its subnet still count.
-
-### Process termination
-
-An eligible finding receives one automatic termination evaluation across scan
-and alert delivery. A refused or failed attempt is not retried when the same
-finding reaches alert delivery. Realtime findings still receive an evaluation;
-new detections and findings replayed from storage receive a fresh evaluation.
-
-CSM opens a kernel process handle before verifying ownership, executable, start
-time, or the file referenced by a process. It checks that the captured process
-is still alive after verification and sends the signal through that handle.
-An exited process cannot redirect the signal to a replacement with the same PID.
-Automatic and manual malware termination reject root credentials, including
-effective and saved root IDs. The separate opt-in AF_ALG reaction requires the
-current credentials and executable to match its recorded event.
-
-Safe signaling needs `pidfd_send_signal` (Linux 5.1). Where `pidfd_open`
-(Linux 5.3) is absent -- EL8 and CloudLinux 8 ship 4.18 kernels without it --
-CSM pins the target through its `/proc/<pid>` directory descriptor, which
-`pidfd_send_signal` accepts and which refers to the same kernel process. Both
-paths reject a recycled PID; CSM never falls back to numeric PID signaling.
-On a kernel without `pidfd_send_signal`, or when service restrictions deny the
-call, termination stays disabled: `csm doctor` reports `process termination
-supported` as failed and the health status becomes `degraded` whenever
-`auto_response.kill_processes` is enabled, so an inoperative protection is
-visible before an incident needs it. Each health snapshot probes this capability
-again, so transient resource failures clear once signaling becomes available.
-Automatic termination failures are logged while the original detection remains.
-Manual kill-and-quarantine reports a termination failure even if the file was
-successfully quarantined; inspect both the process and recovery entry before
-retrying. Manual request cancellation is checked before sending a signal.
-
-### Automatic file response limits
-
-Realtime quarantine, scheduled quarantine, PHP cleaning and automatic `.htaccess`
-cleaning share one rolling-hour budget. `auto_response.max_file_actions_per_hour`
-caps host-wide attempts (default 50), `max_file_actions_per_account_per_hour` caps
-attempts for one account (default 10), and `max_file_action_failures_per_hour`
-pauses these responses after repeated failures (default 3). Zero or an omitted
-key uses the default; negative values and values above 10000 are rejected.
-
-Each attempt is reserved before touching the file. Successful, failed and
-interrupted attempts all consume capacity. Reservations live in
-`<state_path>/file-response.json` and survive configuration reloads and daemon
-restarts. Entries expire one hour after admission. A backwards clock adjustment
-keeps future-dated reservations charged until their window has passed.
-
-Account budgets come from the target's account-home path, not finding text.
-Paths outside recognized account homes share an unknown-account budget. One
-account reaching its limit does not stop other accounts unless the host or
-failure limit is also reached. Automatic directory and special-file quarantine
-is refused because one directory move can affect an unbounded number of files.
-Manual remediation remains available after reviewing the original detection.
-
-A brief shared lock protects each safety reservation and outcome update. The
-file action runs after reservation without holding that lock, so a slow copy
-does not block another available slot. Pending actions hold failure capacity
-until their outcome is saved, so concurrent failures cannot pass the configured
-ceiling. If the state lock remains busy, the next attempt is refused. Unreadable,
-incomplete or unwritable safety state also refuses mutations. The original
-detections remain visible, and a deduplicated `auto_response_paused` warning
-reports the cause. Account-limit notices are
-grouped at host scope so a fault across many accounts cannot flood the alert
-budget. A pause does not create a retry job; new eligible detections can act
-after capacity returns. Review outstanding findings and recovery evidence before
-manual remediation. Do not delete safety state to clear a pause; repair storage
-faults and let reservations expire.
-
-Duplicate detections of one stable file version share a single realtime response
-attempt. A different file planted at the same path remains eligible.
-Within one daemon run, alert delivery does not repeat a file response already
-evaluated by a scan or admitted to the realtime safety gate, including budget
-refusals. A realtime detection rejected using sampled content remains eligible
-for full-file validation during delivery. The original findings still reach
-alerts and history; a new detection can be evaluated again.
-Findings still queued at shutdown retain the existing restart replay behavior:
-the next daemon run evaluates them again under the same persisted limits.
-Parked findings also keep the offending subnets and targeted accounts needed for
-subnet response and credential spray correlation. Older parked findings replay
-without that data. The subnets also appear in the public `cidrs` field.
-
-Critical realtime PHP findings that prove request data reaches an execution
-primitive, or that executable PHP unwraps and runs encoded content, enter this
-file-response gate immediately. Quarantine holds an exclusive Linux lease on the
-open file that produced the finding until that file is removed. It refuses while
-another process has the file open or is running it, and when the content or path
-identity changes. Whole-file malware identified by the cleaner uses this
-lease too. Other quarantines do not take this lease, so they can still move
-a file that is open or running. Comment-only matches, URL-only droppers,
-filename-only checks, tail-window matches and YARA-only findings remain
-available for review without an automatic move.
-
-File quarantine copies only the file size it verified and checks the file again
-before removing it. A file that changed is restored and its copy discarded. If
-its name was recreated meanwhile, the error names the private directory that
-holds the changed file.
-
-Parked reputation findings keep their intelligence source and expiry. If an
-expiry cannot be encoded, only that intelligence metadata is dropped; the
-finding and the rest of the queued batch are still saved and replayed. This
-handling is automatic and has no setting.
-
-A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
-It no longer escalates to whole-file quarantine. A cleaner that recognizes no
-injection or declines an unsupported target refuses the file instead of failing.
-Sources that change or disappear before mutation are also refusals, including
-socket replacements and parent paths replaced after quarantine copying. These
-attempts still use capacity but do not count toward the failure pause. Read,
-write, backup and durability errors still count as failures. Quarantine and
-cleaners retain their descriptor-based identity checks, and automatic actions
-revalidate the file after saving the reservation. Opening a replacement special
-file cannot block response processing.
-
-Manual full scans leave cleaner refusals for review instead of reporting a
-failed remediation. `csm clean` also distinguishes a refusal from an action
-failure; both return a nonzero exit status when the file was not cleaned.
-`csm clean --preview` runs the same cleaner without a backup or a write and
-prints the change as a unified diff. Its header names the SHA-256 of the file
-before and after, the digests the action log records when the clean is
-applied. File names and content are escaped for the terminal. A preview that
-exceeds the display limit fails without writing. Integrations can check for
-`response.preview_diff.v1` in the capabilities list.
-
-WordPress core, plugin and theme files are cleaned in place, with three
-exceptions. When cleaning would leave nothing of a file that sends no page
-output, the file is quarantined whole: a stub would lose the same content,
-while quarantine keeps it for a restore. When cleaning would erase a file's
-page output, the file stays untouched for review. When the release of WordPress
-core or of a wordpress.org plugin that a site runs does not ship the file, it
-was planted and is quarantined. CSM trusts the release a site names only when
-its `version.php` or `<slug>.php` plugin main file is that release's own copy,
-and only from the checksums the realtime file monitor has cached. A plugin
-whose main file has another name stays with the cleaner. Page output is any
-text outside PHP code, including short and echo tags. Whole-file quarantine
-rechecks the original content under the same protection used for other
-verified file responses; a changed file stays in place. `csm clean` refuses a
-file it would leave empty.
-
-Automatic permission fixes dismiss the original finding after a successful fix
-or after confirming its unsafe permission is already gone. A confirmation alone
-does not report a permission change.
-
-These limits use the existing `enabled`, `quarantine_files` and `clean_htaccess`
-opt-ins. Observe mode still forbids automatic changes. `dry_run` continues to
-control IP blocking and web-exposed-file virtual patches; it does not preview
-file quarantine or cleaning. Other response families have their own controls.
-
-### Files written back after removal
-
-When CSM quarantines or cleans a file, it clears the alert state it kept for
-that file. If a detection finds the file there again, the finding is reported
-as new instead of being held back as a repeat.
-Dismissals remain in effect.
-
-CSM also remembers, for seven days, the content each quarantine or clean took
-away. A process that writes the same bytes back to the same path raises
-`removed_file_restored_realtime` (Critical). With `quarantine_files` on, CSM
-then does what it did before: it quarantines the file again, or cleans it
-again. The daemon keeps this memory across restarts. A file cleaned with
-`csm clean` from the command line is not remembered. A restore from the web
-UI quarantine page, CSM's own writes and official WordPress release files are
-never treated as the file coming back.
-
-Any other restore of the same bytes, including the account's own through SSH,
-cPanel or FTP, is removed again: a stolen login replays a payload the same
-way. The finding says how the bytes came back (an SSH, cPanel, cron or FTP
-session, a web request, a terminal, or a process detached under init).
-Sessions take precedence over PHP workers in the ancestry; running PHP from
-cron or a terminal does not make it a web request. Incomplete ancestry is
-reported as untraceable.
-
-The finding gives the current removal's expiry time. Each successful removal
-starts a new seven-day window, so repeated restores can extend it. Automatic
-removal still requires `quarantine_files`. To keep the file, restore it from
-the quarantine page.
-
-The saved history is read only from a private file the daemon owns. A damaged
-or unsafe one is logged and ignored, and detection carries on without it.
-
-Before repeating the response, CSM checks that the file still holds the
-removed bytes, so a later replacement or a restore from the web UI is never
-removed. Removed files are watched whatever their extension. A restored
-`.htaccess` is cleaned only when `clean_htaccess` is on.
-
-With `kill_processes` on, CSM also stops the process that wrote the file back,
-together with its parent processes of the same account, parents first, so a
-loop cannot start another writer. It does so only when those processes trace
-back to the web server or run detached under init, the shape of a loop a
-webshell leaves behind. A PHP worker that serves the site is not stopped unless
-it wrote the file itself. A process with a terminal, or one started from an
-SSH, cPanel or cron session, is left running and the file is still handled;
-root processes are never stopped. An SSH, cron or cPanel session anywhere
-above a PHP worker also prevents the kill, and so does any part of the
-ancestry CSM cannot read. The processes are named when the write is seen, and
-each is checked again through a kernel process handle just before the signal,
-as described above.
-
-A shell a web request left running (`detached_web_process`) is stopped under
-the same rules every time it is seen. When CSM stops one for the same account,
-or the same user outside an account, a second time within 24 hours, it raises
-`detached_web_process_respawn` once a day: something, most likely a PHP file
-that requests still run, keeps starting it. For a hosting account CSM also
-queues a malware scan of the account. It quarantines and cleans only as
-automatic quarantine would at that moment, within the same safety limits, and
-its report shows what it quarantined, cleaned or refused. Stopping never backs
-off, so a shell that keeps coming back is stopped every time.
-
-CSM tracks up to 4096 owners and forgets them when it restarts. Past that, a new
-owner's shells are still stopped every time but not escalated until a tracked
-owner has gone a day without a stop.
-
-### Restoring quarantined files
-
-Regular-file quarantine and pre-clean backups write and sync the private content
-copy, metadata, and directory entries before removing or changing the original.
-Directory quarantine syncs the tree and metadata before moving it on the same
-filesystem. A directory move across filesystems is refused and leaves the source
-in place. Storage failures do not count as successful remediation.
-
-New quarantine and pre-clean sidecars record the original modification time,
-owner, group, permissions, and size. Restore reapplies the saved attributes to
-the opened destination before syncing it. Linux preserves modification times at
-the precision supported by the destination filesystem. An ownership or timestamp
-failure keeps the recovery evidence and reports an error.
-
-On Linux, restore can verify the destination after saved permissions remove all
-read access. The restored file keeps those permissions, including a mode with
-no access granted to anyone.
-
-Older sidecars may use `quarantine_at`; listing and restore also read that
-historical spelling. Entries without a saved quarantine date sort last. Older
-entries have no recorded original modification time, so restore leaves the new
-file's modification time in place instead of treating the archive's timestamp
-as the original. Some older access-file cleanup backups also lack trustworthy
-ownership and permission data; check those attributes when restoring them.
-
-Configured account roots participate in manual remediation and restore. Set up
-[service write access](custom-account-roots.md) for roots outside the packaged
-grants before enabling these operations.
-
-Web UI restore refuses symbolic links in destination directories and does not
-replace an existing file or directory. If a destination changes during restore,
-CSM reports a conflict and retains the quarantine entry. Check the original
-location before retrying; a failed or interrupted file restore can leave a
-partial file in the directory that was opened for restoration. CSM keeps this
-file because removing it could discard a concurrent replacement.
-
-Restore syncs the replacement and its containing directory before deleting
-quarantine evidence. A failure after a move or unlink reports partial completion
-and retains recovery metadata where possible. Inspect both the original and
-quarantine locations named in the error before retrying; a copy may already be
-restored while quarantine cleanup remains incomplete. These guarantees depend
-on the filesystem and storage device honoring sync requests.
-
-Virtual-patch rollback uses the same directory confinement. It replaces or
-removes the access file only when the saved content, owner, and permissions
-still match, preserving later customer edits.
-
-Virtual-patch backups are reused only when their content and saved attributes,
-including modification time, match. A later edit with identical bytes but a new
-modification time gets a separate recovery point.
-
-Rollback isolates displaced entries in a private directory. If another writer
-changes the destination, CSM preserves the live replacement and reports any
-retained recovery directory in the error. Check that directory beneath the
-original destination or quarantine location before retrying. If another writer
-moves a restored directory, CSM cannot recover it from its old name and will
-not substitute a different entry into quarantine.
+| Action | What it does |
+|--------|--------------|
+| **Kill processes** | Stops fake kernel threads, reverse shells, GSocket, loops that write back a file CSM removed, and shell loops a web request left running. Never kills root or system processes. See [Process termination](#process-termination). |
+| **Quarantine files** | Moves webshells, backdoors and phishing files to `/opt/csm/quarantine/`, keeping owner, permissions and mtime. Restore from the Web UI. See [File quarantine and cleaning](#file-quarantine-and-cleaning). |
+| **Block IPs** | Adds attacker addresses to the nftables firewall for a set time. See [IP blocks](#ip-blocks). |
+| **Clean supported malware** | Removes injected code from PHP and `.htaccess` files after saving a backup. Database cleanup has a separate opt-in. |
+| **Drop malicious DB objects** | With `clean_database` on, drops confirmed-malicious stored triggers, events, procedures and functions. A `SHOW CREATE` backup is saved first, so the drop can be reversed. Detection runs either way. |
+| **PHP shield** | Blocks PHP execution from uploads and tmp directories. Inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
+| **PAM blocking** | Blocks an address at once after too many failed SSH logins. See [PAM blocking](#pam-blocking). |
+| **Subnet blocking** | Blocks an IPv4 /24 or IPv6 /64 after several of its addresses were blocked. See [Subnet blocking](#subnet-blocking). |
+| **Permblock escalation** | Makes a temporary block permanent after `permblock_count` repeated offenses within `permblock_interval`. |
+| **Suspend mailbox** | After confirmed credential abuse, suspends the mailbox's logins and outgoing mail through cPanel. See [Mailbox suspension](#mailbox-suspension). |
+| **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
 ## Configuration
 
@@ -376,390 +88,843 @@ auto_response:
     max_actions_per_minute: 60         # rolling 60s window cap on exim -Mf invocations
 ```
 
-### Exposed-file virtual patches
+The full key list is in [Configuration](configuration.md).
 
-A preview, from `csm virtual-patch` without `--apply` or from `auto` mode in dry run, shows each access-file change as a unified diff and writes nothing. Each diff header names the SHA-256 of the file before and after; the after digest is the one the rollback copy expects. Later changes to the same file start from the previous planned change. The local command shows context. Automatic alerts show only the proposed deny rules and mask any existing line that needs a final newline. A file that cannot be shown as text fails the preview.
+## Dry-run safety default
 
-Each applied deny keeps a rollback copy under `/opt/csm/quarantine/pre_clean/`. Re-applying the same rollback state reuses that copy; content, ownership, permissions, or remove-versus-replace changes keep separate restore points.
+`auto_response.dry_run` is `true` when the key is absent. An operator who turns on `block_ips` without reviewing the policy gets a record of what would be blocked, and no block.
 
-All-in-One WP Migration rewrites the access file inside `wp-content/ai1wm-backups`, so CSM also denies only `.wpress` filenames from the parent `wp-content` access file. It does not add parent-wide `.zip` or `.gz` rules because those extensions can be legitimate downloads elsewhere under `wp-content`.
+Dry run is not a simulation mode for everything:
 
-### Dry-run safety default
+| Covered by `dry_run` | Not covered |
+|----------------------|-------------|
+| Automatic IP and subnet blocks and related network enforcement | File quarantine and cleaning |
+| Exposed-file virtual patches in `auto` mode | Permission fixes |
+| Mailbox suspensions and account mail holds | Process termination |
 
-`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without reviewing policy keeps automatic IP blocks unapplied while evaluating policy. The retained-example count surfaces in `csm status --json` and `/api/v1/status`; forecast status reports capacity decisions separately. On entry into live mode CSM requests a purge; owner-managed purges run in bounded passes and report stale examples until complete. While dry-run remains enabled, records older than a week age out.
+The actions in the right column follow their own `auto_response` switches. Manual commands such as `csm firewall ...` always apply.
 
-With the firewall on and outside observe mode, admission also forecasts each automatic IP block in dry run: whether it would fit the hourly ceiling and the temporary block set, behind the blocks and forecasts before it. Status, `csm doctor` and findings history show the forecast, with at most one summary a minute. Admission owns new examples, pruning and purge. On a live start, existing examples also wait for its bounded purge, including while admission startup retries. New examples describe committed capacity predictions; the count also includes retained older examples until pruning or purge. It is not unique IPs or active predicted occupancy. Example loss and incomplete comparisons appear in status. A forecast is not a block; restart or re-entry into dry run starts a new session without restoring hypothetical leases from examples. The forecast fills the temporary block set as automatic admission will: of the slots operator, unknown and subnet blocks leave, a fifth is kept for direct or corroborated attacks, and an unlimited set is modelled as 10000 entries. Forecasts and previews cap each new automatic lifetime, including challenges, at `auto_response.block_expiry`: longer requests are cut and shorter ones stay short. Retries keep their first absolute expiry, even after a lower cap is configured; existing blocking keeps its own lifetimes. In a full set a forecast block may take the place of a lower-priority one, as live admission would: an earlier forecast block of a lower class or severity, or a legacy automatic block that recorded its origin. A new attack may also rotate out an earlier forecast block of the same class and severity once that block has held its slot for 30 minutes, within the share of the set its scope may use; an address whose forecast block was replaced or rotated out cannot rotate again before that block's expiry. A forecast block for an address that returns after the forecast replaced its earlier block lasts only until that earlier block would have ended. A return with too little time left for a firewall block is refused without a forecast charge or retained example.
+IP blocking needs `firewall.enabled: true`. With the firewall off nothing can apply a block, so `csm validate` warns when `auto_response.enabled` and `block_ips` are both on.
 
-Admission checks how each finding's address was read against its producer's declared address sources and the check's current policy, when it mints evidence and whenever retained evidence is used. A producer without a trusted address source cannot mint evidence. This excludes PHP relay findings, whose client address comes from a mail header a local account can forge. With `auto_response.dry_run: true`, these findings cannot produce a successful admission forecast. Stored evidence keeps its existing format and identifiers.
+### What you see in dry run
 
-Scheduled cPanel, ModSecurity audit, per-site and central access log scans can supply automatic response forecasts from complete records with a verified address source and server time. The scheduled command-and-control connection scan can too, for established IPv4 connections this server opened. It names each one by its socket during the current boot, keeps its first-seen time across restarts when the state save completed, and reports both endpoints and the socket owner. Listener changes and overlapping scans do not refresh a matched socket's first-seen time. Socket inodes can be reused between scans; those reports retain the earlier time, and lost first-seen state can make a forecast conflict with retained evidence. A connection on a local port that also listens still alerts but supplies no forecast, because the socket table does not show which side connected. Connections still waiting for a reply and those in the IPv6 socket table are not reported. Without a socket identity the alert still shows but supplies no forecast. Blocking the address drops its replies but does not stop data this server sends to it. Rereading a record does not refresh its time or add independent evidence. Unfinished or ambiguous records cannot supply a new observation. HTTP findings whose counts or bot-majority decisions use forwarded addresses, including mixed direct and forwarded traffic, name a client behind a trusted proxy and are refused as unreachable. The client is the first untrusted address reached from the right of the forwarded header. Periodic scans retain a bounded suffix of complete address tokens; padding to the left of a retained client does not suppress its count. A missing or unreadable right end, or a retained suffix containing only trusted proxies, names no client and is not counted. The resolver refuses a header over 4 KiB or a walk that must read more than 32 hops, its client included; hops left of the client never count. An address in `web_server.trusted_proxies` or `challenge.trusted_proxies` is never read as the client, including when its header is not trusted because it belongs to this host or the host's addresses cannot be read; an address of this host is never trusted as a proxy. An HTTP, cPanel or IP reputation finding whose address is a known CDN or website-firewall edge, from the Cloudflare, QUIC.cloud and Sucuri ranges CSM ships (a replacement `http_proxy_ranges.yaml` does not change them) or, when the ASN database names it, a network in `thresholds.http_asn_crawl_reverse_proxy_asns`, is refused as `proxy_peer`, whether or not `cloudflare.enabled` is set. This edge refusal does not apply to SSH, FTP or mail session peers. When Apache (`RemoteIPHeader`, `RemoteIPProxyProtocol On`, a loaded or configured mod_cloudflare including `DenyAllButCloudFlare`, or mod_rpaf with `RPAF_Enable On` or `RPAFenable On`), nginx (`set_real_ip_from`) or LiteSpeed (Use Client IP in Header, in its own configuration or, on cPanel, the Apache configuration it loads) replaces the logged client address, or CSM cannot read those files completely, new HTTP findings are refused as `rewritten_log` and access-log lines are not IP reputation sightings; cPanel access lines still are, even when the same address also appears in a rewritten web log. An Apache, nginx or LiteSpeed access log format that writes request data into the first client token counts the same way. Leading whitespace and extra spaces after cPanel's `splitlogs` virtual-host field cannot hide that token. A leading quote, brace or other non-address character guards normally escaped output. Brackets cannot guard a request value because scheduled scans accept bracketed IPv6 peers, including peers with ports. Apache format nicknames ignore case, including the `TransferLog` default. A definition in another virtual host or an unrelated conditional section cannot hide a log's inline or common-format fallback. With `HostnameLookups On` in any scope, `%h` counts as a request value, because it then logs the client's unverified reverse DNS name. Inside a mod_macro `<Macro>`, a parameter in a log format, format name, piped log target, module name or directive name leaves the state unknown, including a parameter that spells `ServerName`. Quoted macro names and parameters retain their boundaries. A parameter later in a log file path or in a server name is harmless. A parameter or `${...}` variable that starts a log target leaves the state unknown, except Debian's `${APACHE_LOG_DIR}/`. That exception does not apply when `Define` or `UnDefine` can change the variable, including inside a macro. The built-in `CLF` nickname is also checked after piped logging removes its leading field. An `ErrorLogFormat` request value before an unconditional message in any output record also counts. A message that shares its field with another placeholder cannot guard later request values because that field may disappear. Unresolved Apache configuration variables in log formats, format names and server names are unknown, and so are those that could make or hide a piped log target. Unsupported format handlers, blank Apache server names and custom time formats that can write a line break are unknown, and so are unproven time formats or process, port and duration arguments in or before the field CSM reads. Empty logging conditions, including whitespace-only expressions, are unknown; a nonempty `expr=` condition does not change how its format is read. LiteSpeed formats with unsupported escapes, modifiers, handlers or ambiguous brace arguments are unknown, in both native XML and cPanel Apache configuration. A valid format no `CustomLog`, `GlobalLog`, `TransferLog` or nginx `access_log` uses does not count. nginx checks HTTP and stream format namespaces separately. A log selects the first previously declared format with the same name, ignoring ASCII case. Later case variants do not count as used formats. Unresolved names and malformed log declarations leave the state unknown. Entries inside maps are values, including entries read from included files. With `escape=none`, any request variable can introduce another log record, even after the normal client field or a quote. Binary address variables have unknown output framing. Empty server-name, hostname and port fields cannot hide a following request value. User-defined variables do not inherit trust from a built-in-looking name. nginx original-peer variable names and stream server names remain unproven because their availability depends on the installed modules and version; captures or scripts can supply request values under those names. This conservative check also applies when those variables come from nginx itself. Stream byte counts, session duration and transport protocol remain server values in the stream namespace. These access logs carry no original-peer field CSM reads; the separate web peer log supplies the connecting peer. CSM reads the files when admission starts, at the start of every reload attempt and web UI settings save, and every 10 minutes. Settings saves refresh this state before applying changes, including saves that fail or require a restart. `web_server.config_dir` selects the Apache or nginx root, including the Apache tree used by cPanel LiteSpeed; LiteSpeed XML remains at its standard location. The main file is `apache2.conf` on Debian Apache, `conf/httpd.conf` on RHEL or cPanel, and `nginx.conf` on nginx; a cPanel root ending in `conf` already names that directory. An absent selected Apache main file is unknown, even if a default tree exists elsewhere. A disabled or merely loaded mod_rpaf does not count as a rewrite. Malformed legacy-module arguments leave the state unknown. Cloudflare trusted-proxy hostnames or variables also leave it unknown when CSM cannot establish another active rewrite, because only Apache can resolve those values. Apache section suffixes are ignored only where Apache accepts them. Malformed closing tags and comments on closing tags for read-time conditions such as `IfModule` leave the state unknown; a rewrite directive found beside a parsing gap still counts as active. Files on disk can differ from what the web server loaded until it reloads, a setting in any virtual host applies to the whole host, and responses already queued are not checked again. SMTP password sprays read from Postfix mail logs can now supply forecast evidence. ModSecurity observations expire with the denial's recent-log window. The startup Exim history scan names the newest counted send of the account it reports, using Exim's full timestamp and zone, as the realtime mail log reader names that line. An invalid zone supplies no observation. At its event cap, the realtime cloud relay window keeps the current send's address. An IP reputation finding supplies a forecast only with a local sighting: a record its log's parser read the address from, dated by the server within the last 24 hours. An HTTP or cPanel sighting never uses an address listed in `web_server.trusted_proxies` or `challenge.trusted_proxies`. Admission still applies its normal evidence freshness check. The existing `auto_response.dry_run` setting decides whether admission forecasts these blocks or applies them.
+With the firewall on and outside observe mode, CSM forecasts each automatic block: would it fit the hourly ceiling and the temporary block set, given the blocks and forecasts before it? Status, `csm doctor` and the findings history show the forecast, with at most one summary a minute. `csm status --json` and `/api/v1/status` report how many forecast examples are stored. Whether each forecast block would have fitted is shown separately, in the forecast section of the status output.
 
-A reader that starts inside an unfinished line still delivers its remainder to existing checks, but that fragment cannot supply admission evidence. Complete records that follow it keep their shared references.
+A forecast is not a block. [Dry-run forecasts](#dry-run-forecasts) explains how the forecast models capacity.
 
-Admission also binds each response target to its evidence. Only the mail subnet and ASN crawl entries may widen an attributed address to a containing prefix. Direct queue requests, retained candidates and reservations repeat this check, so previously queued responses cannot bypass it.
-
-This setting is not a universal simulation mode. It gates automatic firewall and related network enforcement paths plus web-exposed-file virtual patches. File quarantine, cleanup, permission changes, and process termination are controlled by their individual `auto_response` flags. Leave those flags off while evaluating block policy.
-
-IP auto-blocking still requires `firewall.enabled: true`. The firewall engine owns live nftables mutations and the dry-run gate; with the firewall disabled there is no engine to call, so `csm validate` warns on `auto_response.enabled: true` plus `block_ips: true`.
-
-Verify dry-run state explicitly:
+### Checking the state
 
 ```bash
 csm status --json | jq '.severities, .blocklist_size'
 csm firewall status   # "Recently Blocked" entries with timestamps after the restart confirm live mode
 ```
 
-To go live: set `dry_run: false`, then run `systemctl reload csm`. The field is hot-reload-safe, and a successful reload validates the config and re-records its hash. For a planned restart instead, run `csm rehash` once before restarting.
+### Going live
 
-### Verdict callback (advisory)
+Set `dry_run: false`, then run `systemctl reload csm`. The key can be reloaded without a restart, and a successful reload validates the config and records its new hash. If you plan a restart instead, run `csm rehash` once before restarting.
 
-When `verdict_callback.enabled: true`, every auto-block call POSTs a
-signed JSON request to the panel before mutating nftables. CSM refuses
-to start without `hmac_secret` or a non-empty `hmac_secret_env` value
-unless `allow_unsigned: true` is set for a staged unsigned rollout.
-Without that opt-in, an unsigned `allow` response is rejected and the
-default block continues.
-When a secret is configured, CSM also requires the panel to sign the
-response body unless `require_response_signature: false` is set for a
-staged rollout. With that opt-out, CSM still checks any echoed `nonce`
-or `timestamp` when a secret is configured; a legacy response that
-omits both keeps working. The panel can return `{"verdict": "block"}`
-(apply), `{"verdict": "allow"}` (audit-only; CSM logs the decision and
-skips nftables), or attach metadata (`tenant_id`, `note`). The callback
-runs after local validation and infra-IP safety checks, and before the
-dry-run gate, so panels can observe dry-run decisions too. In dry run
-with the firewall on outside observe mode, admission also asks for each
-locally eligible block attempt, with `CSM auto-block: <check>` as the reason, up to four
-requests at a time, and uses the configured
-`allow_unsigned` and `require_response_signature` settings. A full set still
-allows a request when a lower-priority automatic block could be replaced or
-an equal-priority forecast block rotated out.
-Pending requests take no slots or replacement claims; admission checks
-capacity again after each answer, so competing requests cannot reuse one
-victim. An `allow` ends that forecast without a block. Until admission decides blocks, a panel can receive an additional request
-for the same automatic block. Local refusals, existing effects, capacity
-waits, coalescing and retries mean request counts need not be two per block.
-The v1 request has no dry-run field. Forecast examples and summaries are
-bounded, unsupported promotions are not simulated, and reload discards old
-policy answers.
+When CSM goes live it purges the stored dry-run examples in the background. Status reports stale examples until the purge is complete. A daemon that starts live with examples left over purges them the same way. While dry run stays on, examples older than a week are dropped.
 
-CSM fails open on hook errors (timeout, non-2xx, malformed body): local admission continues, still subject to dry-run and capacity checks. An error proves neither a block nor a forecast example. The failure is written to the daemon log. Full request/response schema: [Verdict callback contract](verdict-callback-contract.md).
+## IP blocks
 
-### Infrastructure IP DNS guard
+CSM has two ways to apply an automatic block. Admission is the current one: it decides whether a block goes ahead by checking where the address came from, the hourly ceiling and the free room in the temporary block set. In dry run it records a forecast and applies nothing. An older blocking path still handles permanent blocks, mail spray blocks and a few fallbacks. [How admission decides a block](#how-admission-decides-a-block) has the full rules.
 
-Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). The finding auto-clears when resolution recovers.
+### Findings that always trigger IP block
 
-## Findings that always trigger IP block
-
-When `auto_response.block_ips: true` and the firewall is enabled, qualifying findings in this list block the source IP. Per-row severity and challenge exceptions apply. The dry-run gate still applies if `dry_run: true`. Suppression rules do not stop these blocks; allowlist an address to exempt it.
-
-Suppression rules also leave incident auto-blocking, credential-spray containment and central threat responses active. With database response enabled, suppression stops database cleanup and session revocation; the notice listing the session addresses is still sent. Suppress the action's own check type to mute its notification; this does not disable enforcement.
-
-Incidents and central threat responses receive new findings, including suppressed findings and checks that do not notify operators. Duplicate observations within a batch count once. Cross-account correlation uses only unsuppressed sources, and its derived alerts can be muted with their own suppression rules without removing them from enforcement.
+With `auto_response.block_ips: true` and the firewall on, the findings below block their source address. Some rows block only at Critical severity or send the address to the challenge first; the row says so. In dry run the block is forecast, not applied.
 
 | Finding | Description |
 |---------|-------------|
 | `wp_login_bruteforce` | WordPress login flood via wp-login.php |
 | `xmlrpc_abuse` | XML-RPC endpoint flood |
-| `email_php_form_relay` | Client that made hosted sites mail many outside addresses through their forms (responses require `email_protection.php_relay.ip_recipient_mode: enforce`, including retries; routed to the PoW challenge first when challenge is enabled) |
-| `http_request_flood` | Per-IP HTTP request volume exceeds threshold (disabled by default; enable by setting `thresholds.http_flood_threshold > 0`) |
-| `http_scanner_profile` | Random-URL probe pattern from one source IP (disabled by default; enable by setting `thresholds.http_scanner_min_requests > 0`; routed to the PoW challenge first unless `auto_response.http_scanner_action: "block"`) |
-| `http_claimed_bot_unverified` | High-volume claimed crawler traffic while reverse-DNS verification is pending (routed to the PoW challenge first when challenge is enabled) |
-| `http_ua_spoof` | IP exceeding the UA anomaly threshold, including confirmed search-engine bot UA spoofing (periodic; see configuration.md for opt-in flags) |
+| `email_php_form_relay` | A client that made hosted sites mail many outside addresses through their forms. Responses, retries included, need `email_protection.php_relay.ip_recipient_mode: enforce`. Goes to the PoW challenge first when challenge is enabled. |
+| `http_request_flood` | Per-IP HTTP request volume over the threshold. Off by default; set `thresholds.http_flood_threshold` above 0 to enable. |
+| `http_scanner_profile` | Random-URL probe pattern from one source IP. Off by default; set `thresholds.http_scanner_min_requests` above 0 to enable. Goes to the PoW challenge first unless `auto_response.http_scanner_action: "block"`. |
+| `http_claimed_bot_unverified` | High-volume traffic claiming to be a crawler while reverse-DNS verification is pending. Goes to the PoW challenge first when challenge is enabled. |
+| `http_ua_spoof` | IP over the UA anomaly threshold, including confirmed search-engine bot UA spoofing. Periodic; see [Configuration](configuration.md) for the opt-in flags. |
 | `ftp_bruteforce` | FTP authentication flood |
-| `smtp_bruteforce` | SMTP authentication flood. An address that fails only on mailboxes it has login standing on gets an advisory instead |
+| `smtp_bruteforce` | SMTP authentication flood. An address that fails only on mailboxes it has login standing on gets an advisory instead. |
 | `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
-| `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity. An address that fails only on mailboxes it has login standing on gets an advisory instead |
-| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after failures on two or more mailboxes including another one, or on a missing one. Only Critical findings block; High advisories, including a login to a mailbox the address had login standing on before the failures, are visibility only |
+| `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity. An address that fails only on mailboxes it has login standing on gets an advisory instead. |
+| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox, or a mail login after the address failed on two or more mailboxes including a different one, or on a mailbox that does not exist. Only Critical findings block. High advisories are visibility only, including a login to a mailbox the address had login standing on before the failures. |
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
-| `ip_reputation` | IP flagged by AbuseIPDB / rspamd / upstream threat-intel |
+| `ip_reputation` | IP flagged by AbuseIPDB, rspamd or upstream threat intel |
 | `modsec_block_escalation` | ModSecurity deny escalation |
 | `modsec_csm_block_escalation` | CSM-internal ModSecurity deny escalation |
 | `waf_attack_blocked` | WAF high-volume attacker |
 | `email_compromised_account` | Email account compromise indicator |
 | `email_cloud_relay_abuse` | Cloud relay abuse |
 
-Successful cPanel, FTP, webmail and PAM login audit events and authenticated
-File Manager writes do not trigger direct blocks or challenges. Incidents
-containing only these audit events cannot request a block, even when they
-retain a higher severity from an older version. Independent attack evidence
-can still justify a response.
+### What does not block
 
-`block_cpanel_logins` gates cPanel multi-IP logins, API authentication failures,
-webmail brute force and realtime FTP authentication failures. This includes
-webmail challenge routing, since an unanswered challenge can become a block.
+- Successful cPanel, FTP, webmail and PAM login audit events and authenticated File Manager writes never block or challenge directly. An incident made only of these events cannot request a block, even if it kept a higher severity from an older version. Independent attack evidence can still justify a response.
+- `block_cpanel_logins` gates cPanel multi-IP logins, API authentication failures, webmail brute force and realtime FTP authentication failures. It also gates webmail challenge routing, because an unanswered challenge can become a block.
+- A distributed HTTP flood rollup does not block. It describes one targeted vhost, not one source IP. The per-IP findings behind it still block normally.
+- `http_asn_crawl` is handled separately, because one finding can carry several CIDRs. Only Critical findings with confirmed PHP worker saturation can tempban those CIDRs, using `auto_response.http_asn_crawl_tempban`. Dry run and the subnet safety guards still apply.
+- `mail_bruteforce_suspected` and the High forms of `mail_account_compromised` are visibility only. They feed no direct, incident or spray blocking. A separate blockable finding can still block the same source. `mail_bruteforce_suspected` also reports SMTP, IMAP and POP password sprays while spray detection runs in observe mode.
+- Central intelligence and incident blocking act on an address only when a finding names it as an attacker. The remote end of an outbound connection, a customer login, and advisories such as ModSecurity warnings or visitors of a mail-sending script do not count, even when another finding raised the incident's severity. A listed command-and-control server is blocked only by the C2 connection check, when `block_ips` is on.
 
-Queued block candidates are checked against the current check policy and
-login-blocking setting before retrying. Legacy queue entries without a check
-identity are discarded on upgrade; new eligible findings can queue them again.
-Existing firewall blocks and permanent evidence are not removed by this change.
+Queued block candidates are checked against the current check policy and the login-blocking setting before each retry. On upgrade, old queue entries that name no check are dropped; a new eligible finding can queue the block again. Existing firewall blocks and permanent evidence stay.
 
-Distributed HTTP flood rollups do not trigger a direct IP block because
-they describe one targeted vhost, not one source IP. The per-IP findings
-that feed the rollup still drive normal block decisions.
+### Suppression rules and blocking
 
-`http_asn_crawl` is also handled separately because one finding can carry several offending CIDRs rather than one source IP. Only Critical findings with confirmed PHP worker saturation can tempban those CIDRs, using `auto_response.http_asn_crawl_tempban`. Dry-run and subnet safety guards still apply.
+A suppression rule hides an alert. It does not stop enforcement:
 
-`mail_bruteforce_suspected` and the High forms of `mail_account_compromised`
-are visibility only. They do not feed direct, incident, or spray
-auto-blocking. A separate blockable finding can still block the same source.
-`mail_bruteforce_suspected` also reports SMTP, IMAP and POP password sprays
-while spray detection runs in observe mode.
+- The findings in the table above still block. To exempt an address, add it to the allowlist.
+- Incident blocking, credential-spray containment and central threat responses stay active. They receive suppressed findings and findings from checks that send no notification. Duplicate observations in one batch count once.
+- With database response enabled, a suppression does stop database cleanup and session revocation. The notice listing the session addresses is still sent.
+- To mute an action's notification, suppress the action's own check type. The action still runs.
+- Cross-account correlation uses only unsuppressed sources. Its derived alerts can be muted with their own suppression rules and stay in enforcement.
 
-In enforce mode a spray block lasts `thresholds.mail_spray_block_expiry` (30
-days by default) instead of `block_expiry`; an address already blocked keeps
-its current expiry. A block that mixes a spray finding with another finding
-for the address, such as a WAF or per-IP brute force finding, is a normal
-block: it lasts `block_expiry` and uses the scan budget. When the temporary
-block limit is full, the spray block that ends soonest is evicted first, and
-an operator's temporary block is never evicted for an automatic one. A
-blocked address is remembered until one spray memory window after its block
-ends. One failed login from it in that time, on any mailbox, blocks it again
-for the spray length. That includes a failure logged just before an
-authentication outage is detected. On a shared IPv6 /64, an address blocked
-on the /64's shared evidence keeps its own re-block until it is released too.
-An operator unblock, or an undo that removes a block, clears the address's
-spray history: its re-block and the failure history of the address, or for
-IPv6 of its /64. An allow or temporary allow clears it even when the address
-holds no block, and so does the allow CSM adds for an address that a
-`dyndns_hosts` or `infra_ips` hostname resolves to. Its SMTP, IMAP and POP
-failure counts restart across all address spellings. Login trust and
-cracked-password records stay. Pending SMTP rejections are discarded so
-delayed replies cannot restore old spray evidence. A self-service unban
-through the panel API with an unban-scope token lifts the block and its
-re-block but keeps the failure history and counts, so renewed spraying is
-blocked again on the usual rules. An admin token or browser session on that
-route performs a full operator release. Failed firewall releases return an
-error without clearing threat state. A flush clears the spray history,
-per-address failure counts and pending rejections of every address.
-Authentication outage guards remain active after a release or flush.
+### What every block records
 
-Every auto-response block source - scan findings, challenge-timeout
-escalations, central-intel corroborated blocks, and incident spray
-containment - records the same evidence: a temporary threat-DB row, a
-blocked-IPs tracker entry, an `auto_block` finding visible to the block
-digest and alerting, and a step toward permanent-block escalation. A block
-the admission ledger applied is never promoted to a permanent block while it
-stands; its offense still counts toward a later block of the address.
-All of them block only while `auto_response.enabled` and `block_ips` are
-on; with either off, an expired challenge simply leaves the challenge list.
-Reloading these switches takes effect before the next block attempt, including
-later entries in a challenge-timeout batch. Incident block refusals caused by
-these switches keep the incident visible without a failed-block warning.
-Admission applies `auto_response.max_blocks_per_hour` to scan, challenge,
-central, and incident IP blocks. On the legacy path that budget applies to
-scan-driven blocks only.
+Blocks come from four sources: scan findings, challenges that timed out, central intelligence that local evidence corroborated, and incident spray containment. Each applied block records the same evidence:
 
-Challenge notices keep the address sent to the challenge, so daily summaries
-count it among their source addresses. Blocks, challenges and the Web UI Block
-button use the structured address supplied by the check, never an address
-quoted in its message.
+- a temporary row in the threat database
+- an entry in the blocked-IPs tracker
+- an `auto_block` finding, visible to the block digest and to alerts
+- one step toward a permanent block
 
-Mail login spray blocks use a separate hourly budget of the same size. They
-reserve credit before the firewall attempt. An uncertain result keeps that
-credit; a confirmed non-block releases it. Retries wait when the spray budget
-is full, while other scan blocks keep their own budget. Waiting spray retries
-hold at most half of the retry queue and yield space to other retries when
-the queue fills. Deferred retries follow the same limits. One warning an
-hour names the budgets that are full when it is sent, and says when retries
-were dropped because the spray share of the queue was full. A failed spray
-reservation defers spray blocks and reports a warning, without stopping other
-scan blocks.
+A block that admission applied is never promoted to a permanent block while it stands. Its offense still counts toward a later block of the address.
 
-The same setting also sets the hourly ceiling of the admission ledger, which
-covers every IP block it executes, including challenge, central, and incident
-blocks. For the ledger an omitted or zero value selects 1000 and a value above 20000 is
-clamped to 20000; the per-IP limit above keeps reading omitted or zero as 50.
-An explicit value sets both. Packaged configs used to set 50, which keeps the
-ceiling at 50 until the key is removed; `csm doctor` warns about a configured
-ceiling below 1000. Busy shared hosts reach a few hundred automatic blocks in
-their busiest hour, so a ceiling of 200 can hold blocks back for over an hour.
-On upgrade, an existing ledger using the former default of 2000 adopts 1000
-when the key is omitted or zero. An explicit value keeps its meaning.
-Startup and reload apply the new ceiling without clearing recent spend or
-granting fresh credit. If retained spend exceeds the new allowance, admission
-waits for that spend to age out before admitting more blocks.
-At its first start the ledger imports the current hour's block count, so a
-restart cannot grant a fresh hour; a block count that cannot be read starts
-it without saved credit. Status and `csm doctor` show the ceiling and its
-source. A changed ceiling applies on reload, and a web UI settings save
-applies at the owner's next clock tick; a failed change is retried on later
-ticks before admission resumes, with elapsed time credited at the saved
-ceiling before the new one applies. Every automatic response the existing
-blocking paths select is also handed to the ledger. With
-`auto_response.dry_run` false, the firewall on and outside observe mode,
-the ledger applies automatic IP blocks itself within this ceiling and the
-free slots of the temporary block set, and the existing paths leave those
-blocks to it. A block the ledger refuses is final too: the existing paths do
-not apply it either, including a queued retry of the same finding.
-Independent evidence for the address keeps its own response. Where the web
-server rewrites client addresses, available web peer observations verify
-each one: an address that connected for itself is blocked as on a direct
-host, a client behind a trusted proxy or a known CDN edge is only challenged,
-and an address another peer chose is refused as `forged_client`. nginx needs
-no peer log when `real_ip_header` is set at `http` scope and every server
-and location uses that same header. For `CF-Connecting-IP`, every
-`set_real_ip_from` must lie in Cloudflare's ranges. For `proxy_protocol`,
-every source must lie in `web_server.trusted_proxies`: code customers run on
-a shared edge can open connections from the edge's own addresses and write
-any PROXY header. No source may reach a loopback, unspecified,
-or host address, including through IPv4-mapped IPv6. Its web findings are
-then blocked as on a direct host. Other edges and proxies may pass on a
-client's own `CF-Connecting-IP`, so that header counts only from Cloudflare.
-Verification requires a fully readable configuration tree, including all
-includes, and no request data in the client field of any used log format.
-Unresolved hostnames or variables, the default `X-Real-IP` header, and
-conflicting per-server or per-location headers leave nginx unverified.
-Admission uses the current `web_server.trusted_proxies` and freshly reads
-host addresses for each verification; a failed address lookup refuses
-verification. Without a loaded CSM configuration, only Cloudflare's header
-and ranges can qualify.
-Verification uses the request time in the access or ModSecurity log,
-including delayed reads and scheduled scans. A request without a valid log
-time stays unverified. A direct line must fall between the request's second
-and the end of its forward-skew window; separated direct visits cannot fill
-an empty window. Before an address counts as connected for itself, CSM
-reads the peer log again about two seconds after it read the finding, so a
-peer line the web server flushed after its access line still decides.
-Reputation sightings use the same check, findings read together share one
-wait, and a finding without a valid read time stays unverified. A refusal
-that is already final never sits out that wait. Once CSM has trusted a
-peer-log reader, losing that trust keeps unverified addresses refused until
-the daemon restarts; it cannot restore legacy blocking.
-Two refusals still leave the block to the existing
-paths: a client address Apache rewrote from a proxy header while CSM has
-never trusted its current web peer-log reader, or nginx read from a proxy
-header in a configuration CSM reads whole without PROXY protocol, and a
-ledger that could not take new
-work at all. LiteSpeed also applies those headers to
-requests from the host itself, so any local user can choose the address it
-logs: on LiteSpeed that refusal is final as well, and so is one whose
-log format writes request data where CSM reads the client, even when the same
-configuration also enables proxy-header rewriting. `csm doctor` distinguishes
-these final refusals from the Apache and nginx header-only exception.
-A detected nginx `proxy_protocol` source also makes a rewrite refusal final,
-including queued retries and permanent blocks. Only sources covered by
-`web_server.trusted_proxies` can pass verification; shipped CDN ranges alone
-never authorize a PROXY protocol address.
-A challenge whose evidence the ledger refused keeps that refusal, so its
-timeout follows the same rule.
-Permanent blocks, mail spray blocks and derived blocks longer than
-`auto_response.block_expiry` stay on the existing paths, even when their
-evidence was refused, except that forged-client refusals and those final
-rewrite refusals hold for every block lifetime, including permanent incident
-escalation. Longer
-derived blocks still never block a known CDN edge or a client behind a trusted
-proxy. In dry run the ledger forecasts them. With the firewall
-disabled or in observe mode it previews them; neither applies them. While a configured
-firewall engine is starting or unavailable, queued live blocks wait and
-new responses remain on the legacy path. Work the set has
-no room for waits as `set_full` until a slot frees: the slots operator,
-unknown and subnet blocks leave are divided as in the forecast, legacy
-automatic blocks occupy general slots, and an unlimited set counts as 10000
-entries. A Critical local attack, or one with direct compromise or
-independently corroborated evidence, may instead take the general slot of
-a legacy automatic block that recorded its origin. With the firewall on, queued responses disabled by the current
-policy end as `disabled` without a withheld alert, including when their evidence expires before a
-restart or configuration reload. Turning a response back on requires a new
-eligible observation; ended work is not replayed. Status, `csm doctor` and findings
-history show the results. Forecast endings have no new per-attempt row in
-the [action log](action-log.md).
+All four sources block only while `auto_response.enabled` and `block_ips` are on. With either off, an expired challenge just leaves the challenge list. A reload of these switches applies before the next block attempt, including later entries of a challenge-timeout batch. An incident whose block these switches refused stays visible, without a failed-block warning.
 
-The resulting `auto_block` findings are output evidence, not new local
-corroboration for central intelligence or incident correlation. They are
-deduplicated before the digest, attack database, history, and alert sinks
-receive them. Only a block that applied marks its address as auto-blocked in
-the attack database; a dry-run "would be blocked" warning does not.
+The `auto_block` findings are a result, not new evidence: central intelligence and incident correlation do not count them as local corroboration. They are deduplicated before the digest, attack database, history and alerts receive them. Only an applied block marks its address as auto-blocked in the attack database. A dry-run "would be blocked" warning does not.
 
-Central intelligence and incident auto-blocking act on an address only when
-a finding names it as an attacker. The remote end of an outbound connection,
-a customer login, and advisories such as ModSecurity warnings or visitors of
-a mail-sending script do not count, even when another finding raised the
-incident's severity. That includes a listed command-and-control server: only
-the C2 connection check blocks it, when `auto_response.block_ips` is on.
+Blocks, challenges and the Web UI Block button use the structured address the check supplied, never an address quoted in the finding's message. A challenge notice keeps the address sent to the challenge, so daily summaries count it among their source addresses.
+
+### Hourly limit
+
+`auto_response.max_blocks_per_hour` caps automatic IP blocks. One key sets two limits:
+
+| Limit | Applies to | Key omitted or 0 |
+|-------|-----------|------------------|
+| Admission ceiling | Every IP block admission applies: scan, challenge, central and incident blocks | 1000 |
+| Older scan budget | Scan-driven blocks on the older blocking path | 50 |
+
+An explicit value sets both. The admission ceiling is clamped to 20000.
+
+- Packaged configs used to set 50. That value keeps the ceiling at 50 until you remove the key. `csm doctor` warns about a configured ceiling below 1000.
+- Busy shared hosts reach a few hundred automatic blocks in their busiest hour. A ceiling of 200 can hold blocks back for over an hour.
+- On upgrade, a host that used the former default of 2000 adopts 1000 when the key is omitted or zero. An explicit value keeps its meaning.
+- Status and `csm doctor` show the ceiling and where it comes from.
+
+Changing the ceiling:
+
+- A new value applies on reload. A Web UI settings save applies moments later. If applying it fails, admission pauses and retries until it succeeds.
+- A new ceiling never clears recent spend or grants fresh credit. If the blocks of the last hour exceed the new ceiling, admission waits for them to age out.
+- A restart does not grant a fresh hour either. At its first start admission imports the current hour's block count. If that count cannot be read, it starts without saved credit.
+
+### PAM blocking
+
+CSM blocks an address at once when either is true:
+
+- it reaches `thresholds.pam_bruteforce_threshold` failed SSH logins within `pam_bruteforce_window_min` minutes
+- it fails SSH logins on `cred_stuffing_distinct_accounts` different accounts
+
+Only a successful SSH login clears those failures. Failures from other PAM services never block.
+
+### Subnet blocking
+
+With `netblock: true`, CSM blocks a whole IPv4 /24 or IPv6 /64 when `netblock_threshold` addresses of that range (default 3) were blocked within `netblock_window` (default 7 days).
+
+Addresses that count:
+
+- Every currently blocked address, whatever its age, including operator and permanent blocks.
+- A block that has ended, if its latest observed start is inside the window and it did not already count toward an earlier subnet block.
+
+Addresses that do not count:
+
+- An address you whitelisted or cleared, including by bulk whitelist. CSM forgets it.
+- IPv4 addresses blocked for a mail login spray. IPv6 spray blocks do count toward their /64, because one /64 is treated as one source.
+- A saved spray block that is missing from the kernel.
+- An address on `c2_blocklist`, whatever finding asked for the block. A listed command-and-control server is where local processes connect, not a source of attacks. Other blocked addresses in its subnet still count. Such an address never counts toward a permanent block either.
+
+An operator block that goes away and returns starts fresh history once CSM has seen it gone.
+
+CSM reads the spray classification from the firewall state, so a missing or stale scan tracker cannot turn IPv4 spray blocks into range evidence. If block metadata cannot be read, subnet escalation waits while single-address blocks continue.
+
+Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed or port-specific allowed addresses.
+
+The subnet history is pruned hourly. If its file cannot be read, CSM leaves it untouched and counts only the addresses blocked right now until the file is repaired or removed. Status and `csm doctor` report the failure. Clear, whitelist and flush actions report a failed history cleanup so you can retry.
+
+### Mail login spray blocks
+
+In enforce mode a spray block lasts `thresholds.mail_spray_block_expiry` (30 days by default), not `block_expiry`. An address already blocked keeps its current expiry.
+
+- A block that combines a spray finding with another finding for the address, such as a WAF or per-IP brute-force finding, is a normal block. It lasts `block_expiry` and uses the scan budget.
+- When the temporary block set is full, the spray block that ends soonest is evicted first. An operator's temporary block is never evicted for an automatic one.
+- CSM remembers a blocked address until one spray memory window after its block ends. One failed login from it in that time, on any mailbox, blocks it again for the spray length. That includes a failure logged just before an authentication outage is detected. An IPv6 address blocked on failures counted across its /64 stays subject to re-blocking until that address itself is released.
+
+Spray blocks have their own hourly budget, the same size as the scan budget:
+
+- CSM reserves credit before the firewall attempt. An uncertain result keeps the credit. A confirmed non-block releases it.
+- When the spray budget is full, spray retries wait. Other scan blocks keep their own budget.
+- Waiting spray retries hold at most half of the retry queue and give way to other retries when the queue fills. Deferred retries follow the same limits.
+- One warning an hour names the budgets that are full at that moment, and says when retries were dropped because the spray share of the queue was full.
+- A failed spray reservation defers spray blocks and reports a warning. Other scan blocks continue.
+
+What clears an address's spray history:
+
+| Action | Effect |
+|--------|--------|
+| Operator unblock, or an undo that removes a block | Clears the re-block and the failure history of the address, or for IPv6 of its /64. SMTP, IMAP and POP failure counts restart across all address spellings. Pending SMTP rejections are discarded, so a delayed reply cannot restore old spray evidence. Login trust and cracked-password records stay. |
+| Allow or temporary allow | The same, even when the address holds no block. This includes the allow CSM adds for an address a `dyndns_hosts` or `infra_ips` hostname resolves to. |
+| Self-service unban through the panel API with an unban-scope token | Lifts the block and its re-block. Keeps the failure history and counts, so renewed spraying is blocked again on the usual rules. |
+| Admin token or browser session on the same API route | Full operator release. |
+| Flush | Clears the spray history, per-address failure counts and pending rejections of every address. |
+
+A failed firewall release returns an error and clears no threat state. Authentication outage guards remain active after a release or flush.
 
 ### Known-customer block alert
 
-When an automatic block applies to an address that logged in successfully as
-a customer in the last 30 days (cPanel, webmail, SMTP, IMAP or POP), CSM
-sends an alert at once: one email, and the generic alert webhook as event
-`customer_block` with the blocks under `csm.customer_blocks` (see the
-[API reference](api.md#summary-and-customer-block-webhooks)). It names the
-address, the block reason and the check that caused it, and the customer's
-login kind, account or mailbox and last login time. An IPv6 customer is named
-by its /64. A subnet block or netblock that covers known customers sends one
-message with their count and the five most recent. Every applied block
-counts: scan blocks, permanent promotions, challenge timeouts, central
-intelligence and incident blocks. A customer whose own login caused the block
-is left out, also when the block comes later than its cause: a mail account
-compromise names that address and account in its own Critical alert. This also applies when earlier address blocks
-escalate to a range block: its count and examples include only the remaining
-customers. Each block names the command that lifts it:
-`csm firewall remove <ip>` for an address,
-`csm firewall remove-subnet <cidr>` for a range. An allow rule
-(`csm firewall allow <ip>`) trusts the address on every port. It does not
-pass a blocked range, but CSM never blocks a range over an allowed address.
+When an automatic block applies to an address that logged in successfully as a customer in the last 30 days (cPanel, webmail, SMTP, IMAP or POP), CSM alerts you at once. It sends one email and the generic alert webhook as event `customer_block`, with the blocks under `csm.customer_blocks`. See the [API reference](api.md#summary-and-customer-block-webhooks).
 
-The alert is the false-positive check of automatic blocking, never an
-exemption. The block stands with its configured length, and its notice still
-goes to the daily summary, which also lists the block with its customers, so
-a failed alert still reaches you. A login with stolen credentials also makes an
-address known, so the alert can show the block of an attacker holding a
-customer's password, which is worth seeing too. Each applied block sends at
-most one message; a later new block of the same address sends another. A
-promotion to a permanent block is named in its block's message when both
-reach CSM together; a promotion that reaches CSM apart from its block sends
-a message of its own. The alert replaces the live watched-country alert for
-the same block, and the block still counts in the watched-country section of
-the daily summary. It does not spend the hourly alert budget, goes out with
-`alerts.block_digest` off and ignores `alerts.block_digest.channel`. A phpanel
-webhook does not receive it. Dry-run and observe-mode verdicts that would have
-blocked a known customer are listed in the
-[daily summary](configuration.md#daily-summary) instead.
+The alert is the false-positive check of automatic blocking. It is never an exemption: the block stands for its configured length.
 
-## Safety Guards
+The alert names:
 
-- Never kills root processes, system daemons, or cPanel services
-- Infrastructure IPs (`infra_ips` and `firewall.infra_ips`) are never blocked or sent to the challenge page
-- A block of an address that recently logged in as a customer is alerted at once and never exempted
-- Failed mail logins confined to mailboxes an address regularly logs in to raise an advisory instead of a block (login standing in [real-time detection](detection-realtime.md#login-standing))
-- Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
-- Quarantined files preserve full metadata for restoration
-- Every regular file is copied from its verified open descriptor into a private quarantine inode before the detected name is removed. Other hard links are reported after removal; a file swapped into the detected path is reported as a refused remediation, with the captured copy kept as evidence and the replacement left untouched
-- Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
-- IP blocks are limited by `auto_response.max_blocks_per_hour`: admission defaults to 1000/hour and legacy scan blocking to 50/hour.
-- CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour); lower-severity findings batched with them still count against it
-- Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary instead of alert email and the generic webhook; an attack whose block failed, is still queued or ran in dry run is alerted immediately, as are a block of a Cloudflare-covered address and the web attacks from it
-- Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
+- the address, the block reason and the check that caused it
+- the customer's login kind, account or mailbox, and last login time
+- the command that lifts the block: `csm firewall remove <ip>` for an address, `csm firewall remove-subnet <cidr>` for a range
 
-## What CSM Detects in Real-Time
+An IPv6 customer is named by its /64. A subnet block or netblock that covers known customers sends one message with their count and the five most recent.
 
-Beyond standard malware patterns, CSM detects advanced evasion techniques:
+An allow rule (`csm firewall allow <ip>`) trusts the address on every port. It does not pass a blocked range, but CSM never blocks a range over an allowed address.
 
-- **Fragmented function names**: attackers split `base64_decode` across variables (`$a="base"; $b="64_decode"`) to evade simple string matching
-- **Appended payloads**: malicious code added to the end of large legitimate files, beyond typical scan windows. Realtime PHP checks scan the first and last 32KB, and periodic PHP content analysis scans a larger head window plus the tail.
-- **Non-PHP backdoors**: Perl, Python, Bash CGI scripts in web directories (detects toolkits like LEVIATHAN)
-- **SEO spam injection**: gambling/togel dofollow link injection into theme files
-- **WordPress brute force**: real-time access log monitoring for wp-login.php and xmlrpc.php floods (blocks within seconds, not the 10-minute periodic scan)
-- **Admin-panel brute force**: same access-log path, tracks POSTs to `/phpmyadmin/index.php`, `/pma/index.php`, `/phpMyAdmin/index.php`, and Joomla `/administrator/index.php`. Emits `admin_panel_bruteforce` and auto-blocks the IP. Path matcher is intentionally tight to avoid false positives on shared hosting; Drupal and Tomcat Manager use different attack shapes and need separate detectors.
-- **SMTP brute force and probes**: tails `/var/log/exim_mainlog` on cPanel and non-cPanel Exim hosts where the file exists. Emits `smtp_probe_abuse` and `smtp_bruteforce` (per-IP, auto-blocks), `smtp_subnet_spray` (per-/24, auto-blocks the whole subnet), and `smtp_account_spray` (per-mailbox, visibility only). Spray detection adds `mail_bruteforce_suspected` in observe mode and `mail_account_compromised` for a login after failures on other mailboxes.
-- **Mail brute force**: tails `/var/log/maillog` for direct IMAP, POP3, and ManageSieve auth failures. Composes with the existing geo-login monitor so `email_suspicious_geo` keeps working. Emits `mail_bruteforce`, `mail_bruteforce_suspected`, `mail_subnet_spray`, `mail_account_spray`, `mail_account_compromised`, and `mail_auth_backend_degraded`. Established good sources with a confined stale-password pattern emit the suspected advisory without auto-blocking. A compromise finding from an IP established on at least two other mailboxes stays visible as High without auto-blocking. Wider spraying and compromise without that standing still block. When the auth backend is degraded, `mail_bruteforce` and `mail_subnet_spray` auto-blocking pause until backend errors age out.
-- **Mail auth backend probe (cPanel)**: independently of the log signals above, CSM opens the `cpdoveauthd` socket on a short interval. dovecot keeps answering its IMAP/POP3 ports during a cpdoveauthd outage, so cPanel's own service checks do not notice, yet every login fails regardless of password. When the probe finds the socket unreachable CSM raises `mail_auth_backend_degraded` and pauses both mail and SMTP brute-force auto-block. With `auto_response.mail_auth_recovery.restart_enabled`, CSM restarts the mail service once the backend has been continuously down past `down_grace` (default 10m, rate-limited), so a brief blip during maintenance never triggers a needless restart. Changes to mail auth recovery settings require a daemon restart.
+Which blocks alert:
+
+- Every applied block counts: scan blocks, permanent promotions, challenge timeouts, central intelligence and incident blocks.
+- A customer whose own login caused the block is left out, also when the block comes later than its cause. A mail account compromise names that address and account in its own Critical alert. When earlier address blocks escalate to a range block, its count and examples include only the remaining customers.
+- A login with stolen credentials also makes an address known. The alert can therefore show the block of an attacker who holds a customer's password, which is worth seeing too.
+
+How it is delivered:
+
+- Each applied block sends at most one message. A later new block of the same address sends another.
+- A promotion to a permanent block is named in its block's message when both reach CSM together. A promotion that arrives apart from its block sends a message of its own.
+- The block's notice still goes to the daily summary, which lists the block with its customers. A failed alert still reaches you that way.
+- The alert replaces the live watched-country alert for the same block. The block still counts in the watched-country section of the daily summary.
+- It does not spend the hourly alert budget, goes out with `alerts.block_digest` off and ignores `alerts.block_digest.channel`.
+- A phpanel webhook does not receive it.
+- Dry-run and observe-mode verdicts that would have blocked a known customer are listed in the [daily summary](configuration.md#daily-summary) instead.
+
+### Verdict callback (advisory)
+
+With `verdict_callback.enabled: true`, CSM POSTs a signed JSON request to the panel before each automatic block. The panel answers:
+
+| Reply | Effect |
+|-------|--------|
+| `{"verdict": "block"}` | CSM applies the block. |
+| `{"verdict": "allow"}` | Audit only. CSM logs the decision and leaves nftables alone. |
+
+Either reply can carry metadata (`tenant_id`, `note`). The full schema is in the [Verdict callback contract](verdict-callback-contract.md).
+
+Signing:
+
+- CSM refuses to start without `hmac_secret` or a non-empty `hmac_secret_env` value, unless `allow_unsigned: true` is set for a staged unsigned rollout. Without that opt-in, an unsigned `allow` reply is rejected and the block continues.
+- With a secret configured, the panel must sign the reply body, unless `require_response_signature: false` is set for a staged rollout. With that opt-out CSM still checks any echoed `nonce` or `timestamp`. A legacy reply that omits both keeps working.
+
+Errors: CSM fails open. On a timeout, a non-2xx status or a malformed body, local admission continues, still subject to dry run and capacity. An error proves neither a block nor a forecast example. The failure is written to the daemon log.
+
+The callback runs after local validation and the infrastructure-IP checks, and before the dry-run gate, so the panel sees dry-run decisions too. In dry run:
+
+- With the firewall on and outside observe mode, admission asks for each locally eligible block attempt, with `CSM auto-block: <check>` as the reason. It sends up to four requests at a time and uses the configured `allow_unsigned` and `require_response_signature` settings.
+- An `allow` ends that forecast without a block.
+- A full block set still sends a request when a lower-priority automatic block could be replaced or an equal-priority forecast block rotated out. Pending requests hold no slots. Admission checks capacity again after each answer, so competing requests cannot reuse one slot.
+- The v1 request has no dry-run field. Forecast examples and summaries are bounded, and promotions the forecast does not support are not simulated. After a reload CSM asks the panel again and does not reuse earlier answers.
+
+Do not expect exactly two requests per block. Until admission decides blocks, a panel can receive an additional request for the same automatic block. Local refusals, existing effects, capacity waits, coalescing and retries all change the count.
+
+### Infrastructure IP DNS guard
+
+Addresses in top-level `infra_ips` and `firewall.infra_ips` are never blocked automatically. Hostnames in those lists are resolved every 5 minutes.
+
+If a hostname stops resolving, CSM raises an `infra_ips_unresolvable` Warning and keeps the last known addresses protected for the grace period (10 minutes by default). The finding clears by itself when resolution recovers.
+
+## Process termination
+
+CSM evaluates each eligible finding for termination once, whether a scan or alert delivery sees it first. A refused or failed attempt is not retried when the same finding reaches alert delivery. Realtime findings are evaluated too. A new detection, or a finding replayed from storage, gets a fresh evaluation.
+
+### Signaling the right process
+
+CSM never signals a bare PID number. It takes a kernel handle on the process, verifies the owner, executable, start time and referenced file, confirms the process is still alive, and sends the signal through the handle. If the process exits and its PID is reused, the new process is not touched.
+
+Automatic and manual malware termination refuse a process with root credentials, including effective and saved root IDs. The separate opt-in AF_ALG reaction requires the current credentials and executable to match its recorded event.
+
+### Kernel support
+
+Safe signaling needs `pidfd_send_signal` (Linux 5.1). EL8 and CloudLinux 8 ship 4.18 kernels without `pidfd_open` (Linux 5.3). There CSM pins the target through its `/proc/<pid>` directory descriptor, which `pidfd_send_signal` accepts and which refers to the same kernel process. Both ways reject a recycled PID.
+
+On a kernel without `pidfd_send_signal`, or when service restrictions deny the call, termination stays disabled. With `auto_response.kill_processes` on, `csm doctor` then reports `process termination supported` as failed and the health status becomes `degraded`, so you see the gap before an incident needs it. Each health snapshot probes again, so a transient resource failure clears by itself.
+
+### When termination fails
+
+- An automatic failure is logged. The original detection remains.
+- Manual kill-and-quarantine reports a termination failure even if the file was quarantined. Inspect both the process and the recovery entry before retrying.
+- A cancelled manual request is honored before any signal is sent.
+
+### Shells left running by a web request
+
+A shell a web request left running (`detached_web_process`) is stopped every time it is seen. Only shells are stopped. Any other process a web request left running, including a non-shell parent of a shell, stays a Warning for review.
+
+When CSM stops such a shell a second time within 24 hours for the same account, or the same user outside an account, it raises `detached_web_process_respawn` once a day. Something keeps starting it, most likely a PHP file that requests still run. For a hosting account CSM also queues a malware scan of the account. That scan quarantines and cleans only what automatic quarantine would at that moment, within the same safety limits. Its report shows what it quarantined, cleaned or refused.
+
+Stopping never backs off: a shell that keeps coming back is stopped every time. CSM tracks up to 4096 owners and forgets them when it restarts. Past that number, a new owner's shells are still stopped but not escalated until a tracked owner has gone a day without a stop.
+
+## File quarantine and cleaning
+
+### Limits
+
+Realtime quarantine, scheduled quarantine, PHP cleaning and automatic `.htaccess` cleaning share one rolling-hour budget:
+
+| Key | Limits | Default |
+|-----|--------|---------|
+| `auto_response.max_file_actions_per_hour` | Attempts on the whole host | 50 |
+| `max_file_actions_per_account_per_hour` | Attempts for one account | 10 |
+| `max_file_action_failures_per_hour` | Failures before these responses pause | 3 |
+
+Zero or an omitted key uses the default. Negative values and values above 10000 are rejected.
+
+How the budget is counted:
+
+- Each attempt is reserved before CSM touches the file. Successful, failed and interrupted attempts all use capacity.
+- Reservations live in `<state_path>/file-response.json`. They survive config reloads and daemon restarts and expire one hour after they were made. If the clock is set backwards, future-dated reservations stay charged until their hour has passed.
+- The account comes from the file's account-home path, not from the finding text. Paths outside recognized account homes share one unknown-account budget.
+- One account reaching its limit does not stop other accounts, unless the host or failure limit is reached too.
+- A slow file action does not hold up other actions. An action in progress counts against the failure limit until its result is saved, so concurrent failures cannot pass the limit.
+
+CSM refuses the action when the budget state is busy, unreadable, incomplete or unwritable.
+
+Automatic quarantine of a directory or a special file is always refused, because one directory move can affect any number of files. Manual remediation stays available after you review the detection.
+
+When responses pause:
+
+- The original detections stay visible. A deduplicated `auto_response_paused` warning reports the cause.
+- Account-limit notices are grouped for the whole host, so a fault across many accounts cannot flood the alert budget.
+- A pause creates no retry job. New eligible detections can act once capacity returns.
+- Review the outstanding findings and recovery evidence before remediating by hand.
+- Do not delete the budget state to clear a pause. Repair the storage fault and let the reservations expire.
+
+These limits apply under the existing `enabled`, `quarantine_files` and `clean_htaccess` switches. `dry_run` does not preview file quarantine or cleaning.
+
+### What is quarantined automatically
+
+Two kinds of Critical realtime PHP finding are sent for a file response immediately, within the limits above: request data that reaches an execution primitive, and executable PHP that unwraps and runs encoded content.
+
+For these, and for whole-file malware the cleaner identifies, quarantine holds an exclusive Linux lease on the open file until the file is removed. It refuses while another process has the file open or is running it, and when the content or the path identity changes. Other quarantines take no lease, so they can still move a file that is open or running.
+
+These matches stay for review and are never moved automatically: comment-only matches, URL-only droppers, filename-only checks, tail-window matches and YARA-only findings.
+
+Realtime signature quarantine also needs high confidence; see [Safety guards](#safety-guards).
+
+Quarantine copies exactly the file size it verified and checks the file again before removing it. A file that changed in between is restored and its copy discarded. If the name was recreated meanwhile, the error names the private directory that holds the changed file.
+
+### Repeat detections
+
+- Duplicate detections of one unchanged file share a single realtime response attempt. A different file planted at the same path is eligible again.
+- Within one daemon run, alert delivery does not repeat a file response that a scan already evaluated or the realtime gate already admitted, budget refusals included.
+- A realtime detection rejected on sampled content stays eligible for full-file validation during delivery.
+- The original findings still reach alerts and history. A new detection can be evaluated again.
+- Findings still queued at shutdown are evaluated again by the next daemon run, under the same saved limits.
+
+Findings saved at shutdown for the next start keep their offending subnets and targeted accounts, so subnet response and credential-spray correlation still work after the restart. Findings saved by an older version replay without that data. The subnets also appear in the public `cidrs` field.
+
+Saved reputation findings keep their intelligence source and expiry. If an expiry cannot be saved, only that intelligence metadata is dropped. The finding and the rest of the batch are still saved and replayed. There is no setting for this.
+
+### Refusals and failures
+
+A quarantine or cleaning attempt ends in one of three ways:
+
+| Result | When | Counts toward the failure pause |
+|--------|------|-------------------------------|
+| Done | The file was quarantined or cleaned | No |
+| Refused | The file changed or disappeared before the change. This includes a socket swapped in and a parent path replaced after the quarantine copy. For a cleaner, also: it recognizes no injection or declines an unsupported target. | No, but it uses capacity |
+| Failed | A read, write, backup or durability error | Yes |
+
+A failed PHP cleaner leaves the file and any pre-clean backup for manual review. It does not fall back to whole-file quarantine.
+
+Automatic actions check the file again after reserving budget. A special file swapped into the path cannot stall response processing.
+
+Manual full scans leave cleaner refusals for review and do not report them as failed remediation. `csm clean` also tells a refusal from a failure. Both return a nonzero exit status when the file was not cleaned.
+
+`csm clean --preview` runs the same cleaner without a backup or a write and prints the change as a unified diff:
+
+- The header names the SHA-256 of the file before and after. These are the digests the action log records when the clean is applied.
+- File names and content are escaped for the terminal.
+- A preview over the display limit fails without writing.
+- Integrations can check for `response.preview_diff.v1` in the capabilities list.
+
+Automatic permission fixes dismiss the original finding after a successful fix, or after confirming the unsafe permission is already gone. A confirmation alone does not report a permission change.
+
+### WordPress files
+
+WordPress core, plugin and theme files are cleaned in place, with three exceptions:
+
+| Case | What CSM does |
+|------|---------------|
+| Cleaning would leave nothing of a file that sends no page output | Quarantines the whole file. A stub would lose the same content, and quarantine keeps it for a restore. |
+| Cleaning would erase the file's page output | Leaves the file untouched for review. |
+| The WordPress core release, or the wordpress.org plugin release, that the site runs does not ship the file | The file was planted. CSM quarantines it. |
+
+Page output is any text outside PHP code, including short and echo tags.
+
+CSM trusts the release a site names only when its `version.php`, or the plugin's `<slug>.php` main file, is that release's own copy, and only from the checksums the realtime file monitor has cached. A plugin whose main file has another name stays with the cleaner.
+
+Whole-file quarantine rechecks the original content under the same protection as other verified file responses. A changed file stays in place. `csm clean` refuses a file it would leave empty.
+
+### Files written back after removal
+
+When CSM quarantines or cleans a file, it clears the alert state it kept for that file. If the file is detected there again, the finding is reported as new, not held back as a repeat. Dismissals remain in effect.
+
+CSM also remembers, for seven days, the content each quarantine or clean took away. A process that writes the same bytes back to the same path raises `removed_file_restored_realtime` (Critical). With `quarantine_files` on, CSM repeats what it did before: it quarantines the file again, or cleans it again.
+
+What counts as the file coming back:
+
+- Any restore of the same bytes, including the account's own through SSH, cPanel or FTP. A stolen login replays a payload the same way.
+- Removed files are watched whatever their extension.
+
+What does not:
+
+- A restore from the Web UI quarantine page. To keep a file, restore it from there.
+- CSM's own writes and official WordPress release files.
+- A file cleaned with `csm clean` from the command line. It is not remembered.
+- A file that no longer holds the removed bytes. CSM checks before repeating the response, so a later replacement is never removed.
+
+The finding says how the bytes came back: an SSH, cPanel, cron or FTP session, a web request, a terminal, or a process detached under init. Sessions take precedence over PHP workers in the ancestry, so running PHP from cron or a terminal does not make it a web request. Incomplete ancestry is reported as untraceable.
+
+The finding also gives the expiry time of the current removal. Each successful removal starts a new seven-day window, so repeated restores can extend it. A restored `.htaccess` is cleaned only when `clean_htaccess` is on.
+
+The daemon keeps this memory across restarts, in a private file it owns. A damaged or unsafe file is logged and ignored, and detection carries on without it.
+
+#### Stopping the process that wrote the file back
+
+With `kill_processes` on, CSM also stops the process that wrote the file back, together with its parent processes of the same account, parents first, so a loop cannot start another writer.
+
+It does so only when those processes trace back to the web server or run detached under init, the shape of a loop a webshell leaves behind. These are left running, and the file is still handled:
+
+- a PHP worker that serves the site, unless it wrote the file itself
+- a process with a terminal
+- a process started from an SSH, cPanel or cron session, or with such a session anywhere above a PHP worker
+- any process whose ancestry CSM cannot read in full
+- root processes, always
+
+The processes are named when the write is seen. Each is checked again through a kernel process handle just before the signal, as in [Signaling the right process](#signaling-the-right-process).
+
+### Restoring quarantined files
+
+Restore a file from the Web UI quarantine page. Restore puts back the content together with the saved modification time, owner, group and permissions.
+
+What restore refuses:
+
+- A symbolic link in a destination directory.
+- An existing file or directory at the destination. Restore never replaces one.
+- A destination that changes during the restore. CSM reports a conflict and keeps the quarantine entry.
+
+When a restore fails or is interrupted:
+
+- Check the original location before retrying. A partial file can remain in the directory that was opened for the restore. CSM keeps it, because removing it could discard a file someone else wrote there meanwhile.
+- A failure after a move or unlink reports partial completion and keeps the recovery metadata where it can. Inspect both the original and the quarantine locations named in the error. A copy may already be restored while the quarantine cleanup is incomplete.
+- An ownership or timestamp failure keeps the recovery evidence and reports an error.
+
+Custom account roots take part in manual remediation and restore. Set up [service write access](custom-account-roots.md) for roots outside the packaged grants before using these operations.
+
+Older quarantine entries:
+
+- Entries without a saved quarantine date sort last. Entries that use the old `quarantine_at` spelling are still listed and restored.
+- Older entries have no recorded original modification time. Restore leaves the new file's modification time in place.
+- Some older access-file cleanup backups lack trustworthy ownership and permission data. Check those attributes when you restore them.
+
+[Quarantine and restore durability](#quarantine-and-restore-durability) lists the storage guarantees.
+
+### Exposed-file virtual patches
+
+`virtual_patch_exposed_files` denies HTTP access to confirmed exposed files with reversible `.htaccess` rules. `off` only alerts, `manual` applies with `csm virtual-patch --apply`, and `auto` applies confirmed findings when `dry_run` is false, except warning-only sample SQL.
+
+A preview comes from `csm virtual-patch` without `--apply`, or from `auto` mode in dry run. It writes nothing and shows each access-file change as a unified diff:
+
+- Each diff header names the SHA-256 of the file before and after. The after digest is the one the rollback copy expects.
+- Later changes to the same file start from the previous planned change.
+- The local command shows context. Automatic alerts show only the proposed deny rules and mask any existing line that needs a final newline.
+- A file that cannot be shown as text fails the preview.
+
+Each applied deny keeps a rollback copy under `/opt/csm/quarantine/pre_clean/`. Applying the same rollback state again reuses that copy. A change in content, ownership, permissions, modification time, or between remove and replace, keeps a separate restore point. A later edit with identical bytes but a new modification time therefore gets its own.
+
+Rollback replaces or removes the access file only when the saved content, owner and permissions still match, so later customer edits are preserved. It uses the same directory confinement as restore.
+
+All-in-One WP Migration rewrites the access file inside `wp-content/ai1wm-backups`. CSM therefore also denies `.wpress` filenames, and only those, from the parent `wp-content` access file. It adds no parent-wide `.zip` or `.gz` rules, because those can be legitimate downloads elsewhere under `wp-content`.
+
+## Mailbox suspension
+
+After confirmed credential abuse, CSM suspends the mailbox's logins and outgoing mail through cPanel. Suspension follows `auto_response.enabled` and dry run.
+
+Set `auto_response.suspend_mailboxes: false` to keep every finding and incident without suspending mailboxes. Account holds for a domain are unaffected.
+
+### When a mailbox is suspended
+
+| Evidence | Response |
+|----------|----------|
+| A login after brute force (Critical `mail_account_compromised`) | One sign of compromise. After a few failures it suspends the mailbox only together with another sign. After at least `mail_bruteforce_threshold` failures on that mailbox the password was guessed, and this sign alone suspends the mailbox. |
+| Several signs for one mailbox | Suspended with a single Critical `email_mailbox_compromise` finding. See [Mailbox Compromise Evidence](detection-realtime.md#mailbox-compromise-evidence). |
+| The mailbox is caught sending abuse | Always suspended. |
+| A login by the cPanel account's own username | Names no mailbox. After `mail_bruteforce_threshold` failures CSM holds the account's outgoing mail, since that password also opens cPanel and every mailbox. A Critical `email_mailbox_response` finding says what was done. After fewer failures it only alerts. |
+
+Account logins older than the mailbox evidence retention period do not trigger holds.
+
+### What CSM does
+
+CSM tries to suspend both the mailbox's logins and its outgoing mail. Either success stops the escalation. A partial suspension names the restriction that succeeded and does not claim both.
+
+The account-wide outgoing mail hold is the fallback when both fail, when no account owns the domain, or when the target is a bare domain. Evidence that includes no sending never falls back to the account hold.
+
+- If cPanel cannot report the mailbox state, CSM suspends anyway and records the suspension as its own. Sending evidence can still fall back to an account hold.
+- Restrictions and holds that were applied outside CSM are not offered for release.
+- Each attempted suspension or hold is recorded in the action log with its quoted release command. Dry run writes one planned-action record and runs no command. Disabled auto-response writes none.
+- If CSM cannot save an applied hold, the response finding sends staff to the action log and a manual release on the mail server.
+
+CSM runs `/usr/local/cpanel/bin/uapi` as a transient systemd service outside the daemon's filesystem sandbox. Hosts without a usable `systemd-run` run it directly. Each call has a time limit, the JSON result decides success, and mailbox names are always passed as literal arguments. WHM holds and releases also check the JSON API result before reporting success.
+
+### Suspensions per hour
+
+On login evidence, CSM suspends at most three mailboxes of one hosting account in any rolling hour. Mailboxes no hosting account owns share their domain's allowance.
+
+- A mailbox caught sending abuse is always suspended. It still counts toward the hour, including during concurrent login responses.
+- New sending evidence triggers a response even if an earlier login-only incident was held back.
+- Past the limit CSM leaves the mailbox open, reports that it would have suspended it, and raises one Critical `email_mailbox_suspension_paused` finding for the account in that hour. The notice includes mailboxes held back by redirect evidence in the same batch.
+- A released suspension still counts during that hour. Suspending the same mailbox again uses no extra slot.
+- Stalwart aliases count as the mailbox they resolve to. A reassigned address counts as a new mailbox.
+- Account holds and alias changes do not reset the counts. Counts survive a daemon restart.
+
+### Releasing a mailbox or account
+
+After you resolve the credential abuse, release the mailbox or account on the Email page, Suspended tab. The tab lists every suspension and hold CSM made, with its live state in cPanel.
+
+- A suspension lifted directly in cPanel shows as released outside CSM.
+- An incomplete or unreadable status stays unknown. A delayed status reply cannot release a newer suspension.
+- Release undoes the recorded restrictions. It never changes a password.
+- Evidence captured before the release cannot suspend the mailbox again.
+- Cleanup failures are reported so you can retry the release.
+
+Releasing an account hold delivers the mail cPanel held. Delete spam from the Queue tab first; the confirmation says so.
+
+The action log keeps the release commands, quoted for the shell. For example:
+
+```bash
+/usr/local/cpanel/bin/uapi '--user=account' Email unsuspend_login 'email=alice%40example.com'
+```
+
+and the matching `unsuspend_outgoing` command. The address is URI-encoded because uapi decodes its values.
+
+## Mail auth backend recovery (cPanel)
+
+CSM opens the `cpdoveauthd` socket on a short interval. During a `cpdoveauthd` outage dovecot keeps answering on its IMAP and POP3 ports, so cPanel's own service checks notice nothing, yet every login fails whatever the password.
+
+When the socket is unreachable, CSM raises `mail_auth_backend_degraded` and pauses automatic blocking for both mail and SMTP brute force, so customers are not blocked for the outage.
+
+With `auto_response.mail_auth_recovery.restart_enabled`, CSM restarts the mail service once the backend has been down without a break for `down_grace` (10 minutes by default). Restarts are rate-limited, and a short interruption during maintenance does not trigger one. Changes to the mail auth recovery settings need a daemon restart.
+
+The log-based outage signals are described in [Real-time detection](detection-realtime.md#mail-auth-brute-force-tracker).
 
 ## Network dry-run precedence
 
-Three settings combine for direct-SMTP BPF enforcement. Any applicable
-dry-run value that is true wins; live network denial requires all three
-to be false.
+Three settings combine for direct-SMTP BPF enforcement. If any of them is true, traffic is not denied. Live network denial needs all three set to false.
 
-| Layer | Knob | Default | Effect when true |
-|-------|------|---------|------------------|
-| Auto-response | `auto_response.dry_run` | true | Record automatic block decisions without applying firewall denial |
-| Detector | `detection.direct_smtp_egress.dry_run` | true | Suppress detector-scoped action |
-| Kernel | `bpf_enforcement.dry_run` | true | BPF program emits decision but allows traffic |
+| Layer | Key | Default | Effect when true |
+|-------|-----|---------|------------------|
+| Auto-response | `auto_response.dry_run` | true | Records automatic block decisions without applying firewall denial |
+| Detector | `detection.direct_smtp_egress.dry_run` | true | Suppresses the detector's own action |
+| Kernel | `bpf_enforcement.dry_run` | true | The BPF program reports its decision and allows the traffic |
 
-The kernel knob is consulted by the BPF program itself; the others
-gate userspace action paths. All three default to true on a first
-install so a configuration mistake cannot start blocking traffic.
+The BPF program reads the kernel key itself. The other two gate actions in the daemon. All three default to true on a first install, so a configuration mistake cannot start blocking traffic.
+
+## Safety guards
+
+Processes:
+
+- CSM never kills root processes, system daemons or cPanel services.
+
+Addresses:
+
+- Infrastructure IPs (`infra_ips` and `firewall.infra_ips`) are never blocked or sent to the challenge page.
+- A block of an address that recently logged in as a customer is alerted at once and never exempted.
+- Failed mail logins confined to mailboxes an address regularly logs in to raise an advisory, not a block. See [login standing](detection-realtime.md#login-standing).
+- Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed or port-specific allowed IPs.
+- IP blocks are limited by `auto_response.max_blocks_per_hour`: 1000 an hour for admission and 50 an hour for the older scan budget, by default.
+
+Files:
+
+- Quarantined files keep their full metadata for restoration.
+- Every regular file is copied from its verified open descriptor into a private quarantine copy before the detected name is removed. Other hard links are reported after removal. A file swapped into the detected path is reported as a refused remediation: the captured copy is kept as evidence and the replacement is left untouched.
+- Realtime signature quarantine needs high confidence: category `webshell` or `dropper`, a file of at least 512 bytes, and either Shannon entropy of 5.5 or more, or hex density over 20% with an obfuscated-execution signal. This keeps legitimate WordPress plugins out of quarantine.
+
+Alerts:
+
+- Critical alerts and threat-intel reputation sightings always bypass the operator email and webhook rate limit (30 an hour by default). Lower-severity findings batched with them still count against it.
+- Attacks CSM blocked or challenged, and its applied block and challenge notices, go to the daily summary, not to alert email and the generic webhook. An attack is alerted immediately when its block failed, is still queued or ran in dry run. So are a block of a Cloudflare-covered address and the web attacks from it.
+- Trusted countries (`trusted_countries`) suppress login alerts from expected locations.
+
+The detections behind these actions are described in [Real-time detection](detection-realtime.md).
+
+## Details
+
+The sections below are reference material for edge cases. You do not need them to run auto-response.
+
+### How admission decides a block
+
+Every automatic block the blocking code selects is handed to admission. What admission does with it depends on the mode:
+
+| Mode | What happens |
+|------|--------------|
+| Live: `dry_run` false, firewall on, outside observe mode | Admission applies the block itself, within the hourly ceiling and the free slots of the temporary block set. |
+| Dry run | Admission forecasts the block. |
+| Firewall disabled, or observe mode | Admission previews the block. Nothing is applied. |
+| Firewall engine starting or unavailable | Queued live blocks wait. New responses stay on the older blocking path. |
+
+A refusal is final. The older blocking path does not apply a block that admission refused, and neither does a queued retry of the same finding. Independent evidence for the same address keeps its own response. A challenge whose evidence was refused keeps that refusal, so its timeout follows the same rule.
+
+Status, `csm doctor` and the findings history show the results. Forecast endings add no per-attempt row to the [action log](action-log.md).
+
+#### Blocks that stay on the older path
+
+- Permanent blocks, mail spray blocks, and derived blocks (challenge timeouts, central intelligence and incident blocks) that ask for longer than `auto_response.block_expiry`. They stay there even when their evidence was refused, with one exception: a `forged_client` refusal and a final rewrite refusal hold for every block lifetime, including permanent incident escalation. Longer derived blocks still never block a known CDN edge or a client behind a trusted proxy.
+- A block refused only because admission could not take new work at all.
+- A block refused because the web server rewrote the client address from a proxy header, in one of two cases: Apache, while CSM has never trusted its current web peer-log reader; or nginx reading a proxy header, in a configuration CSM reads whole and without PROXY protocol.
+
+A rewrite refusal is final, and nothing goes to the older path, in these cases:
+
+- On LiteSpeed. It also applies proxy headers to requests from the host itself, so any local user can choose the address it logs.
+- With a log format that writes request data where CSM reads the client, even when the same configuration also enables proxy-header rewriting.
+- With a detected nginx `proxy_protocol` source, for queued retries and permanent blocks too. Only sources covered by `web_server.trusted_proxies` can pass verification. The shipped CDN ranges alone never authorize a PROXY protocol address.
+
+`csm doctor` tells these final refusals from the Apache and nginx header-only exception.
+
+#### When the block set is full
+
+Work the temporary block set has no room for waits as `set_full` until a slot frees.
+
+- Of the slots that operator, unknown and subnet blocks leave, a fifth is kept for direct or corroborated attacks.
+- Automatic blocks from the older path occupy general slots.
+- A set without a size limit counts as 10000 entries.
+- A Critical local attack, or one with direct compromise or independently corroborated evidence, may take the general slot of an older automatic block that recorded its origin.
+
+#### Responses you turned off
+
+With the firewall on, a queued response that the current policy disables ends as `disabled`, without a withheld alert. That also happens when its evidence expires before a restart or config reload. Turning the response back on needs a new eligible observation. Ended work is not replayed.
+
+### Which addresses can be blocked
+
+A block is only as good as the address it targets. Admission refuses a block when it cannot be sure the address is the real attacker.
+
+#### Evidence needs a trusted address source
+
+- Admission checks how each finding's address was read. It compares that with the address sources the check declares and with the check's current policy. It does this when evidence is created and every time stored evidence is used.
+- A check without a trusted address source cannot produce evidence. This rules out PHP relay findings, whose client address comes from a mail header a local account can forge. In dry run these findings cannot produce a successful forecast.
+- Each response target is bound to its evidence. Only the mail subnet and ASN crawl entries may widen one address to a containing prefix. Queue requests, retained candidates and reservations repeat the check, so a response queued earlier cannot bypass it.
+- A log reader that starts in the middle of a line still passes the rest of that line to the checks, but the fragment cannot supply evidence. Complete lines after it are unaffected.
+
+#### Sources that supply evidence
+
+`auto_response.dry_run` decides whether admission forecasts these blocks or applies them.
+
+- Scheduled cPanel, ModSecurity audit, per-site and central access log scans supply evidence from complete records with a verified address source and a server time. Rereading a record does not refresh its time or count as independent evidence. Unfinished or ambiguous records supply nothing.
+- SMTP password sprays read from Postfix mail logs supply evidence.
+- ModSecurity observations expire with the denial's recent-log window.
+- The startup Exim history scan names the newest counted send of the account it reports, with Exim's full timestamp and zone, as the realtime mail log reader does. An invalid zone supplies no observation. When the realtime cloud relay window is full, it still keeps the address of the current send.
+- An IP reputation finding supplies evidence only with a local sighting: a record whose log parser read the address, dated by the server within the last 24 hours. An HTTP or cPanel sighting never uses an address listed in `web_server.trusted_proxies` or `challenge.trusted_proxies`. The normal freshness check still applies.
+- The scheduled command-and-control connection scan supplies evidence for established IPv4 connections this server opened. See below.
+
+Command-and-control connection details:
+
+- CSM names each connection by its socket during the current boot, and reports both endpoints and the socket owner.
+- The first-seen time survives a restart when the state save completed. Listener changes and overlapping scans do not refresh it.
+- Socket inodes can be reused between scans. Such a report keeps the earlier time. Lost first-seen state can make a forecast conflict with retained evidence.
+- A connection on a local port that also listens still alerts but supplies no evidence, because the socket table does not show which side connected.
+- Without a socket identity the alert still shows but supplies no evidence.
+- Connections still waiting for a reply, and those in the IPv6 socket table, are not reported.
+- Blocking the address drops its replies. It does not stop data this server sends to it.
+
+#### Clients behind a proxy
+
+An HTTP finding whose counts or bot-majority decision use forwarded addresses names a client behind a trusted proxy. That includes mixed direct and forwarded traffic. The firewall cannot reach such a client, so the finding is refused as unreachable.
+
+How CSM reads the forwarded header:
+
+- The client is the first untrusted address reached from the right of the header.
+- An address in `web_server.trusted_proxies` or `challenge.trusted_proxies` is never read as the client. This is true even when CSM ignores the header that proxy sent, because the proxy address is this server's own or because CSM could not read this server's addresses.
+- An address of this host is never trusted as a proxy.
+- CSM refuses a header over 4 KiB, or a walk that must read more than 32 hops, the client included. Hops left of the client never count.
+- Periodic scans keep a bounded tail of complete addresses. Padding to the left of a retained client does not hide its count. A missing or unreadable right end, or a tail that holds only trusted proxies, names no client and is not counted.
+
+Known CDN and website-firewall edges are refused as `proxy_peer`:
+
+- This applies to HTTP, cPanel and IP reputation findings, whether or not `cloudflare.enabled` is set.
+- An edge is an address in the Cloudflare, QUIC.cloud and Sucuri ranges CSM ships. A replacement `http_proxy_ranges.yaml` does not change them.
+- When the ASN database names it, a network in `thresholds.http_asn_crawl_reverse_proxy_asns` is an edge too.
+- The refusal does not apply to SSH, FTP or mail session peers.
+
+#### When the web server rewrites the logged address
+
+A web server can replace the client address in its log with one taken from a proxy header. CSM then cannot trust that log by itself. New HTTP findings are refused as `rewritten_log`, and access-log lines are not IP reputation sightings. cPanel access lines still are, even when the same address also appears in a rewritten web log.
+
+CSM treats the log as rewritten when it finds any of these, or when it cannot read the configuration files completely:
+
+| Web server | Setting |
+|------------|---------|
+| Apache | `RemoteIPHeader`; `RemoteIPProxyProtocol On`; a loaded or configured mod_cloudflare, including `DenyAllButCloudFlare`; mod_rpaf with `RPAF_Enable On` or `RPAFenable On` |
+| nginx | `set_real_ip_from` |
+| LiteSpeed | Use Client IP in Header, in its own configuration or, on cPanel, the Apache configuration it loads |
+| Any | An access log format that writes request data into the first client token |
+
+A mod_rpaf that is disabled or only loaded does not count as a rewrite.
+
+These access logs carry no original-peer field CSM reads. The separate [web peer log](detection-realtime.md#web-peer-log-and-forged-client-addresses) supplies the connecting peer, and with it CSM can verify each address.
+
+#### Verifying an address with the web peer log
+
+Where the web server rewrites client addresses, CSM checks each one against the web peer log:
+
+| What the peer log shows | Response |
+|-------------------------|----------|
+| The address connected for itself | Blocked, as on a host without a proxy |
+| A client behind a trusted proxy or a known CDN edge | Challenged only |
+| An address that a different connecting peer supplied | Refused as `forged_client` |
+
+Timing rules:
+
+- Verification uses the request time in the access or ModSecurity log, including delayed reads and scheduled scans. A request without a valid log time stays unverified.
+- The peer log must show a direct connection from the address in the request's second or within the forward-skew window after it. Direct visits at other times do not count.
+- Before an address counts as connected for itself, CSM reads the peer log again about two seconds after it read the finding. A peer line the web server flushed after its access line still decides.
+- Reputation sightings use the same check. Findings read together share one wait. A finding without a valid read time stays unverified. A refusal that is already final does not wait.
+- Once CSM has trusted a peer-log reader, losing that trust keeps unverified addresses refused until the daemon restarts. It does not bring back blocking on the older path.
+
+nginx needs no peer log when all of these hold. Its web findings are then blocked as on a direct host.
+
+- `real_ip_header` is set at `http` scope, and every server and location uses that same header.
+- For `CF-Connecting-IP`, every `set_real_ip_from` lies in Cloudflare's ranges. Other edges and proxies may pass on a client's own `CF-Connecting-IP`, so that header counts only from Cloudflare.
+- For `proxy_protocol`, every source lies in `web_server.trusted_proxies`. Code that customers run on a shared edge can open connections from the edge's own addresses and write any PROXY header.
+- No source can reach a loopback, unspecified or host address, including through IPv4-mapped IPv6.
+- The whole configuration tree is readable, all includes included, and no used log format has request data in the client field.
+
+nginx stays unverified with unresolved hostnames or variables, the default `X-Real-IP` header, or conflicting per-server or per-location headers. For each verification admission uses the current `web_server.trusted_proxies` and reads the host addresses afresh; a failed address lookup refuses verification. Without a loaded CSM configuration, only Cloudflare's header and ranges can qualify.
+
+#### When CSM reads the web server configuration
+
+CSM reads the configuration when admission starts, at the start of every reload attempt and Web UI settings save, and every 10 minutes. A settings save refreshes this state before applying its changes, including a save that fails or needs a restart.
+
+`web_server.config_dir` selects the Apache or nginx root, including the Apache tree that cPanel LiteSpeed uses. LiteSpeed XML stays at its standard location. The main file is:
+
+| Platform | Main file |
+|----------|-----------|
+| Debian Apache | `apache2.conf` |
+| RHEL or cPanel Apache | `conf/httpd.conf`. A cPanel root ending in `conf` already names that directory. |
+| nginx | `nginx.conf` |
+
+If the selected Apache main file is absent, the state is unknown, even if a default tree exists elsewhere.
+
+Limits of this check:
+
+- Files on disk can differ from what the web server loaded until it reloads.
+- A setting in any virtual host applies to the whole host.
+- Responses already queued are not checked again.
+
+#### Log format rules
+
+CSM reads every log format in use, to see whether request data can end up where it reads the client address. When it cannot prove a format safe, the state is unknown and the log is treated as rewritten. A valid format that no `CustomLog`, `GlobalLog`, `TransferLog` or nginx `access_log` uses does not count.
+
+All web servers:
+
+- Leading whitespace and extra spaces after cPanel's `splitlogs` virtual-host field cannot hide the client token.
+- A leading quote, brace or other non-address character guards normally escaped output. Brackets do not guard a request value, because scheduled scans accept bracketed IPv6 peers, with or without ports.
+
+Apache:
+
+- Format nicknames ignore case, including the `TransferLog` default.
+- A definition in another virtual host or an unrelated conditional section cannot hide a log's inline or common-format fallback.
+- With `HostnameLookups On` in any scope, `%h` counts as a request value, because it then logs the client's unverified reverse DNS name.
+- The built-in `CLF` nickname is also checked after piped logging removes its leading field.
+- An `ErrorLogFormat` that writes a request value before an unconditional message, in any output record, counts too. A message that shares its field with another placeholder does not protect later request values, because that field may disappear.
+- A nonempty `expr=` condition does not change how its format is read.
+- A `${...}` variable that starts a log target leaves the state unknown, except Debian's `${APACHE_LOG_DIR}/`. The exception does not apply when `Define` or `UnDefine` can change the variable, including inside a macro.
+- Section suffixes are ignored only where Apache accepts them. A rewrite directive found beside a parsing gap still counts as active.
+
+Apache state is unknown with:
+
+- unresolved configuration variables in log formats, format names or server names, or ones that could make or hide a piped log target
+- unsupported format handlers, or blank server names
+- custom time formats that can write a line break
+- unproven time formats, or process, port and duration arguments, in or before the field CSM reads
+- empty logging conditions, including whitespace-only expressions
+- malformed legacy-module arguments
+- malformed closing tags, or comments on closing tags, for read-time conditions such as `IfModule`
+- Cloudflare trusted-proxy hostnames or variables, when CSM cannot establish another active rewrite. Only Apache can resolve those values.
+
+Apache mod_macro, inside a `<Macro>`:
+
+- A parameter in a log format, format name, piped log target, module name or directive name leaves the state unknown. That includes a parameter that spells `ServerName`.
+- A parameter later in a log file path, or in a server name, is harmless.
+- A macro parameter that starts a log target leaves the state unknown.
+- Quoted macro names and parameters keep their boundaries.
+
+LiteSpeed:
+
+- Formats with unsupported escapes, modifiers, handlers or ambiguous brace arguments are unknown, in both native XML and cPanel Apache configuration.
+
+nginx:
+
+- HTTP and stream format namespaces are checked separately. Stream byte counts, session duration and transport protocol remain server values in the stream namespace.
+- A log selects the first previously declared format with the same name, ignoring ASCII case. Later case variants do not count as used formats.
+- Unresolved names and malformed log declarations leave the state unknown.
+- Entries inside maps are values, including entries read from included files.
+- With `escape=none`, any request variable can start another log record, even after the normal client field or a quote.
+- Binary address variables have unknown output framing.
+- Empty server-name, hostname and port fields cannot hide a following request value.
+- User-defined variables do not inherit trust from a name that looks built in.
+- Original-peer variable names and stream server names stay unproven, because their availability depends on the installed modules and version, and captures or scripts can supply request values under those names. CSM applies this caution even when the variables come from nginx itself.
+
+### Dry-run forecasts
+
+A forecast answers one question: would this block have fitted? It never becomes a block. A restart, or going back into dry run, starts a new session and restores nothing from the stored examples.
+
+What the example count means:
+
+- CSM stores a bounded number of examples of successful capacity predictions, not every attempted block.
+- The count includes older examples until they are pruned or purged.
+- It is not a count of unique addresses, and not the number of blocks that would be active now.
+- Lost examples and incomplete comparisons appear in status.
+
+How the forecast models capacity:
+
+- It fills the temporary block set as live admission will. Of the slots that operator, unknown and subnet blocks leave, a fifth is kept for direct or corroborated attacks. A set without a size limit is modelled as 10000 entries.
+- In forecasts and previews, each new automatic lifetime, challenges included, is capped at `auto_response.block_expiry`. Longer requests are cut and shorter ones stay short.
+- A retry keeps its first absolute expiry, even after you configure a lower cap. Blocking on the older path keeps its own lifetimes.
+
+When the modelled set is full:
+
+- A forecast block may take the place of a lower-priority one, as live admission would. That is an earlier forecast block of a lower class or severity, or an automatic block from the older path that recorded its origin.
+- A new attack may rotate out an earlier forecast block of the same class and severity once that block has held its slot for 30 minutes, as long as it stays within the part of the set its kind of block may use.
+- An address whose forecast block was replaced or rotated out cannot rotate again before that block's expiry.
+- If an address returns after the forecast replaced its earlier block, its new forecast block lasts only until the earlier block would have ended. A return with too little time left for a firewall block is refused, with no forecast charge and no stored example.
+
+### Quarantine and restore durability
+
+These guarantees depend on the filesystem and storage device honoring sync requests.
+
+Quarantine:
+
+- For a regular file, quarantine and pre-clean backup write and sync the private content copy, the metadata and the directory entries before the original is removed or changed.
+- Directory quarantine syncs the tree and metadata before moving it on the same filesystem. A directory move across filesystems is refused and leaves the source in place.
+- A storage failure never counts as a successful remediation.
+- New quarantine and pre-clean records store the original modification time, owner, group, permissions and size.
+
+Restore:
+
+- Restore applies the saved attributes to the opened destination before syncing it. Linux keeps modification times at the precision the destination filesystem supports.
+- Restore can verify the destination even after the saved permissions remove all read access. The restored file keeps those permissions, including a mode that grants no access to anyone.
+- Restore syncs the replacement and its directory before deleting the quarantine evidence.
+
+When a restore is rolled back:
+
+- CSM moves displaced entries into a private directory.
+- If another writer changes the destination, CSM keeps the live replacement and names any retained recovery directory in the error. Check that directory beneath the original destination or quarantine location before retrying.
+- If another writer moves a restored directory, CSM cannot recover it from its old name and will not put a different entry into quarantine in its place.
