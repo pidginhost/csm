@@ -645,8 +645,10 @@ Critical partial-containment record, reason `unsupported_containment`
 with outcome `applied`: the input-chain drop stops replies from the
 address, but outbound-only traffic to it still leaves. Its response ran,
 so it is not counted in the Critical summary or the doctor's gap row.
-A refused block of a protected address keeps its withheld record but is
-not counted there either: blocking that address is never wanted.
+A protected or allowlisted address keeps its withheld notice when the
+firewall refuses it before reservation or at the final attempt to apply
+the block. Neither refusal advances the Critical summary. The attempted
+block still follows the usual failure accounting and retry limit.
 Records may use only a
 fixed share of the reserve, a key is due for delivery at most once an hour
 and a summary once a minute after acknowledged delivery. While the owner
