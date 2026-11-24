@@ -9,25 +9,31 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ## [Unreleased]
 
+### Highlights
+
+- Run `csm doctor` after upgrading: SSH, mail and FTP log lines any local user could forge now only alert, and its login sources row shows how to keep blocking.
+- The daemon can no longer write its own configuration; settings saved from the Web UI go through a separate sandboxed helper.
+- On Apache and cPanel LiteSpeed hosts that read client addresses from a proxy header, the new CSM web peer log lets CSM block direct web attackers again.
+- Registry installs between releases are signed and checked, and `csm doctor` flags deploy script copies that still accept unsigned builds.
+- Automatic mailbox suspensions need stronger evidence, pause after several in one account, and can be turned off with `auto_response.suspend_mailboxes`.
+- Hosts that leave `auto_response.max_blocks_per_hour` unset allow up to 1000 automatic blocks an hour.
+- New: scheduled state backups, `csm support-bundle`, Undo on the Server Hardening page, and diff previews for cleanups and virtual patches.
+
 ### Security
 
 - Stalwart setup and `csm doctor` refuse forwarded webmail addresses when site code can run as a user the webmail port lock admits, or this cannot be checked. Run `csm doctor` to see what runs as a shared user.
 - The daemon can no longer write its configuration directory; settings it saves are written by a separate helper sandboxed to that directory.
+- SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks, mailbox suspensions or count as customer logins; they still alert.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.
-- `csm doctor` confirms matching release copies of deploy scripts and warns when it cannot confirm or inspect a copy.
-- Internal registry downloads between releases carry verified signatures even when only the AMD64 build is available.
-- The registry installer refuses unverified builds, and `csm doctor` reports older copies that still accept them.
+- Registry builds between releases are always signed, the registry installer refuses unverified ones, and `csm doctor` flags deploy script copies that differ from the release.
 - State backups skip symbolic links inside the state and rules directories.
 - A feed-listed address is excused from reputation blocking only by an IPv4 mail login the mail service recorded in the last day.
-- SSH, mail and FTP log lines that any local user could forge no longer trigger automatic blocks, mailbox suspensions or count as customer logins; they still alert.
-- With `auto_response.dry_run` off, web findings on nginx hosts that take PROXY protocol from anything but `web_server.trusted_proxies` no longer firewall-block that address; challenges still apply.
 - `csm webserver-integration peer-log install` adds the CSM web peer log on Apache and cPanel LiteSpeed; `csm doctor` shows whether it is active.
-- With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
-- With `auto_response.dry_run` off and the CSM web peer log, proxy-header hosts block direct web attackers, only challenge proxied clients and never block an address they cannot verify.
 - With the CSM web peer log, CSM alerts when the web server logs a client address chosen by a local process or an untrusted peer.
+- With `auto_response.dry_run` off and the CSM web peer log, proxy-header hosts block direct web attackers, only challenge proxied clients and never block an address they cannot verify.
+- With `auto_response.dry_run` off, web findings no longer firewall-block an address the web server took from a proxy header, untrusted PROXY protocol or request data; challenges still apply.
+- With `auto_response.dry_run` off, admission now blocks web attackers on nginx hosts that take client addresses only from Cloudflare's header and ranges or trusted PROXY protocol.
 - With `auto_response.dry_run` off, a refused address is never blocked by the older path, except proxy-header clients on Apache without the web peer log or on nginx.
-- With `auto_response.dry_run` off, web findings on LiteSpeed hosts that read client addresses from a proxy header no longer firewall-block that address; challenges still apply.
-- With `auto_response.dry_run` off, web findings no longer firewall-block an address the access log takes from request data, even where a proxy header is also trusted; challenges still apply.
 - A known CDN edge is never blocked automatically, including when a forwarded header names it or the web server rewrites client addresses.
 - Automatic blocks and the Web UI Block button now use only the address a check parsed from its log line, never one quoted in a finding's message.
 
@@ -45,21 +51,28 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - Automatic mailbox suspensions on login evidence pause in a hosting account after several in one hour, with one Critical alert; sending abuse always suspends.
 - A mail login after a few failed logins no longer suspends the mailbox or holds the account by itself; one after a brute-force run of failures still does.
 - Slow failed mail logins from an address that regularly logs in to that mailbox now alert without blocking it, and a later login no longer suspends the mailbox.
+- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
+- FTP logins no longer count as known customers in block alerts.
+- Hosts that leave `auto_response.max_blocks_per_hour` unset now allow at most 1000 automatic blocks an hour instead of 2000; `csm doctor` warns only below 1000.
 - Findings for a removed file written back now say how it came back and that restoring it from the Quarantine page stops CSM removing it again.
 - The Server Hardening page leaves fixes that can disrupt a working host unticked and says what each can break; applying a whole section skips them.
 - Database cleanup refuses to change a WordPress option without a saved backup, and leaves it alone if the site changed it after the preview.
-- Where syslog goes through journald, CSM reads SSH, pure-ftpd and, with `mail_logs.source: auto`, mail logins from journal entries; `csm doctor` shows each source.
-- SSH, mail and FTP logins read from log files now alert without blocking.
-- FTP logins no longer count as known customers in block alerts.
-- Hosts that leave `auto_response.max_blocks_per_hour` unset now allow at most 1000 automatic blocks an hour instead of 2000; `csm doctor` warns only below 1000.
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 - JavaScript scans now detect keystroke leaks in modules with import or export attributes, destructured arrow defaults, and statements with semicolons after newlines.
 - Malware scans now use YARA-X 1.24.0 and produce the same matches with the shipped rules.
 
 ### Fixed
 
+#### Automatic response
+
 - `csm doctor` and the Critical response gaps summary no longer count a refused block of a protected or allowlisted address as a missed response.
+
+#### Mail
+
 - A forward that keeps a copy of the mail no longer counts toward suspending the mailbox unless something else corroborates it.
+
+#### Findings
+
 - Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
 
 ## [4.15.0] - 2026-11-20
