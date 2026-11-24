@@ -21,6 +21,8 @@ func TestWorkerCompileRefusesFilesystemIncludes(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`rule outside { condition: true }`), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// YARA-X follows includes only inside the working directory when no include directories are set.
+	t.Chdir(filepath.Dir(path))
 	source := fmt.Sprintf("include %q", path)
 	legacy, err := yara.CompileSources([]yara.Source{{Name: "legacy.yar", Text: []byte(source)}})
 	if err != nil {
