@@ -244,7 +244,7 @@ func sshAlreadyBack(content string, s sshUndoState) bool {
 	kw := strings.ToLower(s.Keyword)
 	var value string
 	found, inBlock, inMatch, seenBlock := false, false, false, false
-	active := map[string]int{}
+	var active []string
 	for _, line := range strings.Split(content, "\n") {
 		t := strings.TrimSpace(line)
 		k, v, ok := splitSSHDKeyword(t)
@@ -265,19 +265,21 @@ func sshAlreadyBack(content string, s sshUndoState) bool {
 		case k == "match":
 			inMatch = true
 		case !inMatch:
-			active[line]++
+			if original, disabled := strings.CutPrefix(line, sshdDisabledBy); disabled {
+				if key, _, _ := splitSSHDKeyword(strings.TrimSpace(original)); key == kw {
+					return false
+				}
+			}
+			if ok && k == kw {
+				active = append(active, line)
+			}
 		}
 	}
 	if inBlock || found != s.HadValue || value != s.PrevValue {
 		return false
 	}
-	for _, line := range s.DisabledLines {
-		if active[line] == 0 {
-			return false
-		}
-		active[line]--
-	}
-	return true
+	// Order matters: sshd uses the first active value for a keyword.
+	return slices.Equal(active, s.DisabledLines)
 }
 
 // --- sysctl ---
@@ -536,89 +538,102 @@ func configLines(content string) []string {
 
 func updatesValue(line string) (string, bool) { return keyValueLine(line, cpUpdatesKey) }
 
-// updatesEdit is one line the cp_updates apply changed: the line it wrote,
-// which of the identical lines in the applied file that is, from 0, and the
-// line before, empty for a line it added.
+// updatesEdit identifies a setting line, including an unchanged first line.
+// nth and total distinguish comments created by apply from identical comments
+// that already existed. was is empty for a line the apply added.
 type updatesEdit struct {
 	wrote string
 	nth   int
+	total int
 	was   string
 }
 
-// updatesEdits reads from the record the lines the apply changed, and false
-// unless it changed them as the apply does: it sets the first active
-// UPDATES line or adds one, and comments out any later ones.
+// updatesEdits accepts only the transformation setKeyValueFile performs.
 func updatesEdits(prev, applied []string) ([]updatesEdit, bool) {
 	set := cpUpdatesKey + "=" + cpUpdatesValue
-	if len(applied) != len(prev) && len(applied) != len(prev)+1 {
-		return nil, false
-	}
+	expected := slices.Clone(prev)
 	var edits []updatesEdit
-	sets := 0
-	seen := map[string]int{}
-	for i, wrote := range applied {
-		seen[wrote]++
-		was := ""
-		if i < len(prev) {
-			if was = prev[i]; was == wrote {
-				continue
-			}
-			if _, ok := updatesValue(was); !ok {
-				return nil, false
-			}
-		} else if wrote != set {
-			return nil, false
-		}
-		switch wrote {
-		case set:
-			sets++
-		case "# " + was:
-		default:
-			return nil, false
-		}
-		edits = append(edits, updatesEdit{wrote, seen[wrote] - 1, was})
-	}
-	return edits, sets == 1
-}
-
-// restoreUpdatesLines returns lines, the file now, with the edits undone,
-// once every active UPDATES line still holds the applied value. A line the
-// apply commented out is enabled in place, or follows the restored line when
-// a cPanel save dropped the comment.
-func restoreUpdatesLines(lines []string, edits []updatesEdit, what string) ([]string, error) {
-	var put []string
-	enable := map[int]string{}
-	for _, e := range edits {
-		i := -1
-		if e.wrote == "# "+e.was {
-			i = nthIndex(lines, e.wrote, e.nth)
-		}
-		switch {
-		case i >= 0:
-			enable[i] = e.was
-		case e.was != "":
-			put = append(put, e.was)
-		}
-	}
-	out := make([]string, 0, len(lines)+len(put))
-	placed := false
-	for i, line := range lines {
-		if was, ok := enable[i]; ok {
-			out = append(out, was)
+	for i, line := range prev {
+		if _, ok := updatesValue(line); !ok {
 			continue
 		}
-		v, ok := updatesValue(line)
-		switch {
-		case !ok:
-			out = append(out, line)
-		case v != cpUpdatesValue:
-			return nil, changedSince(what)
-		case !placed:
-			out, placed = append(out, put...), true
+		wrote := "# " + line
+		if len(edits) == 0 {
+			wrote = set
+		}
+		expected[i] = wrote
+		edits = append(edits, updatesEdit{wrote: wrote, was: line})
+	}
+	if len(edits) == 0 {
+		expected = append(expected, set)
+		edits = append(edits, updatesEdit{wrote: set})
+	}
+	if !slices.Equal(expected, applied) {
+		return nil, false
+	}
+	seen := map[string]int{}
+	next := 0
+	for i, line := range applied {
+		active := false
+		if i < len(prev) {
+			_, active = updatesValue(prev[i])
+		}
+		if active || i == len(prev) {
+			edits[next].nth = seen[line]
+			next++
+		}
+		seen[line]++
+	}
+	for i := range edits {
+		edits[i].total = seen[edits[i].wrote]
+	}
+	return edits, true
+}
+
+// restoreUpdatesLines keeps the original setting order even if only some
+// comments survived a later save. Ambiguous identical comments are refused
+// rather than enabling a comment that may have predated the apply.
+func restoreUpdatesLines(lines []string, edits []updatesEdit, what string) ([]string, error) {
+	first := -1
+	counts := map[string]int{}
+	for i, line := range lines {
+		counts[line]++
+		if v, ok := updatesValue(line); ok {
+			if v != cpUpdatesValue {
+				return nil, changedSince(what)
+			}
+			if first < 0 {
+				first = i
+			}
 		}
 	}
-	if !placed {
+	if first < 0 {
 		return nil, changedSince(what)
+	}
+	put := map[int][]string{first: nil}
+	anchor := first
+	for n, e := range edits {
+		if n > 0 && counts[e.wrote] > 0 {
+			if counts[e.wrote] != e.total {
+				return nil, changedSince(what)
+			}
+			i := nthIndex(lines, e.wrote, e.nth)
+			if i <= anchor {
+				return nil, changedSince(what)
+			}
+			anchor = i
+		}
+		if e.was != "" {
+			put[anchor] = append(put[anchor], e.was)
+		}
+	}
+	out := make([]string, 0, len(lines)+len(edits))
+	for i, line := range lines {
+		if restored, ok := put[i]; ok {
+			out = append(out, restored...)
+		} else if _, active := updatesValue(line); !active {
+			out = append(out, line)
+		}
 	}
 	return out, nil
 }

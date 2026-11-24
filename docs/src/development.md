@@ -1817,9 +1817,10 @@ goes, so a host where a reload always fails can still undo.
 
 Before checking that the host still holds the applied state, undo checks
 whether every element of the record already holds its earlier state: the SSH
-block value or its absence and the disabled global lines enabled again, the
-sysctl runtime and drop-in values, the tweak value, each PHP drop-in's key,
-the owner and mode, open compiler access for the script method, and the
+block value or its absence and the global lines enabled in recorded order with
+no remaining CSM-disabled lines for that keyword, the sysctl runtime and
+drop-in values, the tweak value, each PHP drop-in's key, the owner and mode,
+open compiler access for the script method, and the
 `UPDATES` values. Then it changes nothing, removes the record and reports
 `undone`, so an operator who reset a setting by hand is not left with an Undo
 button that only refuses. For tweaks, no value and an empty one count as the
@@ -1830,15 +1831,20 @@ cPanel validates the value. An earlier tweak value that is missing or empty,
 or one the call refuses with `metadata.result` 0, makes undo refuse, keeping
 the record and the applied value, and point to WHM Tweak Settings; a failed
 command or unreadable reply is still a failure. The apply result says undo
-will need WHM Tweak Settings when the tweak had no value or an empty one.
+will need WHM Tweak Settings when the recorded earlier tweak value was absent
+or empty, including after repeated applies.
 
 The `cp_updates` record holds the whole file before and after the apply.
 Undo reads the apply's edits from the two: the first active `UPDATES` line
-set, or one added, and later active ones commented out. A record with any
-other edit is refused as not matching the fix. Undo checks only the current
-active `UPDATES` lines against the applied value and restores only those
+set (even if already daily), or one added, and later active ones commented
+out. A record with any other edit is refused as not matching the fix. Undo
+checks only the current active `UPDATES` lines against the applied value and
+restores only those
 lines, enabling commented duplicates in place, or after the restored line
-when a cPanel save dropped the comments. Every other line stays as it is.
+when a cPanel save dropped the comments. Missing duplicates follow the
+nearest surviving earlier setting so their original order is preserved.
+If only some identical comments survived, undo refuses rather than guessing
+which comment the apply created. Every other line stays as it is.
 
 Each successful sysctl runtime change is recorded before the next command,
 then its record is updated after the drop-in is saved. PHP records grow after

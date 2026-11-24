@@ -1036,7 +1036,7 @@ func TestHardeningUndoRefusesMismatchedRecord(t *testing.T) {
 				t.Fatal(err)
 			}
 			return HardeningUndoRecord{Name: "cp_updates", Kind: "file", File: &fileUndoState{
-				Path: path, Previous: "UPDATES=daily\nUPDATES=never\n", Applied: "UPDATES=daily\n# UPDATES=never\n",
+				Path: path, Previous: "UPDATES=manual\nUPDATES=never\n", Applied: "# UPDATES=manual\n# UPDATES=never\n",
 			}}, func() string {
 				return fileText(t, path)
 			}

@@ -381,6 +381,9 @@ func recordHardeningUndo(r store.AuditResult, rec HardeningUndoRecord, prior und
 		}
 		rec.Name, rec.Category, rec.AppliedAt = r.Name, r.Category, time.Now().UTC()
 		if err = writeHardeningUndo(rec); err == nil {
+			if rec.Tweak != nil && rec.Tweak.Previous == "" {
+				return " Undo will need WHM Tweak Settings: whmapi1 cannot clear " + rec.Tweak.Key + "."
+			}
 			return ""
 		}
 	}
@@ -529,10 +532,6 @@ func applyHardeningSingle(r store.AuditResult) HardeningFixResult {
 		}
 		undo := tweakUndoState{Key: kv.key, Previous: prev, HadValue: had, Applied: kv.value}
 		note := recordHardeningUndo(r, HardeningUndoRecord{Kind: "tweak", Tweak: &undo}, prior, readErr)
-		// No value and an empty one cannot be sent back, so say so now.
-		if note == "" && prev == "" {
-			note = " Undo will need WHM Tweak Settings: whmapi1 cannot clear " + kv.key + "."
-		}
 		return applied(r, fmt.Sprintf("Tweak setting %s set to %s.", kv.key, kv.value)+note)
 	}
 	if dir, ok := hardeningTmpDirs[r.Name]; ok {
