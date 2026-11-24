@@ -37,8 +37,8 @@ One call under that lock reads the client's count, script shares and recipient d
 
 Before counting, that call drops the recipients the client reached in either of these ways:
 
-- Through an account where the client is now staff.
-- Through a script that is now ignored.
+- Through an account where the client has staff status.
+- Through a script on the ignore list.
 
 A current exemption therefore also covers mail recorded before it applied.
 

@@ -12,6 +12,7 @@ csm selftest --json
 The exit status is 0 when every sample matched what the bundle records, for each available engine. It is 1 when anything needs attention. These fail the run:
 
 - A rule load that is incomplete or empty.
+- A missed detection, a false positive or a detected sample marked as a known gap.
 - A scan error.
 - An invalid sample.
 - An empty bundle.
@@ -33,7 +34,7 @@ A missing or unreadable configuration fails the command. CSM does not fall back 
 | `known gap` | An adversarial sample the shipped signature rules do not catch, recorded in the bundle. |
 | `MISSED` | An adversarial sample that should have been caught and was not. A regression. |
 | `FALSE POSITIVE` | A benign control the rules fired on. |
-| `GAP CLOSED` | A recorded gap that now fires. Good news; the bundle needs updating. |
+| `GAP CLOSED` | The rules detect a sample recorded as a known gap. Update the bundle after confirming the match. |
 | `ERROR` | The sample could not be decoded or scanned. The error is printed below it. |
 
 The summary counts missed samples, false positives, closed gaps and errors separately. A skipped engine has no sample results. The JSON output gives the reason in its `skipped` field.

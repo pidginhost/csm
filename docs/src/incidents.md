@@ -4,7 +4,7 @@ CSM groups related findings into incidents, so you see one escalating story per 
 
 ## Working with incidents
 
-1. Open **Monitor -> Incidents** in the [Web UI](#web-ui), or run `csm incidents list`. See [Control socket](#control-socket) for the commands.
+1. Open **Incidents** under **Monitor** in the [Web UI](#web-ui), or run `csm incidents list`. See [Control socket](#control-socket) for the commands.
 2. Review each incident and set its status to `contained`, `resolved` or `dismissed`. [Lifecycle](#lifecycle) says what each status means.
 3. If more incidents stay open than you want to triage, shorten the idle time for the kind that fills the list. See [Auto-close](#auto-close).
 4. To collapse a password spray from one address into a single incident, follow the [rollout](#rollout) for credential-spray suppression.
@@ -12,7 +12,7 @@ CSM groups related findings into incidents, so you see one escalating story per 
 
 ### Web UI
 
-Open **Monitor -> Incidents**. The page has three tabs:
+Open **Incidents** under **Monitor**. The page has three tabs:
 
 | Tab | What it shows |
 |-----|---------------|
@@ -47,12 +47,9 @@ csm incidents bulk-status --older-than 24h [--last-seen-before RFC3339] [--statu
 | `GET /api/v1/incidents/<id>` | Returns one incident. |
 | `POST /api/v1/incidents/<id>/status` | Changes the status. |
 
-The list route has two response shapes:
+A successful list request returns a JSON object: `{"items":[...], "total":N, "offset":N, "limit":N, "status":"...", "truncated":false}`. `truncated` is true when more matches follow this page. Use `?offset=` to fetch the next page.
 
-- Without query parameters, the response is a bare JSON array. This is the existing wire shape that phpanel and SIEM consumers decode.
-- When `?limit=`, `?offset=`, or `?status=` is present, the response is an envelope: `{"items":[...], "total":N, "offset":N, "limit":N, "status":"..."}`.
-
-`status` accepts the four statuses plus `active`, which means open and contained and is the default Web UI filter. The server caps `limit` at 500.
+`?status=` accepts the four statuses plus `active`, which means open and contained and is the default Web UI filter. Without it, the list holds every status. `?limit=` defaults to 50 and the server caps it at 500.
 
 See [api.md](api.md) for endpoint detail.
 
@@ -140,7 +137,7 @@ A threat-intelligence match on an address seen failing IMAP or POP3 logins also 
 
 The compromise kinds are reserved for evidence that an attack succeeded:
 
-- `web_account_compromise` needs on-disk or behavioural signals such as a webshell or suspicious PHP.
+- `web_account_compromise` needs on-disk or behavioral signals such as a webshell or suspicious PHP.
 - `mailbox_takeover` needs post-authentication abuse such as outbound spam, cloud relay, or a compromised-account signal.
 
 The inbound-attack kinds `web_attack` and `mailbox_bruteforce` carry short attacker-grade retention (default 24h), and compromise kinds get the longer review window. For `web_attack`, this keeps defended probes and attacker-IP reputation hits from inflating the account-compromise count or its longer review window. [Auto-close](#auto-close) lists the defaults.
@@ -175,7 +172,7 @@ incidents:
       web_account_compromise: 168h
 ```
 
-CSM never auto-closes a kind that is absent from `by_kind`. The default map omits `host_integrity_risk`, `host_takeover`, and `post_exploit_process`, because those host-level incidents should stay open until an operator reviews them.
+Omitting a kind from `by_kind` keeps its default. Set its value to an empty string to remove its idle threshold. The default map omits `host_integrity_risk`, `host_takeover`, and `post_exploit_process`, because those host-level incidents should stay open until an operator reviews them.
 
 Auto-close does not block re-detection. If a fresh finding for the same correlation key arrives after the auto-close, CSM creates a new open incident. The closed record keeps its history.
 
@@ -193,7 +190,7 @@ CSM keeps an untouched auto-resolved record for 7 days, measured from when the i
 
 Failed mailbox logins already collapse onto the attacker IP as a single `mailbox_bruteforce` incident (see [Classification](#classification)). Spray suppression extends that across protocols. It is off by default, and its own `dry_run` is on by default.
 
-For each source IP, CSM tracks the set of distinct mailboxes and accounts that the `per_check` detectors (mail and PAM) report across the merge window. Once an IP exceeds `distinct_mailboxes`, CSM opens a single `credential_spray` super-incident keyed on the IP. Its severity escalates with breadth: it becomes Critical at `severity_escalate_at` distinct mailboxes. Later findings from that IP attach to the spray incident's timeline.
+For each source IP, CSM counts the distinct targets that the `per_check` detectors report. With `enabled: true` and `dry_run: false`, reaching `distinct_mailboxes` triggers a `credential_spray` incident. If an active incident already uses that IP as its key, CSM promotes it and keeps its timeline. Otherwise CSM opens one. Later qualifying findings join the same incident. On a merge, CSM raises the severity to Critical if the target count reaches or exceeds `severity_escalate_at`.
 
 Defaults (configurable in `csm.yaml`):
 
@@ -230,7 +227,7 @@ If `per_check` includes `mail_subnet_spray` or `smtp_subnet_spray`, grouping use
 | `high` | Blocks at the `distinct_mailboxes` trip. | Recommended once the dry-run counter looks clean. |
 | `critical` | Blocks only after severity escalates: one IP hits `severity_escalate_at` distinct mailboxes. | Only when you have strong shared-NAT exposure and accept that slow sprayers evade the gate. |
 
-`high` trips on the first sustained burst, before the source IP goes idle for longer than the merge window. `critical` needs the IP to hit `severity_escalate_at` before it is idle for more than the merge window. A low-and-slow attacker that stays below that count before each idle reset never escalates and is never blocked.
+Before a spray incident opens, a gap longer than the merge window resets the target count. Once CSM binds the address to an open spray incident, an idle gap alone does not reset it. Later qualifying findings can still trigger Critical escalation.
 
 ### How the spray block is applied
 

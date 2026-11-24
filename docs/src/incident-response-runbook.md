@@ -1,6 +1,6 @@
 # Incident Response Runbook
 
-Use this flow when CSM flags account compromise, mailbox takeover, malicious database triggers, or outbound spam on a production cPanel host. Work through the steps in order.
+Use this flow when CSM flags account compromise, mailbox takeover, malicious database triggers, or outbound spam on a production cPanel host. If an upgrade is needed, take the backup in step 2 before running the upgrade command in step 1.
 
 ## Safety rules
 

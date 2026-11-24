@@ -1,8 +1,8 @@
 # Signature Rules
 
-CSM matches file content against signature rules. YAML rules run in real-time scanning and when CSM re-checks a finding. Optional YARA-X rules also run during deep scans and email attachment scanning. All rules are stored in `/opt/csm/rules/`.
+CSM matches file content against signature rules. YAML rules run in real-time scanning and when CSM re-checks a finding. Optional YARA-X rules also run during deep scans and email attachment scanning. The default rules directory is `/opt/csm/rules/`. Set `signatures.rules_dir` to use another directory.
 
-If an engine loads zero rules, CSM raises a `realtime_rules_missing` finding at startup and after every reload. A mistyped `signatures.rules_dir` or an empty rule sync causes this. Without the finding, both engines would treat an empty directory as a successful load and scan every write against nothing.
+CSM checks rule coverage at startup and after reloads. It raises `realtime_rules_missing` when YAML or an active YARA engine has no loaded rules. Check the rules directory and the disabled-rule list. Reloading the same empty set does not repeat the finding.
 
 ## Updating Rules
 
@@ -259,7 +259,7 @@ signatures:
 
 ### The download mirror
 
-YARA Forge's upstream GitHub releases publish ZIP files, but not CSM detached signatures. CSM therefore requires `yara_forge.download_url` to point at a mirror you operate.
+YARA Forge's upstream GitHub releases publish ZIP files, but not CSM detached signatures. CSM therefore requires `signatures.yara_forge.download_url` to point at a signed mirror: the project mirror shown above, or one you operate.
 
 - The URL may contain `{tier}` and `{version}` placeholders.
 - The detached signature must be available at the resolved ZIP URL plus `.sig`.
@@ -313,11 +313,11 @@ Realtime signature auto-quarantine adds a safety gate. A match is eligible only 
 - The file is at least 512 bytes.
 - The file has Shannon entropy >= 5.5, or it has hex density > 20% plus an obfuscated-execution signal.
 
-Legitimate plugin code is well below 5.5 entropy and passes through. Obfuscated malware is at 5.8 or above and is caught.
+Entropy alone does not determine whether a file is malicious. This gate applies after a signature match.
 
 ## Alert Rate Limiting
 
-By default CSM sends at most 30 operator alert dispatches an hour. Change the limit with `max_per_hour`.
+By default CSM sends at most 30 operator alert dispatches an hour. Change the limit with `alerts.max_per_hour`.
 
 | Findings | Treatment |
 |----------|-----------|

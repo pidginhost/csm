@@ -1,6 +1,6 @@
 # Critical Checks
 
-Critical checks run every 10 minutes. On a busy shared host a run typically takes a few seconds of wall-clock time. The runner enforces the 10-minute cadence even when a tick takes longer.
+Critical checks run every 10 minutes. On a busy shared host a run typically takes a few seconds of wall-clock time. The periodic scanner finishes its current run before it starts another.
 
 The tables below name the finding identifiers CSM emits, grouped by area. Most are standalone scheduled checks. A few are produced by a parent scheduled check and are not scheduled on their own:
 

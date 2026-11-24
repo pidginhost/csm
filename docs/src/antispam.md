@@ -1,6 +1,6 @@
 # Inbound spam filtering
 
-CSM can filter inbound mail through rspamd. On cPanel hosts each cPanel account decides for itself whether its mail is filtered. On Postfix hosts every local domain is filtered. Filtering is off by default.
+CSM can filter inbound mail through rspamd. On cPanel hosts each cPanel account decides for itself whether its mail is filtered. On Postfix hosts filtering is server-wide. You can exempt recipients or domains. Filtering is off by default.
 
 You install rspamd. CSM configures it, wires it into Exim on cPanel, keeps the integration current and reports when filtering is not working. CSM is never in the live mail path: Exim or Postfix talks to rspamd directly, and stopping CSM leaves the installed filtering in place.
 

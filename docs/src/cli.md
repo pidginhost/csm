@@ -38,9 +38,9 @@ The daemon checks ModSecurity rule actions every five minutes using file content
 
 | Command | Description |
 |---------|-------------|
-| `csm run` | Run all checks now via the daemon, send alerts |
-| `csm run-critical` | Critical checks now via the daemon (the daemon also schedules critical checks internally every 10 min) |
-| `csm run-deep` | Deep checks now via the daemon (the daemon also schedules deep checks internally every 60 min) |
+| `csm run` | Run all checks on demand via the daemon and send alerts |
+| `csm run-critical` | Run critical checks on demand via the daemon and send alerts. Scheduled runs start every 10 minutes. |
+| `csm run-deep` | Run deep checks on demand via the daemon and send alerts. The default interval between scheduled runs is 60 minutes. |
 | `csm check` | Run all checks via the daemon, print findings to stdout, no alerts / auto-response |
 | `csm check-critical` | Test critical checks only (dry-run via daemon) |
 | `csm check-deep` | Test deep checks only (dry-run via daemon) |
@@ -138,7 +138,7 @@ Uninstall is intentionally non-destructive unless `--purge` is supplied.
 
 - It takes 5-10 min on large servers.
 - Dangerous privileged accounts or WHM root tokens can still be reported on the first scan.
-- Add `--confirm` when existing history would be cleared.
+- If the store contains history, add `--confirm` only if you intend to replace the baseline.
 
 ### Rehash
 
@@ -451,7 +451,7 @@ What undo restores, by fix:
 - `/tmp`, `/var/tmp` and `/etc/shadow` get back their owner and mode.
 - WHM tweak settings are set back with `whmapi1 set_tweaksetting`. See [WHM tweaks that cannot be put back](#whm-tweaks-that-cannot-be-put-back).
 - Compilers: if the apply changed the compiler's mode, undo puts back its owner and mode. If the apply ran `/scripts/compilers off`, undo runs `/scripts/compilers on`, which sets cPanel's own modes, not the earlier ones.
-- cPanel updates: `/etc/cpupdate.conf` gets back its earlier `UPDATES` lines, including any the apply commented out, in their earlier order. Undo refuses if identical comments cannot be distinguished after an edit. Every other line stays as it is now, so saving WHM Update Preferences after the apply does not block undo.
+- cPanel updates: `/etc/cpupdate.conf` gets back its earlier `UPDATES` lines, including any the apply commented out, in their earlier order. Undo refuses if identical comments cannot be distinguished after an edit. Undo preserves all other lines, so saving WHM Update Preferences after the apply does not block undo.
 - PHP: each drop-in the apply wrote gets back the key's earlier line, or loses the key, and PHP reloads as on apply.
 
 A CSM drop-in left with only its header is removed.
@@ -557,7 +557,7 @@ With `--only=firewall`, a durable firewall journal and its snapshot in the archi
 
 ### Audit export
 
-`<when>` is RFC 3339 (`2026-04-01T00:00:00Z`) or a duration relative to now (`24h`, `7d`).
+`<when>` is RFC 3339 (`2026-04-01T00:00:00Z`) or a duration relative to the current time (`24h`, `7d`).
 
 `csm export` prints one JSON event per line on stdout, in the same `v=1` schema the live audit_log sinks emit. Pipe to a file or directly into a log shipper.
 

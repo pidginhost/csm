@@ -1,6 +1,6 @@
 # Verdict Callback HTTP Contract (v1)
 
-When `auto_response.verdict_callback.enabled: true`, CSM POSTs each auto-block decision to the configured URL and reads an advisory response. The endpoint lets phpanel observe and label decisions, downgrade them to audit-only, and attach tenant attribution. It is not a per-tenant nftables enforcement plane.
+When `auto_response.verdict_callback.enabled: true`, CSM POSTs eligible automatic block decisions to the configured URL and reads an advisory response. The endpoint lets phpanel observe and label decisions, downgrade them to audit-only, and attach tenant attribution. It is not a per-tenant nftables enforcement plane.
 
 CSM runs its local block validation before calling the endpoint. It rejects these locally and does not send them to the callback:
 
@@ -32,7 +32,7 @@ In dry run, with the firewall on and outside observe mode, admission also asks t
 - Run up to four at a time.
 - Honor `allow_unsigned` and `require_response_signature`.
 
-An `allow` ends the forecast for that block attempt, and CSM stores no forecast example for it. Admission sends no request when a block already covers the address, when the target is protected, or when the block set has no room. A retry asks again, and a reload discards old policy answers.
+An `allow` ends the forecast for that block attempt, and CSM stores no forecast example for it. Admission sends no request when a block already covers the address, when the target is protected, or when the forecast cannot admit or replace an entry in the full block set. A retry asks again, and a reload discards old policy answers.
 
 The v1 request contains no dry-run field. Request totals are not an exact multiple of the calls from the older (legacy) blocking path.
 
@@ -78,21 +78,21 @@ The value comes from the running process environment. After you edit an environm
 
 ### Running without a secret
 
-CSM refuses to enable the callback without a non-empty `hmac_secret` or resolved `hmac_secret_env` value.
+CSM requires a non-empty `hmac_secret` or resolved `hmac_secret_env` value unless you enable `allow_unsigned`.
 
-Set `allow_unsigned: true` only for staged rollouts that intentionally send unsigned requests and accept unsigned responses. Without that explicit opt-in, CSM rejects an unsigned `allow` verdict and proceeds with the default block.
+Set `allow_unsigned: true` only for staged rollouts that intentionally send unsigned requests and accept unsigned responses. Without a secret, CSM accepts an `allow` verdict only with that opt-in.
 
 ### Response signing (required by default)
 
 The server MUST sign its response body with the same HMAC-SHA256 scheme: the same secret and the same `X-CSM-Signature: sha256=<hex>` header. CSM verifies the response signature with constant-time compare before it parses the verdict. It rejects an unsigned or forged response and falls back to its default block. Without this check an on-path attacker could downgrade every "block" decision to "allow".
 
-If the server cannot sign responses yet, for example mid-rollout, set `auto_response.verdict_callback.require_response_signature: false` in `csm.yaml` to temporarily accept unsigned responses. The default is `true`, and there is no other way to disable the signature requirement.
+If the server cannot sign responses yet, for example mid-rollout, set `auto_response.verdict_callback.require_response_signature: false` in `csm.yaml` to temporarily accept unsigned responses. The default is `true` when a secret is configured.
 
 When response signing is disabled but a secret is configured, CSM still checks any `nonce` or `timestamp` fields the server echoes:
 
 - A nonce must match the request nonce.
 - A timestamp must stay within the five-minute skew window.
-- A legacy response that omits both fields keeps working.
+- A `block` reply can omit both fields. An `allow` reply must include at least one.
 
 ## Request body
 
@@ -142,11 +142,11 @@ The panel does not need to validate `timestamp` but MAY use it to reject stale c
 
 `"block"` is the default verdict, and `"allow"` overrides it. CSM rejects any other string as a protocol error and treats it as "no decision": it proceeds with the default block, per fail-open semantics.
 
-CSM compares `nonce` with constant-time equality and rejects mismatches as replay attempts. It rejects replies whose `timestamp` drifts more than five minutes from the local clock. When response signing is disabled, CSM still checks each of these two fields if it is present.
+CSM compares `nonce` with constant-time equality and rejects mismatches as replay attempts. It rejects replies whose `timestamp` drifts more than five minutes from the local clock. With a configured secret, CSM checks these fields when present even if response signing is disabled.
 
 ## Failure semantics
 
-The hook is fail-open: when a call fails or CSM rejects the reply, CSM proceeds with the default block.
+On callback failure, automatic blocking follows local policy, including dry run. A failed BPF callback leaves the kernel decision unchanged. The table describes automatic blocks.
 
 | Case | What CSM does |
 |---|---|
@@ -158,9 +158,9 @@ The hook is fail-open: when a call fails or CSM rejects the reply, CSM proceeds 
 | 200 OK with `verdict: "allow"` and no HMAC secret while `allow_unsigned` is false | Rejects it as an unsigned downgrade and treats it as fail-open (default block). |
 | 200 OK with missing or invalid `X-CSM-Signature`, and `require_response_signature` not turned off | Rejects it as forged and treats it as fail-open (default block). |
 | 200 OK with mismatched `nonce` or timestamp drift over five minutes | Rejects it as replay whenever a secret is configured and the field is present, and treats it as fail-open (default block). |
-| 200 OK with missing `nonce` or `timestamp` | Rejects it as replay when response signing is required. |
+| 200 OK with missing `nonce` or `timestamp` | With a secret, requires both fields for signed-response mode and at least one for an `allow` in optional-signature mode. |
 
-Missing replay fields are accepted only when `require_response_signature: false` is set for a legacy response shape.
+With a configured secret, signed JSON replies require both replay fields by default. An empty, correctly signed body carries no verdict.
 
 Operators see a forged-response rejection in stderr. Recurring rejections indicate either a panel-side rollout gap or an active on-path attack.
 

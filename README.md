@@ -104,12 +104,12 @@ Put overrides owned by automation in `/etc/csm/conf.d/*.yaml`; see [Configuratio
 
 ## Safety defaults
 
-- `mode: observe` detects and alerts only. It runs no automatic remediation or integration updates, and it refuses a config that still enables a state-changing subsystem. See [Observe mode](docs/src/observe-mode.md).
-- Auto-response is off until enabled. Automatic IP and subnet blocking then starts in dry run until you set `auto_response.dry_run: false`. Dry run guards network responses only, not file cleanup or process actions.
+- `mode: observe` keeps detection, correlation and alerting active. It skips automatic host remediation and integration updates, and it refuses a config that still enables a state-changing subsystem. See [Observe mode](docs/src/observe-mode.md).
+- Auto-response is off until enabled. Automatic IP and subnet blocking then starts in dry run until you set `auto_response.dry_run: false`. Dry run also covers mailbox suspensions and account mail holds. File cleanup and process termination follow their own switches.
 - Virtual patches for exposed files are off by default. Manual mode previews or applies them by hand. Automatic mode also needs auto-response and honors dry run.
 - BPF enforcement and PHP relay freezing have their own dry-run controls.
 
-When responses are on:
+CSM also applies these safeguards:
 
 - Infrastructure, local, allowed and verified-bot addresses are never blocked automatically.
 - Process termination skips root and recognized system services.

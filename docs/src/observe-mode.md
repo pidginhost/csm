@@ -22,7 +22,7 @@ Use observe mode in two situations:
 2. Decide what to do with host protections CSM already installed. Observe mode leaves them in place, so remove or change them explicitly first if that is the intended posture.
 3. Turn off every switch that changes host state. See [Contradictory settings are refused, not rewritten](#contradictory-settings-are-refused-not-rewritten).
 4. Set `mode: observe`.
-5. Restart the daemon with `systemctl restart csm`. Changing `mode` requires a restart, not a reload.
+5. After a hand edit, run `csm rehash`. Restart the daemon with `systemctl restart csm`. Changing `mode` requires a restart, not a reload.
 6. Check the result. See [Confirming the posture](#confirming-the-posture).
 
 Observe startup refuses a pending rollback because restoring it would change the host, while ignoring it would abandon the rollback deadline.
@@ -58,6 +58,7 @@ CSM checks these keys:
 - `bpf_enforcement.enabled`
 - `email_protection.forward_guard.enabled`
 - `email_protection.antispam.enabled`
+- `email_protection.antispam.learning.enabled`
 - `auto_response.php_relay.freeze`
 - `auto_response.mail_auth_recovery.restart_enabled`
 - `auto_response.virtual_patch_exposed_files` set to `auto`

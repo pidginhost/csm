@@ -127,7 +127,7 @@ curl -o goroutine.txt 'http://127.0.0.1:<port>/debug/pprof/goroutine?debug=2'
   - Sustained growth means findings are not reaching operators. Check SMTP, webhook reachability, and credentials.
 - `csm_audit_sink_degraded{sink}` (gauge): one when an enabled JSONL or syslog destination failed to open or write, zero when healthy or disabled.
   - Values appear after the audit pipeline first runs and remain degraded during retry backoff.
-  - Syslog reports local write results, not receiver acknowledgement.
+  - Syslog reports local write results, not receiver acknowledgment.
 - `csm_audit_events_dropped_total{sink}` (counter): events whose destination was unavailable or whose write failed.
   - Use `csm export --since <when>` for backfill. Failed live deliveries are not replayed automatically.
 
@@ -302,7 +302,7 @@ Registered when `reputation.upstream.enabled: true`.
 
 ### Firewall blocks
 
-- `csm_firewall_block_outcome_total{outcome,source}` (counter): every IP block attempt, labelled by firewall `outcome` and by `source`.
+- `csm_firewall_block_outcome_total{outcome,source}` (counter): every IP block attempt, labeled by firewall `outcome` and by `source`.
   - `outcome` is `live`, `dry_run`, `allowed`, `allowlisted`, `noop`, `protected` for refused infrastructure IPs, or `error` for engine failures or an unavailable engine.
   - `source` is `scan`, `challenge`, `incident`, `central_intel`, `cli`, `web_ui`, or `unknown` for an invalid internal source.
   - All combinations are exported at zero from startup. Unexpected outcome or source values collapse into the fixed `error` or `unknown` buckets instead of creating new labels.
@@ -433,7 +433,7 @@ A queued rescan is stored with the rule state that caused it, and the scan store
 
 - The saved queue is restored even if the state store becomes available after the first watcher tick.
 - Invalid queue records log a warning and are repaired by queuing a fresh rescan. The scan neither tracks nor clears a queue it cannot read.
-- A deep run cancelled by shutdown or by the check timeout saves no progress.
+- A deep run canceled by shutdown or by the check timeout saves no progress.
 
 State from older builds contains only mtimes. The first successful read adds a hash without queuing a rescan if the recorded mtime still matches. A moved mtime without a recorded hash conservatively queues one rescan.
 

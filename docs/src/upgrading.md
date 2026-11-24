@@ -154,16 +154,18 @@ Then `systemctl daemon-reload && systemctl restart csm`. Verify with `systemctl 
 
 `auto_response.dry_run` defaults to `true` when the key is absent. Automatic IP blocks are not applied.
 
-If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
+If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Read the live setting from the running daemon:
 
 ```bash
-csm status --json | jq '.auto_response_dry_run, .dry_run_blocks'
+csm status --json | jq '.automation | {auto_response_dry_run, dry_run_blocks}'
 csm firewall status            # check that "Recently Blocked" picks up new entries after the restart
 ```
 
-With the firewall on and outside observe mode, `dry_run_blocks` counts the forecast examples CSM has retained. Older examples stay in the count until CSM prunes them. It is not the number of blocks that would be active right now, and it is not a count of all attempted blocks.
+"Recently Blocked" also lists manual blocks, so it does not prove live mode by itself.
 
-Manual `csm firewall ...` operations bypass dry-run and always apply.
+With the firewall on and outside observe mode, `dry_run_blocks` counts the forecast examples CSM has retained. Older examples stay in the count until CSM prunes them. It is not the number of blocks that would still be active, and it is not a count of all attempted blocks.
+
+Manual firewall blocks bypass dry run and still respect target protections.
 
 ## Admission applies automatic IP blocks
 
@@ -211,7 +213,7 @@ Keep the database and firewall state, including action identifiers and absolute 
 
 For a rollback:
 
-1. Set `auto_response.dry_run: true` in the effective configuration, reload, and confirm `csm status --json` reports `auto_response_dry_run: true`. A drop-in may override the main config.
+1. Set `auto_response.dry_run: true` in the effective configuration, reload, and confirm `csm status --json` reports `automation.auto_response_dry_run` as true. A drop-in may override the main config.
 2. Confirm admission has stopped executing (`admission.owner.executing` is false) before proceeding. A failed reload is not a successful stop.
 3. Note the installed version, the `csm doctor` result and the current timed blocks. Then stop `csm.service` and confirm it is inactive. Keep a consistent backup of the stopped database and firewall state.
 4. Install the retained 4.14.0 package with the package manager, allowing the downgrade. The standalone helper installs only the latest release: on a standalone host, put the retained 4.14.0 binary and its assets in place and run `csm rehash` before starting. Do not substitute a locally compiled binary.

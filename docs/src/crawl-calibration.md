@@ -366,7 +366,7 @@ Removed minutes break windows like any unknown minute and never train a baseline
 
 These bounds assume each copy lists requests in the order they completed. The manifest records, per copy, how far any logged time trails an earlier one. That disorder is a lower bound on completion delay, so a proof whose lateness bound is smaller is refused.
 
-The declared disorder must also cover inversions between the timed neighbours of lost lines, including neighbours outside the recording period.
+The declared disorder must also cover inversions between the timed neighbors of lost lines, including neighbors outside the recording period.
 
 ## How a replay runs
 

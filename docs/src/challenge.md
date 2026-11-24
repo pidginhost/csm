@@ -499,7 +499,7 @@ Requests from this server's own addresses, loopback included, get HTTP 403 witho
 | 429 | Too many failed attempts from one address. Wait and retry. |
 | 405 | Any method other than `POST`. |
 | 404 | `verified_session` is off. |
-| 503 | CSM cannot read this server's addresses right now. |
+| 503 | CSM cannot read this server's current addresses. |
 
 Integration notes:
 
