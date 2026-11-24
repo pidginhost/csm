@@ -11,7 +11,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Security
 
-- Hardening undo refuses redirected system settings and SSH configurations whose managed settings moved into conditional sections.
 - Stalwart setup and `csm doctor` refuse forwarded webmail addresses when site code can run as a user the webmail port lock admits, or this cannot be checked. Run `csm doctor` to see what runs as a shared user.
 - The daemon can no longer write its configuration directory; settings it saves are written by a separate helper sandboxed to that directory.
 - FTP findings only alert when logged to files or when a running pure-ftpd server with name resolution disabled cannot be confirmed. Set pure-ftpd's `DontResolve yes` and restart it to keep FTP blocks.
@@ -56,7 +55,6 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 
 ### Fixed
 
-- Hardening undo retains recovery information after failed restores or service reloads so operators can retry.
 - A forward that keeps a copy of the mail no longer counts toward suspending the mailbox unless something else corroborates it.
 - Dismissed findings no longer count toward the coordinated attack and shared malware alerts across accounts while they stay unchanged.
 
