@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/VKCOM/php-parser v0.8.2
-	github.com/VirusTotal/yara-x/go v1.23.0
+	github.com/VirusTotal/yara-x/go v1.24.0
 	github.com/aymanbagabas/go-udiff v0.4.2
 	github.com/cilium/ebpf v0.22.0
 	github.com/coreos/go-systemd/v22 v22.7.0
@@ -13,7 +13,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.2
 	github.com/google/go-cmp v0.7.0
 	github.com/google/nftables v0.3.0
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/mdlayher/netlink v1.11.2
 	github.com/oschwald/maxminddb-golang/v2 v2.9.1
 	github.com/redis/go-redis/v9 v9.23.0

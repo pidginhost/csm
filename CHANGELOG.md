@@ -55,6 +55,7 @@ Releases before 4.10.0 are archived: [4.0 to 4.9](docs/changelog/4.0-4.9.md), [3
 - `csm webserver-integration` rejects unknown flags, extra words and missing configuration arguments, and honors configuration overrides in both spaced and equals forms.
 - Go dependencies are updated to their current releases.
 - JavaScript scans now detect keystroke leaks in modules with import attributes, destructured arrow defaults, and statements with semicolons after newlines.
+- The malware scanning engine moves to YARA-X 1.24.0; shipped rules compile and match as before.
 
 ### Fixed
 
